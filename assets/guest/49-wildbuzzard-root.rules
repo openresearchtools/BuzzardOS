@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Guest-only root delegation. The system bus, polkit daemon, and systemd PID 1
+// are all private to the Wild Buzzard namespaces. This rule never reaches the
+// host polkit service.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "wildbuzzard" &&
+        action.id == "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.YES;
+    }
+});

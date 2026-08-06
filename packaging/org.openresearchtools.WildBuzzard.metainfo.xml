@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.openresearchtools.wildbuzzard</id>
+  <name>Wild Buzzard</name>
+  <summary>Persistent rootless Linux desktop machines</summary>
+  <developer id="org.openresearchtools">
+    <name>Open Research Tools</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      Boot a persistent, namespace-isolated Sway desktop with a classic
+      accessible shell whose complete output appears in one native host
+      Wayland window.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.openresearchtools.wildbuzzard.desktop</launchable>
+  <url type="homepage">https://github.com/openresearchtools/BuzzardOS</url>
+  <provides>
+    <binary>wildbuzzard</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-08-04" type="development" />
+  </releases>
+</component>

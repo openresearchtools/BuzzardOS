@@ -1,0 +1,13 @@
+schema = 1
+name = "Cua Driver"
+upstream_repository = "https://github.com/trycua/cua"
+upstream_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
+upstream_tag = "cua-driver-rs-v0.17.0"
+upstream_version = "0.17.0"
+license = "MIT"
+vendored_scope = "libs/cua-driver Linux driver, required shared Rust crates/assets, and CLI/MCP contract testkit"
+
+[wild_buzzard]
+fork_name = "Wild Buzzard CUA Driver"
+upstream_endorsement = false
+modifications = "CHANGES.WILDBUZZARD.md"

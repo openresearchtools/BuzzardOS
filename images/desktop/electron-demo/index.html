@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wild Buzzard Electron</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font: 16px system-ui, sans-serif;
+        background: #111827;
+        color: #f9fafb;
+      }
+      main {
+        max-width: 42rem;
+        margin: 4rem auto;
+        padding: 2rem;
+      }
+      label,
+      button {
+        display: block;
+        margin: 1rem 0;
+      }
+      input[type="text"] {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 0.7rem;
+      }
+      button {
+        padding: 0.7rem 1.1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Wild Buzzard Electron</h1>
+      <p id="status" role="status">Electron accessibility test is ready.</p>
+      <label for="message">Accessible Electron input</label>
+      <input
+        id="message"
+        type="text"
+        aria-label="Accessible Electron input"
+        value="ready"
+      />
+      <label><input id="enabled" type="checkbox" checked /> Enable agent control</label>
+      <button id="action" type="button">Run accessible action</button>
+    </main>
+    <script>
+      document.getElementById("action").addEventListener("click", () => {
+        document.getElementById("status").textContent = "Accessible action completed.";
+      });
+    </script>
+  </body>
+</html>

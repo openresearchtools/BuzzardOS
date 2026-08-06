@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wild Buzzard
+Comment=Persistent rootless desktop machine
+Exec=wildbuzzard
+Icon=wildbuzzard
+StartupWMClass=org.openresearchtools.wildbuzzard
+Terminal=false
+Categories=System;Emulator;
+Keywords=container;desktop;wayland;vm;

@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+# The complete machine is already inside a rootless user namespace. Chromium's
+# setuid sandbox cannot operate on the deliberately nosuid persistent rootfs.
+exec env -u ELECTRON_RUN_AS_NODE -u ELECTRON_NO_ATTACH_CONSOLE \
+    /opt/electron/electron \
+    --no-sandbox \
+    --disable-gpu \
+    --ozone-platform=x11 \
+    --force-renderer-accessibility \
+    /usr/local/share/wildbuzzard-electron-demo/main.js \
+    "$@"

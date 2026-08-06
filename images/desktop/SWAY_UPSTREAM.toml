@@ -1,0 +1,13 @@
+schema = 1
+
+[sway]
+repository = "https://github.com/swaywm/sway"
+release = "1.12"
+commit = "88869399f421d9180dd8b6ed0b5a1f4a3585d252"
+license = "MIT"
+
+[wlroots]
+repository = "https://gitlab.freedesktop.org/wlroots/wlroots"
+release = "0.20.2"
+commit = "d783533489e1f75d6886c2ab5c5960090ef268f8"
+license = "MIT"

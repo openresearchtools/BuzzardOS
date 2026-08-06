@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+output=$1
+shift
+[ "$1" = "--" ] || {
+    echo "wildbuzzard-sudo-exec: invalid invocation" >&2
+    exit 2
+}
+shift
+
+# The caller creates this FIFO in the guest-private user runtime directory.
+# Guest root is deliberately not a host-security boundary: the interactive
+# user is authorized to run any command as guest root.
+exec >"$output" 2>&1
+exec "$@"

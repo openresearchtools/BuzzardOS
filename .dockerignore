@@ -1,0 +1,17 @@
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!assets/
+!assets/**
+!images/
+!images/desktop/
+!images/desktop/**
+!packaging/
+!packaging/**
+!third_party/
+!third_party/trycua-cua/
+!third_party/trycua-cua/**
+third_party/trycua-cua/cua-driver/rust/target/
+third_party/trycua-cua/cua-driver/rust/target/**
