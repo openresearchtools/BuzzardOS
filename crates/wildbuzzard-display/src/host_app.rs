@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
@@ -20,8 +20,8 @@ use wb_core::{
 };
 
 use crate::gateway::{
-    DmabufFormat, DmabufFrame, GatewayCommand, GatewayCommandSender, GatewayConnection,
-    GatewayEvent, GatewaySockets, HostCommand, OutputMode,
+    CursorImage, DmabufFormat, DmabufFrame, GatewayCommand, GatewayCommandSender,
+    GatewayConnection, GatewayEvent, GatewaySockets, HostCommand, OutputMode,
 };
 use crate::launch::Launch;
 
@@ -30,6 +30,10 @@ const MAX_INITIAL_SIZE_CORRECTIONS: u8 = 8;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const BACKGROUND_CLOCK_GRACE: Duration = Duration::from_millis(50);
 const DEFAULT_REFRESH_MHZ: u32 = 60_000;
+const WAYLAND_SCALE_DENOMINATOR: u32 = 120;
+const WAYLAND_FIXED_DENOMINATOR: i64 = 256;
+const MAX_WAYLAND_FIXED_EXTENT: u32 =
+    ((i32::MAX as u64 + 1) / WAYLAND_FIXED_DENOMINATOR as u64) as u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MonitorState {
@@ -141,6 +145,18 @@ struct NativeWindow {
     pending_presentations: RefCell<VecDeque<PendingPresentation>>,
     presentation: RefCell<PresentationDiagnostics>,
     input: RefCell<InputStats>,
+    /// Input diagnostics are deliberately written by the 200 ms status poll,
+    /// never from the pointer-motion hot path.  Atomic JSON replacement for
+    /// every motion event caused needless filesystem and allocator pressure
+    /// while the guest compositor was trying to present interactive frames.
+    input_dirty: Cell<bool>,
+    pressed_pointer_buttons: RefCell<BTreeSet<u32>>,
+    /// Sway may recommit an unchanged cursor surface while the pointer moves.
+    /// Reinstalling an identical GDK cursor invalidates host-side state and can
+    /// make the embedded monitor visibly flash. Keep the last complete image
+    /// and update GTK only when the cursor shape or hotspot actually changes.
+    last_cursor: RefCell<Option<CursorImage>>,
+    cursor_state: Cell<u8>,
 }
 
 struct PendingFrame {
@@ -164,7 +180,6 @@ struct FrameMetadata {
     modifier: u64,
     planes: u32,
     explicit_sync: bool,
-    native_resolution: bool,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -352,13 +367,17 @@ impl NativeWindow {
             }),
             input: RefCell::new(InputStats {
                 schema: 3,
-                scale_120: 120,
+                scale_120: initial_guest_scale_120,
                 logical_width: 1,
                 logical_height: 1,
                 physical_width: 1,
                 physical_height: 1,
                 ..InputStats::default()
             }),
+            input_dirty: Cell::new(false),
+            pressed_pointer_buttons: RefCell::new(BTreeSet::new()),
+            last_cursor: RefCell::new(None),
+            cursor_state: Cell::new(0),
         });
 
         native.install_actions();
@@ -388,6 +407,27 @@ impl NativeWindow {
             if let Err(error) = this.save_window() {
                 eprintln!("wildbuzzard-display: saving maximize state: {error:#}");
             }
+        });
+
+        // GDK's fractional `scale` property is the frontend's authoritative
+        // view of the Wayland preferred-scale protocol state. A surface can
+        // change scale while its logical allocation stays unchanged (for
+        // example when moved between monitors), so do not wait for a resize
+        // or infer a scale from captured pixels.
+        let this = Rc::clone(self);
+        self.window.connect_realize(move |_| {
+            let Some(surface) = this.window.surface() else {
+                return;
+            };
+            let width = this.monitor_stack.width().max(1) as u32;
+            let height = this.monitor_stack.height().max(1) as u32;
+            this.update_viewport(width, height);
+            let scale_this = Rc::clone(&this);
+            surface.connect_scale_notify(move |_| {
+                let width = scale_this.monitor_stack.width().max(1) as u32;
+                let height = scale_this.monitor_stack.height().max(1) as u32;
+                scale_this.update_viewport(width, height);
+            });
         });
 
         let this = Rc::clone(self);
@@ -504,6 +544,7 @@ impl NativeWindow {
         });
         let this = Rc::clone(self);
         motion.connect_leave(move |_| {
+            this.release_pressed_pointer_buttons();
             this.send_guest_input(GatewayCommand::PointerLeave);
         });
         self.picture.add_controller(motion);
@@ -523,6 +564,7 @@ impl NativeWindow {
             let (x, y) = this.to_guest_surface(x, y);
             this.send_guest_input(GatewayCommand::PointerMotion { x, y });
             if let Some(button) = linux_pointer_button(gesture.current_button()) {
+                this.pressed_pointer_buttons.borrow_mut().insert(button);
                 this.send_guest_input(GatewayCommand::PointerButton {
                     button,
                     pressed: true,
@@ -534,10 +576,12 @@ impl NativeWindow {
             let (x, y) = this.to_guest_surface(x, y);
             this.send_guest_input(GatewayCommand::PointerMotion { x, y });
             if let Some(button) = linux_pointer_button(gesture.current_button()) {
-                this.send_guest_input(GatewayCommand::PointerButton {
-                    button,
-                    pressed: false,
-                });
+                if this.pressed_pointer_buttons.borrow_mut().remove(&button) {
+                    this.send_guest_input(GatewayCommand::PointerButton {
+                        button,
+                        pressed: false,
+                    });
+                }
             }
         });
         self.picture.add_controller(click);
@@ -567,6 +611,7 @@ impl NativeWindow {
             if let Some(toplevel) = this.gdk_toplevel() {
                 toplevel.restore_system_shortcuts();
             }
+            this.release_pressed_pointer_buttons();
             this.send_guest_input(GatewayCommand::KeyboardLeave);
         });
         self.picture.add_controller(focus);
@@ -593,26 +638,36 @@ impl NativeWindow {
         self.picture.add_controller(keys);
     }
 
+    fn release_pressed_pointer_buttons(&self) {
+        let buttons = std::mem::take(&mut *self.pressed_pointer_buttons.borrow_mut());
+        for button in buttons {
+            self.send_guest_input(GatewayCommand::PointerButton {
+                button,
+                pressed: false,
+            });
+        }
+    }
+
     fn to_guest_surface(&self, x: f64, y: f64) -> (f64, f64) {
         let mode = self.output_mode();
         (
-            scale_monitor_coordinate(x, self.viewport_width.get(), mode.physical_width),
-            scale_monitor_coordinate(y, self.viewport_height.get(), mode.physical_height),
+            map_monitor_coordinate(x, self.viewport_width.get(), mode.physical_width),
+            map_monitor_coordinate(y, self.viewport_height.get(), mode.physical_height),
         )
     }
 
     fn send_guest_input(&self, command: GatewayCommand) {
         self.refresh_shortcut_inhibition();
         {
+            let mode = self.output_mode();
             let mut stats = self.input.borrow_mut();
             stats.received_events = stats.received_events.saturating_add(1);
             stats.last_event_monotonic_us = monotonic_us();
-            stats.scale_120 = self.scale_120.get();
-            stats.logical_width = u64::from(self.viewport_width.get());
-            stats.logical_height = u64::from(self.viewport_height.get());
-            stats.physical_width = scale_dimension(self.viewport_width.get(), self.scale_120.get());
-            stats.physical_height =
-                scale_dimension(self.viewport_height.get(), self.scale_120.get());
+            stats.scale_120 = mode.scale_120;
+            stats.logical_width = u64::from(mode.logical_width);
+            stats.logical_height = u64::from(mode.logical_height);
+            stats.physical_width = u64::from(mode.physical_width);
+            stats.physical_height = u64::from(mode.physical_height);
             match &command {
                 GatewayCommand::PointerEnter { x, y } => {
                     stats.last_event = "pointer-enter".into();
@@ -687,9 +742,7 @@ impl NativeWindow {
             let mut stats = self.input.borrow_mut();
             stats.ignored_events = stats.ignored_events.saturating_add(1);
             drop(stats);
-            if let Err(error) = self.save_input() {
-                eprintln!("wildbuzzard-display: saving input diagnostics: {error:#}");
-            }
+            self.input_dirty.set(true);
             return;
         }
         if let Err(error) = self.commands.send(command) {
@@ -700,9 +753,7 @@ impl NativeWindow {
             let mut stats = self.input.borrow_mut();
             stats.forwarded_events = stats.forwarded_events.saturating_add(1);
         }
-        if let Err(error) = self.save_input() {
-            eprintln!("wildbuzzard-display: saving input diagnostics: {error:#}");
-        }
+        self.input_dirty.set(true);
     }
 
     fn install_actions(self: &Rc<Self>) {
@@ -773,6 +824,8 @@ impl NativeWindow {
                         self.set_state(MonitorState::Failed);
                     }
                 }
+                GatewayEvent::GuestCursor(cursor) => self.install_cursor(cursor),
+                GatewayEvent::GuestCursorHidden => self.hide_cursor(),
                 GatewayEvent::FrameReleased { id, held_us } => {
                     let mut stats = self.presentation.borrow_mut();
                     stats.released_frames = stats.released_frames.saturating_add(1);
@@ -791,6 +844,12 @@ impl NativeWindow {
         if self.last_runtime_check.get().elapsed() >= RUNTIME_POLL_INTERVAL {
             self.last_runtime_check.set(Instant::now());
             self.refresh_runtime_state();
+            if self.input_dirty.replace(false)
+                && let Err(error) = self.save_input()
+            {
+                self.input_dirty.set(true);
+                eprintln!("wildbuzzard-display: saving input diagnostics: {error:#}");
+            }
         }
     }
 
@@ -832,7 +891,6 @@ impl NativeWindow {
             anyhow::bail!("guest dmabuf frame has {} planes", planes.len());
         }
         let plane_count = planes.len() as u32;
-        let output_mode = self.output_mode();
         let metadata = FrameMetadata {
             width,
             height,
@@ -840,8 +898,6 @@ impl NativeWindow {
             modifier,
             planes: plane_count,
             explicit_sync,
-            native_resolution: width == output_mode.physical_width
-                && height == output_mode.physical_height,
         };
 
         let display = gtk::prelude::WidgetExt::display(&self.window);
@@ -912,6 +968,30 @@ impl NativeWindow {
             self.set_state(MonitorState::Running);
         }
         self.save_presentation()
+    }
+
+    fn install_cursor(&self, cursor: CursorImage) {
+        if self.cursor_state.get() == 1 && self.last_cursor.borrow().as_ref() == Some(&cursor) {
+            return;
+        }
+        *self.last_cursor.borrow_mut() = Some(cursor.clone());
+        let bytes = glib::Bytes::from_owned(cursor.pixels);
+        let texture = gdk::MemoryTexture::new(
+            cursor.width as i32,
+            cursor.height as i32,
+            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+            &bytes,
+            cursor.stride,
+        );
+        let cursor = gdk::Cursor::from_texture(&texture, cursor.hotspot_x, cursor.hotspot_y, None);
+        self.picture.set_cursor(Some(&cursor));
+        self.cursor_state.set(1);
+    }
+
+    fn hide_cursor(&self) {
+        if self.cursor_state.replace(2) != 2 {
+            self.picture.set_cursor_from_name(Some("none"));
+        }
     }
 
     fn release_rejected_frame(&self, id: u64) -> Result<()> {
@@ -1124,7 +1204,18 @@ impl NativeWindow {
         stats.scale_120 = self.scale_120.get();
         stats.viewport_width = self.viewport_width.get();
         stats.viewport_height = self.viewport_height.get();
-        stats.native_resolution = frame.metadata.native_resolution;
+        // Re-evaluate against the current protocol state. A frame may have
+        // been queued immediately before a host resize or monitor-scale
+        // transition; its submission-time value must never resurrect a stale
+        // native-resolution or zero-copy claim.
+        let exact_native_mapping = frame_has_exact_native_mapping(
+            frame.metadata.width,
+            frame.metadata.height,
+            self.viewport_width.get(),
+            self.viewport_height.get(),
+            self.scale_120.get(),
+        );
+        stats.native_resolution = exact_native_mapping;
         stats.presentation_feedback = true;
         stats.gtk_subsurface_offload = frame.offloaded;
         stats.last_pacing_source = "host-vblank".into();
@@ -1153,7 +1244,7 @@ impl NativeWindow {
         stats.presented = true;
         stats.discarded = false;
         stats.vsync = refresh_interval_us > 0;
-        stats.zero_copy = frame.offloaded && frame.metadata.native_resolution;
+        stats.zero_copy = frame.offloaded && exact_native_mapping;
         stats.sequence = sequence;
         stats.refresh_ns = refresh_interval_us
             .max(0)
@@ -1247,7 +1338,22 @@ impl NativeWindow {
             .surface()
             .map(|surface| surface.scale())
             .unwrap_or(1.0);
-        let scale_120 = effective_scale_120(self.launch.test_fractional_scale_120, scale);
+        let scale_120 = match effective_scale_120(self.launch.test_fractional_scale_120, scale) {
+            Ok(scale_120) => scale_120,
+            Err(error) => {
+                *self.failure.borrow_mut() = Some(error);
+                self.set_state(MonitorState::Failed);
+                return;
+            }
+        };
+        let Some(host_mapping) = PixelMapping::new(width, height, scale_120) else {
+            *self.failure.borrow_mut() = Some(format!(
+                "host viewport {width}x{height} at {scale_120}/120 scale exceeds the supported \
+                 Wayland buffer or fixed-point coordinate dimensions"
+            ));
+            self.set_state(MonitorState::Failed);
+            return;
+        };
         let guest_scale_120 = self.launch.guest_scale_120.unwrap_or(scale_120);
         let refresh_mhz = self
             .window
@@ -1258,19 +1364,33 @@ impl NativeWindow {
             })
             .map(|monitor| monitor.refresh_rate().max(0) as u32)
             .unwrap_or(0);
-        if self.viewport_width.replace(width) != width
-            || self.viewport_height.replace(height) != height
-            || self.scale_120.replace(scale_120) != scale_120
-            || self.guest_scale_120.replace(guest_scale_120) != guest_scale_120
-            || self.refresh_mhz.replace(refresh_mhz) != refresh_mhz
+        // Evaluate every replacement before combining the flags. `||` around
+        // the `replace` calls would short-circuit after the first changed
+        // field and publish a torn width/height/scale transition.
+        let width_changed = self.viewport_width.replace(width) != width;
+        let height_changed = self.viewport_height.replace(height) != height;
+        let scale_changed = self.scale_120.replace(scale_120) != scale_120;
+        let guest_scale_changed = self.guest_scale_120.replace(guest_scale_120) != guest_scale_120;
+        let refresh_changed = self.refresh_mhz.replace(refresh_mhz) != refresh_mhz;
+        if width_changed
+            || height_changed
+            || scale_changed
+            || guest_scale_changed
+            || refresh_changed
         {
             {
                 let mut stats = self.input.borrow_mut();
-                stats.scale_120 = scale_120;
-                stats.logical_width = u64::from(width);
-                stats.logical_height = u64::from(height);
-                stats.physical_width = scale_dimension(width, scale_120);
-                stats.physical_height = scale_dimension(height, scale_120);
+                stats.scale_120 = guest_scale_120;
+                stats.logical_width = u64::from(guest_logical_dimension(
+                    host_mapping.physical_width,
+                    guest_scale_120,
+                ));
+                stats.logical_height = u64::from(guest_logical_dimension(
+                    host_mapping.physical_height,
+                    guest_scale_120,
+                ));
+                stats.physical_width = u64::from(host_mapping.physical_width);
+                stats.physical_height = u64::from(host_mapping.physical_height);
             }
             {
                 let mut stats = self.presentation.borrow_mut();
@@ -1278,8 +1398,13 @@ impl NativeWindow {
                 stats.viewport_width = width;
                 stats.viewport_height = height;
                 stats.native_resolution = stats.width > 0
-                    && u64::from(stats.width) == scale_dimension(width, scale_120)
-                    && u64::from(stats.height) == scale_dimension(height, scale_120);
+                    && frame_has_exact_native_mapping(
+                        stats.width,
+                        stats.height,
+                        width,
+                        height,
+                        scale_120,
+                    );
                 if !stats.native_resolution {
                     stats.zero_copy = false;
                 }
@@ -1319,18 +1444,25 @@ impl NativeWindow {
     }
 
     fn output_mode(&self) -> OutputMode {
-        let host_scale_120 = self.scale_120.get();
         let guest_scale_120 = self.guest_scale_120.get();
-        let physical_width = scale_dimension(self.viewport_width.get(), host_scale_120) as u32;
-        let physical_height = scale_dimension(self.viewport_height.get(), host_scale_120) as u32;
+        let mapping = self.host_pixel_mapping();
         OutputMode {
-            logical_width: guest_logical_dimension(physical_width, guest_scale_120),
-            logical_height: guest_logical_dimension(physical_height, guest_scale_120),
-            physical_width,
-            physical_height,
+            logical_width: guest_logical_dimension(mapping.physical_width, guest_scale_120),
+            logical_height: guest_logical_dimension(mapping.physical_height, guest_scale_120),
+            physical_width: mapping.physical_width,
+            physical_height: mapping.physical_height,
             scale_120: guest_scale_120,
             refresh_mhz: self.refresh_mhz.get(),
         }
+    }
+
+    fn host_pixel_mapping(&self) -> PixelMapping {
+        PixelMapping::new(
+            self.viewport_width.get(),
+            self.viewport_height.get(),
+            self.scale_120.get(),
+        )
+        .expect("validated host viewport must fit Wayland fixed-point coordinates")
     }
 
     fn apply_host_command(&self, command: HostCommand) {
@@ -1393,10 +1525,16 @@ impl NativeWindow {
     }
 
     fn save_host_request(&self, action: &str) -> Result<()> {
+        let machine = self
+            .launch
+            .machine_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("machine directory name is not valid UTF-8")?;
         let value = serde_json::json!({
             "schema": 1,
             "action": action,
-            "machine": self.launch.machine_dir.file_name(),
+            "machine": machine,
         });
         atomic_json(&self.launch.status_dir.join("host-request.json"), &value)
     }
@@ -1758,8 +1896,10 @@ impl NativeWindow {
         // the complete host application at the surface's physical pixel size
         // so a 1600px guest buffer occupies exactly 1600 captured pixels.
         let scale_120 = self.scale_120.get();
-        let physical_width = scale_dimension(logical_width as u32, scale_120) as i32;
-        let physical_height = scale_dimension(logical_height as u32, scale_120) as i32;
+        let mapping = PixelMapping::new(logical_width as u32, logical_height as u32, scale_120)
+            .context("host application dimensions exceed Wayland fixed-point coordinates")?;
+        let physical_width = mapping.physical_width as i32;
+        let physical_height = mapping.physical_height as i32;
         let physical_snapshot = gtk::Snapshot::new();
         physical_snapshot.scale(
             physical_width as f32 / logical_width as f32,
@@ -1827,25 +1967,32 @@ impl NativeWindow {
                 stats.shortcut_inhibit_revocations.saturating_add(1);
         }
         stats.host_shortcuts_inhibited = inhibited;
-        drop(stats);
-        if let Err(error) = self.save_input() {
-            eprintln!("wildbuzzard-display: saving shortcut inhibition state: {error:#}");
-        }
+        self.input_dirty.set(true);
     }
 
     fn save_output_state(&self) -> Result<()> {
         let host_scale_120 = self.scale_120.get();
         let guest_scale_120 = self.guest_scale_120.get();
-        let physical_width = scale_dimension(self.viewport_width.get(), host_scale_120) as u32;
-        let physical_height = scale_dimension(self.viewport_height.get(), host_scale_120) as u32;
+        let mapping = PixelMapping::new(
+            self.viewport_width.get(),
+            self.viewport_height.get(),
+            host_scale_120,
+        )
+        .context("host viewport exceeds supported Wayland buffer dimensions")?;
+        let physical_width = mapping.physical_width;
+        let physical_height = mapping.physical_height;
         let guest_logical_width = guest_logical_dimension(physical_width, guest_scale_120);
         let guest_logical_height = guest_logical_dimension(physical_height, guest_scale_120);
         let value = serde_json::json!({
-            "schema": 5,
+            "schema": 6,
             "scale_120": guest_scale_120,
             "host_scale_120": host_scale_120,
+            "host_scale_denominator": WAYLAND_SCALE_DENOMINATOR,
             "host_viewport_width": self.viewport_width.get(),
             "host_viewport_height": self.viewport_height.get(),
+            "host_pixel_mapping_integral": mapping.is_integral(),
+            "host_width_scale_remainder": mapping.width_remainder,
+            "host_height_scale_remainder": mapping.height_remainder,
             "logical_width": guest_logical_width,
             "logical_height": guest_logical_height,
             "guest_logical_width": guest_logical_width,
@@ -1932,43 +2079,138 @@ fn show_error_dialog(parent: &gtk::ApplicationWindow, heading: &str, error: &any
     dialog.show(Some(parent));
 }
 
-fn scale_dimension(logical: u32, scale_120: u32) -> u64 {
-    (logical as u64 * scale_120 as u64).div_ceil(120)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PixelMapping {
+    physical_width: u32,
+    physical_height: u32,
+    width_remainder: u32,
+    height_remainder: u32,
+}
+
+impl PixelMapping {
+    fn new(logical_width: u32, logical_height: u32, scale_120: u32) -> Option<Self> {
+        if logical_width > MAX_WAYLAND_FIXED_EXTENT || logical_height > MAX_WAYLAND_FIXED_EXTENT {
+            return None;
+        }
+        let (physical_width, width_remainder) = scaled_axis(logical_width, scale_120)?;
+        let (physical_height, height_remainder) = scaled_axis(logical_height, scale_120)?;
+        if physical_width > MAX_WAYLAND_FIXED_EXTENT || physical_height > MAX_WAYLAND_FIXED_EXTENT {
+            return None;
+        }
+        Some(Self {
+            physical_width,
+            physical_height,
+            width_remainder,
+            height_remainder,
+        })
+    }
+
+    fn is_integral(self) -> bool {
+        self.width_remainder == 0 && self.height_remainder == 0
+    }
+}
+
+fn scaled_axis(logical: u32, scale_120: u32) -> Option<(u32, u32)> {
+    if logical == 0 || scale_120 == 0 {
+        return None;
+    }
+    let product = u64::from(logical).checked_mul(u64::from(scale_120))?;
+    let physical = product.div_ceil(u64::from(WAYLAND_SCALE_DENOMINATOR));
+    let physical = u32::try_from(physical).ok()?;
+    (physical <= MAX_WAYLAND_FIXED_EXTENT).then_some((
+        physical,
+        (product % u64::from(WAYLAND_SCALE_DENOMINATOR)) as u32,
+    ))
+}
+
+fn frame_has_exact_native_mapping(
+    frame_width: u32,
+    frame_height: u32,
+    viewport_width: u32,
+    viewport_height: u32,
+    scale_120: u32,
+) -> bool {
+    scale_120 != 0
+        && u64::from(frame_width) * u64::from(WAYLAND_SCALE_DENOMINATOR)
+            == u64::from(viewport_width) * u64::from(scale_120)
+        && u64::from(frame_height) * u64::from(WAYLAND_SCALE_DENOMINATOR)
+            == u64::from(viewport_height) * u64::from(scale_120)
 }
 
 fn guest_logical_dimension(physical: u32, guest_scale_120: u32) -> u32 {
     u64::from(physical)
         .saturating_mul(120)
-        .saturating_add(u64::from(guest_scale_120.max(1)) / 2)
         .checked_div(u64::from(guest_scale_120.max(1)))
         .unwrap_or(1)
         .clamp(1, u64::from(u32::MAX)) as u32
 }
 
-fn effective_scale_120(test_override: Option<u32>, host_scale: f64) -> u32 {
-    test_override.unwrap_or_else(|| (host_scale * 120.0).round().clamp(120.0, 960.0) as u32)
+fn effective_scale_120(test_override: Option<u32>, host_scale: f64) -> Result<u32, String> {
+    if let Some(scale_120) = test_override {
+        return (scale_120 != 0)
+            .then_some(scale_120)
+            .ok_or_else(|| "test Wayland scale override must not be zero".into());
+    }
+    if !host_scale.is_finite() || host_scale <= 0.0 {
+        return Err(format!(
+            "host Wayland surface reported invalid scale {host_scale}"
+        ));
+    }
+    let protocol_units = host_scale * f64::from(WAYLAND_SCALE_DENOMINATOR);
+    let rounded = protocol_units.round();
+    // GDK exposes the protocol's integer 1/120 unit through an f64 scale.
+    // Permit only IEEE-754 round-trip error, not an arbitrary near-by scale.
+    let round_trip_tolerance = f64::EPSILON * rounded.abs().max(1.0) * 2.0;
+    if (protocol_units - rounded).abs() > round_trip_tolerance
+        || rounded < 1.0
+        || rounded > f64::from(u32::MAX)
+    {
+        return Err(format!(
+            "host Wayland surface scale {host_scale:.12} is not representable in exact 1/120 units"
+        ));
+    }
+    Ok(rounded as u32)
 }
 
-fn clamp_guest_logical_coordinate(value: f64, extent: u32) -> f64 {
-    // Wayland surface coordinates use wl_fixed (24.8), so one 1/256 logical
-    // pixel step is the smallest representable point inside the far edge.
-    value.clamp(0.0, (f64::from(extent) - (1.0 / 256.0)).max(0.0))
-}
-
-fn scale_monitor_coordinate(value: f64, monitor_extent: u32, surface_extent: u32) -> f64 {
-    let monitor_extent = monitor_extent.max(1);
-    let surface_extent = surface_extent.max(1);
-    let monitor_coordinate = clamp_guest_logical_coordinate(value, monitor_extent);
-    let surface_coordinate =
-        monitor_coordinate * f64::from(surface_extent) / f64::from(monitor_extent);
-    clamp_guest_logical_coordinate(surface_coordinate, surface_extent)
+fn map_monitor_coordinate(value: f64, from_extent: u32, to_extent: u32) -> f64 {
+    assert!((1..=MAX_WAYLAND_FIXED_EXTENT).contains(&from_extent));
+    assert!((1..=MAX_WAYLAND_FIXED_EXTENT).contains(&to_extent));
+    let from_fixed = coordinate_to_fixed(value, from_extent);
+    let numerator = i128::from(from_fixed) * i128::from(to_extent);
+    let denominator = i128::from(from_extent);
+    let to_fixed =
+        ((numerator + denominator / 2) / denominator).clamp(0, i128::from(i32::MAX)) as i32;
+    fixed_to_coordinate(to_fixed.min(max_fixed_coordinate(to_extent)))
 }
 
 fn unscale_monitor_coordinate(value: f64, surface_extent: u64, logical_extent: u64) -> f64 {
-    if surface_extent == 0 {
+    let Ok(surface_extent) = u32::try_from(surface_extent) else {
         return 0.0;
+    };
+    let Ok(logical_extent) = u32::try_from(logical_extent) else {
+        return 0.0;
+    };
+    map_monitor_coordinate(value, surface_extent, logical_extent)
+}
+
+fn coordinate_to_fixed(value: f64, extent: u32) -> i32 {
+    if !value.is_finite() {
+        return 0;
     }
-    value * logical_extent as f64 / surface_extent as f64
+    (value * WAYLAND_FIXED_DENOMINATOR as f64)
+        .round()
+        .clamp(0.0, f64::from(max_fixed_coordinate(extent))) as i32
+}
+
+fn fixed_to_coordinate(value: i32) -> f64 {
+    value as f64 / WAYLAND_FIXED_DENOMINATOR as f64
+}
+
+fn max_fixed_coordinate(extent: u32) -> i32 {
+    i64::from(extent.min(MAX_WAYLAND_FIXED_EXTENT))
+        .saturating_mul(WAYLAND_FIXED_DENOMINATOR)
+        .saturating_sub(1)
+        .min(i64::from(i32::MAX)) as i32
 }
 
 fn corrected_window_size(
@@ -2066,29 +2308,151 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fractional_scale_is_applied_once() {
-        assert_eq!(scale_dimension(2000, 180), 3000);
-        assert_eq!(scale_dimension(1, 160), 2);
-        assert_eq!(effective_scale_120(None, 4.0 / 3.0), 160);
-        assert_eq!(effective_scale_120(Some(180), 4.0 / 3.0), 180);
+    fn fractional_scale_is_recovered_from_exact_protocol_units() {
+        assert_eq!(effective_scale_120(None, 4.0 / 3.0).unwrap(), 160);
+        assert_eq!(effective_scale_120(Some(180), 4.0 / 3.0).unwrap(), 180);
+        assert!(effective_scale_120(Some(0), 1.0).is_err());
+        assert!(effective_scale_120(None, f64::NAN).is_err());
+        assert!(effective_scale_120(None, 1.331).is_err());
+        assert!(effective_scale_120(None, 160.25 / 120.0).is_err());
+        for protocol_units in 120..=960 {
+            let gdk_scale = f64::from(protocol_units) / 120.0;
+            assert_eq!(
+                effective_scale_120(None, gdk_scale).unwrap(),
+                protocol_units
+            );
+        }
         assert_eq!(guest_logical_dimension(1600, 150), 1280);
-        assert_eq!(guest_logical_dimension(1707, 150), 1366);
+        // Sway floors a fractional output's logical rectangle. Mirror that
+        // exact value so output synchronization converges instead of
+        // reapplying the same mode after every output event.
+        assert_eq!(guest_logical_dimension(1707, 150), 1365);
     }
 
     #[test]
-    fn input_coordinates_remain_in_guest_logical_space() {
-        assert_eq!(clamp_guest_logical_coordinate(939.0, 1920), 939.0);
-        assert_eq!(clamp_guest_logical_coordinate(-1.0, 1920), 0.0);
-        assert!(clamp_guest_logical_coordinate(1920.0, 1920) < 1920.0);
+    fn scale_matrix_distinguishes_allocation_from_integral_pixel_identity() {
+        let cases = [
+            (120, 1280, 800, true),
+            (150, 1600, 1000, true),
+            (160, 1707, 1067, false),
+            (180, 1920, 1200, true),
+            (210, 2240, 1400, true),
+            (240, 2560, 1600, true),
+        ];
+        for (scale_120, physical_width, physical_height, integral) in cases {
+            let mapping = PixelMapping::new(1280, 800, scale_120).unwrap();
+            assert_eq!(
+                (mapping.physical_width, mapping.physical_height),
+                (physical_width, physical_height)
+            );
+            assert_eq!(mapping.is_integral(), integral);
+            assert_eq!(
+                frame_has_exact_native_mapping(
+                    physical_width,
+                    physical_height,
+                    1280,
+                    800,
+                    scale_120,
+                ),
+                integral
+            );
+        }
+    }
+
+    #[test]
+    fn arbitrary_resizes_use_ceiling_allocation_but_exact_identity_only() {
+        let scales = [120, 150, 160, 180, 210, 240];
+        let viewports = [
+            (1, 1),
+            (319, 241),
+            (853, 479),
+            (1279, 799),
+            (1280, 800),
+            (4093, 2161),
+        ];
+        for scale_120 in scales {
+            for (width, height) in viewports {
+                let mapping = PixelMapping::new(width, height, scale_120).unwrap();
+                let width_product = u64::from(width) * u64::from(scale_120);
+                let height_product = u64::from(height) * u64::from(scale_120);
+                assert_eq!(
+                    u64::from(mapping.physical_width),
+                    width_product.div_ceil(120)
+                );
+                assert_eq!(
+                    u64::from(mapping.physical_height),
+                    height_product.div_ceil(120)
+                );
+                let exact = width_product % 120 == 0 && height_product % 120 == 0;
+                assert_eq!(mapping.is_integral(), exact);
+                assert_eq!(
+                    frame_has_exact_native_mapping(
+                        mapping.physical_width,
+                        mapping.physical_height,
+                        width,
+                        height,
+                        scale_120,
+                    ),
+                    exact
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resize_invalidates_native_identity_until_both_axes_are_exact() {
+        assert!(frame_has_exact_native_mapping(1600, 1000, 1280, 800, 150));
+        assert!(!frame_has_exact_native_mapping(1600, 1000, 1279, 799, 150));
+        let resized = PixelMapping::new(1279, 799, 150).unwrap();
+        assert_eq!(
+            (resized.physical_width, resized.physical_height),
+            (1599, 999)
+        );
+        assert!(!resized.is_integral());
+        assert!(!frame_has_exact_native_mapping(
+            resized.physical_width,
+            resized.physical_height,
+            1279,
+            799,
+            150,
+        ));
+        assert!(!frame_has_exact_native_mapping(1600, 1000, 1280, 800, 160,));
+        assert!(!frame_has_exact_native_mapping(0, 0, 0, 0, 0,));
+    }
+
+    #[test]
+    fn mapping_rejects_dimension_and_fixed_point_overflow() {
+        let maximum =
+            PixelMapping::new(MAX_WAYLAND_FIXED_EXTENT, MAX_WAYLAND_FIXED_EXTENT, 120).unwrap();
+        assert_eq!(maximum.physical_width, MAX_WAYLAND_FIXED_EXTENT);
+        assert_eq!(max_fixed_coordinate(MAX_WAYLAND_FIXED_EXTENT), i32::MAX);
+        assert!(PixelMapping::new(MAX_WAYLAND_FIXED_EXTENT + 1, 1, 120).is_none());
+        assert!(PixelMapping::new(MAX_WAYLAND_FIXED_EXTENT, 1, 121).is_none());
+        assert!(PixelMapping::new(u32::MAX, u32::MAX, u32::MAX).is_none());
+        assert!(PixelMapping::new(0, 1, 120).is_none());
+        assert!(PixelMapping::new(1, 1, 0).is_none());
+    }
+
+    #[test]
+    fn input_coordinates_are_quantized_and_transformed_exactly_once() {
+        assert_eq!(coordinate_to_fixed(939.0, 1920), 939 * 256);
+        assert_eq!(coordinate_to_fixed(-1.0, 1920), 0);
+        assert_eq!(coordinate_to_fixed(1920.0, 1920), 1920 * 256 - 1);
+        assert_eq!(map_monitor_coordinate(0.0, 1280, 1707), 0.0);
+        assert_eq!(map_monitor_coordinate(640.0, 1280, 1707), 853.5);
+        assert_eq!(unscale_monitor_coordinate(853.5, 1707, 1280), 640.0);
+        // Host and guest UI scales are independent: host logical input is
+        // mapped once to the physical nested surface, then diagnostics may
+        // express that physical point in the guest's logical coordinate space.
+        let guest_surface = map_monitor_coordinate(640.0, 1280, 1600);
+        assert_eq!(guest_surface, 800.0);
+        assert_eq!(unscale_monitor_coordinate(guest_surface, 1600, 1600), 800.0);
     }
 
     #[test]
     fn host_monitor_coordinates_cover_the_complete_fractional_surface() {
-        assert_eq!(scale_monitor_coordinate(0.0, 1280, 1707), 0.0);
-        assert_eq!(scale_monitor_coordinate(640.0, 1280, 1707), 853.5);
-        let far_edge = scale_monitor_coordinate(1280.0, 1280, 1707);
+        let far_edge = map_monitor_coordinate(1280.0, 1280, 1707);
         assert!(far_edge > 1706.99 && far_edge < 1707.0);
-        assert_eq!(unscale_monitor_coordinate(853.5, 1707, 1280), 640.0);
     }
 
     #[test]

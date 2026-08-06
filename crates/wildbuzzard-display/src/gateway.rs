@@ -38,7 +38,21 @@ pub(crate) enum GatewayEvent {
     GuestDisconnected,
     GuestFailed(String),
     GuestFrame(DmabufFrame),
+    GuestCursor(CursorImage),
+    GuestCursorHidden,
     FrameReleased { id: u64, held_us: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CursorImage {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stride: usize,
+    pub(crate) hotspot_x: i32,
+    pub(crate) hotspot_y: i32,
+    /// Premultiplied BGRA8 pixels, matching wl_shm ARGB8888 on little-endian
+    /// Linux and GDK_MEMORY_B8G8R8A8_PREMULTIPLIED.
+    pub(crate) pixels: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

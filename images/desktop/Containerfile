@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.96-slim AS shell-builder
 
-RUN apt-get update && \
-    apt-get install --yes --no-install-recommends \
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         libxkbcommon-dev \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
@@ -14,8 +14,8 @@ RUN cargo build --locked --release -p wildbuzzard-shell
 
 FROM rust:1.96-slim AS cua-builder
 
-RUN apt-get update && \
-    apt-get install --yes --no-install-recommends \
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         libx11-dev \
         libxfixes-dev \
         libxi-dev \
@@ -43,11 +43,13 @@ FROM debian:sid AS sway-builder
 ARG SWAY_COMMIT=88869399f421d9180dd8b6ed0b5a1f4a3585d252
 ARG WLROOTS_COMMIT=d783533489e1f75d6886c2ab5c5960090ef268f8
 
-RUN apt-get update && \
-    apt-get install --yes --no-install-recommends \
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         build-essential \
+        ca-certificates \
         git \
         glslang-tools \
+        hwdata \
         libcairo2-dev \
         libdisplay-info-dev \
         libdrm-dev \
@@ -73,10 +75,14 @@ RUN apt-get update && \
         meson \
         ninja-build \
         pkg-config \
-        wayland-protocols && \
+        wayland-protocols \
+        xwayland && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /source
+
+COPY scripts/verify-stock-sway-contract.sh \
+    /usr/local/libexec/verify-stock-sway-contract
 
 # Fetch the exact source commits behind the pinned upstream releases. The
 # release image receives only installed artifacts and licenses, never these
@@ -90,7 +96,8 @@ RUN git init wlroots && \
     git -C sway remote add origin https://github.com/swaywm/sway.git && \
     git -C sway fetch --depth 1 origin "$SWAY_COMMIT" && \
     git -C sway checkout --detach FETCH_HEAD && \
-    test "$(git -C sway rev-parse HEAD)" = "$SWAY_COMMIT"
+    test "$(git -C sway rev-parse HEAD)" = "$SWAY_COMMIT" && \
+    /usr/local/libexec/verify-stock-sway-contract /source/sway
 
 RUN meson setup wlroots/build wlroots \
         --buildtype=release \
@@ -142,8 +149,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Stock Sway/wlroots desktop with a private D-Bus/AT-SPI session. The image
 # intentionally contains no KWin, Plasma shell, compositor source
 # tree, compiler toolchain, or Blender.
-RUN apt-get update && \
-    apt-get install --yes --no-install-recommends \
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         at-spi2-core \
         ca-certificates \
         chromium \
@@ -215,8 +222,8 @@ RUN curl --fail --location --retry 3 \
     printf '%s  %s\n' "$CUDA_KEYRING_SHA256" /tmp/cuda-keyring.deb \
         | sha256sum --check - && \
     dpkg --install /tmp/cuda-keyring.deb && \
-    apt-get update && \
-    apt-get install --yes --no-install-recommends \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         "cuda-cudart-13-1=${CUDA_CUDART_VERSION}" \
         "libcublas-13-1=${CUDA_CUBLAS_VERSION}" && \
     rm /tmp/cuda-keyring.deb && \

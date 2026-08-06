@@ -122,11 +122,7 @@ fn scale_floor_ratio(value: i64, numerator: u32, denominator: u32) -> i64 {
 }
 
 fn scale_ceil_ratio(value: i64, numerator: u32, denominator: u32) -> i64 {
-    -scale_floor_ratio(
-        value.saturating_neg(),
-        numerator,
-        denominator,
-    )
+    -scale_floor_ratio(value.saturating_neg(), numerator, denominator)
 }
 
 fn scaled_rect(
@@ -537,6 +533,14 @@ fn identity_for(id: u64) -> Option<ToplevelIdentity> {
         .ok()
         .and_then(|registry| registry.get(&id).cloned())
         .or_else(|| {
+            sway_ipc::resolve_public_window(id, None)
+                .ok()
+                .map(|window| ToplevelIdentity {
+                    title: window.title,
+                    app_id: window.app_id,
+                })
+        })
+        .or_else(|| {
             compositor_ipc::window_for_id(id).map(|window| ToplevelIdentity {
                 title: window.title,
                 app_id: window.app_id,
@@ -909,20 +913,17 @@ fn windows_from_foreign_toplevel_state(state: &State) -> Vec<WindowInfo> {
         } else {
             format!("{} [{}]", tl.title, tl.app_id)
         };
-        let compositor = compositor_windows
-            .iter()
-            .find(|window| {
-                !used_compositor_ids.contains(&window.id)
-                    && !tl.title.is_empty()
-                    && window.title == tl.title
-            })
-            .or_else(|| {
-                compositor_windows.iter().find(|window| {
-                    !used_compositor_ids.contains(&window.id)
-                        && !tl.app_id.is_empty()
-                        && window.app_id == tl.app_id
-                })
-            });
+        // Non-Sway wlroots compositors do not expose a cross-protocol opaque
+        // identifier. Enrich only a genuinely unique title/app-id match;
+        // iteration order must never choose between indistinguishable windows.
+        let mut compositor_matches = compositor_windows.iter().filter(|window| {
+            !used_compositor_ids.contains(&window.id)
+                && (tl.title.is_empty() || window.title == tl.title)
+                && (tl.app_id.is_empty() || window.app_id == tl.app_id)
+                && (!tl.title.is_empty() || !tl.app_id.is_empty())
+        });
+        let first = compositor_matches.next();
+        let compositor = first.filter(|_| compositor_matches.next().is_none());
         let stable_id = state
             .stable_toplevel_ids
             .get(protocol_id)
@@ -1066,6 +1067,43 @@ fn foreign_toplevel_sender() -> &'static mpsc::Sender<ForeignToplevelCommand> {
 /// Stable ids remain bound to the same handle until its compositor `closed`
 /// event, including when several windows share one pid/title/app-id.
 pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
+    if std::env::var_os("SWAYSOCK").is_some() {
+        return sway_ipc::list_public_windows().map(|windows| {
+            windows
+                .into_iter()
+                .map(|(public_id, window)| {
+                    let title = if window.app_id.is_empty() {
+                        window.title.clone()
+                    } else {
+                        format!("{} [{}]", window.title, window.app_id)
+                    };
+                    let toplevel = Toplevel {
+                        title: window.title.clone(),
+                        app_id: window.app_id.clone(),
+                        minimized: window.minimized,
+                        maximized: window.maximized,
+                        activated: window.focused,
+                        fullscreen: window.fullscreen,
+                        ..Toplevel::default()
+                    };
+                    remember_identity(public_id, &toplevel);
+                    WindowInfo {
+                        xid: public_id,
+                        pid: Some(window.pid),
+                        app_name: window.app_id,
+                        title,
+                        is_on_screen: window.visible && window.width > 0 && window.height > 0,
+                        z_index: None,
+                        x: window.x,
+                        y: window.y,
+                        width: window.width,
+                        height: window.height,
+                    }
+                })
+                .collect()
+        });
+    }
+
     let (reply, result) = mpsc::channel();
     foreign_toplevel_sender()
         .send(ForeignToplevelCommand::List(reply))
@@ -1617,6 +1655,10 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
     // foreign-toplevel connection. Activate them there; a fresh virtual
     // pointer connection cannot resolve those ids safely.
     let local_activate_window_id = match activate_window_id {
+        Some(id) if sway_ipc::is_public_window_id(id) => {
+            sway_ipc::focus_public_window(id, None)?;
+            None
+        }
         Some(id) if id >= STABLE_TOPLEVEL_ID_BASE => {
             activate_stable_foreign_toplevel(id)?;
             None
@@ -1738,6 +1780,11 @@ pub fn activate_window_for_input_target(
         return Ok(());
     }
 
+    if sway_ipc::is_public_window_id(window_id) {
+        sway_ipc::focus_public_window(window_id, target_pid)?;
+        return Ok(());
+    }
+
     if window_id >= STABLE_TOPLEVEL_ID_BASE {
         activate_stable_foreign_toplevel(window_id)?;
         std::thread::sleep(std::time::Duration::from_millis(60));
@@ -1807,6 +1854,16 @@ impl WindowControlState {
             None => Self::default(),
         }
     }
+
+    fn from_sway(state: sway_ipc::WindowControlState) -> Self {
+        Self {
+            present: state.present,
+            minimized: state.minimized,
+            maximized: state.maximized,
+            fullscreen: state.fullscreen,
+            activated: state.focused,
+        }
+    }
 }
 
 fn control_state_for_handle(
@@ -1870,8 +1927,24 @@ fn control_window_on_worker(
 /// read the resulting protocol state back.
 pub fn control_window(
     window_id: u64,
+    expected_pid: u32,
     action: WindowControlAction,
 ) -> anyhow::Result<(WindowControlState, WindowControlState)> {
+    if sway_ipc::is_public_window_id(window_id) {
+        let window = sway_ipc::resolve_public_window(window_id, Some(expected_pid))?;
+        let sway_action = match action {
+            WindowControlAction::Close => sway_ipc::WindowControlAction::Close,
+            WindowControlAction::Minimize => sway_ipc::WindowControlAction::Minimize,
+            WindowControlAction::Maximize => sway_ipc::WindowControlAction::Maximize,
+            WindowControlAction::Restore => sway_ipc::WindowControlAction::Restore,
+        };
+        let (before, after) = sway_ipc::control_window(window.id, sway_action)?;
+        return Ok((
+            WindowControlState::from_sway(before),
+            WindowControlState::from_sway(after),
+        ));
+    }
+
     let (reply, result) = mpsc::channel();
     foreign_toplevel_sender()
         .send(ForeignToplevelCommand::Control {
@@ -2045,6 +2118,11 @@ pub fn window_geometry(window_id: u64) -> Option<(i32, i32, u32, u32)> {
 /// Internal compositor/AT-SPI geometry in compositor-logical coordinates,
 /// before the one canonical physical-pixel transform.
 pub(crate) fn window_geometry_logical(window_id: u64) -> Option<(i32, i32, u32, u32)> {
+    if sway_ipc::is_public_window_id(window_id) {
+        let window = sway_ipc::resolve_public_window(window_id, None).ok()?;
+        return Some((window.x, window.y, window.width, window.height));
+    }
+
     if let Some(window) = compositor_ipc::window_for_id(window_id) {
         return Some((window.x, window.y, window.width, window.height));
     }
@@ -2119,48 +2197,13 @@ pub fn set_window_frame(
     height: u32,
 ) -> anyhow::Result<(Option<WindowInfo>, bool, bool)> {
     if std::env::var_os("SWAYSOCK").is_none() {
-        anyhow::bail!(
-            "Sway IPC is unavailable for setting another toplevel's frame"
-        );
+        anyhow::bail!("Sway IPC is unavailable for setting another toplevel's frame");
     }
-    let identity = identity_for(window_id);
-    let mut candidates = sway_ipc::list_windows()
-        .ok_or_else(|| anyhow::anyhow!("Sway IPC get_tree is unavailable"))?
-        .into_iter()
-        .filter(|window| window.pid == pid)
-        .collect::<Vec<_>>();
-    if candidates.len() > 1 {
-        if let Some(identity) = identity.as_ref() {
-            let exact = candidates
-                .iter()
-                .filter(|window| {
-                    (!identity.title.is_empty() && window.title == identity.title)
-                        || (!identity.app_id.is_empty() && window.app_id == identity.app_id)
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if exact.len() == 1 {
-                candidates = exact;
-            }
-        }
-    }
-    if candidates.len() != 1 {
-        anyhow::bail!(
-            "Sway target is ambiguous: pid {pid} owns {} compositor toplevels",
-            candidates.len()
-        );
-    }
-    let compositor_id = candidates[0].id;
-    let before = logical_rect_to_canonical(
-        candidates[0].x,
-        candidates[0].y,
-        candidates[0].width,
-        candidates[0].height,
-    );
+    let target = sway_ipc::resolve_public_window(window_id, Some(pid))?;
+    let compositor_id = target.id;
+    let before = logical_rect_to_canonical(target.x, target.y, target.width, target.height);
     let logical = canonical_rect_to_logical(x, y, width, height);
-    if !sway_ipc::set_window_frame(compositor_id, logical.0, logical.1, logical.2, logical.3) {
-        anyhow::bail!("Sway rejected the exact-container frame command for {compositor_id}");
-    }
+    sway_ipc::set_window_frame_checked(compositor_id, logical.0, logical.1, logical.2, logical.3)?;
 
     let requested = (x, y, width, height);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -2353,7 +2396,18 @@ pub fn drag(
 ) -> anyhow::Result<()> {
     virtual_keyboard::with_modifiers_held(modifiers, || {
         with_libei_fallback(
-            || drag_vptr(Some(window_id), from_x, from_y, to_x, to_y, steps, button),
+            || {
+                drag_vptr(
+                    Some(window_id),
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    steps,
+                    duration_ms,
+                    button,
+                )
+            },
             || {
                 libei_wait_pointer_ready()?;
                 activate_window_for_input(window_id)?;
@@ -2376,7 +2430,7 @@ pub fn drag_desktop(
 ) -> anyhow::Result<()> {
     virtual_keyboard::with_modifiers_held(modifiers, || {
         with_libei_fallback(
-            || drag_vptr(None, from_x, from_y, to_x, to_y, steps, button),
+            || drag_vptr(None, from_x, from_y, to_x, to_y, steps, duration_ms, button),
             || {
                 libei_wait_pointer_ready()?;
                 libei_drag(from_x, from_y, to_x, to_y, steps, duration_ms, button)
@@ -2394,50 +2448,48 @@ fn drag_vptr(
     to_x: i32,
     to_y: i32,
     steps: u32,
+    duration_ms: u64,
     button: u8,
 ) -> anyhow::Result<()> {
-    let mut sess = open_vptr_session(window_id)?;
-    std::thread::sleep(std::time::Duration::from_millis(40));
-    let (w, h) = (sess.output_w, sess.output_h);
-    let btn = evdev_pointer_button(button);
-    let clamp_xy = |x: i32, y: i32| -> (u32, u32) {
-        (
-            x.clamp(0, w as i32 - 1) as u32,
-            y.clamp(0, h as i32 - 1) as u32,
-        )
-    };
-    let (fx, fy) = clamp_xy(from_x, from_y);
-    sess.vptr.motion_absolute(event_time_ms(), fx, fy, w, h);
-    sess.vptr.frame();
-    sess.queue.roundtrip(&mut sess.state)?;
-    std::thread::sleep(std::time::Duration::from_millis(15));
-    sess.vptr.button(event_time_ms(), btn, ButtonState::Pressed);
-    sess.vptr.frame();
-    sess.queue.roundtrip(&mut sess.state)?;
+    // Use the same long-lived virtual pointer implementation as the explicit
+    // mouse_button_down/mouse_drag/mouse_button_up tools.  Creating and
+    // destroying a second virtual pointer inside this one-shot helper allowed
+    // titlebar moves, but Sway did not retain compositor edge/corner grabs for
+    // its motions.  One pointer object must own the whole press/move/release
+    // sequence.
+    static NEXT_DRAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let cursor_id = format!(
+        "__one_shot_drag_{}_{}",
+        std::process::id(),
+        NEXT_DRAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    match window_id {
+        Some(id) => persistent_vptr::press(&cursor_id, id, from_x, from_y, button)?,
+        None => persistent_vptr::press_desktop(&cursor_id, from_x, from_y, button)?,
+    }
+
+    // Give Sway one event-loop turn to install its titlebar/border grab before
+    // the first motion.  The persistent pointer remains held during the wait.
+    std::thread::sleep(std::time::Duration::from_millis(30));
     let n = steps.max(1);
+    let step_delay = std::time::Duration::from_millis(duration_ms / u64::from(n));
     for s in 1..=n {
         let t = s as f64 / n as f64;
         let ix = (from_x as f64 + (to_x - from_x) as f64 * t).round() as i32;
         let iy = (from_y as f64 + (to_y - from_y) as f64 * t).round() as i32;
-        let (cx, cy) = clamp_xy(ix, iy);
-        sess.vptr.motion_absolute(event_time_ms(), cx, cy, w, h);
-        sess.vptr.frame();
-        sess.queue.roundtrip(&mut sess.state)?;
-        std::thread::sleep(std::time::Duration::from_millis(8));
+        if let Err(error) = persistent_vptr::move_to(&cursor_id, ix, iy) {
+            let _ = persistent_vptr::release(&cursor_id, button);
+            return Err(error);
+        }
+        if !step_delay.is_zero() {
+            std::thread::sleep(step_delay);
+        }
     }
-    let (tx, ty) = clamp_xy(to_x, to_y);
-    sess.vptr.motion_absolute(event_time_ms(), tx, ty, w, h);
-    sess.vptr.frame();
-    sess.queue.roundtrip(&mut sess.state)?;
-    sess.vptr
-        .button(event_time_ms(), btn, ButtonState::Released);
-    sess.vptr.frame();
+    persistent_vptr::move_to(&cursor_id, to_x, to_y)?;
+    persistent_vptr::release(&cursor_id, button)?;
     // Sync the synthetic-cursor registry with the drag endpoint so a
     // subsequent `get_cursor_position` reports where we left the pointer.
-    record_synth_cursor(tx as i32, ty as i32);
-    sess.queue.roundtrip(&mut sess.state)?;
-    sess.vptr.destroy();
-    sess.queue.roundtrip(&mut sess.state)?;
+    record_synth_cursor(to_x, to_y);
     Ok(())
 }
 
@@ -2511,14 +2563,7 @@ pub fn type_text_focused(text: &str) -> anyhow::Result<()> {
 pub fn type_text_then_key_focused(text: &str, key: &str) -> anyhow::Result<()> {
     let keysym = key_to_keysym(key);
     let result = std::process::Command::new("wtype")
-        .args([
-            "-k",
-            "Shift_L",
-            "-d",
-            WTYPE_TEXT_DELAY_MS,
-            "-s",
-            "30",
-        ])
+        .args(["-k", "Shift_L", "-d", WTYPE_TEXT_DELAY_MS, "-s", "30"])
         .arg(text)
         .args(["-s", "50", "-k", &keysym])
         .output();

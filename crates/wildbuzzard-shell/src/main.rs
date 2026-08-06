@@ -2,6 +2,7 @@
 
 mod icons;
 mod model;
+mod sway_ipc;
 
 use accesskit::{
     Action, ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Node as A11yNode,
@@ -14,18 +15,20 @@ use icons::{AppIcon, load_application_icons};
 use model::{
     Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT, MENU_WIDTH, PANEL_HEIGHT, Rect,
     ShellAction, desktop_targets, menu_targets, panel_targets, scan_applications,
+    window_menu_targets,
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_foreign_toplevel_list, delegate_keyboard, delegate_layer,
+    delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
+    foreign_toplevel_list::{ForeignToplevelList, ForeignToplevelListHandler},
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-        pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
         WaylandSurface,
@@ -47,22 +50,17 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1;
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
         wp_fractional_scale_v1::{Event as FractionalScaleEvent, WpFractionalScaleV1},
     },
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
-};
-use wayland_protocols_wlr::foreign_toplevel::v1::client::{
-    zwlr_foreign_toplevel_handle_v1::{
-        Event as ToplevelEvent, State as ToplevelState, ZwlrForeignToplevelHandleV1,
-    },
-    zwlr_foreign_toplevel_manager_v1::{Event as ManagerEvent, ZwlrForeignToplevelManagerV1},
 };
 
 const MENU_HEIGHT: u32 = 560;
@@ -72,6 +70,8 @@ const REPAINT_ACKNOWLEDGEMENT: &str = "wildbuzzard-shell-repaint-ack";
 const SHELL_READY: &str = "shell-ready";
 const OUTPUT_SETTLE_REPAINT_FRAMES: u8 = 90;
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
+const WINDOW_MENU_WIDTH: u32 = 260;
+const WINDOW_MENU_HEIGHT: u32 = 44 + 4 * MENU_ROW_HEIGHT as u32;
 
 #[derive(Debug, Clone, Copy)]
 enum ShellSurface {
@@ -150,9 +150,7 @@ fn run() -> Result<()> {
     let compositor = CompositorState::bind(&globals, &qh).context("guest has no wl_compositor")?;
     let layer_shell = LayerShell::bind(&globals, &qh).context("guest has no wlr layer-shell")?;
     let shm = Shm::bind(&globals, &qh).context("guest has no wl_shm")?;
-    let toplevel_manager: ZwlrForeignToplevelManagerV1 = globals
-        .bind(&qh, 1..=3, ())
-        .context("guest compositor has no foreign-toplevel management protocol")?;
+    let foreign_toplevel_list = ForeignToplevelList::new(&globals, &qh);
     let fractional_manager: WpFractionalScaleManagerV1 = globals
         .bind(&qh, 1..=1, ())
         .context("guest compositor has no fractional-scale protocol")?;
@@ -226,7 +224,7 @@ fn run() -> Result<()> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         compositor,
-        _toplevel_manager: toplevel_manager,
+        foreign_toplevel_list,
         _fractional_manager: fractional_manager,
         _viewporter: viewporter,
         _fractional_scales: [desktop_fractional, panel_fractional, menu_fractional],
@@ -243,6 +241,7 @@ fn run() -> Result<()> {
         panel_configured: false,
         menu_configured: false,
         menu_open: false,
+        menu_kind: MenuKind::Applications,
         menu_scroll: 0,
         scale_120: 120,
         task_page: 0,
@@ -253,7 +252,9 @@ fn run() -> Result<()> {
         seat: None,
         applications,
         application_icons,
-        toplevels: BTreeMap::new(),
+        exact_toplevels: BTreeMap::new(),
+        restore_frames: BTreeMap::new(),
+        last_window_state_scan: Instant::now(),
         last_application_scan: Instant::now(),
         repaint_request,
         // An output-sync request may predate the shell process by a few
@@ -301,9 +302,15 @@ fn run() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Toplevel {
-    handle: ZwlrForeignToplevelHandleV1,
+struct ExactToplevel {
+    identifier: String,
     window: GuestWindow,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum MenuKind {
+    Applications,
+    Window(u32),
 }
 
 struct Shell {
@@ -312,7 +319,7 @@ struct Shell {
     output_state: OutputState,
     shm: Shm,
     compositor: CompositorState,
-    _toplevel_manager: ZwlrForeignToplevelManagerV1,
+    foreign_toplevel_list: ForeignToplevelList,
     _fractional_manager: WpFractionalScaleManagerV1,
     _viewporter: WpViewporter,
     _fractional_scales: [WpFractionalScaleV1; 3],
@@ -329,6 +336,7 @@ struct Shell {
     panel_configured: bool,
     menu_configured: bool,
     menu_open: bool,
+    menu_kind: MenuKind,
     menu_scroll: usize,
     scale_120: u32,
     task_page: usize,
@@ -339,7 +347,9 @@ struct Shell {
     seat: Option<wl_seat::WlSeat>,
     applications: Vec<Application>,
     application_icons: BTreeMap<String, AppIcon>,
-    toplevels: BTreeMap<u32, Toplevel>,
+    exact_toplevels: BTreeMap<u32, ExactToplevel>,
+    restore_frames: BTreeMap<String, sway_ipc::Rect>,
+    last_window_state_scan: Instant,
     last_application_scan: Instant,
     repaint_request: Option<PathBuf>,
     repaint_generation: Option<String>,
@@ -406,6 +416,33 @@ impl Accessibility {
 }
 
 impl Shell {
+    fn update_exact_toplevel(&mut self, handle: &ExtForeignToplevelHandleV1) {
+        let Some(info) = self.foreign_toplevel_list.info(handle) else {
+            return;
+        };
+        let id = handle.id().protocol_id();
+        let existing = self
+            .exact_toplevels
+            .get(&id)
+            .map(|entry| entry.window.clone());
+        self.exact_toplevels.insert(
+            id,
+            ExactToplevel {
+                identifier: info.identifier,
+                window: GuestWindow {
+                    id,
+                    title: info.title,
+                    app_id: info.app_id,
+                    focused: existing.as_ref().is_some_and(|window| window.focused),
+                    minimized: existing.as_ref().is_some_and(|window| window.minimized),
+                    maximized: existing.as_ref().is_some_and(|window| window.maximized),
+                },
+            },
+        );
+        self.refresh_window_states();
+        self.dirty = true;
+    }
+
     fn poll(&mut self) {
         if let Some(generation) = self
             .repaint_request
@@ -447,6 +484,10 @@ impl Shell {
                 self.dirty = true;
             }
         }
+        if self.last_window_state_scan.elapsed() >= Duration::from_millis(100) {
+            self.last_window_state_scan = Instant::now();
+            self.refresh_window_states();
+        }
         let requests: Vec<_> = self
             .accessibility
             .as_ref()
@@ -485,12 +526,39 @@ impl Shell {
 
     fn windows(&self) -> Vec<GuestWindow> {
         let mut windows: Vec<_> = self
-            .toplevels
+            .exact_toplevels
             .values()
             .map(|toplevel| toplevel.window.clone())
             .collect();
-        windows.sort_by_key(|window| (!window.focused, window.id));
+        // Focus changes must only update the active-button styling. Reordering
+        // the focused window to the front made task buttons jump underneath
+        // the pointer as soon as a view received focus.
+        windows.sort_by_key(|window| window.id);
         windows
+    }
+
+    fn refresh_window_states(&mut self) {
+        let Ok(states) = sway_ipc::list_windows() else {
+            return;
+        };
+        let states = states
+            .into_iter()
+            .map(|state| (state.identifier.clone(), state))
+            .collect::<BTreeMap<_, _>>();
+        let mut changed = false;
+        for toplevel in self.exact_toplevels.values_mut() {
+            let Some(state) = states.get(&toplevel.identifier) else {
+                continue;
+            };
+            let before = toplevel.window.clone();
+            toplevel.window.focused = state.focused;
+            toplevel.window.minimized = state.minimized;
+            toplevel.window.maximized = state.maximized;
+            changed |= before != toplevel.window;
+        }
+        if changed {
+            self.dirty = true;
+        }
     }
 
     fn set_desktop_input_region(&self) -> Result<()> {
@@ -524,16 +592,16 @@ impl Shell {
     }
 
     fn toggle_menu(&mut self) {
-        self.menu_open = !self.menu_open;
+        if self.menu_open && self.menu_kind == MenuKind::Applications {
+            self.hide_menu();
+            return;
+        }
+        self.menu_open = true;
+        self.menu_kind = MenuKind::Applications;
         self.menu_scroll = 0;
-        self.menu.set_size(
-            if self.menu_open { MENU_WIDTH as u32 } else { 1 },
-            if self.menu_open {
-                self.preferred_menu_height()
-            } else {
-                1
-            },
-        );
+        self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
+        self.menu
+            .set_size(MENU_WIDTH as u32, self.preferred_menu_height());
         let _ = self.set_menu_input_region();
         self.menu.commit();
         self.dirty = true;
@@ -541,8 +609,37 @@ impl Shell {
 
     fn hide_menu(&mut self) {
         if self.menu_open {
-            self.toggle_menu();
+            self.menu_open = false;
+            self.menu.set_size(1, 1);
+            let _ = self.set_menu_input_region();
+            self.menu.commit();
+            self.dirty = true;
         }
+    }
+
+    fn show_window_menu(&mut self, id: u32, pointer_x: f64) {
+        let Some(window) = self.exact_toplevels.get(&id) else {
+            return;
+        };
+        let maximum_left = self
+            .panel_size
+            .0
+            .saturating_sub(WINDOW_MENU_WIDTH)
+            .try_into()
+            .unwrap_or(i32::MAX);
+        let left = (pointer_x.floor() as i32).clamp(0, maximum_left);
+        self.menu_open = true;
+        self.menu_kind = MenuKind::Window(id);
+        self.menu_scroll = 0;
+        self.menu.set_margin(0, 0, PANEL_HEIGHT, left);
+        self.menu.set_size(WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT);
+        let _ = self.set_menu_input_region();
+        self.menu.commit();
+        self.dirty = true;
+        eprintln!(
+            "wildbuzzard-shell: opened controls for {} ({})",
+            window.window.title, window.identifier
+        );
     }
 
     fn preferred_menu_height(&self) -> u32 {
@@ -596,14 +693,45 @@ impl Shell {
                 self.hide_menu();
             }
             ShellAction::ActivateWindow(id) => {
-                if let Some(toplevel) = self.toplevels.get(&id) {
-                    if toplevel.window.minimized {
-                        toplevel.handle.unset_minimized();
-                    }
-                    if let Some(seat) = self.seat.as_ref() {
-                        toplevel.handle.activate(seat);
+                if let Some(toplevel) = self.exact_toplevels.get(&id)
+                    && let Err(error) = sway_ipc::focus(&toplevel.identifier)
+                {
+                    eprintln!("wildbuzzard-shell: focus failed: {error:#}");
+                }
+                self.hide_menu();
+            }
+            ShellAction::MinimizeWindow(id) => {
+                if let Some(toplevel) = self.exact_toplevels.get(&id)
+                    && let Err(error) = sway_ipc::minimize(&toplevel.identifier)
+                {
+                    eprintln!("wildbuzzard-shell: minimize failed: {error:#}");
+                }
+                self.hide_menu();
+            }
+            ShellAction::ToggleMaximizeWindow(id) => {
+                if let Some(toplevel) = self.exact_toplevels.get(&id) {
+                    let identifier = toplevel.identifier.clone();
+                    let result = if toplevel.window.maximized {
+                        let restore = self.restore_frames.remove(&identifier);
+                        sway_ipc::restore(&identifier, restore)
+                    } else {
+                        sway_ipc::maximize(&identifier).map(|(before, _)| {
+                            self.restore_frames.insert(identifier, before.rect);
+                        })
+                    };
+                    if let Err(error) = result {
+                        eprintln!("wildbuzzard-shell: maximize/restore failed: {error:#}");
                     }
                 }
+                self.hide_menu();
+            }
+            ShellAction::CloseWindow(id) => {
+                if let Some(toplevel) = self.exact_toplevels.get(&id)
+                    && let Err(error) = sway_ipc::close(&toplevel.identifier)
+                {
+                    eprintln!("wildbuzzard-shell: close failed: {error:#}");
+                }
+                self.hide_menu();
             }
             ShellAction::TaskbarPrevious => {
                 self.task_page = self.task_page.saturating_sub(1);
@@ -626,9 +754,18 @@ impl Shell {
                 .into_iter()
                 .find(|target| target.rect.contains(x, y))
         } else if surface == self.menu.wl_surface() && self.menu_open {
-            menu_targets(self.menu_size.1, &self.applications, self.menu_scroll)
-                .into_iter()
-                .find(|target| target.rect.contains(x, y))
+            match self.menu_kind {
+                MenuKind::Applications => {
+                    menu_targets(self.menu_size.1, &self.applications, self.menu_scroll)
+                        .into_iter()
+                        .find(|target| target.rect.contains(x, y))
+                }
+                MenuKind::Window(id) => self.exact_toplevels.get(&id).and_then(|window| {
+                    window_menu_targets(&window.window)
+                        .into_iter()
+                        .find(|target| target.rect.contains(x, y))
+                }),
+            }
         } else if surface == self.desktop.wl_surface() {
             desktop_targets()
                 .into_iter()
@@ -641,8 +778,23 @@ impl Shell {
         }
     }
 
+    fn secondary_click_panel(&mut self, x: f64, y: f64) {
+        let target = panel_targets(self.panel_size.0, &self.windows(), self.task_page)
+            .into_iter()
+            .find(|target| target.rect.contains(x, y));
+        if let Some(HitTarget {
+            action: ShellAction::ActivateWindow(id),
+            ..
+        }) = target
+        {
+            self.show_window_menu(id, x);
+        } else {
+            self.hide_menu();
+        }
+    }
+
     fn scroll_menu(&mut self, amount: f64) {
-        if !self.menu_open || amount == 0.0 {
+        if !self.menu_open || self.menu_kind != MenuKind::Applications || amount == 0.0 {
             return;
         }
         if amount > 0.0 {
@@ -788,26 +940,6 @@ impl Shell {
                 [240, 242, 244, 255],
             );
         }
-        let machine_name =
-            std::env::var("WILDBUZZARD_MACHINE_NAME").unwrap_or_else(|_| "Machine".into());
-        draw_text_centered(
-            canvas,
-            width,
-            height,
-            self.font.as_ref(),
-            &elide(&machine_name, 11),
-            scale_rect(
-                Rect {
-                    x: logical_width.saturating_sub(92) as i32,
-                    y: 0,
-                    width: 92,
-                    height: logical_height as i32,
-                },
-                self.scale_120,
-            ),
-            scale_font(12.0, self.scale_120),
-            [213, 218, 222, 255],
-        );
         attach(
             &self.panel,
             &self.viewports[1],
@@ -841,7 +973,7 @@ impl Shell {
                 [0, 0, 0, 0]
             },
         );
-        if self.menu_open {
+        if self.menu_open && self.menu_kind == MenuKind::Applications {
             fill_rect(
                 canvas,
                 width,
@@ -954,6 +1086,60 @@ impl Shell {
                     [190, 198, 204, 255],
                 );
             }
+        } else if self.menu_open
+            && let MenuKind::Window(id) = self.menu_kind
+            && let Some(toplevel) = self.exact_toplevels.get(&id)
+        {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: logical_width as i32,
+                        height: 44,
+                    },
+                    self.scale_120,
+                ),
+                [65, 104, 138, 255],
+            );
+            draw_text(
+                canvas,
+                width,
+                height,
+                self.font.as_ref(),
+                &elide(&toplevel.window.title, 28),
+                scale_coord(14, self.scale_120),
+                scale_coord(13, self.scale_120),
+                scale_font(14.0, self.scale_120),
+                [255, 255, 255, 255],
+            );
+            for target in window_menu_targets(&toplevel.window) {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(inset(target.rect, 2), self.scale_120),
+                    if matches!(target.action, ShellAction::CloseWindow(_)) {
+                        [88, 54, 54, 255]
+                    } else {
+                        [57, 62, 70, 255]
+                    },
+                );
+                draw_text(
+                    canvas,
+                    width,
+                    height,
+                    self.font.as_ref(),
+                    &target.label,
+                    scale_coord(target.rect.x + 12, self.scale_120),
+                    scale_coord(target.rect.y + 10, self.scale_120),
+                    scale_font(13.0, self.scale_120),
+                    [242, 244, 246, 255],
+                );
+            }
         }
         attach(
             &self.menu,
@@ -987,6 +1173,7 @@ impl Shell {
         let panel_y = self.desktop_size.1.saturating_sub(self.panel_size.1) as i32;
         let menu_y = panel_y.saturating_sub(self.menu_size.1 as i32);
         let windows = self.windows();
+        let applications_menu_open = self.menu_open && self.menu_kind == MenuKind::Applications;
 
         for (index, target) in desktop_targets().into_iter().enumerate() {
             add_accessible_target(
@@ -1032,6 +1219,28 @@ impl Shell {
                 0,
                 panel_y,
             );
+            for (control_index, target) in window_menu_targets(window).into_iter().enumerate() {
+                let id = NodeId(
+                    30_000
+                        + u64::try_from(index).unwrap_or_default() * 10
+                        + u64::try_from(control_index).unwrap_or_default(),
+                );
+                let mut node = A11yNode::new(Role::Button);
+                node.set_label(format!("{} {}", target.label, window.title));
+                if self.menu_open && self.menu_kind == MenuKind::Window(window.id) {
+                    node.set_bounds(a11y_rect(target.rect, 0, menu_y));
+                }
+                node.add_action(Action::Click);
+                children.push(id);
+                targets.insert(
+                    id,
+                    AccessibleTarget::Activate {
+                        action: target.action,
+                        menu_index: None,
+                    },
+                );
+                nodes.push((id, node));
+            }
         }
         // Keep every installed application in the accessibility tree even
         // while the visual menu is closed or scrolled. An in-guest agent can
@@ -1046,7 +1255,7 @@ impl Shell {
                 .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX));
             let mut node = A11yNode::new(Role::MenuItem);
             node.set_label(application.name.clone());
-            if self.menu_open {
+            if applications_menu_open {
                 node.set_bounds(a11y_rect(
                     Rect {
                         x: 8,
@@ -1060,7 +1269,7 @@ impl Shell {
             }
             node.set_position_in_set(index + 1);
             node.add_action(Action::Click);
-            if self.menu_open {
+            if applications_menu_open {
                 node.add_action(Action::ScrollIntoView);
             }
             nodes.push((id, node));
@@ -1076,7 +1285,7 @@ impl Shell {
         let shutdown_id = NodeId(20_000);
         let mut shutdown = A11yNode::new(Role::MenuItem);
         shutdown.set_label("Shut Down Machine");
-        if self.menu_open {
+        if applications_menu_open {
             shutdown.set_bounds(a11y_rect(
                 Rect {
                     x: 8,
@@ -1103,8 +1312,8 @@ impl Shell {
 
         let mut menu = A11yNode::new(Role::Menu);
         menu.set_label("Applications menu");
-        menu.set_expanded(self.menu_open);
-        if self.menu_open {
+        menu.set_expanded(applications_menu_open);
+        if applications_menu_open {
             menu.set_bounds(A11yRect::new(
                 0.0,
                 f64::from(menu_y),
@@ -1114,7 +1323,7 @@ impl Shell {
         }
         menu.set_children(menu_children);
         menu.set_size_of_set(self.applications.len());
-        if self.menu_open {
+        if applications_menu_open {
             menu.set_scroll_y(self.menu_scroll as f64);
             menu.set_scroll_y_min(0.0);
             menu.set_scroll_y_max(self.applications.len().saturating_sub(visible_rows) as f64);
@@ -1170,76 +1379,43 @@ fn add_accessible_target(
     nodes.push((id, node));
 }
 
-impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Shell {
-    fn event(
-        state: &mut Self,
-        _: &ZwlrForeignToplevelManagerV1,
-        event: ManagerEvent,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            ManagerEvent::Toplevel { toplevel } => {
-                let id = toplevel.id().protocol_id();
-                state.toplevels.insert(
-                    id,
-                    Toplevel {
-                        handle: toplevel,
-                        window: GuestWindow {
-                            id,
-                            ..GuestWindow::default()
-                        },
-                    },
-                );
-                state.dirty = true;
-            }
-            ManagerEvent::Finished => state.exit = true,
-            _ => {}
-        }
+impl ForeignToplevelListHandler for Shell {
+    fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelList {
+        &mut self.foreign_toplevel_list
     }
 
-    wayland_client::event_created_child!(Shell, ZwlrForeignToplevelManagerV1, [
-        wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE =>
-        (ZwlrForeignToplevelHandleV1, ())
-    ]);
-}
-
-impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Shell {
-    fn event(
-        state: &mut Self,
-        handle: &ZwlrForeignToplevelHandleV1,
-        event: ToplevelEvent,
-        _: &(),
+    fn new_toplevel(
+        &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
+        handle: ExtForeignToplevelHandleV1,
+    ) {
+        self.update_exact_toplevel(&handle);
+    }
+
+    fn update_toplevel(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        handle: ExtForeignToplevelHandleV1,
+    ) {
+        self.update_exact_toplevel(&handle);
+    }
+
+    fn toplevel_closed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        handle: ExtForeignToplevelHandleV1,
     ) {
         let id = handle.id().protocol_id();
-        let Some(toplevel) = state.toplevels.get_mut(&id) else {
-            return;
-        };
-        match event {
-            ToplevelEvent::Title { title } => toplevel.window.title = title,
-            ToplevelEvent::AppId { app_id } => toplevel.window.app_id = app_id,
-            ToplevelEvent::State { state: states } => {
-                let states = states
-                    .chunks_exact(4)
-                    .filter_map(|bytes| {
-                        let raw = u32::from_ne_bytes(bytes.try_into().ok()?);
-                        WEnum::<ToplevelState>::from(raw).into_result().ok()
-                    })
-                    .collect::<Vec<_>>();
-                toplevel.window.focused = states.contains(&ToplevelState::Activated);
-                toplevel.window.minimized = states.contains(&ToplevelState::Minimized);
-                toplevel.window.maximized = states.contains(&ToplevelState::Maximized);
-            }
-            ToplevelEvent::Closed => {
-                handle.destroy();
-                state.toplevels.remove(&id);
-            }
-            _ => {}
+        if let Some(toplevel) = self.exact_toplevels.remove(&id) {
+            self.restore_frames.remove(&toplevel.identifier);
         }
-        state.dirty = true;
+        if self.menu_kind == MenuKind::Window(id) {
+            self.hide_menu();
+        }
+        self.dirty = true;
     }
 }
 
@@ -1326,8 +1502,14 @@ impl LayerShellHandler for Shell {
                 size.0, size.1
             );
             if self.menu_open {
-                self.menu
-                    .set_size(MENU_WIDTH as u32, self.preferred_menu_height());
+                match self.menu_kind {
+                    MenuKind::Applications => self
+                        .menu
+                        .set_size(MENU_WIDTH as u32, self.preferred_menu_height()),
+                    MenuKind::Window(_) => {
+                        self.menu.set_size(WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT)
+                    }
+                }
                 self.menu.commit();
             }
         } else if layer == &self.panel {
@@ -1409,6 +1591,11 @@ impl PointerHandler for Shell {
             match event.kind {
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     self.click_surface(&event.surface, event.position.0, event.position.1);
+                }
+                PointerEventKind::Press { button, .. }
+                    if button == BTN_RIGHT && event.surface == *self.panel.wl_surface() =>
+                {
+                    self.secondary_click_panel(event.position.0, event.position.1);
                 }
                 PointerEventKind::Axis { vertical, .. }
                     if event.surface == *self.menu.wl_surface() =>
@@ -1536,6 +1723,7 @@ delegate_seat!(Shell);
 delegate_keyboard!(Shell);
 delegate_pointer!(Shell);
 delegate_layer!(Shell);
+delegate_foreign_toplevel_list!(Shell);
 delegate_registry!(Shell);
 wayland_client::delegate_noop!(Shell: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(Shell: ignore WpViewporter);

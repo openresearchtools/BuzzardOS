@@ -55,6 +55,9 @@ pub enum ShellAction {
     OpenShared,
     LaunchApplication(String),
     ActivateWindow(u32),
+    MinimizeWindow(u32),
+    ToggleMaximizeWindow(u32),
+    CloseWindow(u32),
     TaskbarPrevious,
     TaskbarNext,
     ShutdownMachine,
@@ -69,7 +72,7 @@ pub struct HitTarget {
 
 pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<HitTarget> {
     const APPLICATIONS_WIDTH: i32 = 126;
-    const STATUS_WIDTH: i32 = 92;
+    const STATUS_WIDTH: i32 = 0;
     const NAV_WIDTH: i32 = 24;
     const MIN_TASK_WIDTH: i32 = 148;
 
@@ -188,6 +191,37 @@ pub fn menu_targets(
         action: ShellAction::ShutdownMachine,
     });
     targets
+}
+
+pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
+    const HEADER_HEIGHT: i32 = 44;
+    const MENU_WIDTH: i32 = 260;
+    [
+        ("Focus", ShellAction::ActivateWindow(window.id)),
+        ("Minimize", ShellAction::MinimizeWindow(window.id)),
+        (
+            if window.maximized {
+                "Restore"
+            } else {
+                "Maximize"
+            },
+            ShellAction::ToggleMaximizeWindow(window.id),
+        ),
+        ("Close", ShellAction::CloseWindow(window.id)),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (label, action))| HitTarget {
+        rect: Rect {
+            x: 8,
+            y: HEADER_HEIGHT + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+            width: MENU_WIDTH - 16,
+            height: MENU_ROW_HEIGHT,
+        },
+        label: label.to_owned(),
+        action,
+    })
+    .collect()
 }
 
 pub fn desktop_targets() -> Vec<HitTarget> {
@@ -510,6 +544,29 @@ mod tests {
                 ShellAction::OpenFiles | ShellAction::OpenShared
             )
         }));
+    }
+
+    #[test]
+    fn task_context_menu_exposes_complete_window_controls() {
+        let window = GuestWindow {
+            id: 42,
+            title: "Editor".into(),
+            maximized: false,
+            ..GuestWindow::default()
+        };
+        let targets = window_menu_targets(&window);
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Focus", "Minimize", "Maximize", "Close"]
+        );
+        let maximized = GuestWindow {
+            maximized: true,
+            ..window
+        };
+        assert_eq!(window_menu_targets(&maximized)[2].label, "Restore");
     }
 
     #[test]

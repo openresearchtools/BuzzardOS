@@ -8,6 +8,8 @@
 !images/
 !images/desktop/
 !images/desktop/**
+!scripts/
+!scripts/verify-stock-sway-contract.sh
 !packaging/
 !packaging/**
 !third_party/

@@ -44,7 +44,8 @@ use xkbcommon::xkb;
 
 use crate::drm_syncobj::{SyncobjDevice, SyncobjTimeline};
 use crate::gateway::{
-    DmabufFormat, DmabufFrame, DmabufPlane, EventSender, GatewayCommand, GatewayEvent, OutputMode,
+    CursorImage, DmabufFormat, DmabufFrame, DmabufPlane, EventSender, GatewayCommand, GatewayEvent,
+    OutputMode,
 };
 
 const MAX_DMABUF_PLANES: usize = 4;
@@ -268,6 +269,8 @@ struct GuestState {
     focused_surface: Option<wl_surface::WlSurface>,
     pointer_position: Option<(f64, f64)>,
     pointer_entered: bool,
+    cursor_surface: Option<wl_surface::WlSurface>,
+    cursor_hotspot: (i32, i32),
     keyboard_focused: bool,
     keyboard_entered: bool,
     keymap: KeymapFile,
@@ -297,6 +300,8 @@ impl GuestState {
             focused_surface: None,
             pointer_position: None,
             pointer_entered: false,
+            cursor_surface: None,
+            cursor_hotspot: (0, 0),
             keyboard_focused: false,
             keyboard_entered: false,
             keymap: KeymapFile::create()?,
@@ -784,14 +789,25 @@ impl GuestState {
             None => 0,
         };
         let explicit_sync = sync_surface.is_some();
-        if data
-            .xdg_surface
-            .lock()
-            .expect("surface role poisoned")
-            .is_none()
+        if self
+            .cursor_surface
+            .as_ref()
+            .is_some_and(|cursor| cursor == surface)
         {
-            // A non-xdg surface is the nested compositor's cursor. GTK keeps
-            // the host pointer cursor separate from monitor pixels.
+            match cursor_image_from_buffer(&buffer, self.cursor_hotspot) {
+                Ok(image) => {
+                    if let Err(error) = self.events.send(GatewayEvent::GuestCursor(image)) {
+                        let _ = self
+                            .events
+                            .send(GatewayEvent::GuestFailed(format!("{error:#}")));
+                    }
+                }
+                Err(error) => {
+                    let _ = self.events.send(GatewayEvent::GuestFailed(format!(
+                        "importing nested compositor cursor: {error:#}"
+                    )));
+                }
+            }
             let explicit_sync = release_point.is_some();
             if let Some(point) = release_point {
                 if let Err(error) = point.timeline.signal(point.point) {
@@ -1085,12 +1101,12 @@ struct ShmPoolData {
 }
 
 struct ShmBufferData {
-    _fd: OwnedFd,
-    _offset: i32,
-    _width: i32,
-    _height: i32,
-    _stride: i32,
-    _format: wl_shm::Format,
+    fd: OwnedFd,
+    offset: i32,
+    width: i32,
+    height: i32,
+    stride: i32,
+    format: wl_shm::Format,
 }
 
 struct DmabufPlaneData {
@@ -1220,11 +1236,11 @@ fn frame_from_buffer(
         BufferData::Dmabuf(data) => data,
         BufferData::Shm(data) => {
             let _ = (
-                data._offset,
-                data._width,
-                data._height,
-                data._stride,
-                data._format,
+                data.offset,
+                data.width,
+                data.height,
+                data.stride,
+                data.format,
             );
             bail!(
                 "nested compositor attached shared memory to its primary output; fast path failed"
@@ -1271,6 +1287,75 @@ fn frame_from_buffer(
         submitted_monotonic_us: monotonic_us(),
         explicit_sync,
         acquire_wait_us,
+    })
+}
+
+fn cursor_image_from_buffer(
+    buffer: &wl_buffer::WlBuffer,
+    hotspot: (i32, i32),
+) -> Result<CursorImage> {
+    let data = buffer
+        .data::<BufferData>()
+        .context("nested compositor attached an unknown cursor buffer")?;
+    let BufferData::Shm(data) = data else {
+        bail!("nested compositor cursor is not a wl_shm buffer");
+    };
+    anyhow::ensure!(
+        data.width > 0 && data.height > 0 && data.width <= 512 && data.height <= 512,
+        "cursor dimensions {}x{} are invalid",
+        data.width,
+        data.height
+    );
+    anyhow::ensure!(
+        data.offset >= 0 && data.stride >= data.width.saturating_mul(4),
+        "cursor offset/stride is invalid"
+    );
+    anyhow::ensure!(
+        matches!(
+            data.format,
+            wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888
+        ),
+        "cursor wl_shm format {:?} is unsupported",
+        data.format
+    );
+    let stride = usize::try_from(data.stride).context("cursor stride overflow")?;
+    let length = stride
+        .checked_mul(usize::try_from(data.height).context("cursor height overflow")?)
+        .context("cursor byte length overflow")?;
+    let mut pixels = vec![0_u8; length];
+    // SAFETY: `pixels` owns `length` writable bytes, the retained pool fd is
+    // valid, and the validated non-negative offset fits off_t on Linux.
+    let read = unsafe {
+        libc::pread(
+            data.fd.as_raw_fd(),
+            pixels.as_mut_ptr().cast(),
+            pixels.len(),
+            i64::from(data.offset),
+        )
+    };
+    if read < 0 {
+        return Err(std::io::Error::last_os_error()).context("reading cursor wl_shm buffer");
+    }
+    anyhow::ensure!(
+        usize::try_from(read).ok() == Some(length),
+        "cursor wl_shm buffer was truncated"
+    );
+    if data.format == wl_shm::Format::Xrgb8888 {
+        for row in pixels.chunks_exact_mut(stride) {
+            for pixel in
+                row[..usize::try_from(data.width).unwrap_or_default() * 4].chunks_exact_mut(4)
+            {
+                pixel[3] = 255;
+            }
+        }
+    }
+    Ok(CursorImage {
+        width: data.width as u32,
+        height: data.height as u32,
+        stride,
+        hotspot_x: hotspot.0.clamp(0, data.width.saturating_sub(1)),
+        hotspot_y: hotspot.1.clamp(0, data.height.saturating_sub(1)),
+        pixels,
     })
 }
 
@@ -1556,12 +1641,12 @@ impl Dispatch<wl_shm_pool::WlShmPool, ShmPoolData> for GuestState {
                 data_init.init(
                     id,
                     BufferData::Shm(ShmBufferData {
-                        _fd: fd,
-                        _offset: offset,
-                        _width: width,
-                        _height: height,
-                        _stride: stride,
-                        _format: format,
+                        fd,
+                        offset,
+                        width,
+                        height,
+                        stride,
+                        format,
                     }),
                 );
             }
@@ -2054,14 +2139,27 @@ impl Dispatch<wl_seat::WlSeat, ()> for GuestState {
 
 impl Dispatch<wl_pointer::WlPointer, ()> for GuestState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _resource: &wl_pointer::WlPointer,
-        _request: wl_pointer::Request,
+        request: wl_pointer::Request,
         _data: &(),
         _handle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        if let wl_pointer::Request::SetCursor {
+            surface,
+            hotspot_x,
+            hotspot_y,
+            ..
+        } = request
+        {
+            state.cursor_surface = surface;
+            state.cursor_hotspot = (hotspot_x, hotspot_y);
+            if state.cursor_surface.is_none() {
+                let _ = state.events.send(GatewayEvent::GuestCursorHidden);
+            }
+        }
     }
 }
 

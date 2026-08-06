@@ -284,6 +284,81 @@ wait_for_window() {
     return 1
 }
 
+window_frame_for_pid() {
+    local pid=$1
+    guest cua-driver list_windows "{\"pid\":$pid}" |
+        jq -ce --argjson pid "$pid" '
+            [.windows[] | select(.pid == $pid and .is_on_screen)][0] |
+            {x, y, width, height}
+        '
+}
+
+drag_guest_frame_edge() {
+    local pid=$1
+    local edge=$2
+    local before points after
+    before=$(window_frame_for_pid "$pid")
+    points=$(jq -c --arg edge "$edge" '
+        (.x + (.width / 2 | floor)) as $cx |
+        (.y + (.height / 2 | floor)) as $cy |
+        if $edge == "left" then
+            {from_x: .x + 1, from_y: $cy, to_x: .x - 15, to_y: $cy}
+        elif $edge == "right" then
+            {from_x: .x + .width - 2, from_y: $cy,
+             to_x: .x + .width + 15, to_y: $cy}
+        elif $edge == "top" then
+            {from_x: $cx, from_y: .y + 1, to_x: $cx, to_y: .y - 15}
+        elif $edge == "bottom" then
+            {from_x: $cx, from_y: .y + .height - 2,
+             to_x: $cx, to_y: .y + .height + 15}
+        elif $edge == "top-left" then
+            {from_x: .x + 1, from_y: .y + 1,
+             to_x: .x - 15, to_y: .y - 15}
+        elif $edge == "top-right" then
+            {from_x: .x + .width - 2, from_y: .y + 1,
+             to_x: .x + .width + 15, to_y: .y - 15}
+        elif $edge == "bottom-left" then
+            {from_x: .x + 1, from_y: .y + .height - 2,
+             to_x: .x - 15, to_y: .y + .height + 15}
+        else
+            {from_x: .x + .width - 2, from_y: .y + .height - 2,
+             to_x: .x + .width + 15, to_y: .y + .height + 15}
+        end
+    ' <<<"$before")
+    assert_cua_ok drag "$(jq -c \
+        '. + {scope:"desktop", duration_ms:180, steps:12}' <<<"$points")"
+    after=$(window_frame_for_pid "$pid")
+    jq -e -n --arg edge "$edge" --argjson before "$before" --argjson after "$after" '
+        def near($a; $b): (($a - $b) | fabs) <= 4;
+        ($before.x + $before.width) as $before_right |
+        ($before.y + $before.height) as $before_bottom |
+        ($after.x + $after.width) as $after_right |
+        ($after.y + $after.height) as $after_bottom |
+        if $edge == "left" then
+            $after.x < $before.x - 8 and near($after_right; $before_right)
+        elif $edge == "right" then
+            near($after.x; $before.x) and $after_right > $before_right + 8
+        elif $edge == "top" then
+            $after.y < $before.y - 8 and near($after_bottom; $before_bottom)
+        elif $edge == "bottom" then
+            near($after.y; $before.y) and $after_bottom > $before_bottom + 8
+        elif $edge == "top-left" then
+            $after.x < $before.x - 8 and $after.y < $before.y - 8 and
+            near($after_right; $before_right) and near($after_bottom; $before_bottom)
+        elif $edge == "top-right" then
+            $after.y < $before.y - 8 and $after_right > $before_right + 8 and
+            near($after.x; $before.x) and near($after_bottom; $before_bottom)
+        elif $edge == "bottom-left" then
+            $after.x < $before.x - 8 and $after_bottom > $before_bottom + 8 and
+            near($after_right; $before_right) and near($after.y; $before.y)
+        else
+            $after_right > $before_right + 8 and
+            $after_bottom > $before_bottom + 8 and
+            near($after.x; $before.x) and near($after.y; $before.y)
+        end
+    ' >/dev/null
+}
+
 wb doctor
 if [[ ! -f "$portable_dir/vm/$machine/machine.json" ]]; then
     create_arguments=(create "$machine" --gpu all)
@@ -599,6 +674,43 @@ thunar_state=$(guest cua-driver get_window_state \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window,\"include_screenshot\":false}")
 jq -e '.element_count > 10 and (.tree_markdown | length) > 100' \
     <<<"$thunar_state" >/dev/null
+
+# Stock Sway owns one synchronized normal frame for every managed application.
+# Drive its titlebar and all four edges/corners with desktop-absolute CUA input;
+# including pid/window_id here would select window-local coordinates instead.
+guest grep -Fxq 'for_window [all] floating enable, border normal 3' \
+    /etc/wildbuzzard/sway-config
+guest swaymsg -r -t get_tree | jq -e --argjson pid "$thunar_pid" '
+    .. | objects |
+    select(.pid? == $pid) |
+    .floating != "auto_off" and .floating != "user_off" and
+    .border == "normal" and .deco_rect.height > 0
+' >/dev/null
+thunar_before_drag=$(window_frame_for_pid "$thunar_pid")
+titlebar_drag=$(jq -c '
+    {
+        scope: "desktop",
+        from_x: (.x + (.width / 2 | floor)),
+        from_y: (.y + 10),
+        to_x: (.x + (.width / 2 | floor) + 36),
+        to_y: (.y + 34),
+        duration_ms: 220,
+        steps: 14
+    }
+' <<<"$thunar_before_drag")
+assert_cua_ok drag "$titlebar_drag"
+thunar_after_drag=$(window_frame_for_pid "$thunar_pid")
+jq -e -n --argjson before "$thunar_before_drag" --argjson after "$thunar_after_drag" '
+    $after.x > $before.x + 20 and $after.y > $before.y + 12 and
+    (($after.width - $before.width) | fabs) <= 4 and
+    (($after.height - $before.height) | fabs) <= 4
+' >/dev/null
+for guest_frame_edge in \
+    left right top bottom \
+    top-left top-right bottom-left bottom-right; do
+    drag_guest_frame_edge "$thunar_pid" "$guest_frame_edge"
+done
+
 assert_cua_ok bring_to_front \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
 thunar_action=$(jq -er \
@@ -815,6 +927,16 @@ XEV
     [[ $(jq -r '.display.application_devices | length' "$runtime") -gt 0 ]]
 
     if guest test -e /dev/nvidiactl; then
+        # The NVIDIA ICD is staged in ephemeral runtime state so the broker
+        # never creates a mount placeholder in the persistent rootfs. Prove
+        # that the session's additive Vulkan manifest exposes the selected
+        # NVIDIA GPU while retaining the Mesa devices.
+        guest test -s /run/wildbuzzard-host/driver/nvidia_icd.json
+        guest env \
+            VK_ADD_DRIVER_FILES=/run/wildbuzzard-host/driver/nvidia_icd.json \
+            vulkaninfo --summary |
+            grep -F 'deviceName' |
+            grep -F 'NVIDIA' >/dev/null
         guest sh -c 'cat > /tmp/wildbuzzard-desktop-gpu-test.py <<'"'"'PY'"'"'
 import ctypes
 cuda = ctypes.CDLL("libcuda.so.1")

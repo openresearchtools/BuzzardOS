@@ -11,9 +11,10 @@ The target image contains:
 - Wild Buzzard's native Rust desktop shell, with an always-visible bottom
   classic taskbar, compact vertical Applications menu with real theme icons,
   desktop shortcuts, running-application buttons, and guest session controls;
-- compositor-level titlebars, draggable windows, resizable borders, and
-  minimize, maximize/restore, and close controls for Wayland and Xwayland
-  applications;
+- stock compositor-level titlebars, draggable windows, and four-edge/four-corner
+  resizable borders for Wayland and Xwayland applications; stock Sway does not
+  draw titlebar window buttons, so close and state/geometry actions use its
+  private in-guest IPC/input routes;
 - Xwayland;
 - Firefox, Chromium, and a pinned representative accessible Electron app;
 - private system and session D-Bus services;
@@ -32,6 +33,11 @@ The visual menu may scroll, but AT-SPI exposes the complete installed-app list
 and every running window for direct agent invocation. KDE Wallet
 auto-activation is disabled; Chromium uses its guest-local basic password
 store and does not display a wallet prompt.
+
+The exact stock decoration/input boundary, including the absence of
+minimize/maximize/close titlebar buttons, is recorded in
+`STOCK_SWAY_WINDOW_CONTRACT.md` and checked against the pinned source during
+the image build.
 
 Build and publish the image with an OCI-compatible build service:
 

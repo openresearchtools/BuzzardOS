@@ -101,8 +101,8 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
     let machine_dir = canonical_real_directory(machine_dir, "machine directory")?;
     let shared = canonical_real_directory(shared, "shared folder")?;
     let rootfs = canonical_real_directory(&machine_dir.join("rootfs"), "machine rootfs")?;
-    let config = MachineConfig::load(&machine_dir)?;
-    validate_portable_layout(&machine_dir, &rootfs, &shared, &config)?;
+    let initial_config = MachineConfig::load(&machine_dir)?;
+    validate_portable_layout(&machine_dir, &rootfs, &shared, &initial_config)?;
     validate_rootfs(&rootfs)?;
     let _machine_lock = lock_machine(&machine_dir)?;
 
@@ -111,52 +111,134 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
     let bwrap = resources.helper_or_path("bwrap")?;
     let unshare = resources.helper_or_path("unshare")?;
 
-    let mut state = RuntimeState::new(MachineState::Starting);
-    state.detail = Some("creating namespaces".into());
-    state.save(&machine_dir)?;
-
-    let result = launch_container(
-        &bwrap,
-        &unshare,
+    let host_wayland =
+        WaylandCapabilities::probe(&wayland).context("probing host Wayland capabilities")?;
+    let runtime = LifecycleRuntime::create()?;
+    let sync_drm_device = render_node_for_device(host_wayland.dmabuf_main_device);
+    let mut display = start_display_gateway(
         &resources,
-        &config,
-        &machine_dir,
-        &rootfs,
-        &shared,
-        &wayland,
-        &mut state,
-    );
+        DisplayGatewayPaths {
+            host_wayland: &wayland,
+            guest_runtime: &runtime.guest,
+            host_status: &runtime.host_status,
+            display_state: &runtime.display_state,
+            machine_dir: &machine_dir,
+        },
+        &initial_config,
+        sync_drm_device.as_deref(),
+    )?;
+    let machine_name = initial_config.name.clone();
 
-    match result {
-        Ok(status)
-            if status.success()
-                || RuntimeState::load(&machine_dir)?
-                    .is_some_and(|state| state.state == MachineState::Stopping) =>
+    let mut start_requested = true;
+    loop {
+        if start_requested {
+            clear_session_runtime(&runtime)?;
+            let config = MachineConfig::load(&machine_dir)?;
+            validate_portable_layout(&machine_dir, &rootfs, &shared, &config)?;
+            let mut state = RuntimeState::new(MachineState::Starting);
+            state.detail = Some("creating namespaces".into());
+            state.save(&machine_dir)?;
+
+            let result = launch_container(
+                &bwrap,
+                &unshare,
+                &resources,
+                &config,
+                &machine_dir,
+                &rootfs,
+                &shared,
+                &host_wayland,
+                &runtime,
+                &mut display,
+                &mut state,
+            );
+
+            let latest = RuntimeState::load(&machine_dir)?;
+            match result {
+                Ok(session)
+                    if session.status.success()
+                        || latest
+                            .as_ref()
+                            .is_some_and(|state| state.state == MachineState::Stopping) =>
+                {
+                    let shutdown_detail = latest
+                        .filter(|state| state.state == MachineState::Stopping)
+                        .and_then(|state| state.detail)
+                        .unwrap_or_else(|| "clean shutdown".into());
+                    let mut stopped = RuntimeState::new(MachineState::Stopped);
+                    stopped.container_pid = None;
+                    stopped.detail = Some(shutdown_detail);
+                    stopped.save(&machine_dir)?;
+                    start_requested = session.restart;
+                }
+                Ok(session) => {
+                    let mut failed = RuntimeState::new(MachineState::Failed);
+                    failed.container_pid = None;
+                    failed.detail = Some(format!("container exited with {}", session.status));
+                    failed.save(&machine_dir)?;
+                    start_requested = session.restart;
+                }
+                Err(error) => {
+                    let mut failed = RuntimeState::new(MachineState::Failed);
+                    failed.container_pid = None;
+                    failed.detail = Some(format!("{error:#}"));
+                    failed.save(&machine_dir)?;
+                    eprintln!("Wild Buzzard machine session failed: {error:#}");
+                    start_requested = false;
+                }
+            }
+        }
+
+        if start_requested {
+            continue;
+        }
+
+        if let Some(status) = display
+            .child
+            .try_wait()
+            .context("checking persistent display gateway status")?
         {
-            let shutdown_detail = RuntimeState::load(&machine_dir)?
-                .filter(|state| state.state == MachineState::Stopping)
-                .and_then(|state| state.detail)
-                .unwrap_or_else(|| "clean shutdown".into());
             let mut stopped = RuntimeState::new(MachineState::Stopped);
             stopped.launcher_pid = None;
-            stopped.detail = Some(shutdown_detail);
+            stopped.container_pid = None;
+            stopped.detail = Some("host application closed".into());
             stopped.save(&machine_dir)?;
-            Ok(())
+            if status.success() {
+                return Ok(());
+            }
+            bail!("persistent display gateway exited with {status}");
         }
-        Ok(status) => {
-            let mut failed = RuntimeState::new(MachineState::Failed);
-            failed.launcher_pid = None;
-            failed.detail = Some(format!("container exited with {status}"));
-            failed.save(&machine_dir)?;
-            bail!("container exited with {status}")
+
+        // Once the native window has accepted Close it will quit as soon as
+        // this stopped state is visible.  Do not consume a concurrent `start`
+        // request during that short interval: the display child and its
+        // control socket are already committed to exiting, so launching PID 1
+        // against them would leave a headless session stuck in Starting.
+        // The launcher observes this supervisor exit and starts a fresh native
+        // application instead.
+        if read_window_diagnostics(&runtime.host_status.join("window.json"))
+            .is_some_and(|window| window.close_requested)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
         }
-        Err(error) => {
-            let mut failed = RuntimeState::new(MachineState::Failed);
-            failed.launcher_pid = None;
-            failed.detail = Some(format!("{error:#}"));
-            failed.save(&machine_dir)?;
-            Err(error)
+
+        match take_host_request(&runtime.host_status, &machine_name) {
+            Ok(Some(request)) => match request.as_str() {
+                "start" | "restart" => start_requested = true,
+                "stop" => {}
+                _ => unreachable!("validated host request"),
+            },
+            Ok(None) => {}
+            Err(error) => {
+                let mut failed = RuntimeState::new(MachineState::Failed);
+                failed.container_pid = None;
+                failed.detail = Some(format!("invalid host lifecycle request: {error:#}"));
+                failed.save(&machine_dir)?;
+                eprintln!("Wild Buzzard rejected host lifecycle request: {error:#}");
+            }
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -169,40 +251,16 @@ fn launch_container(
     machine_dir: &Path,
     rootfs: &Path,
     shared: &Path,
-    wayland: &Path,
+    host_wayland: &WaylandCapabilities,
+    runtime: &LifecycleRuntime,
+    display: &mut TerminateOnDrop,
     state: &mut RuntimeState,
-) -> Result<ExitStatus> {
+) -> Result<SessionResult> {
     let (block_read, mut block_write) = pipe().context("creating container start barrier")?;
     let (status_read, status_write) = pipe().context("creating container status pipe")?;
-    let host_wayland =
-        WaylandCapabilities::probe(wayland).context("probing host Wayland capabilities")?;
-    let readiness = tempfile::Builder::new()
-        .prefix("wildbuzzard-runtime-")
-        .tempdir()
-        .context("creating ephemeral compositor readiness directory")?;
-    let (readiness_path, _readiness_guard) =
-        if std::env::var_os("WILDBUZZARD_KEEP_RUNTIME").is_some() {
-            let path = readiness.keep();
-            eprintln!(
-                "Wild Buzzard development runtime evidence will remain at {}",
-                path.display()
-            );
-            (path, None)
-        } else {
-            (readiness.path().to_path_buf(), Some(readiness))
-        };
-    let guest_runtime = readiness_path.join("guest");
-    let host_status = readiness_path.join("host-status");
-    let display_state = readiness_path.join("display-state");
-    fs::create_dir(&guest_runtime).context("creating guest runtime directory")?;
-    fs::create_dir(&host_status).context("creating host display status directory")?;
-    fs::create_dir(&display_state).context("creating display state directory")?;
-    fs::set_permissions(&guest_runtime, fs::Permissions::from_mode(0o777))
-        .context("setting guest runtime permissions")?;
-    fs::set_permissions(&host_status, fs::Permissions::from_mode(0o700))
-        .context("setting host display status permissions")?;
-    fs::set_permissions(&display_state, fs::Permissions::from_mode(0o755))
-        .context("setting display state permissions")?;
+    let guest_runtime = &runtime.guest;
+    let host_status = &runtime.host_status;
+    let display_state = &runtime.display_state;
     let resolv_conf = guest_runtime.join("resolv.conf");
     let resolv_contents = match config.network {
         NetworkMode::User => {
@@ -287,19 +345,6 @@ fn launch_container(
         service_environment.extend(injection.environment.iter().cloned());
     }
     write_environment_file(&guest_runtime.join("driver.env"), &service_environment)?;
-    let sync_drm_device = render_node_for_device(host_wayland.dmabuf_main_device);
-    let mut display = start_display_gateway(
-        resources,
-        DisplayGatewayPaths {
-            host_wayland: wayland,
-            guest_runtime: &guest_runtime,
-            host_status: &host_status,
-            display_state: &display_state,
-            machine_dir,
-        },
-        config,
-        sync_drm_device.as_deref(),
-    )?;
     let cgroup = MachineCgroup::create(config, unshare)?;
     let staged_cgroup = if matches!(config.network, NetworkMode::Host) {
         None
@@ -452,6 +497,9 @@ fn launch_container(
     let container_pid = read_container_pid(status_read).inspect_err(|_| {
         terminate(&mut container.child);
     })?;
+    state.container_pid = Some(container_pid);
+    state.detail = Some("waiting for desktop readiness".into());
+    state.save(machine_dir)?;
 
     let mut network = match config.network {
         NetworkMode::User => match start_slirp(resources, container_pid) {
@@ -469,16 +517,30 @@ fn launch_container(
         .context("releasing container start barrier")?;
     drop(block_write);
 
-    if let Err(error) = wait_for_desktop(
+    match wait_for_desktop(
         &mut container.child,
         &guest_runtime.join("desktop-ready"),
         &host_status.join("window.json"),
         &host_status.join("presentation.json"),
+        host_status,
+        machine_dir,
+        &config.name,
+        container_pid,
         Duration::from_secs(90),
     ) {
-        let log = fs::read_to_string(guest_runtime.join("compositor.log"))
-            .unwrap_or_else(|_| "the nested compositor produced no diagnostic log".into());
-        return Err(error.context(format!("nested compositor log:\n{}", log.trim())));
+        Ok(DesktopWait::Ready) => {}
+        Ok(DesktopWait::Exited { status, restart }) => {
+            if let Some(mut child) = network.take() {
+                terminate(&mut child.child);
+            }
+            cgroup.cleanup();
+            return Ok(SessionResult { status, restart });
+        }
+        Err(error) => {
+            let log = fs::read_to_string(guest_runtime.join("compositor.log"))
+                .unwrap_or_else(|_| "the nested compositor produced no diagnostic log".into());
+            return Err(error.context(format!("nested compositor log:\n{}", log.trim())));
+        }
     }
 
     state.state = MachineState::Running;
@@ -498,6 +560,8 @@ fn launch_container(
     let mut presentation_snapshot = fs::read(host_status.join("presentation.json")).ok();
     let mut last_diagnostics_refresh = Instant::now();
     let mut close_shutdown_requested = false;
+    let mut host_action_shutdown_requested = false;
+    let mut restart_requested = false;
     let mut display_exited_for_shutdown = false;
     let mut unrequested_display_exit_deadline = None;
     let mut unrequested_display_status = None;
@@ -568,6 +632,33 @@ fn launch_container(
             terminate(&mut container.child);
             bail!("user-mode network helper exited unexpectedly with {network_status}");
         }
+        if !host_action_shutdown_requested
+            && let Some(request) = take_host_request(host_status, &config.name)?
+        {
+            match request.as_str() {
+                "start" => {}
+                "stop" | "restart" => {
+                    restart_requested = request == "restart";
+                    state.state = MachineState::Stopping;
+                    state.detail = Some(if restart_requested {
+                        "host application requested an orderly restart".into()
+                    } else {
+                        "host application requested an orderly shutdown".into()
+                    });
+                    state.save(machine_dir)?;
+                    let result = unsafe { libc::kill(container_pid as i32, libc::SIGRTMIN() + 3) };
+                    if result != 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(libc::ESRCH) {
+                            return Err(error)
+                                .context("requesting shutdown from native host application");
+                        }
+                    }
+                    host_action_shutdown_requested = true;
+                }
+                _ => unreachable!("validated host request"),
+            }
+        }
         let current_window = fs::read(host_status.join("window.json")).ok();
         let current_presentation = fs::read(host_status.join("presentation.json")).ok();
         if current_window != window_snapshot
@@ -625,7 +716,10 @@ fn launch_container(
         terminate(&mut child.child);
     }
     cgroup.cleanup();
-    Ok(status)
+    Ok(SessionResult {
+        status,
+        restart: restart_requested,
+    })
 }
 
 fn save_diagnostics_preserving_stop(machine_dir: &Path, state: &mut RuntimeState) -> Result<()> {
@@ -974,9 +1068,14 @@ fn wait_for_desktop(
     marker: &Path,
     window_marker: &Path,
     presentation_marker: &Path,
+    host_status: &Path,
+    machine_dir: &Path,
+    machine_name: &str,
+    container_pid: u32,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<DesktopWait> {
     let deadline = Instant::now() + timeout;
+    let mut requested_restart = None;
     loop {
         if marker.is_file()
             && read_window_diagnostics(window_marker).is_some_and(|window| window.toplevels == 1)
@@ -988,13 +1087,50 @@ fn wait_for_desktop(
                 true
             };
             if presentation_ready {
-                return Ok(());
+                return Ok(DesktopWait::Ready);
+            }
+        }
+        if requested_restart.is_none()
+            && let Some(request) = take_host_request(host_status, machine_name)?
+        {
+            match request.as_str() {
+                "start" => {}
+                "stop" | "restart" => {
+                    let restart = request == "restart";
+                    let mut state = RuntimeState::load(machine_dir)?
+                        .unwrap_or_else(|| RuntimeState::new(MachineState::Stopping));
+                    state.state = MachineState::Stopping;
+                    state.detail = Some(if restart {
+                        "host application cancelled startup for an orderly restart".into()
+                    } else {
+                        "host application cancelled startup".into()
+                    });
+                    state.save(machine_dir)?;
+                    let result = unsafe { libc::kill(container_pid as i32, libc::SIGRTMIN() + 3) };
+                    if result != 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(libc::ESRCH) {
+                            return Err(error).context("cancelling desktop startup");
+                        }
+                    }
+                    requested_restart = Some(restart);
+                }
+                _ => unreachable!("validated host request"),
             }
         }
         if let Some(status) = container
             .try_wait()
             .context("checking systemd container readiness")?
         {
+            if requested_restart.is_some()
+                || RuntimeState::load(machine_dir)?
+                    .is_some_and(|state| state.state == MachineState::Stopping)
+            {
+                return Ok(DesktopWait::Exited {
+                    status,
+                    restart: requested_restart.unwrap_or(false),
+                });
+            }
             bail!("container exited with {status} before the desktop compositor became ready");
         }
         if Instant::now() >= deadline {
@@ -1076,6 +1212,154 @@ impl Drop for TerminateOnDrop {
     fn drop(&mut self) {
         terminate(&mut self.child);
     }
+}
+
+struct LifecycleRuntime {
+    _guard: Option<tempfile::TempDir>,
+    guest: PathBuf,
+    host_status: PathBuf,
+    display_state: PathBuf,
+}
+
+impl LifecycleRuntime {
+    fn create() -> Result<Self> {
+        let temporary = tempfile::Builder::new()
+            .prefix("wildbuzzard-runtime-")
+            .tempdir()
+            .context("creating lifecycle runtime directory")?;
+        let (root, guard) = if std::env::var_os("WILDBUZZARD_KEEP_RUNTIME").is_some() {
+            let path = temporary.keep();
+            eprintln!(
+                "Wild Buzzard development runtime evidence will remain at {}",
+                path.display()
+            );
+            (path, None)
+        } else {
+            (temporary.path().to_path_buf(), Some(temporary))
+        };
+        let guest = root.join("guest");
+        let host_status = root.join("host-status");
+        let display_state = root.join("display-state");
+        fs::create_dir(&guest).context("creating guest runtime directory")?;
+        fs::create_dir(&host_status).context("creating host display status directory")?;
+        fs::create_dir(&display_state).context("creating display state directory")?;
+        fs::set_permissions(&guest, fs::Permissions::from_mode(0o777))
+            .context("setting guest runtime permissions")?;
+        fs::set_permissions(&host_status, fs::Permissions::from_mode(0o700))
+            .context("setting host display status permissions")?;
+        fs::set_permissions(&display_state, fs::Permissions::from_mode(0o755))
+            .context("setting display state permissions")?;
+        Ok(Self {
+            _guard: guard,
+            guest,
+            host_status,
+            display_state,
+        })
+    }
+}
+
+struct SessionResult {
+    status: ExitStatus,
+    restart: bool,
+}
+
+enum DesktopWait {
+    Ready,
+    Exited { status: ExitStatus, restart: bool },
+}
+
+#[derive(Deserialize)]
+struct HostRequest {
+    schema: u32,
+    action: String,
+    machine: String,
+}
+
+fn clear_session_runtime(runtime: &LifecycleRuntime) -> Result<()> {
+    for relative in [
+        "desktop-ready",
+        "guest-poweroff-requested",
+        "compositor.log",
+        "resolv.conf",
+        "hostname",
+        "initial-output.conf",
+        "wildbuzzard-desktop-poweroff-marker.conf",
+        "driver.env",
+    ] {
+        let path = runtime.guest.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("clearing session file {}", path.display()));
+            }
+        }
+    }
+    let request = runtime.host_status.join("host-request.json");
+    match fs::remove_file(&request) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("clearing lifecycle request {}", request.display()));
+        }
+    }
+    let presentation = runtime.host_status.join("presentation.json");
+    match fs::remove_file(&presentation) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "clearing previous presentation state {}",
+                    presentation.display()
+                )
+            });
+        }
+    }
+    let staged_cgroup = runtime.host_status.join("cgroup");
+    match fs::remove_dir(&staged_cgroup) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "clearing previous staged cgroup directory {}",
+                    staged_cgroup.display()
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+fn take_host_request(status_dir: &Path, machine: &str) -> Result<Option<String>> {
+    let path = status_dir.join("host-request.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading host request {}", path.display()));
+        }
+    };
+    fs::remove_file(&path).with_context(|| format!("consuming host request {}", path.display()))?;
+    let request: HostRequest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing host request {}", path.display()))?;
+    if request.schema != 1 {
+        bail!("unsupported host request schema {}", request.schema);
+    }
+    if request.machine != machine {
+        bail!(
+            "host request targets machine '{}' instead of '{}'",
+            request.machine,
+            machine
+        );
+    }
+    if !matches!(request.action.as_str(), "start" | "stop" | "restart") {
+        bail!("unsupported host lifecycle request '{}'", request.action);
+    }
+    Ok(Some(request.action))
 }
 
 fn prepare_host_control_directory(control_socket: &Path) -> Result<()> {

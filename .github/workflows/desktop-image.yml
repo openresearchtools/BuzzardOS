@@ -6,6 +6,7 @@ on:
     tags: ["v*"]
     paths:
       - images/desktop/**
+      - scripts/verify-stock-sway-contract.sh
       - third_party/trycua-cua/**
       - .github/workflows/desktop-image.yml
   workflow_dispatch:

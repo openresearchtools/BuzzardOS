@@ -11,7 +11,7 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -21,10 +21,12 @@ use wb_core::{
 };
 
 const DEFAULT_IMAGE: &str = "ghcr.io/openresearchtools/buzzardos-desktop:latest";
-const GUEST_ASSETS_REVISION: &str = concat!(env!("CARGO_PKG_VERSION"), "+assets.27\n");
+const GUEST_ASSETS_REVISION: &str = concat!(env!("CARGO_PKG_VERSION"), "+assets.35\n");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
 const LEGACY_REFERENCE_CUA_SHA256: &str =
     "1f7abdd51e6239d3069caec92d73fca4a71c037321518c73036700012b30f029";
+const LEGACY_TILED_SWAY_CONFIG_SHA256: &str =
+    "eb974c1c489d4ca7f37043be1eca969d38042007eecb1d22e5d418dd7bcf23d3";
 const REFERENCE_CHROMIUM_MASTER_PREFERENCES_SHA256: &str =
     "9cbc1b64e3b027cb424ccea3c99ef0da3c82371ca4c5b3af9b18df21ad85dfdb";
 const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
@@ -982,6 +984,10 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
         sha256: REFERENCE_CHROMIUM_MASTER_PREFERENCES_SHA256.into(),
         mode: 0o644,
     };
+    let legacy_tiled_sway_config = GuestAssetRecord {
+        sha256: LEGACY_TILED_SWAY_CONFIG_SHA256.into(),
+        mode: 0o644,
+    };
     for (relative, contents, mode) in GUEST_ASSETS {
         migrate_guest_asset(
             rootfs,
@@ -991,8 +997,11 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
             previous
                 .as_ref()
                 .and_then(|manifest| manifest.assets.get(*relative)),
-            (*relative == "etc/chromium/master_preferences")
-                .then_some(&reference_chromium_preferences),
+            match *relative {
+                "etc/chromium/master_preferences" => Some(&reference_chromium_preferences),
+                "etc/wildbuzzard/sway-config" => Some(&legacy_tiled_sway_config),
+                _ => None,
+            },
         )?;
     }
     for relative in [
@@ -1362,13 +1371,38 @@ fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
     let machine_dir = require_machine(paths, name)?;
     let _config = MachineConfig::load(&machine_dir)?;
 
-    if let Some(state) = RuntimeState::load(&machine_dir)?
-        && state.state == MachineState::Running
-        && runtime_is_live(&state, &machine_dir)
-    {
-        window(paths, name, WindowAction::Restore)?;
-        println!("Machine '{name}' is already running; restored its host window");
-        return Ok(());
+    if let Some(state) = RuntimeState::load(&machine_dir)? {
+        if state.state == MachineState::Running && runtime_is_live(&state, &machine_dir) {
+            send_host_control(&machine_dir, "restore")?;
+            println!("Machine '{name}' is already running; restored its host window");
+            return Ok(());
+        }
+        if supervisor_is_live(&state, &machine_dir) {
+            refresh_guest_assets(&machine_dir.join("rootfs"))?;
+            let supervisor_pid = state.launcher_pid;
+            let reused = send_host_control(&machine_dir, "start")
+                .and_then(|()| wait_for_supervised_start(&machine_dir, Duration::from_secs(95)));
+            match reused {
+                Ok(()) => {
+                    println!("Started '{name}' in its existing host window");
+                    return Ok(());
+                }
+                Err(error) => {
+                    if let Some(pid) = supervisor_pid {
+                        let _ = wait_for_process_exit(pid, Duration::from_secs(5));
+                    }
+                    if RuntimeState::load(&machine_dir)?
+                        .as_ref()
+                        .is_some_and(|latest| supervisor_is_live(latest, &machine_dir))
+                    {
+                        return Err(error);
+                    }
+                    eprintln!(
+                        "The previous host window completed closing during start; opening a new native window"
+                    );
+                }
+            }
+        }
     }
 
     refresh_guest_assets(&machine_dir.join("rootfs"))?;
@@ -1525,6 +1559,12 @@ fn wait_for_detached_start(
 fn stop(paths: &WbPaths, name: &str) -> Result<()> {
     let machine_dir = require_machine(paths, name)?;
     let mut state = RuntimeState::load(&machine_dir)?.context("machine has no runtime state")?;
+    if matches!(state.state, MachineState::Stopped | MachineState::Failed)
+        && supervisor_is_live(&state, &machine_dir)
+    {
+        println!("'{name}' is already stopped; its host window remains open");
+        return Ok(());
+    }
     if state.state == MachineState::Starting {
         let Some(broker_pid) = state.launcher_pid else {
             return repair_stale_stop(&machine_dir, &mut state, name);
@@ -1532,30 +1572,27 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
         if !broker_matches_machine(broker_pid, &machine_dir) {
             return repair_stale_stop(&machine_dir, &mut state, name);
         }
-        state.state = MachineState::Stopping;
-        state.detail = Some("cancelling machine startup".into());
-        state.save(&machine_dir)?;
-        signal_process(broker_pid, libc::SIGTERM)?;
-        if !wait_for_process_exit(broker_pid, Duration::from_secs(5)) {
-            signal_process(broker_pid, libc::SIGKILL)?;
-            if !wait_for_process_exit(broker_pid, Duration::from_secs(5)) {
-                bail!("machine broker {broker_pid} did not exit after SIGKILL");
+        if let Some(pid) = state.container_pid {
+            state.state = MachineState::Stopping;
+            state.detail = Some("cancelling machine startup".into());
+            state.save(&machine_dir)?;
+            let result = unsafe { libc::kill(pid as i32, libc::SIGRTMIN() + 3) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                return Err(std::io::Error::last_os_error())
+                    .with_context(|| format!("cancelling machine startup process {pid}"));
             }
+            wait_for_machine_stopped(&machine_dir, Duration::from_secs(30))?;
+            println!("Cancelled startup of '{name}'; its host window remains open");
+            return Ok(());
         }
-        state.state = MachineState::Stopped;
-        state.launcher_pid = None;
-        state.container_pid = None;
-        state.detail = Some("startup cancelled".into());
-        state.save(&machine_dir)?;
-        println!("Cancelled startup of '{name}'");
+        send_host_control(&machine_dir, "stop")?;
+        wait_for_machine_stopped(&machine_dir, Duration::from_secs(95))?;
+        println!("Cancelled startup of '{name}'; its host window remains open");
         return Ok(());
     }
     if !runtime_is_live(&state, &machine_dir) {
         return repair_stale_stop(&machine_dir, &mut state, name);
     }
-    let broker_pid = state
-        .launcher_pid
-        .context("live machine state has no supervising broker process id")?;
     let pid = state
         .container_pid
         .context("live machine state has no systemd process id")?;
@@ -1569,16 +1606,16 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
             .with_context(|| format!("requesting systemd shutdown from process {pid}"));
     }
     if wait_for_process_exit(pid, Duration::from_secs(20)) {
-        wait_for_broker_shutdown(&machine_dir, broker_pid)?;
-        println!("Stopped '{name}' cleanly");
+        wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
+        println!("Stopped '{name}' cleanly; its host window remains open");
         return Ok(());
     }
 
     eprintln!("Orderly shutdown timed out; sending SIGTERM to '{name}'");
     signal_process(pid, libc::SIGTERM)?;
     if wait_for_process_exit(pid, Duration::from_secs(5)) {
-        wait_for_broker_shutdown(&machine_dir, broker_pid)?;
-        println!("Stopped '{name}' after SIGTERM");
+        wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
+        println!("Stopped '{name}' after SIGTERM; its host window remains open");
         return Ok(());
     }
 
@@ -1587,24 +1624,64 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
     if !wait_for_process_exit(pid, Duration::from_secs(5)) {
         bail!("machine process {pid} did not exit after SIGKILL");
     }
-    wait_for_broker_shutdown(&machine_dir, broker_pid)?;
-    println!("Stopped '{name}' after forced termination");
+    wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
+    println!("Stopped '{name}' after forced termination; its host window remains open");
     Ok(())
 }
 
-fn window(paths: &WbPaths, name: &str, action: WindowAction) -> Result<()> {
+fn wait_for_machine_stopped(machine_dir: &Path, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if RuntimeState::load(machine_dir)?.is_some_and(|state| {
+            matches!(state.state, MachineState::Stopped | MachineState::Failed)
+                && state.container_pid.is_none()
+        }) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "machine did not enter stopped state within {} seconds",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn wait_for_supervised_start(machine_dir: &Path, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(state) = RuntimeState::load(machine_dir)? {
+            match state.state {
+                MachineState::Running if runtime_is_live(&state, machine_dir) => return Ok(()),
+                MachineState::Failed => bail!(
+                    "machine failed to start: {}",
+                    state.detail.as_deref().unwrap_or("no diagnostic")
+                ),
+                _ => {}
+            }
+            if !supervisor_is_live(&state, machine_dir) {
+                bail!("machine lifecycle supervisor exited during startup");
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "machine did not report desktop readiness within {} seconds",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn send_host_control(machine_dir: &Path, command: &str) -> Result<()> {
     use std::os::unix::net::UnixStream;
 
-    let machine_dir = require_machine(paths, name)?;
-    let state = RuntimeState::load(&machine_dir)?.context("machine has no runtime state")?;
-    if !runtime_is_live(&state, &machine_dir) {
-        bail!("machine '{name}' is not running");
-    }
-    let socket = host_control_socket(&machine_dir)?;
+    let socket = host_control_socket(machine_dir)?;
     let mut connection = UnixStream::connect(&socket)
         .with_context(|| format!("connecting to host window control {}", socket.display()))?;
     connection
-        .write_all(format!("{}\n", action.as_str()).as_bytes())
+        .write_all(format!("{command}\n").as_bytes())
         .context("sending host window control request")?;
     let mut response = String::new();
     connection
@@ -1617,31 +1694,13 @@ fn window(paths: &WbPaths, name: &str, action: WindowAction) -> Result<()> {
     }
 }
 
-fn wait_for_broker_shutdown(machine_dir: &Path, broker_pid: u32) -> Result<()> {
-    if wait_for_process_exit(broker_pid, Duration::from_secs(10)) {
-        return Ok(());
+fn window(paths: &WbPaths, name: &str, action: WindowAction) -> Result<()> {
+    let machine_dir = require_machine(paths, name)?;
+    let state = RuntimeState::load(&machine_dir)?.context("machine has no runtime state")?;
+    if !supervisor_is_live(&state, &machine_dir) {
+        bail!("machine '{name}' has no live host window");
     }
-    if !broker_matches_machine(broker_pid, machine_dir) {
-        return Ok(());
-    }
-
-    eprintln!(
-        "Machine systemd exited but broker cleanup timed out; sending SIGTERM to broker {broker_pid}"
-    );
-    signal_process(broker_pid, libc::SIGTERM)?;
-    if wait_for_process_exit(broker_pid, Duration::from_secs(5)) {
-        return Ok(());
-    }
-    if !broker_matches_machine(broker_pid, machine_dir) {
-        return Ok(());
-    }
-
-    eprintln!("Broker cleanup ignored SIGTERM; sending SIGKILL to broker {broker_pid}");
-    signal_process(broker_pid, libc::SIGKILL)?;
-    if !wait_for_process_exit(broker_pid, Duration::from_secs(5)) {
-        bail!("machine broker {broker_pid} did not exit after SIGKILL");
-    }
-    Ok(())
+    send_host_control(&machine_dir, action.as_str())
 }
 
 fn repair_stale_stop(machine_dir: &Path, state: &mut RuntimeState, name: &str) -> Result<()> {
@@ -2067,6 +2126,17 @@ fn runtime_is_live(state: &RuntimeState, machine_dir: &Path) -> bool {
         && broker_matches_machine(launcher_pid, machine_dir)
 }
 
+fn supervisor_is_live(state: &RuntimeState, machine_dir: &Path) -> bool {
+    let Some(launcher_pid) = state.launcher_pid else {
+        return false;
+    };
+    pid_alive(launcher_pid)
+        && broker_matches_machine(launcher_pid, machine_dir)
+        && host_control_socket(machine_dir).is_ok_and(|socket| {
+            fs::symlink_metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
+        })
+}
+
 fn broker_matches_machine(pid: u32, machine_dir: &Path) -> bool {
     let Ok(command_line) = fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
@@ -2351,8 +2421,7 @@ mod layer_tests {
         install_guest_assets_without_shell(&rootfs).unwrap();
 
         let sway_config = fs::read_to_string(rootfs.join("etc/wildbuzzard/sway-config")).unwrap();
-        assert!(sway_config.contains("for_window [shell=\"xdg_shell\"] floating enable"));
-        assert!(sway_config.contains("for_window [shell=\"xwayland\"] floating enable"));
+        assert!(sway_config.contains("for_window [all] floating enable, border normal 3"));
         assert!(sway_config.contains("workspace 1"));
         assert!(sway_config.contains("wildbuzzard-desktop-services"));
         assert!(!sway_config.contains("waybar"));

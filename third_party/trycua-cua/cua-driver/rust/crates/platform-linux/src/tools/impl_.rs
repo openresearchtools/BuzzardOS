@@ -6673,22 +6673,20 @@ impl Tool for GetScreenSizeTool {
         .await;
         match result {
             // Matches Swift text format 1:1.
-            Ok(Ok((w, h, logical_w, logical_h, scale))) => {
-                ToolResult::text(format!(
-                    "✅ Main display: {w}x{h} physical pixels; guest logical mode \
+            Ok(Ok((w, h, logical_w, logical_h, scale))) => ToolResult::text(format!(
+                "✅ Main display: {w}x{h} physical pixels; guest logical mode \
                      {logical_w}x{logical_h} @ {scale}x"
-                ))
-                .with_structured(json!({
-                    "width": w,
-                    "height": h,
-                    "physical_width": w,
-                    "physical_height": h,
-                    "logical_width": logical_w,
-                    "logical_height": logical_h,
-                    "scale_factor": scale,
-                    "coordinate_space": "guest-output-native-physical-dmabuf-pixels"
-                }))
-            }
+            ))
+            .with_structured(json!({
+                "width": w,
+                "height": h,
+                "physical_width": w,
+                "physical_height": h,
+                "logical_width": logical_w,
+                "logical_height": logical_h,
+                "scale_factor": scale,
+                "coordinate_space": "guest-output-native-physical-dmabuf-pixels"
+            })),
             Ok(Err(e)) => ToolResult::error(e.to_string()),
             Err(e) => ToolResult::error(format!("Task error: {e}")),
         }
@@ -6785,15 +6783,7 @@ impl Tool for GetDesktopStateTool {
             let (_, _, logical_w, logical_h, scale_120) =
                 crate::wayland::canonical_output_metadata(screen_w, screen_h);
             Ok((
-                b64,
-                shot_w,
-                shot_h,
-                screen_w,
-                screen_h,
-                logical_w,
-                logical_h,
-                scale_120,
-                written,
+                b64, shot_w, shot_h, screen_w, screen_h, logical_w, logical_h, scale_120, written,
             ))
         })
         .await;
@@ -8300,6 +8290,7 @@ impl Tool for WindowControlTool {
                     kind.name()
                 ));
             }
+            let sway_ipc_target = crate::wayland::sway_ipc::is_public_window_id(window_id);
             tokio::task::spawn_blocking(move || {
                 let action = match kind {
                     WindowControlKind::Close => crate::wayland::WindowControlAction::Close,
@@ -8307,11 +8298,15 @@ impl Tool for WindowControlTool {
                     WindowControlKind::Maximize => crate::wayland::WindowControlAction::Maximize,
                     WindowControlKind::Restore => crate::wayland::WindowControlAction::Restore,
                 };
-                crate::wayland::control_window(window_id, action).map(|(before, after)| {
+                crate::wayland::control_window(window_id, pid, action).map(|(before, after)| {
                     (
                         normalized_wayland_control_state(before),
                         normalized_wayland_control_state(after),
-                        ActionTransport::LinuxWaylandForeignToplevel,
+                        if sway_ipc_target {
+                            ActionTransport::LinuxWaylandCompositorIpc
+                        } else {
+                            ActionTransport::LinuxWaylandForeignToplevel
+                        },
                     )
                 })
             })
