@@ -513,7 +513,12 @@ linuxdeploy_args=(
 for library in "${gst_plugin_sources[@]}" "${spa_plugin_sources[@]}"; do
     linuxdeploy_args+=(--library "$library")
 done
-"$linuxdeploy" "${linuxdeploy_args[@]}"
+# The pinned NVIDIA binaries are extracted directly into the AppDir rather
+# than installed into the disposable build host.  Make that staged library
+# directory visible to linuxdeploy's ldd-based dependency resolver so it can
+# trace libnvidia-container and its closure without a host toolkit install.
+LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    "$linuxdeploy" "${linuxdeploy_args[@]}"
 
 # linuxdeploy may infer and copy GStreamer's direct ALSA plugin while walking
 # transitive launcher dependencies, even though it is intentionally absent
