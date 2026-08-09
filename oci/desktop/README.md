@@ -17,8 +17,8 @@ The target image contains:
   the shell's accessible Focus, Bring Into View, Minimize, Maximize/Restore,
   and Close menu backed by private in-guest Sway IPC;
 - Xwayland;
-- Firefox ESR, Chromium, Foot, and the shared libraries/FUSE integration used
-  by typical native Electron AppImages;
+- Firefox ESR, Thunar, Mousepad, Foot, and the shared libraries/FUSE
+  integration used by typical native Electron AppImages;
 - private system and session D-Bus services;
 - a private AT-SPI registry for GTK, Qt/KDE, Electron/Chromium, and compatible
   Xwayland applications;
@@ -27,14 +27,16 @@ The target image contains:
 - Vulkan/OpenGL desktop support.
 
 It contains no KWin, KDE Plasma shell, XFCE shell, labwc, Waybar, Fuzzel,
-patched wlroots, private compositor fork, compiler toolchain, or Blender. KDE,
-GTK, Electron, and other applications remain supported and may be installed
-like any other guest software. Newly installed desktop entries are discovered
-by the Applications menu without rebuilding the image.
+patched wlroots, private compositor fork, compiler toolchain, Blender,
+Chromium, Dolphin, Pavucontrol, `x11-apps`, XTerm/UXTerm, or Mesa/Vulkan
+diagnostic applications. Xwayland and the Mesa/Vulkan runtime remain present.
+KDE, GTK, Electron, and other applications remain supported and may be
+installed like any other guest software. Newly installed desktop entries are
+discovered by the Applications menu without rebuilding the image.
 The visual menu may scroll, but AT-SPI exposes the complete installed-app list
 and every running window for direct agent invocation. KDE Wallet
-auto-activation is disabled; Chromium uses its guest-local basic password
-store and does not display a wallet prompt.
+auto-activation is disabled so compatible applications do not display an
+unexpected wallet prompt.
 
 No Electron SDK/demo, LM Studio binary, or other vendor application is bundled.
 Native Electron acceptance supplies the official LM Studio AppImage from an

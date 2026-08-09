@@ -17,8 +17,6 @@
 0755	assets/wildbuzzard-sudo	usr/local/bin/sudo
 0755	assets/wildbuzzard-sudo-exec	usr/libexec/wildbuzzard-sudo-exec
 0644	assets/49-wildbuzzard-root.rules	etc/polkit-1/rules.d/49-wildbuzzard-root.rules
-0644	assets/chromium-flags	etc/chromium.d/wildbuzzard
-0644	assets/chromium-master-preferences	etc/chromium/master_preferences
 0644	assets/kwalletrc	etc/xdg/kwalletrc
 0644	assets/gtk-3.0-settings.ini	etc/gtk-3.0/settings.ini
 0644	assets/gtk-4.0-settings.ini	etc/gtk-4.0/settings.ini

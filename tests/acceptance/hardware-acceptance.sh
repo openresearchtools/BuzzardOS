@@ -894,8 +894,8 @@ guest chmod 0700 /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent
 [[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
 
 # The reference image uses pinned, unmodified upstream Sway 1.12 and wlroots
-# 0.20.2 commits, and deliberately omits the discarded
-# compositor/desktop stack, Blender, and build toolchain.
+# 0.20.2 commits.  Keep application compatibility in the runtime, but do not
+# confuse full-matrix test fixtures with applications shipped by the image.
 guest dpkg-query -W libwlroots-0.20 >/dev/null
 [[ $(guest readlink -f "$(guest sh -c 'command -v sway')") == /usr/bin/sway ]]
 guest sway --version 2>&1 | grep -E '^sway version 1\.12' >/dev/null
@@ -907,11 +907,35 @@ guest grep -Fxq \
     /usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
 guest test -f /usr/share/doc/wildbuzzard-sway/LICENSE.sway
 guest test -f /usr/share/doc/wildbuzzard-sway/LICENSE.wlroots
-for forbidden in blender gcc kwin_wayland labwc make wayfire waybar fuzzel; do
+for required_command in \
+    ffmpeg firefox-esr foot mousepad sway thunar wtype Xwayland; do
+    guest sh -c 'command -v "$1"' sh "$required_command" >/dev/null
+done
+for required_package in \
+    ffmpeg firefox-esr foot fuse3 libfuse2t64 mesa-vulkan-drivers mousepad \
+    pipewire pipewire-pulse thunar wireplumber xwayland; do
+    [[ $(guest dpkg-query -W -f='${db:Status-Status}' "$required_package") == \
+        installed ]]
+done
+for forbidden in \
+    blender chromium dolphin gcc glxgears kwin_wayland labwc make \
+    pavucontrol uxterm vkcube vulkaninfo wayfire waybar fuzzel \
+    wildbuzzard-electron-demo xeyes xterm; do
     ! guest sh -c 'command -v "$1"' sh "$forbidden" >/dev/null 2>&1
 done
-for forbidden_package in blender kwin-wayland labwc plasma-workspace wayfire waybar fuzzel; do
+for forbidden_package in \
+    blender chromium dolphin kwin-wayland labwc mesa-utils pavucontrol \
+    plasma-workspace vulkan-tools wayfire waybar fuzzel x11-apps xterm; do
     ! guest dpkg-query -W "$forbidden_package" >/dev/null 2>&1
+done
+for forbidden_desktop_entry in \
+    /usr/share/applications/chromium.desktop \
+    /usr/share/applications/org.kde.dolphin.desktop \
+    /usr/share/applications/pavucontrol.desktop \
+    /usr/share/applications/wildbuzzard-electron-demo.desktop \
+    /usr/share/applications/debian-uxterm.desktop \
+    /usr/share/applications/debian-xterm.desktop; do
+    ! guest test -e "$forbidden_desktop_entry"
 done
 for wallet_activation in \
     /usr/share/applications/org.kde.ksecretd.desktop \
@@ -922,9 +946,6 @@ for wallet_activation in \
     /usr/share/xdg-desktop-portal/portals/kwallet.portal; do
     ! guest test -e "$wallet_activation"
 done
-guest grep -q -- '--password-store=basic' /etc/chromium.d/wildbuzzard
-guest grep -q -- '--force-renderer-accessibility=complete' \
-    /etc/chromium.d/wildbuzzard
 ! guest pgrep -x ksecretd >/dev/null 2>&1
 ! guest pgrep -x kwalletd6 >/dev/null 2>&1
 
@@ -973,22 +994,23 @@ time.sleep(1)
 nodes = list(walk(pyatspi.Registry.getDesktop(0)))
 labels = [node.name for node in nodes if node.name]
 for expected in [
-    "Chromium Web Browser",
-    "Dolphin",
     "Firefox ESR",
     "Foot",
+    "Mousepad",
     "Thunar File Manager",
-    "Volume Control",
-    "Wild Buzzard Electron",
     "Shut Down Machine",
 ]:
     assert expected in labels
-chromium = next(node for node in nodes if node.name == "Chromium Web Browser")
-chromium_actions = chromium.queryAction()
-assert "click" in [
-    chromium_actions.getName(index)
-    for index in range(chromium_actions.nActions)
-]
+for forbidden in [
+    "Chromium Web Browser",
+    "Dolphin",
+    "PulseAudio Volume Control",
+    "UXTerm",
+    "Volume Control",
+    "Wild Buzzard Electron",
+    "XTerm",
+]:
+    assert forbidden not in labels
 
 # Return the human-facing menu to its original closed state.
 button = next(node for node in nodes if node.name == "Applications")
@@ -996,9 +1018,6 @@ actions = button.queryAction()
 action_names = [actions.getName(index) for index in range(actions.nActions)]
 assert actions.doAction(action_names.index("click"))
 PY
-for guest_command in wtype Xwayland; do
-    guest sh -c 'command -v "$1"' sh "$guest_command" >/dev/null
-done
 ! guest sh -c 'command -v wildbuzzard-window-control' >/dev/null
 
 # The native Rust shell is functional, not merely installed, and advertises
@@ -1014,7 +1033,7 @@ done
 guest makoctl list | grep -q "Wild Buzzard acceptance"
 guest makoctl dismiss --all
 
-for process_name in chromium dolphin electron foot glxgears thunar vkcube xev xeyes; do
+for process_name in foot thunar; do
     guest pkill -x "$process_name" >/dev/null 2>&1 || true
 done
 
@@ -1275,10 +1294,20 @@ guest cua-driver list_windows '{}' |
         'all(.windows[]; .window_id != $id)' >/dev/null
 
 if [[ "$full_matrix" == 1 ]]; then
-    # Representative native Wayland Qt/KDE plus Electron, Chromium, and legacy
-    # Xwayland clients must all remain inside Sway's one output and publish
-    # their normal accessibility objects where the toolkit supports them.
-    for guest_command in dolphin chromium xeyes; do
+    # These are dedicated acceptance-machine fixtures, not reference-image
+    # contents.  Install them only after the baseline absence checks above so
+    # a passing full-matrix run cannot silently claim that they ship in the
+    # OCI.  The acceptance machine is persistent by design and disposable;
+    # use a newly created machine for each clean-reference certification.
+    guest sudo -n apt-get update
+    guest sudo -n env DEBIAN_FRONTEND=noninteractive \
+        apt-get install --yes --no-install-recommends \
+        dolphin mesa-utils vulkan-tools x11-apps x11-utils
+
+    # Representative native Wayland Qt/KDE plus an external vendor Electron
+    # AppImage and legacy Xwayland clients must all remain inside Sway's one
+    # output and publish their normal accessibility objects where supported.
+    for guest_command in dolphin glxgears vkcube vulkaninfo xev xeyes; do
         guest sh -c 'command -v "$1"' sh "$guest_command" >/dev/null
     done
     guest pkill -x dolphin >/dev/null 2>&1 || true
@@ -1379,36 +1408,6 @@ if [[ "$full_matrix" == 1 ]]; then
     rm -f -- "$electron_acceptance_host_path" "$electron_acceptance_log_path"
     electron_acceptance_host_path=
     electron_acceptance_log_path=
-
-    guest pkill -x chromium >/dev/null 2>&1 || true
-    guest_spawn chromium --no-sandbox \
-        --ozone-platform=wayland \
-        --user-data-dir=/tmp/wildbuzzard-chromium about:blank
-    chromium=$(wait_for_window chromium)
-    chromium_pid=$(jq -er '.pid' <<<"$chromium")
-    chromium_window=$(jq -er '.window_id' <<<"$chromium")
-    guest sh -c \
-        'grep -zq -- "--password-store=basic" "/proc/$1/cmdline"' \
-        sh "$chromium_pid"
-    guest sh -c \
-        'grep -zq -- "--force-renderer-accessibility=complete" "/proc/$1/cmdline"' \
-        sh "$chromium_pid"
-    guest cua-driver get_window_state \
-        "{\"pid\":$chromium_pid,\"window_id\":$chromium_window,\"include_screenshot\":false}" |
-        jq -e '.element_count > 4 and (.tree_markdown | length) > 100' >/dev/null
-    ! guest pgrep -x ksecretd >/dev/null 2>&1
-    ! guest pgrep -x kwalletd6 >/dev/null 2>&1
-    guest cua-driver list_windows '{}' |
-        jq -e '
-            [.windows[] |
-             select(
-                (.app_name | ascii_downcase | contains("wallet")) or
-                (.app_name | ascii_downcase | contains("secret")) or
-                (.title | ascii_downcase | contains("wallet"))
-             )] |
-            length == 0
-        ' >/dev/null
-    guest pkill -x chromium >/dev/null 2>&1 || true
 
     guest pkill -x xeyes >/dev/null 2>&1 || true
     guest_spawn xeyes

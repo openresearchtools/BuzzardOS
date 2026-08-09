@@ -122,6 +122,7 @@ def atomic_write(path: Path, contents: str) -> None:
         ) as output:
             temporary = Path(output.name)
             output.write(contents)
+        temporary.chmod(0o644)
         os.replace(temporary, path)
         temporary = None
     finally:

@@ -4,9 +4,12 @@
 The build compiles the pinned stock Sway/wlroots stack, the guest shell, and the
 vendored CUA driver, then installs the complete `guest/asset-manifest.tsv`
 payload. The final image includes systemd, Sway, Xwayland, Foot, Firefox ESR,
-Chromium, AT-SPI, PipeWire/WirePlumber, GPU userspace, and generic native
-Electron AppImage dependencies. It contains no host launcher code, compiler,
-compositor source, bundled Electron SDK/demo, LM Studio binary, or Blender.
+Mousepad, Thunar, AT-SPI, PipeWire/WirePlumber, GPU userspace, and generic
+native Electron AppImage dependencies. It contains no host launcher code,
+compiler, compositor source, bundled Electron SDK/demo, LM Studio binary, or
+Blender. Chromium, Dolphin, Pavucontrol, `x11-apps`, XTerm/UXTerm, and
+Mesa/Vulkan diagnostic applications are also absent; Xwayland and the actual
+Mesa/Vulkan runtimes remain present.
 
 ```sh
 ./oci/build-local.sh

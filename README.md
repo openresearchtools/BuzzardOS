@@ -170,9 +170,8 @@ persistent machines therefore use the audited driver without a runtime
 download or a separately installed host helper.
 
 Qt/KDE application support does not enable a KDE Wallet prompt. KWallet
-auto-activation is removed from the reference session, and Chromium uses its
-guest-local basic password store while retaining its complete accessibility
-tree. The reference image includes Noto Core, CJK, and Color Emoji fonts so
+auto-activation is removed from the reference session. The reference image
+includes Noto Core, CJK, and Color Emoji fonts so
 multilingual Unicode text renders as glyphs rather than missing-character
 boxes.
 
@@ -238,6 +237,14 @@ commits. They are built in an isolated image stage with the GLES2 and Vulkan
 renderers, Xwayland, dmabuf, explicit synchronization, presentation, and color
 management support enabled. No compiler or compositor source is retained in
 the final machine.
+
+The clean reference desktop preinstalls only Firefox ESR, the customized
+Thunar file manager, Mousepad, and Foot as general user-facing applications;
+`ffmpeg` remains available as a runtime/codec utility. Chromium, Dolphin,
+Pavucontrol, `x11-apps`, XTerm/UXTerm, Mesa/Vulkan diagnostic applications,
+Blender, and any Wild Buzzard Electron demo are absent. Xwayland, Mesa/Vulkan
+runtime support, generic Electron/AppImage support, PipeWire, CUA, and the
+desktop integration remain included.
 
 `--gpu all` selects every supported DRM and NVIDIA GPU. A DRM render node,
 index, PCI identifier, or NVIDIA UUID can restrict selection. Matching host

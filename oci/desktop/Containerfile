@@ -209,12 +209,10 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         at-spi2-core \
         ca-certificates \
-        chromium \
         curl \
         dbus \
         dbus-user-session \
         dbus-x11 \
-        dolphin \
         ffmpeg \
         firefox-esr \
         fonts-dejavu-core \
@@ -257,10 +255,9 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         libxkbcommon0 \
         libxrandr2 \
         mako-notifier \
-        mesa-utils \
         mesa-vulkan-drivers \
+        mousepad \
         openssh-client \
-        pavucontrol \
         pipewire \
         pipewire-alsa \
         pipewire-pulse \
@@ -279,10 +276,8 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         systemd-sysv \
         thunar \
         util-linux \
-        vulkan-tools \
         wireplumber \
         wtype \
-        x11-apps \
         xdg-desktop-portal \
         xdg-desktop-portal-gtk \
         xdg-desktop-portal-wlr \
@@ -353,11 +348,14 @@ COPY --from=guest-assets-builder /guest-root/ /
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md \
     /usr/share/doc/wildbuzzard/
 COPY LICENSES /usr/share/doc/wildbuzzard/licenses
-RUN cp /usr/share/doc/wildbuzzard/licenses/generated/RUST_DEPENDENCY_LICENSES.txt \
+RUN install -m 0644 \
+        /usr/share/doc/wildbuzzard/licenses/generated/RUST_DEPENDENCY_LICENSES.txt \
         /usr/share/doc/wildbuzzard/RUST_DEPENDENCY_LICENSES.txt && \
-    cp /usr/share/doc/wildbuzzard/licenses/generated/cargo-guest.tsv \
+    install -m 0644 \
+        /usr/share/doc/wildbuzzard/licenses/generated/cargo-guest.tsv \
         /usr/share/doc/wildbuzzard/cargo-guest.tsv && \
-    cp /usr/share/doc/wildbuzzard/licenses/generated/cargo-cua.tsv \
+    install -m 0644 \
+        /usr/share/doc/wildbuzzard/licenses/generated/cargo-cua.tsv \
         /usr/share/doc/wildbuzzard/cargo-cua.tsv
 COPY tools/fetch-mpl-sources.sh /usr/libexec/wildbuzzard-fetch-mpl-sources
 RUN chmod 0755 /usr/libexec/wildbuzzard-fetch-mpl-sources && \

@@ -315,6 +315,9 @@ The reference image is a Debian-family desktop with:
 - Wild Buzzard's native Rust desktop shell.
 - TryCua Cua Driver running as the interactive user.
 - GTK, Qt/KDE, Electron, Chromium, Vulkan, and OpenGL application support.
+- Exactly four preinstalled, user-facing general applications: Firefox ESR,
+  the customized Thunar file manager, Mousepad, and Foot. `ffmpeg` remains a
+  non-menu runtime/codec utility.
 - Native Type-2 AppImage support: `libfuse.so.2`, FUSE 3 utilities, the
   explicitly filtered `/dev/fuse` device, and automatic owner-execute
   authorization for genuine AppImage ELF files arriving in guest-owned
@@ -323,10 +326,14 @@ The reference image is a Debian-family desktop with:
   renders as glyphs instead of missing-character boxes.
 
 The reference image contains no Plasma shell, KWin, XFCE shell, Wayfire, labwc,
-Waybar, Fuzzel, patched compositor, compiler toolchain, Blender, or private
-wlroots fork. Users may install or replace desktop software inside their
-persistent machine. That cannot alter the host, but replacing the reference
-compositor or boot assets may make Wild Buzzard integration diagnostics fail.
+Waybar, Fuzzel, patched compositor, compiler toolchain, Blender, Chromium,
+Dolphin, Pavucontrol, `x11-apps`, XTerm/UXTerm, Mesa/Vulkan diagnostic tools,
+Wild Buzzard Electron demo, or private wlroots fork. Removing `x11-apps` and
+XTerm/UXTerm does not remove Xwayland support. Removing Mesa/Vulkan diagnostic
+tools does not remove the graphics runtime or drivers. Users may install or
+replace desktop software inside their persistent machine. That cannot alter
+the host, but replacing the reference compositor or boot assets may make Wild
+Buzzard integration diagnostics fail.
 
 The persistent rootfs remains `nosuid` and the guest retains Linux
 `no_new_privs`. Native AppImage execution must not solve FUSE authorization by
@@ -472,9 +479,8 @@ commit. It is not downloaded unpinned during a release build.
 KDE application compatibility must not create an unexpected Plasma-style
 password-wallet prompt. The reference image disables and removes KWallet
 D-Bus/portal auto-activation while retaining libraries required by installed
-Qt/KDE applications. Chromium uses its guest-local basic password store and
-forces its complete accessibility tree; a normal Applications-menu launch
-must not start `ksecretd` or `kwalletd`.
+Qt/KDE applications. A normal Applications-menu launch must not start
+`ksecretd` or `kwalletd`.
 
 The host receives only the nested compositor's one surface. Guest AT-SPI,
 application D-Bus, panels, internal windows, screenshots, and input tools are
@@ -733,7 +739,9 @@ status while any safe in-scope acceptance scenario remains untested.
 - Exercise those operations against the Wild Buzzard shell and real GTK,
   Qt/KDE, Electron/Chromium, native Wayland, and Xwayland applications. Assert
   visible post-action state and inspect screenshots, rather than accepting
-  command exit status alone.
+  command exit status alone. Applications absent from the reference image are
+  installed only into the dedicated disposable/persistent acceptance machine;
+  they are never treated as preinstalled release content.
 - In a dedicated persistent acceptance machine, use only the installed
   in-guest CUA/MCP/AT-SPI interfaces to perform a complete human-style desktop
   journey:
@@ -744,8 +752,8 @@ status while any safe in-scope acceptance scenario remains untested.
     close application windows through guest titlebars and task buttons;
   - switch repeatedly between multiple open apps using the bottom taskbar and
     verify exactly one correctly titled task per window;
-  - browse a real page in Chromium, interact with page controls, scroll, type
-    text, change tabs, and confirm Chromium's complete accessibility tree;
+  - browse a real page in Firefox ESR, interact with page controls, scroll,
+    type text, change tabs, and confirm its complete accessibility tree;
   - create, rename, copy, move, and delete test files in `Files` and `Shared`,
     and verify `/shared` changes from both guest and portable host folder;
   - use a terminal to run normal commands and a passwordless guest

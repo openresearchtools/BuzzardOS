@@ -27,8 +27,6 @@ const LEGACY_REFERENCE_CUA_SHA256: &str =
     "1f7abdd51e6239d3069caec92d73fca4a71c037321518c73036700012b30f029";
 const LEGACY_TILED_SWAY_CONFIG_SHA256: &str =
     "eb974c1c489d4ca7f37043be1eca969d38042007eecb1d22e5d418dd7bcf23d3";
-const REFERENCE_CHROMIUM_MASTER_PREFERENCES_SHA256: &str =
-    "9cbc1b64e3b027cb424ccea3c99ef0da3c82371ca4c5b3af9b18df21ad85dfdb";
 const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
     (
         "usr/libexec/wildbuzzard-init",
@@ -118,16 +116,6 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
     (
         "etc/polkit-1/rules.d/49-wildbuzzard-root.rules",
         include_bytes!("../../../../guest/assets/49-wildbuzzard-root.rules"),
-        0o644,
-    ),
-    (
-        "etc/chromium.d/wildbuzzard",
-        include_bytes!("../../../../guest/assets/chromium-flags"),
-        0o644,
-    ),
-    (
-        "etc/chromium/master_preferences",
-        include_bytes!("../../../../guest/assets/chromium-master-preferences"),
         0o644,
     ),
     (
@@ -1115,10 +1103,6 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     remove_empty_nvidia_mount_placeholders(rootfs)?;
     let previous = read_guest_asset_manifest(rootfs);
-    let reference_chromium_preferences = GuestAssetRecord {
-        sha256: REFERENCE_CHROMIUM_MASTER_PREFERENCES_SHA256.into(),
-        mode: 0o644,
-    };
     let legacy_tiled_sway_config = GuestAssetRecord {
         sha256: LEGACY_TILED_SWAY_CONFIG_SHA256.into(),
         mode: 0o644,
@@ -1133,7 +1117,6 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
                 .as_ref()
                 .and_then(|manifest| manifest.assets.get(*relative)),
             match *relative {
-                "etc/chromium/master_preferences" => Some(&reference_chromium_preferences),
                 "etc/wildbuzzard/sway-config" => Some(&legacy_tiled_sway_config),
                 _ => None,
             },
@@ -1142,6 +1125,8 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
     for relative in [
         "usr/libexec/wildbuzzard-wayfire-session",
         "etc/xdg/wayfire.ini",
+        "etc/chromium.d/wildbuzzard",
+        "etc/chromium/master_preferences",
     ] {
         remove_retired_guest_asset(
             rootfs,
@@ -2662,24 +2647,8 @@ mod layer_tests {
                 .unwrap()
                 .contains("EnvironmentFile=/run/wildbuzzard-host/driver.env")
         );
-        assert!(
-            fs::read_to_string(rootfs.join("etc/chromium.d/wildbuzzard"))
-                .unwrap()
-                .contains("--password-store=basic")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("etc/chromium.d/wildbuzzard"))
-                .unwrap()
-                .contains("--force-renderer-accessibility=complete")
-        );
-        let chromium_preferences: serde_json::Value = serde_json::from_slice(
-            &fs::read(rootfs.join("etc/chromium/master_preferences")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            chromium_preferences["browser"]["custom_chrome_frame"],
-            false
-        );
+        assert!(!rootfs.join("etc/chromium.d/wildbuzzard").exists());
+        assert!(!rootfs.join("etc/chromium/master_preferences").exists());
         assert!(
             fs::read_to_string(rootfs.join("etc/xdg/kwalletrc"))
                 .unwrap()
@@ -2854,22 +2823,21 @@ mod layer_tests {
     }
 
     #[test]
-    fn migration_replaces_a_recognized_reference_image_file() {
+    fn migration_replaces_a_recognized_unmanifested_legacy_asset() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
         fs::create_dir(&rootfs).unwrap();
-        let relative = Path::new("etc/chromium/master_preferences");
-        install_guest_asset(&rootfs, relative, b"reference package value", 0o644).unwrap();
-        let stale_manifest_record = guest_asset_record(b"new distributed value", 0o644);
-        let recognized_reference = guest_asset_record(b"reference package value", 0o644);
+        let relative = Path::new("etc/wildbuzzard/legacy.conf");
+        install_guest_asset(&rootfs, relative, b"recognized legacy value", 0o644).unwrap();
+        let recognized_legacy = guest_asset_record(b"recognized legacy value", 0o644);
 
         migrate_guest_asset(
             &rootfs,
             relative,
             b"new distributed value",
             0o644,
-            Some(&stale_manifest_record),
-            Some(&recognized_reference),
+            None,
+            Some(&recognized_legacy),
         )
         .unwrap();
 
@@ -2877,6 +2845,24 @@ mod layer_tests {
             fs::read(rootfs.join(relative)).unwrap(),
             b"new distributed value"
         );
+    }
+
+    #[test]
+    fn migration_removes_unchanged_retired_asset_and_preserves_guest_edit() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let unchanged = Path::new("etc/wildbuzzard/retired.conf");
+        let edited = Path::new("etc/wildbuzzard/edited-retired.conf");
+        let previous = guest_asset_record(b"managed value", 0o644);
+        install_guest_asset(&rootfs, unchanged, b"managed value", 0o644).unwrap();
+        install_guest_asset(&rootfs, edited, b"guest value", 0o644).unwrap();
+
+        remove_retired_guest_asset(&rootfs, unchanged, Some(&previous)).unwrap();
+        remove_retired_guest_asset(&rootfs, edited, Some(&previous)).unwrap();
+
+        assert!(!rootfs.join(unchanged).exists());
+        assert_eq!(fs::read(rootfs.join(edited)).unwrap(), b"guest value");
     }
 
     #[test]

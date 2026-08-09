@@ -8,8 +8,8 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard)" = "1000:1000:700"
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard/.config)" = "1000:1000:700"
     for command in \
-        Xwayland chromium cua-driver dbus-daemon dolphin firefox-esr foot \
-        fusermount3 grim mako pipewire sway swaymsg systemctl thunar \
+        Xwayland cua-driver dbus-daemon ffmpeg firefox-esr foot fusermount3 grim \
+        mako mousepad pipewire sway swaymsg systemctl thunar \
         wireplumber wtype
     do
         command -v "$command" >/dev/null
@@ -31,7 +31,7 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
         test -s "$required"
     done
 	dpkg-query -W \
-	    at-spi2-core firefox-esr foot fuse3 libfuse2t64 \
+	    at-spi2-core ffmpeg firefox-esr foot fuse3 libfuse2t64 mousepad \
 	    fonts-noto-color-emoji fonts-noto-core fonts-noto-cjk \
 	    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcairo2 \
 	    libcups2t64 libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 \
@@ -91,7 +91,7 @@ manifest = json.loads(
     (root / "usr/lib/wildbuzzard/guest-assets.manifest.json").read_text()
 )
 assert manifest["schema"] == 1
-assert len(manifest["assets"]) >= 49
+assert len(manifest["assets"]) >= 47
 for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
@@ -122,9 +122,10 @@ PY
         ! command -v "$build_command" >/dev/null 2>&1
 	done
 	for forbidden_package in \
-	    blender build-essential cargo cmake fuzzel g++ gcc git kwin-wayland \
-	    labwc make meson ninja-build pkg-config plasma-workspace rustc waybar wayfire \
-	    xfce4 xfce4-panel xfdesktop4
+	    blender build-essential cargo chromium cmake dolphin fuzzel g++ gcc git \
+	    kwin-wayland labwc make mesa-utils meson ninja-build pavucontrol pkg-config \
+	    plasma-workspace rustc vulkan-tools waybar wayfire x11-apps xfce4 \
+	    xfce4-panel xfdesktop4 xterm
 	do
 	    status=$(dpkg-query -W -f="\${db:Status-Abbrev}" "$forbidden_package" 2>/dev/null || true)
 	    case "$status" in

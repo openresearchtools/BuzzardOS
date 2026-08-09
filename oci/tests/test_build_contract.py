@@ -129,6 +129,7 @@ class OciBuildContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         for package in (
+            "ffmpeg",
             "firefox-esr",
             "foot",
             "fuse3",
@@ -137,9 +138,24 @@ class OciBuildContractTests(unittest.TestCase):
             "libgtk-3-0t64",
             "libnss3",
             "libxkbcommon0",
+            "mousepad",
+            "thunar",
             "xwayland",
         ):
             self.assertRegex(
+                containerfile,
+                rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
+            )
+        for package in (
+            "chromium",
+            "dolphin",
+            "mesa-utils",
+            "pavucontrol",
+            "vulkan-tools",
+            "x11-apps",
+            "xterm",
+        ):
+            self.assertNotRegex(
                 containerfile,
                 rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
             )
@@ -147,10 +163,17 @@ class OciBuildContractTests(unittest.TestCase):
         for forbidden in (
             "blender",
             "build-essential",
+            "chromium",
+            "dolphin",
             "kwin-wayland",
+            "mesa-utils",
+            "pavucontrol",
             "plasma-workspace",
             "rustc",
+            "vulkan-tools",
             "waybar",
+            "x11-apps",
+            "xterm",
         ):
             self.assertIn(forbidden, verifier)
 

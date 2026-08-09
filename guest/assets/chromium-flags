@@ -1,3 +1,0 @@
-# Wild Buzzard supplies a private guest session, not a KDE Plasma login.
-# Do not auto-detect or D-Bus-activate a host-style KDE password wallet.
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland --password-store=basic --force-renderer-accessibility=complete"
