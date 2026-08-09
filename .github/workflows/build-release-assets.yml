@@ -159,6 +159,7 @@ jobs:
                 libgtk-4-dev \
                 libpipewire-0.3-dev \
                 libpulse-dev \
+                libslirp0 \
                 libspa-0.2-modules \
                 libwayland-dev \
                 libx11-dev \
