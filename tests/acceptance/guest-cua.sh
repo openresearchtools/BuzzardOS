@@ -60,21 +60,40 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
     NO_AT_BRIDGE=0 \
     CUA_DRIVER_RS_ENABLE_WAYLAND=1 \
     sh -lc '
-        session_pid=$(pgrep -xo wildbuzzard-she) || {
+        session_pid=
+        WAYLAND_DISPLAY=
+        SWAYSOCK=
+        shell_observed=0
+        attempt=0
+        while [ "$attempt" -lt 150 ]; do
+            candidate=$(pgrep -xo wildbuzzard-she 2>/dev/null || true)
+            if [ -n "$candidate" ] && [ -r "/proc/$candidate/environ" ]; then
+                shell_observed=1
+                wayland_display=$(
+                    tr "\0" "\n" <"/proc/$candidate/environ" |
+                        sed -n "s/^WAYLAND_DISPLAY=//p" |
+                        head -1
+                )
+                sway_socket=$(
+                    tr "\0" "\n" <"/proc/$candidate/environ" |
+                        sed -n "s/^SWAYSOCK=//p" |
+                        head -1
+                )
+                if [ -n "$wayland_display" ] && [ -n "$sway_socket" ]; then
+                    session_pid=$candidate
+                    WAYLAND_DISPLAY=$wayland_display
+                    SWAYSOCK=$sway_socket
+                    break
+                fi
+            fi
+            attempt=$((attempt + 1))
+            sleep 0.1
+        done
+        if [ "$shell_observed" -eq 0 ]; then
             echo "Wild Buzzard shell session is unavailable" >&2
             exit 1
-        }
-        WAYLAND_DISPLAY=$(
-            tr "\0" "\n" <"/proc/$session_pid/environ" |
-                sed -n "s/^WAYLAND_DISPLAY=//p" |
-                head -1
-        )
-        SWAYSOCK=$(
-            tr "\0" "\n" <"/proc/$session_pid/environ" |
-                sed -n "s/^SWAYSOCK=//p" |
-                head -1
-        )
-        if [ -z "$WAYLAND_DISPLAY" ] || [ -z "$SWAYSOCK" ]; then
+        fi
+        if [ -z "$session_pid" ]; then
             echo "private Sway application endpoints are unavailable" >&2
             exit 1
         fi

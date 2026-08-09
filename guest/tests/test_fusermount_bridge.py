@@ -39,7 +39,7 @@ class FusermountBridgeContractTests(unittest.TestCase):
             (
                 [
                     "-o",
-                    "ro,nosuid,nodev,subtype=squashfuse",
+                    "ro,nosuid,nodev,subtype=LM-Studio-0.4.20-1-x64.AppImage",
                     "--",
                     "/run/user/1000/.mount_BBBBBB",
                 ],
@@ -63,7 +63,9 @@ class FusermountBridgeContractTests(unittest.TestCase):
             (["--version"], 7),
             (["-o", "rw,nosuid,nodev", "--", "/tmp/.mount_bad"], 7),
             (["-o", "ro,nosuid,nodev,allow_other", "--", "/tmp/.mount_bad"], 7),
-            (["-o", "ro,nosuid,nodev,subtype=evil", "--", "/tmp/.mount_bad"], 7),
+            (["-o", "ro,nosuid,nodev,subtype=bad,allow_other", "--", "/tmp/.mount_bad"], 7),
+            (["-o", "ro,nosuid,nodev,subtype=../../bad", "--", "/tmp/.mount_bad"], 7),
+            (["-o", "ro,nosuid,nodev,subtype=bad value", "--", "/tmp/.mount_bad"], 7),
             (["-o", "ro,nosuid,nodev", "--", "/tmp/.mount_bad"], -1),
             (["-u", "-z", "-q", "--", "/tmp/.mount_bad"], -1),
             (["-u", "-q", "-z", "--", "/tmp/.mount_bad"], 7),
@@ -229,10 +231,56 @@ class FusermountBridgeContractTests(unittest.TestCase):
         approved = self.bridge["is_approved_fuse_mount"]
         path = "/tmp/.mount_Test42"
         good = f"10 9 0:42 / {path} ro,nosuid,nodev,relatime - fuse.squashfuse image ro\n"
-        self.assertTrue(approved(path, good))
-        self.assertFalse(approved(path, good.replace("nodev,", "")))
-        self.assertFalse(approved(path, good.replace("fuse.squashfuse", "ext4")))
-        self.assertFalse(approved(path + "x", good))
+        appimage = (
+            f"10 9 0:42 / {path} ro,nosuid,nodev,relatime - "
+            "fuse.LM-Studio-0.4.20-1-x64.AppImage image ro\n"
+        )
+        self.assertTrue(approved(path, 10, good))
+        self.assertTrue(approved(path, 10, appimage))
+        self.assertFalse(approved(path, 11, good))
+        self.assertFalse(approved(path, 10, good.replace("nodev,", "")))
+        self.assertFalse(approved(path, 10, good.replace("fuse.squashfuse", "ext4")))
+        self.assertFalse(approved(path, 10, good.replace("fuse.squashfuse", "fuse.")))
+        self.assertFalse(
+            approved(path, 10, good.replace("fuse.squashfuse", "fuse.bad/subtype"))
+        )
+        self.assertFalse(approved(path + "x", 10, good))
+
+    def test_pinned_fd_mount_id_parser_rejects_missing_or_invalid_values(self) -> None:
+        parse = self.bridge["parse_fd_mount_id"]
+        self.assertEqual(parse("pos:\t0\nflags:\t012000000\nmnt_id:\t42\n"), 42)
+        for invalid in ("", "mnt_id:\t0\n", "mnt_id:\tnot-a-number\n"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(self.ValidationError):
+                    parse(invalid)
+
+    def test_unmount_does_not_require_getattr_from_an_orphaned_fuse_root(self) -> None:
+        def reject_getattr(_descriptor: int):
+            raise PermissionError(errno.EACCES, "orphaned FUSE root rejects getattr")
+
+        with tempfile.TemporaryDirectory(prefix=".mount_OrphanedFuse", dir="/tmp") as temporary:
+            mountpoint = Path(temporary)
+            mountpoint.chmod(0o700)
+            mountinfo = (
+                f"10 9 0:42 / {mountpoint} ro,nosuid,nodev,relatime - "
+                "fuse.LM-Studio-0.4.20-1-x64.AppImage image ro\n"
+            )
+            descriptor = self.bridge["open_validated_mountpoint"](
+                str(mountpoint),
+                "unmount",
+                mountinfo_reader=lambda: mountinfo,
+                metadata_reader=reject_getattr,
+                mount_id_reader=lambda _descriptor: 10,
+            )
+            os.close(descriptor)
+
+    def test_unmount_detaches_only_the_pinned_mountpoint_fd(self) -> None:
+        calls = []
+        self.bridge["detach_mount_by_fd"](
+            37,
+            unmount=lambda target, flags: calls.append((target, flags)),
+        )
+        self.assertEqual(calls, [("/proc/self/fd/37", self.bridge["MNT_DETACH"])])
 
     def test_real_helper_is_opened_without_following_symlinks_and_executes_by_fd(self) -> None:
         open_helper = self.bridge["open_real_fusermount"]

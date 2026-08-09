@@ -135,6 +135,14 @@ Local changes are kept as ordinary reviewable source changes in this tree:
   with protocol version 2. This prevents absolute input from being accepted
   against an ambiguous nested output layout while leaving the real Sway seat
   at its previous position.
+- Linux `launch_app` retains and reaps every spawned child. A direct launcher
+  that exits unsuccessfully before publishing a window now returns a
+  structured `exited_before_window` failure with `running: false`, instead of
+  leaving a zombie and claiming success. A zero-exit launcher that publishes
+  no observable window is reported as an unconfirmed failure rather than
+  treating a possible daemon/existing-instance handoff as proven; live GUI
+  children are reaped asynchronously when they later exit, and `xdg-open`
+  helper children receive the same cleanup.
 - the release build cross-compiles this pinned driver to the guest glibc
   baseline and carries it in the AppImage as a versioned managed guest asset,
   so existing persistent machines receive the audited fork without an

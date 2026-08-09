@@ -1326,6 +1326,126 @@ impl Tool for GetWindowStateTool {
 pub struct LaunchAppTool;
 static LAUNCH_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 
+#[derive(Debug)]
+enum DirectLaunchObservation {
+    Running {
+        pid: u32,
+        windows: Vec<Value>,
+    },
+    ExitedBeforeWindow {
+        pid: u32,
+        status: std::process::ExitStatus,
+    },
+}
+
+fn reap_in_background(mut child: std::process::Child) {
+    let pid = child.id();
+    std::thread::spawn(move || {
+        if let Err(error) = child.wait() {
+            tracing::warn!(pid, %error, "failed to reap launched application child");
+        }
+    });
+}
+
+fn observe_direct_launch(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+    mut windows_for_pid: impl FnMut(u32) -> Vec<Value>,
+) -> std::io::Result<DirectLaunchObservation> {
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        // try_wait(2) reaps an exited child. Checking it before claiming the
+        // process is running prevents a short-lived AppImage/runtime failure
+        // from being left as a zombie and reported as `running: true`.
+        if let Some(status) = child.try_wait()? {
+            return Ok(DirectLaunchObservation::ExitedBeforeWindow { pid, status });
+        }
+
+        let windows = windows_for_pid(pid);
+        if !windows.is_empty() {
+            // The GUI owns a window and is still alive. Keep the driver from
+            // accumulating a zombie when it eventually exits without making
+            // launch_app wait for the lifetime of the application.
+            reap_in_background(child);
+            return Ok(DirectLaunchObservation::Running { pid, windows });
+        }
+
+        if std::time::Instant::now() >= deadline {
+            // Close the final race between the loop's first try_wait and the
+            // timeout decision before returning `running: true`.
+            if let Some(status) = child.try_wait()? {
+                return Ok(DirectLaunchObservation::ExitedBeforeWindow { pid, status });
+            }
+            reap_in_background(child);
+            return Ok(DirectLaunchObservation::Running { pid, windows });
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+fn direct_launch_result(
+    message: String,
+    name: String,
+    observation: DirectLaunchObservation,
+) -> ToolResult {
+    match observation {
+        DirectLaunchObservation::Running { pid, windows } => ToolResult::text(message)
+            .with_structured(json!({
+                "pid": pid,
+                "bundle_id": Value::Null,
+                "name": name,
+                "running": true,
+                "active": false,
+                "windows": windows,
+            })),
+        DirectLaunchObservation::ExitedBeforeWindow { pid, status } => {
+            #[cfg(unix)]
+            let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+            #[cfg(not(unix))]
+            let signal: Option<i32> = None;
+            let mut structured = json!({
+                "pid": pid,
+                "bundle_id": Value::Null,
+                "name": name,
+                "running": false,
+                "active": false,
+                "windows": [],
+                "launch_state": if status.success() {
+                    "completed_without_window"
+                } else {
+                    "exited_before_window"
+                },
+                "handoff": false,
+                "handoff_possible": status.success(),
+                "exit": {
+                    "success": status.success(),
+                    "code": status.code(),
+                    "signal": signal,
+                },
+            });
+            if status.success() {
+                // A zero exit can mean a daemonized/existing-instance handoff,
+                // but without an observed window transition that is only a
+                // possibility. The CUA contract forbids reporting success from
+                // a helper exit code alone.
+                structured["code"] = json!("launch_completed_without_window");
+                ToolResult::error(format!(
+                    "Launcher process {pid} for {name} exited successfully, but no application window was observed."
+                ))
+                .with_structured(structured)
+            } else {
+                structured["code"] = json!("launch_exited_before_window");
+                ToolResult::error(format!(
+                    "Launch process {pid} for {name} exited with {status} before publishing a window."
+                ))
+                .with_structured(structured)
+            }
+        }
+    }
+}
+
 fn contains_remote_debugging_flag(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.contains("--remote-debugging-port") || lower.contains("--remote-debugging-pipe")
@@ -1379,16 +1499,17 @@ impl Tool for LaunchAppTool {
         }
 
         let result = tokio::task::spawn_blocking(
-            move || -> anyhow::Result<(String, Option<u32>, String)> {
+            move || -> anyhow::Result<(String, String, Option<DirectLaunchObservation>)> {
                 // Open URLs via xdg-open.
                 if !urls.is_empty() {
                     for url in &urls {
-                        std::process::Command::new("xdg-open").arg(url).spawn()?;
+                        let child = std::process::Command::new("xdg-open").arg(url).spawn()?;
+                        reap_in_background(child);
                     }
                     return Ok((
                         format!("Opened {} URL(s) via xdg-open.", urls.len()),
-                        None,
                         "xdg-open".to_owned(),
+                        None,
                     ));
                 }
                 // launch_path > name. Both go through the same direct-exec path
@@ -1419,20 +1540,32 @@ impl Tool for LaunchAppTool {
                     match launch.spawn() {
                         Ok(child) => {
                             let pid = child.id();
+                            let observation = observe_direct_launch(
+                                child,
+                                std::time::Duration::from_secs(3),
+                                std::time::Duration::from_millis(100),
+                                |pid| {
+                                    crate::wayland::list_windows_dispatch(Some(pid))
+                                        .iter()
+                                        .map(window_record_json)
+                                        .collect()
+                                },
+                            )?;
                             return Ok((
                                 format!("✅ Launched {cmd} (pid {pid}) in background."),
-                                Some(pid),
                                 cmd.to_owned(),
+                                Some(observation),
                             ));
                         }
                         Err(_) => {
                             // Fall back to xdg-open for .desktop app names. xdg-open may
                             // spawn a helper and exit, so do not claim its pid is the app pid.
-                            std::process::Command::new("xdg-open").arg(cmd).spawn()?;
+                            let child = std::process::Command::new("xdg-open").arg(cmd).spawn()?;
+                            reap_in_background(child);
                             return Ok((
                                 format!("Opened '{cmd}' via xdg-open."),
-                                None,
                                 cmd.to_owned(),
+                                None,
                             ));
                         }
                     }
@@ -1443,29 +1576,9 @@ impl Tool for LaunchAppTool {
         .await;
 
         match result {
-            Ok(Ok((message, pid_opt, name))) => {
-                if let Some(pid) = pid_opt {
-                    let windows = tokio::task::spawn_blocking(move || {
-                        let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_secs(3);
-                        loop {
-                            let windows = crate::wayland::list_windows_dispatch(Some(pid));
-                            if !windows.is_empty() || std::time::Instant::now() >= deadline {
-                                return windows.iter().map(window_record_json).collect::<Vec<_>>();
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                    })
-                    .await
-                    .unwrap_or_default();
-                    ToolResult::text(message).with_structured(json!({
-                        "pid": pid,
-                        "bundle_id": Value::Null,
-                        "name": name,
-                        "running": true,
-                        "active": false,
-                        "windows": windows,
-                    }))
+            Ok(Ok((message, name, observation))) => {
+                if let Some(observation) = observation {
+                    direct_launch_result(message, name, observation)
                 } else {
                     ToolResult::text(message).with_structured(json!({
                         "pid": Value::Null,
@@ -1492,6 +1605,103 @@ fn chromium_family_program(program: &str) -> bool {
     ["chrome", "chromium", "electron", "brave", "edge"]
         .iter()
         .any(|needle| basename.contains(needle))
+}
+
+#[cfg(test)]
+mod launch_app_tests {
+    use super::*;
+
+    fn observe_shell(script: &str) -> DirectLaunchObservation {
+        let child = std::process::Command::new("sh")
+            .args(["-c", script])
+            .spawn()
+            .expect("spawn launch fixture");
+        observe_direct_launch(
+            child,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(5),
+            |_| Vec::new(),
+        )
+        .expect("observe launch fixture")
+    }
+
+    #[test]
+    fn early_nonzero_exit_is_reaped_and_returns_structured_failure() {
+        let observation = observe_shell("exit 37");
+        let result = direct_launch_result(
+            "spawned".to_owned(),
+            "/tmp/failing.AppImage".to_owned(),
+            observation,
+        );
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.expect("structured failure");
+        assert_eq!(structured["running"], false);
+        assert_eq!(structured["active"], false);
+        assert_eq!(structured["windows"], json!([]));
+        assert_eq!(structured["code"], "launch_exited_before_window");
+        assert_eq!(structured["launch_state"], "exited_before_window");
+        assert_eq!(structured["handoff"], false);
+        assert_eq!(structured["exit"]["success"], false);
+        assert_eq!(structured["exit"]["code"], 37);
+    }
+
+    #[test]
+    fn successful_short_lived_launcher_without_window_is_unconfirmed() {
+        // A daemonizing launcher or an existing-instance handoff commonly
+        // exits zero before the eventual application window belongs to a
+        // different PID. Report that possibility without claiming success or
+        // claiming that the reaped launcher PID is still running.
+        let observation = observe_shell("exit 0");
+        let result = direct_launch_result(
+            "spawned".to_owned(),
+            "/usr/bin/daemonizing-launcher".to_owned(),
+            observation,
+        );
+
+        assert_eq!(result.is_error, Some(true));
+        let structured = result
+            .structured_content
+            .expect("structured unconfirmed launch");
+        assert_eq!(structured["running"], false);
+        assert_eq!(structured["active"], false);
+        assert_eq!(structured["windows"], json!([]));
+        assert_eq!(structured["code"], "launch_completed_without_window");
+        assert_eq!(structured["launch_state"], "completed_without_window");
+        assert_eq!(structured["handoff"], false);
+        assert_eq!(structured["handoff_possible"], true);
+        assert_eq!(structured["exit"]["success"], true);
+        assert_eq!(structured["exit"]["code"], 0);
+    }
+
+    #[test]
+    fn live_child_with_window_remains_running_and_gets_a_reaper() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.1"])
+            .spawn()
+            .expect("spawn live launch fixture");
+        let pid = child.id();
+        let observation = observe_direct_launch(
+            child,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(5),
+            |observed_pid| vec![json!({"pid": observed_pid, "title": "Fixture"})],
+        )
+        .expect("observe live launch fixture");
+        let result = direct_launch_result(
+            "spawned".to_owned(),
+            "/usr/bin/fixture".to_owned(),
+            observation,
+        );
+
+        assert_eq!(result.is_error, None);
+        let structured = result
+            .structured_content
+            .expect("structured running launch");
+        assert_eq!(structured["pid"], pid);
+        assert_eq!(structured["running"], true);
+        assert_eq!(structured["windows"][0]["title"], "Fixture");
+    }
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────
