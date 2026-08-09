@@ -222,9 +222,12 @@ env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" \
     create release-seed-smoke
 mapped_rootfs="$roundtrip/vm/release-seed-smoke/rootfs"
 roundtrip_diff="$build_root/roundtrip.diff"
+# Linux rewrites this one xattr from VFS v2 to namespaced VFS v3. The
+# verifier below compares its masks, flags, revision, and root ID directly.
 sudo rsync \
     -aHAXnci \
     --delete \
+    --filter='-x security.capability' \
     --numeric-ids \
     --no-owner \
     --no-group \

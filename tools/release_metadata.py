@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -26,6 +28,11 @@ ROOTFS_MANIFEST_NAME = "WildBuzzard-rootfs-linux-x86_64.json"
 APPIMAGE_NAME = "WildBuzzard-x86_64.AppImage"
 BUNDLE_MANIFEST = PurePosixPath("provenance/bundle-files.json")
 BUNDLE_CHECKSUMS = PurePosixPath("SHA256SUMS")
+SECURITY_CAPABILITY_XATTR = "security.capability"
+VFS_CAP_REVISION_MASK = 0xFF000000
+VFS_CAP_REVISION_2 = 0x02000000
+VFS_CAP_REVISION_3 = 0x03000000
+VFS_CAP_FLAGS_EFFECTIVE = 0x000001
 
 
 class MetadataError(RuntimeError):
@@ -282,7 +289,105 @@ def guest_id_to_host(guest_id: int, host_id: int, subordinate_start: int) -> int
     return subordinate_start + guest_id - 1
 
 
+def parse_file_capability(
+    value: bytes, description: str
+) -> tuple[int, int, int, bool, int | None]:
+    """Decode the Linux VFS v2/v3 security.capability wire format."""
+
+    if len(value) < 4:
+        raise MetadataError(f"{description} file capability is shorter than its header")
+    (magic_etc,) = struct.unpack_from("<I", value)
+    revision = magic_etc & VFS_CAP_REVISION_MASK
+    flags = magic_etc & ~VFS_CAP_REVISION_MASK
+    if flags & ~VFS_CAP_FLAGS_EFFECTIVE:
+        raise MetadataError(
+            f"{description} file capability has unsupported flags 0x{flags:06x}"
+        )
+    if revision == VFS_CAP_REVISION_2:
+        expected_size = 20
+    elif revision == VFS_CAP_REVISION_3:
+        expected_size = 24
+    else:
+        raise MetadataError(
+            f"{description} file capability has unsupported revision "
+            f"0x{revision:08x}"
+        )
+    if len(value) != expected_size:
+        raise MetadataError(
+            f"{description} file capability revision "
+            f"{revision >> 24} has size {len(value)}, expected {expected_size}"
+        )
+
+    _magic, permitted_low, inheritable_low, permitted_high, inheritable_high = (
+        struct.unpack_from("<IIIII", value)
+    )
+    permitted = permitted_low | (permitted_high << 32)
+    inheritable = inheritable_low | (inheritable_high << 32)
+    root_id = struct.unpack_from("<I", value, 20)[0] if expected_size == 24 else None
+    return (
+        revision,
+        permitted,
+        inheritable,
+        bool(flags & VFS_CAP_FLAGS_EFFECTIVE),
+        root_id,
+    )
+
+
+def read_file_capability(path: Path, description: str) -> bytes | None:
+    try:
+        return os.getxattr(path, SECURITY_CAPABILITY_XATTR, follow_symlinks=False)
+    except OSError as error:
+        if error.errno == errno.ENODATA:
+            return None
+        raise MetadataError(
+            f"cannot inspect {description} file capability at {path}: {error}"
+        ) from error
+
+
+def verify_idmapped_file_capability(
+    relative: str,
+    canonical_value: bytes | None,
+    mapped_value: bytes | None,
+    expected_root_id: int,
+) -> None:
+    if canonical_value is None and mapped_value is None:
+        return
+    if canonical_value is None or mapped_value is None:
+        missing = "canonical" if canonical_value is None else "mapped"
+        raise MetadataError(
+            f"ID-mapped rootfs is missing {missing} file capability at {relative}"
+        )
+
+    canonical = parse_file_capability(
+        canonical_value, f"canonical rootfs {relative}"
+    )
+    mapped = parse_file_capability(mapped_value, f"mapped rootfs {relative}")
+    if canonical[0] != VFS_CAP_REVISION_2 or canonical[4] is not None:
+        raise MetadataError(
+            f"canonical rootfs file capability at {relative} is not VFS revision 2"
+        )
+    if mapped[0] != VFS_CAP_REVISION_3 or mapped[4] is None:
+        raise MetadataError(
+            f"mapped rootfs file capability at {relative} is not namespaced VFS revision 3"
+        )
+    if mapped[4] != expected_root_id:
+        raise MetadataError(
+            f"mapped rootfs file capability at {relative} has namespace root ID "
+            f"{mapped[4]}, expected {expected_root_id}"
+        )
+    if canonical[1:4] != mapped[1:4]:
+        raise MetadataError(
+            f"ID-mapped rootfs file capability masks or flags differ at {relative}"
+        )
+
+
 def verify_idmapped_copy(args: argparse.Namespace) -> None:
+    for value, description in [
+        (args.subuid_start, "subordinate UID start"),
+        (args.subgid_start, "subordinate GID start"),
+    ]:
+        if not 0 <= value <= 0xFFFFFFFF:
+            raise MetadataError(f"{description} is outside the Linux ID range: {value}")
     for root, description in [
         (args.canonical, "canonical rootfs"),
         (args.mapped, "mapped rootfs"),
@@ -312,6 +417,14 @@ def verify_idmapped_copy(args: argparse.Namespace) -> None:
                 f"{relative}: expected {expected_uid}:{expected_gid}, "
                 f"found {destination.st_uid}:{destination.st_gid}"
             )
+        canonical_path = canonical if relative == "." else canonical / relative
+        mapped_path = mapped if relative == "." else mapped / relative
+        verify_idmapped_file_capability(
+            relative,
+            read_file_capability(canonical_path, "canonical rootfs"),
+            read_file_capability(mapped_path, "mapped rootfs"),
+            args.subuid_start,
+        )
 
 
 def inspect_rootfs(rootfs: Path) -> dict[str, object]:

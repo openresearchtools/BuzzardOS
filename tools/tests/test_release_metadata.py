@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import shutil
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -320,6 +321,28 @@ class SourceEvidenceTests(unittest.TestCase):
 
 
 class IdMapTests(unittest.TestCase):
+    @staticmethod
+    def capability(
+        revision: int,
+        *,
+        permitted: int = 0x0000000200000001,
+        inheritable: int = 0x0000000800000004,
+        effective: bool = True,
+        root_id: int | None = None,
+    ) -> bytes:
+        magic = revision | (release_metadata.VFS_CAP_FLAGS_EFFECTIVE if effective else 0)
+        value = struct.pack(
+            "<IIIII",
+            magic,
+            permitted & 0xFFFFFFFF,
+            inheritable & 0xFFFFFFFF,
+            permitted >> 32,
+            inheritable >> 32,
+        )
+        if root_id is not None:
+            value += struct.pack("<I", root_id)
+        return value
+
     def test_keep_id_mapping_matches_launcher_contract(self) -> None:
         self.assertEqual(release_metadata.guest_id_to_host(0, 1001, 100000), 100000)
         self.assertEqual(release_metadata.guest_id_to_host(999, 1001, 100000), 100999)
@@ -330,6 +353,66 @@ class IdMapTests(unittest.TestCase):
     def test_keep_id_mapping_rejects_out_of_range_guest_id(self) -> None:
         with self.assertRaisesRegex(release_metadata.MetadataError, "outside"):
             release_metadata.guest_id_to_host(65536, 1001, 100000)
+
+    def test_capability_parser_decodes_v2_and_v3(self) -> None:
+        v2 = self.capability(release_metadata.VFS_CAP_REVISION_2)
+        v3 = self.capability(release_metadata.VFS_CAP_REVISION_3, root_id=100000)
+        self.assertEqual(
+            release_metadata.parse_file_capability(v2, "v2"),
+            (
+                release_metadata.VFS_CAP_REVISION_2,
+                0x0000000200000001,
+                0x0000000800000004,
+                True,
+                None,
+            ),
+        )
+        self.assertEqual(
+            release_metadata.parse_file_capability(v3, "v3")[-1], 100000
+        )
+
+    def test_capability_parser_rejects_malformed_forms(self) -> None:
+        v2 = self.capability(release_metadata.VFS_CAP_REVISION_2)
+        with self.assertRaisesRegex(release_metadata.MetadataError, "size"):
+            release_metadata.parse_file_capability(v2[:-1], "short v2")
+        with self.assertRaisesRegex(release_metadata.MetadataError, "unsupported revision"):
+            release_metadata.parse_file_capability(
+                self.capability(0x01000000)[:12], "v1"
+            )
+        invalid_flags = bytearray(v2)
+        invalid_flags[0] |= 0x02
+        with self.assertRaisesRegex(release_metadata.MetadataError, "unsupported flags"):
+            release_metadata.parse_file_capability(bytes(invalid_flags), "flags")
+
+    def test_idmapped_capability_accepts_only_semantic_v2_to_v3_conversion(self) -> None:
+        canonical = self.capability(release_metadata.VFS_CAP_REVISION_2)
+        mapped = self.capability(
+            release_metadata.VFS_CAP_REVISION_3, root_id=100000
+        )
+        release_metadata.verify_idmapped_file_capability(
+            "usr/bin/helper", canonical, mapped, 100000
+        )
+
+        wrong_masks = self.capability(
+            release_metadata.VFS_CAP_REVISION_3,
+            permitted=0x10,
+            root_id=100000,
+        )
+        with self.assertRaisesRegex(release_metadata.MetadataError, "masks or flags"):
+            release_metadata.verify_idmapped_file_capability(
+                "usr/bin/helper", canonical, wrong_masks, 100000
+            )
+        with self.assertRaisesRegex(release_metadata.MetadataError, "root ID"):
+            release_metadata.verify_idmapped_file_capability(
+                "usr/bin/helper",
+                canonical,
+                self.capability(release_metadata.VFS_CAP_REVISION_3, root_id=100001),
+                100000,
+            )
+        with self.assertRaisesRegex(release_metadata.MetadataError, "missing mapped"):
+            release_metadata.verify_idmapped_file_capability(
+                "usr/bin/helper", canonical, None, 100000
+            )
 
 
 if __name__ == "__main__":
