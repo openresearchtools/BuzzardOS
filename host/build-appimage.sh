@@ -45,7 +45,7 @@ case "$(uname -m)" in
         ;;
 esac
 
-for command_name in cargo curl dd file find id install make mksquashfs ninja patch python3 readelf realpath sha256sum sort tar touch bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
+for command_name in cargo curl dd file find git id install make mksquashfs ninja patch python3 readelf realpath sha256sum sort tar touch zstd bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "build dependency missing: $command_name" >&2
         exit 1
@@ -118,6 +118,7 @@ stage_release_license_payload() {
     local go_destination="$appdir/usr/share/doc/wildbuzzard/sources/go"
     local slirp_destination="$appdir/usr/share/doc/wildbuzzard/sources/slirp4netns"
     local runtime_destination="$appdir/usr/share/doc/wildbuzzard/sources/appimage-runtime"
+    local project_destination="$appdir/usr/share/doc/wildbuzzard/sources/project"
 
     # Snapshot licensing inputs only after linuxdeploy has finished mutating the
     # AppDir. Remove the previous snapshot first so a deleted source record can
@@ -127,7 +128,8 @@ stage_release_license_payload() {
         "$mpl_destination" \
         "$go_destination" \
         "$slirp_destination" \
-        "$runtime_destination"
+        "$runtime_destination" \
+        "$project_destination"
     install -d -m755 \
         "$appdir/usr/share/doc/wildbuzzard" \
         "$appdir/usr/share/doc/wildbuzzard-cua" \
@@ -137,7 +139,8 @@ stage_release_license_payload() {
         "$go_destination" \
         "$slirp_destination" \
         "$runtime_destination" \
-        "$runtime_destination/relink-kit"
+        "$runtime_destination/relink-kit" \
+        "$project_destination"
     install -m644 "$project_dir/LICENSE" \
         "$appdir/usr/share/doc/wildbuzzard/LICENSE"
     install -m644 "$project_dir/NOTICE" \
@@ -165,6 +168,11 @@ stage_release_license_payload() {
     cp -a "$appimage_runtime_relink_kit/." "$runtime_destination/relink-kit/"
     install -m644 "$appimage_runtime_metadata" \
         "$runtime_destination/runtime-metadata.toml"
+
+    rm -rf -- "$build_dir/project-source"
+    "$project_dir/tools/create-project-source-archive.sh" \
+        "$build_dir/project-source"
+    cp -a "$build_dir/project-source/." "$project_destination/"
 
     install -m644 "$project_dir/guest/third_party/trycua-cua/LICENSE.md" \
         "$appdir/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md"

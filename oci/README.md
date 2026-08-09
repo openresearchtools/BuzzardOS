@@ -1,4 +1,4 @@
-# Local reference-image assembly
+# Reference-image assembly
 
 `compose.yaml` builds the Debian reference image from `desktop/Containerfile`.
 The build compiles the pinned stock Sway/wlroots stack, the guest shell, and the
@@ -22,5 +22,13 @@ size, and exact installed `dpkg` package/version inventory under
 compressed archive and checksum are written there as well. These files are
 build evidence; they are not committed to the source tree.
 
-The build is local-only. It does not log into a registry, push an image, create
-a GitHub package, or publish a release.
+The developer entry point is local-only. It does not log into a registry, push
+an image, create a GitHub package, or publish a release.
+
+The manually dispatched release-assets workflow uses the same Containerfile on
+a disposable GitHub-hosted x86-64 runner. Its image remains in that runner's
+Docker daemon long enough to pass `verify-image.sh`, export a digest-verified
+OCI layout, and flatten the filesystem into the compressed rootfs seed carried
+by `WildBuzzard-portable-x86_64.tar.zst`. The OCI layout and local image are
+then discarded. Neither artifact-only nor publication mode pushes GHCR or any
+other container registry/package.

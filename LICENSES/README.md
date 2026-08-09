@@ -4,13 +4,23 @@ This directory is the release-compliance source of truth for Wild Buzzard.
 It complements, and does not replace, the project-level `LICENSE` file or any
 license/copyright notice embedded in a third-party source or binary package.
 
-The records distinguish three different distribution surfaces:
+The records distinguish three different evidence surfaces:
 
 1. the source repository, including the audited TryCua fork and guest assets;
 2. the native AppImage, including Rust dependencies, downloaded helpers, and
    the shared-library closure copied from the build host; and
-3. the reference OCI image, including Debian/NVIDIA packages and the
-   source-built Sway/wlroots and Cua Driver binaries.
+3. the distributed flat guest-rootfs seed, including Debian/NVIDIA packages
+   and the source-built Sway/wlroots and Cua Driver binaries. The OCI image is
+   a local build intermediate used to assemble and verify this payload; it is
+   not published to GHCR, another registry, or GitHub Packages.
+
+The complete portable archive preserves the binary boundary as two separate
+license groups. `licenses/appimage/` contains the exact AppImage documentation,
+notices, source archives, relink material, and provenance. The independent
+`licenses/guest-rootfs/` group contains the exact guest `/usr/share/doc`
+closure, project source archive, pinned-upstream records, package inventory,
+and flat-rootfs manifest. Evidence from one group must never be treated as a
+substitute for missing evidence in the other.
 
 `release-components.toml` records direct, non-Cargo inputs.  Checksums are for
 the exact downloaded artifact where the build has one.  A source commit is
@@ -47,14 +57,14 @@ commit-pinned fallback record.
 For Debian-family payloads, the authoritative per-binary-package notice is the
 package's `/usr/share/doc/<package>/copyright` file (including a valid Debian
 doc-directory symlink).  A release audit must enumerate the *built* AppDir and
-OCI rootfs; the Containerfile and AppImage script alone cannot describe the
-transitive package closure.
+flattened rootfs; the Containerfile and AppImage script alone cannot describe
+the transitive package closure.
 
 `generated/oci-packages.tsv` is the exact, sorted binary-package/version
-inventory from the locally built reference image named in
-`release-components.toml`.  The structural gate validates its count and hash;
-the OCI artifact gate independently reconstructs the list from dpkg status and
-requires an exact match.  A later reference-image build must deliberately
+inventory from the reference image named in `release-components.toml`. The
+structural gate validates its count and hash; the runner's flat-rootfs gate
+independently reconstructs the list from dpkg status and requires an exact
+match before archiving it. A later reference-image build must deliberately
 replace this record and its content-addressed image evidence.
 
 The audit is evidence collection, not legal advice.  In particular, the
@@ -89,3 +99,10 @@ tools/check-licenses.sh --guest-rootfs /path/to/extracted/rootfs
 `--structural` suppresses only the explicitly recorded policy/provenance
 blockers; it never suppresses stale generated evidence, a checksum mismatch,
 an unclassified asset, or an artifact missing a required notice.
+
+The manually dispatched GitHub workflow performs structural artifact checks in
+default `artifacts` mode so engineering outputs can be inspected without being
+published. `prerelease` and `release` modes run the strict gate, require an
+existing SemVer tag for the exact selected commit, and stop before publication
+while any unresolved blocker remains. No workflow uploads an OCI image or
+container package.

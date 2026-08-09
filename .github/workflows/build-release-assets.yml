@@ -1,0 +1,501 @@
+name: Build release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Keep outputs as Actions artifacts or publish an existing tag.
+        required: true
+        default: artifacts
+        type: choice
+        options:
+          - artifacts
+          - prerelease
+          - release
+      release_tag:
+        description: Existing SemVer tag to publish (required outside artifacts mode).
+        required: false
+        type: string
+      confirm_publish:
+        description: Confirm that prerelease/release publication is intentional.
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: wildbuzzard-release-assets-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-request:
+    name: Validate request
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release assembly tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends zstd
+          fi
+          bash -n \
+            host/build-appimage.sh \
+            tools/assemble-release-assets.sh \
+            tools/build-release-rootfs.sh \
+            tools/create-project-source-archive.sh
+          python3 -m py_compile \
+            tools/license_audit.py \
+            tools/release_metadata.py
+          python3 -m unittest discover -s tools/tests -v
+
+      - name: Validate artifact or publication mode
+        shell: bash
+        env:
+          BUILD_MODE: ${{ inputs.mode }}
+          CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SELECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_MODE" == artifacts ]]; then
+            printf 'Artifact-only mode selected; no GitHub Release can be created.\n'
+            ./tools/check-licenses.sh --structural
+            exit 0
+          fi
+
+          [[ "$CONFIRM_PUBLISH" == true ]] || {
+            echo 'confirm_publish must be enabled for prerelease/release mode' >&2
+            exit 1
+          }
+          semver='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$RELEASE_TAG" =~ $semver ]] || {
+            echo 'release_tag must be an existing SemVer tag (an optional v prefix is accepted)' >&2
+            exit 1
+          }
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || {
+            echo "release tag does not exist: $RELEASE_TAG" >&2
+            exit 1
+          }
+          tag_commit=$(git rev-parse --verify "$RELEASE_TAG^{commit}")
+          [[ "$tag_commit" == "$SELECTED_COMMIT" ]] || {
+            echo "tag $RELEASE_TAG resolves to $tag_commit, not selected commit $SELECTED_COMMIT" >&2
+            exit 1
+          }
+
+          # Refuse known policy/provenance blockers before doing the expensive
+          # build. The publisher repeats this strict gate against the checkout.
+          ./tools/check-licenses.sh
+
+  build-appimage:
+    name: Build standalone AppImage
+    needs: validate-request
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 360
+    env:
+      APPIMAGE_BUILD_IMAGE: wildbuzzard-appimage-build:${{ github.run_id }}
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Initialize runner-local output paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "APPIMAGE_OUTPUT=$RUNNER_TEMP/wildbuzzard-appimage-output/WildBuzzard-x86_64.AppImage" >>"$GITHUB_ENV"
+
+      - name: Create pinned Ubuntu 26.04 AppImage build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_environment="$RUNNER_TEMP/wildbuzzard-appimage-build.Dockerfile"
+          cat >"$build_environment" <<'EOF'
+          FROM rust:1.96.0-bookworm@sha256:c993d32d95cc146bd12c84d66f0b924a6a96f3988325f39c144f2f9893dea120 AS rust-toolchain
+          FROM ubuntu:26.04@sha256:7b202b0e2e0028c6250f5fcf41d04df492d145a1654c6995a6553f0c1f6f1960
+          COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+          COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+          ENV PATH=/usr/local/cargo/bin:${PATH}
+          ENV RUSTUP_HOME=/usr/local/rustup
+          ENV CARGO_HOME=/usr/local/cargo
+          RUN export DEBIAN_FRONTEND=noninteractive; \
+              apt-get update; \
+              apt-get install --yes --no-install-recommends \
+                apparmor \
+                binutils \
+                bubblewrap \
+                build-essential \
+                ca-certificates \
+                curl \
+                desktop-file-utils \
+                dpkg-dev \
+                file \
+                fuse3 \
+                git \
+                gstreamer1.0-pipewire \
+                gstreamer1.0-plugins-bad \
+                gstreamer1.0-plugins-base \
+                gstreamer1.0-plugins-good \
+                gstreamer1.0-tools \
+                libdrm-dev \
+                libfuse3-dev \
+                libgbm-dev \
+                libgraphene-1.0-dev \
+                libgtk-4-dev \
+                libpipewire-0.3-dev \
+                libpulse-dev \
+                libspa-0.2-modules \
+                libwayland-dev \
+                libxkbcommon-dev \
+                make \
+                ninja-build \
+                patch \
+                patchelf \
+                pipewire-bin \
+                pkg-config \
+                python3 \
+                squashfs-tools \
+                util-linux \
+                xz-utils \
+                zstd; \
+              rm -rf /var/lib/apt/lists/*
+          EOF
+          docker build \
+            --platform linux/amd64 \
+            --file "$build_environment" \
+            --tag "$APPIMAGE_BUILD_IMAGE" \
+            "$RUNNER_TEMP"
+
+      - name: Build and structurally audit the AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p \
+            "$RUNNER_TEMP/wildbuzzard-appimage-build" \
+            "$RUNNER_TEMP/wildbuzzard-appimage-output"
+          docker run --rm \
+            --platform linux/amd64 \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "$RUNNER_TEMP/wildbuzzard-appimage-build:/build" \
+            --volume "$RUNNER_TEMP/wildbuzzard-appimage-output:/output" \
+            --env WILDBUZZARD_BUILD_ROOT=/build \
+            --env WILDBUZZARD_OUTPUT_DIR=/output \
+            --env OUTPUT_UID="$(id -u)" \
+            --env OUTPUT_GID="$(id -g)" \
+            "$APPIMAGE_BUILD_IMAGE" \
+            bash -euo pipefail -c '
+              git config --global --add safe.directory /workspace
+              rustc --version
+              pkg-config --modversion gtk4
+              /workspace/host/build-appimage.sh
+              chown -R "$OUTPUT_UID:$OUTPUT_GID" /output
+            '
+          test -x "$APPIMAGE_OUTPUT"
+          test "$(stat -c '%s' -- "$APPIMAGE_OUTPUT")" -lt 2147483648 || {
+            echo "standalone AppImage is not smaller than GitHub's 2 GiB asset limit" >&2
+            exit 1
+          }
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_OUTPUT" --version
+          (
+            cd "$(dirname -- "$APPIMAGE_OUTPUT")"
+            sha256sum WildBuzzard-x86_64.AppImage >SHA256SUMS
+          )
+
+      - name: Release AppImage builder scratch space
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image rm --force "$APPIMAGE_BUILD_IMAGE" >/dev/null 2>&1 || true
+          docker builder prune --all --force >/dev/null
+          build_scratch="$RUNNER_TEMP/wildbuzzard-appimage-build"
+          if [[ -d "$build_scratch" ]]; then
+            sudo find "$build_scratch" -mindepth 1 -delete
+          fi
+          test ! -e "$APPIMAGE_OUTPUT" || test -s "$APPIMAGE_OUTPUT"
+
+      - name: Upload standalone AppImage artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: WildBuzzard-x86_64.AppImage
+          path: |
+            ${{ runner.temp }}/wildbuzzard-appimage-output/WildBuzzard-x86_64.AppImage
+            ${{ runner.temp }}/wildbuzzard-appimage-output/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  build-portable:
+    name: Build complete portable bundle
+    needs:
+      - validate-request
+      - build-appimage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 360
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the exact standalone AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-x86_64.AppImage
+          path: ${{ runner.temp }}/wildbuzzard-appimage-input
+
+      - name: Initialize runner-local output paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "APPIMAGE_INPUT=$RUNNER_TEMP/wildbuzzard-appimage-input/WildBuzzard-x86_64.AppImage"
+            echo "RELEASE_OUTPUT=$RUNNER_TEMP/wildbuzzard-release-assets"
+            echo "ROOTFS_STAGE=$RUNNER_TEMP/wildbuzzard-rootfs-stage"
+          } >>"$GITHUB_ENV"
+
+      - name: Install runner-only assembly tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            acl \
+            attr \
+            jq \
+            rsync \
+            skopeo \
+            squashfs-tools \
+            uidmap \
+            zstd
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+          docker buildx version
+          chmod 0755 "$APPIMAGE_INPUT"
+          (
+            cd "$(dirname -- "$APPIMAGE_INPUT")"
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Build and verify flattened rootfs payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tools/build-release-rootfs.sh "$APPIMAGE_INPUT" "$ROOTFS_STAGE"
+
+      - name: Assemble and verify the complete distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tools/assemble-release-assets.sh \
+            "$APPIMAGE_INPUT" \
+            "$ROOTFS_STAGE" \
+            "$RELEASE_OUTPUT"
+          test -x "$RELEASE_OUTPUT/WildBuzzard-x86_64.AppImage"
+          test -s "$RELEASE_OUTPUT/WildBuzzard-portable-x86_64.tar.zst"
+          test -s "$RELEASE_OUTPUT/SHA256SUMS"
+          cmp "$APPIMAGE_INPUT" "$RELEASE_OUTPUT/WildBuzzard-x86_64.AppImage"
+          (cd "$RELEASE_OUTPUT" && sha256sum --check SHA256SUMS)
+
+      - name: Upload complete portable-bundle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: WildBuzzard-portable-x86_64.tar.zst
+          path: |
+            ${{ runner.temp }}/wildbuzzard-release-assets/WildBuzzard-portable-x86_64.tar.zst
+            ${{ runner.temp }}/wildbuzzard-release-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  verify-publication:
+    name: Verify immutable publication inputs
+    if: ${{ inputs.mode != 'artifacts' }}
+    needs:
+      - validate-request
+      - build-appimage
+      - build-portable
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download standalone AppImage artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-x86_64.AppImage
+          path: ${{ runner.temp }}/publish/appimage
+
+      - name: Download complete portable-bundle artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-portable-x86_64.tar.zst
+          path: ${{ runner.temp }}/publish/portable
+
+      - name: Repeat strict publication gate
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SELECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify "$RELEASE_TAG^{commit}")" = "$SELECTED_COMMIT"
+          (
+            cd "$RUNNER_TEMP/publish/appimage"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          (
+            cd "$RUNNER_TEMP/publish/portable"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          ./tools/check-licenses.sh
+
+  publish-prerelease:
+    name: Publish prerelease
+    if: ${{ inputs.mode == 'prerelease' }}
+    needs: verify-publication
+    runs-on: ubuntu-24.04
+    environment: prerelease
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - name: Download verified standalone AppImage artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-x86_64.AppImage
+          path: ${{ runner.temp }}/publish/appimage
+
+      - name: Download verified complete portable-bundle artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-portable-x86_64.tar.zst
+          path: ${{ runner.temp }}/publish/portable
+
+      - name: Create GitHub prerelease from immutable same-run artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          SELECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          (
+            cd "$RUNNER_TEMP/publish/appimage"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          (
+            cd "$RUNNER_TEMP/publish/portable"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          object=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + " " + .object.sha')
+          read -r object_type object_sha <<<"$object"
+          for _ in 1 2 3 4; do
+            [[ "$object_type" == tag ]] || break
+            object=$(gh api "repos/$REPOSITORY/git/tags/$object_sha" --jq '.object.type + " " + .object.sha')
+            read -r object_type object_sha <<<"$object"
+          done
+          [[ "$object_type" == commit && "$object_sha" == "$SELECTED_COMMIT" ]] || {
+            echo "release tag no longer resolves to selected commit $SELECTED_COMMIT" >&2
+            exit 1
+          }
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for $RELEASE_TAG; refusing to replace it" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/publish/appimage/WildBuzzard-x86_64.AppImage" \
+            "$RUNNER_TEMP/publish/portable/WildBuzzard-portable-x86_64.tar.zst" \
+            --repo "$REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "Wild Buzzard $RELEASE_TAG" \
+            --prerelease
+
+  publish-release:
+    name: Publish production release
+    if: ${{ inputs.mode == 'release' }}
+    needs: verify-publication
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - name: Download verified standalone AppImage artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-x86_64.AppImage
+          path: ${{ runner.temp }}/publish/appimage
+
+      - name: Download verified complete portable-bundle artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WildBuzzard-portable-x86_64.tar.zst
+          path: ${{ runner.temp }}/publish/portable
+
+      - name: Create GitHub release from immutable same-run artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPOSITORY: ${{ github.repository }}
+          SELECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          (
+            cd "$RUNNER_TEMP/publish/appimage"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          (
+            cd "$RUNNER_TEMP/publish/portable"
+            sha256sum --check --ignore-missing SHA256SUMS
+          )
+          object=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + " " + .object.sha')
+          read -r object_type object_sha <<<"$object"
+          for _ in 1 2 3 4; do
+            [[ "$object_type" == tag ]] || break
+            object=$(gh api "repos/$REPOSITORY/git/tags/$object_sha" --jq '.object.type + " " + .object.sha')
+            read -r object_type object_sha <<<"$object"
+          done
+          [[ "$object_type" == commit && "$object_sha" == "$SELECTED_COMMIT" ]] || {
+            echo "release tag no longer resolves to selected commit $SELECTED_COMMIT" >&2
+            exit 1
+          }
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for $RELEASE_TAG; refusing to replace it" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/publish/appimage/WildBuzzard-x86_64.AppImage" \
+            "$RUNNER_TEMP/publish/portable/WildBuzzard-portable-x86_64.tar.zst" \
+            --repo "$REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "Wild Buzzard $RELEASE_TAG" \
+            --latest

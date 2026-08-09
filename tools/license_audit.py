@@ -11,7 +11,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
@@ -36,6 +36,15 @@ CUA_MANIFEST = CUA_ROOT / "cua-driver/rust/Cargo.toml"
 CUA_LOCK = CUA_ROOT / "cua-driver/rust/Cargo.lock"
 TARGET = "x86_64-unknown-linux-gnu"
 OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
+HOST_CLOSURE_MANIFEST = "usr/share/doc/wildbuzzard/host-package-closure.tsv"
+HOST_CLOSURE_HEADER = (
+    "# Wild Buzzard AppImage build-host package copyright closure v2",
+    "# appdir_path\tpayload_sha256\tpackage\tversion\tcopyright_sha256",
+)
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+DEBIAN_BINARY_PACKAGE_PATTERN = re.compile(
+    r"[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?"
+)
 
 NON_DPKG_APPDIR_ELFS = {
     "usr/bin/wildbuzzard",
@@ -1216,7 +1225,7 @@ def dpkg_versions(packages: set[str]) -> dict[str, str]:
 
 def appdir_host_closure(
     appdir: Path,
-) -> tuple[list[tuple[str, str, str, str]], list[str], int]:
+) -> tuple[list[tuple[str, str, str, str, str]], list[str], int]:
     payloads = [
         path
         for path in elf_files(appdir)
@@ -1224,11 +1233,12 @@ def appdir_host_closure(
     ]
     candidates = dpkg_candidates({path.name for path in payloads})
     build_ids: dict[Path, str] = {}
-    path_owners: list[tuple[str, set[str]]] = []
+    path_owners: list[tuple[str, str, set[str]]] = []
     issues: list[str] = []
     all_owners: set[str] = set()
     for path in sorted(payloads, key=lambda item: item.relative_to(appdir).as_posix()):
         relative = path.relative_to(appdir).as_posix()
+        payload_sha256 = sha256_file(path)
         appdir_build_id = elf_build_id(path, build_ids)
         owners: set[str] = set()
         for package, host_path in sorted(candidates.get(path.name, set())):
@@ -1237,14 +1247,14 @@ def appdir_host_closure(
             if appdir_build_id:
                 matches = elf_build_id(host_path, build_ids) == appdir_build_id
             else:
-                matches = sha256_file(host_path) == sha256_file(path)
+                matches = sha256_file(host_path) == payload_sha256
             if matches:
                 owners.add(package)
         if not owners:
             issues.append(
                 f"AppDir ELF has no exact build-host package mapping: {relative}"
             )
-        path_owners.append((relative, owners))
+        path_owners.append((relative, payload_sha256, owners))
         all_owners.update(owners)
 
     versions = dpkg_versions(all_owners)
@@ -1257,50 +1267,165 @@ def appdir_host_closure(
             continue
         copyright_hashes[package] = sha256_file(copyright_path)
 
-    rows: list[tuple[str, str, str, str]] = []
-    for relative, owners in path_owners:
+    rows: list[tuple[str, str, str, str, str]] = []
+    for relative, payload_sha256, owners in path_owners:
         for package in sorted(owners):
             copyright_hash = copyright_hashes.get(package)
             if copyright_hash is not None:
-                rows.append((relative, package, versions[package], copyright_hash))
+                rows.append(
+                    (
+                        relative,
+                        payload_sha256,
+                        package,
+                        versions[package],
+                        copyright_hash,
+                    )
+                )
     return rows, issues, len(payloads)
 
 
-def render_host_closure(rows: list[tuple[str, str, str, str]]) -> str:
-    output = [
-        "# Wild Buzzard AppImage build-host package copyright closure v1",
-        "# appdir_path\tpackage\tversion\tcopyright_sha256",
-    ]
+def render_host_closure(rows: list[tuple[str, str, str, str, str]]) -> str:
+    output = list(HOST_CLOSURE_HEADER)
     output.extend("\t".join(row) for row in rows)
     return "\n".join(output) + "\n"
 
 
-def verify_appdir_host_notices(appdir: Path) -> tuple[list[str], int]:
-    rows, issues, payload_count = appdir_host_closure(appdir)
-    packages = {row[1] for row in rows}
-    for package in sorted(packages):
-        document_package = package.split(":", 1)[0]
-        source = Path("/usr/share/doc") / document_package / "copyright"
-        destination = appdir / "usr/share/doc" / document_package / "copyright"
-        if not destination.is_file():
-            issues.append(
-                f"AppDir host-package notice missing: {destination.relative_to(appdir)}"
-            )
-        elif sha256_file(destination) != sha256_file(source):
-            issues.append(
-                "AppDir host-package notice differs from build host: "
-                f"{destination.relative_to(appdir)}"
-            )
-    manifest = appdir / "usr/share/doc/wildbuzzard/host-package-closure.tsv"
-    expected_manifest = render_host_closure(rows).encode("utf-8")
-    if not manifest.is_file():
-        issues.append(
-            "AppDir host-package closure manifest missing: "
-            "usr/share/doc/wildbuzzard/host-package-closure.tsv"
+def validate_appdir_relative_path(value: str, *, field: str) -> str:
+    if not value or "\\" in value or "\0" in value:
+        raise AuditError(f"AppDir host-package closure has invalid {field}: {value!r}")
+    parsed = PurePosixPath(value)
+    if (
+        parsed.is_absolute()
+        or value != parsed.as_posix()
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+    ):
+        raise AuditError(f"AppDir host-package closure has unsafe {field}: {value!r}")
+    return value
+
+
+def parse_host_closure_manifest(
+    manifest: Path,
+) -> list[tuple[str, str, str, str, str]]:
+    if not manifest.is_file() or manifest.is_symlink():
+        raise AuditError(
+            f"AppDir host-package closure manifest missing: {HOST_CLOSURE_MANIFEST}"
         )
-    elif manifest.read_bytes() != expected_manifest:
-        issues.append("AppDir host-package closure manifest differs from audited payload")
-    return issues, payload_count
+    raw = manifest.read_bytes()
+    if len(raw) > 16 * 1024 * 1024:
+        raise AuditError("AppDir host-package closure manifest is unreasonably large")
+    try:
+        contents = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise AuditError("AppDir host-package closure manifest is not UTF-8") from error
+    if "\r" in contents or not contents.endswith("\n"):
+        raise AuditError("AppDir host-package closure manifest is not canonical LF text")
+    lines = contents.splitlines()
+    if tuple(lines[:2]) != HOST_CLOSURE_HEADER:
+        raise AuditError("AppDir host-package closure manifest is not canonical v2")
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    package_metadata: dict[str, tuple[str, str]] = {}
+    path_hashes: dict[str, str] = {}
+    try:
+        reader = csv.reader(lines[2:], delimiter="\t", strict=True)
+        for line_number, fields in enumerate(reader, start=3):
+            if len(fields) != 5:
+                raise AuditError(
+                    "AppDir host-package closure row "
+                    f"{line_number} has {len(fields)} fields instead of 5"
+                )
+            relative, payload_hash, package, version, copyright_hash = fields
+            validate_appdir_relative_path(relative, field="payload path")
+            if SHA256_PATTERN.fullmatch(payload_hash) is None:
+                raise AuditError(
+                    f"AppDir host-package closure row {line_number} has invalid payload SHA-256"
+                )
+            if DEBIAN_BINARY_PACKAGE_PATTERN.fullmatch(package) is None:
+                raise AuditError(
+                    f"AppDir host-package closure row {line_number} has invalid package name"
+                )
+            if (
+                not version
+                or len(version) > 512
+                or any(
+                    character.isspace()
+                    or ord(character) < 0x20
+                    or ord(character) == 0x7F
+                    for character in version
+                )
+            ):
+                raise AuditError(
+                    f"AppDir host-package closure row {line_number} has invalid package version"
+                )
+            if SHA256_PATTERN.fullmatch(copyright_hash) is None:
+                raise AuditError(
+                    f"AppDir host-package closure row {line_number} has invalid copyright SHA-256"
+                )
+            key = (relative, package)
+            if key in seen:
+                raise AuditError(
+                    "AppDir host-package closure has duplicate payload/package mapping: "
+                    f"{relative} -> {package}"
+                )
+            seen.add(key)
+            prior_path_hash = path_hashes.setdefault(relative, payload_hash)
+            if prior_path_hash != payload_hash:
+                raise AuditError(
+                    f"AppDir host-package closure has conflicting hashes for {relative}"
+                )
+            metadata = (version, copyright_hash)
+            prior_metadata = package_metadata.setdefault(package, metadata)
+            if prior_metadata != metadata:
+                raise AuditError(
+                    f"AppDir host-package closure has conflicting metadata for {package}"
+                )
+            rows.append((relative, payload_hash, package, version, copyright_hash))
+    except csv.Error as error:
+        raise AuditError(f"cannot parse AppDir host-package closure: {error}") from error
+    if rows != sorted(rows) or render_host_closure(rows) != contents:
+        raise AuditError("AppDir host-package closure rows are not canonical")
+    return rows
+
+
+def verify_appdir_host_notices(appdir: Path) -> tuple[list[str], int]:
+    manifest = appdir / HOST_CLOSURE_MANIFEST
+    rows = parse_host_closure_manifest(manifest)
+    issues: list[str] = []
+    payloads = {
+        path.relative_to(appdir).as_posix(): path
+        for path in elf_files(appdir)
+        if path.relative_to(appdir).as_posix() not in NON_DPKG_APPDIR_ELFS
+    }
+    recorded_paths = {row[0] for row in rows}
+    missing = sorted(payloads.keys() - recorded_paths)
+    unexpected = sorted(recorded_paths - payloads.keys())
+    for relative in missing:
+        issues.append(f"AppDir ELF is absent from host-package closure: {relative}")
+    for relative in unexpected:
+        issues.append(f"AppDir host-package closure maps a non-payload ELF: {relative}")
+
+    observed_hashes: dict[str, str] = {}
+    for relative, expected_hash, _package, _version, _copyright_hash in rows:
+        payload = payloads.get(relative)
+        if payload is None:
+            continue
+        actual_hash = observed_hashes.setdefault(relative, sha256_file(payload))
+        if actual_hash != expected_hash:
+            issues.append(
+                f"AppDir host-package payload differs from staged build: {relative}"
+            )
+
+    package_metadata = {row[2]: (row[3], row[4]) for row in rows}
+    for package, (_version, expected_hash) in sorted(package_metadata.items()):
+        document_package = package.split(":", 1)[0]
+        relative = f"usr/share/doc/{document_package}/copyright"
+        destination = appdir / relative
+        if not destination.is_file() or destination.is_symlink():
+            issues.append(f"AppDir host-package notice missing: {relative}")
+        elif sha256_file(destination) != expected_hash:
+            issues.append(f"AppDir host-package notice hash differs: {relative}")
+    return issues, len(payloads)
 
 
 def stage_appdir_host_notices(appdir: Path) -> None:
@@ -1309,14 +1434,14 @@ def stage_appdir_host_notices(appdir: Path) -> None:
     rows, issues, payload_count = appdir_host_closure(appdir)
     if issues:
         raise AuditError("; ".join(issues))
-    for package in sorted({row[1] for row in rows}):
+    for package in sorted({row[2] for row in rows}):
         document_package = package.split(":", 1)[0]
         atomic_copy(
             Path("/usr/share/doc") / document_package / "copyright",
             appdir / "usr/share/doc" / document_package / "copyright",
         )
     atomic_write(
-        appdir / "usr/share/doc/wildbuzzard/host-package-closure.tsv",
+        appdir / HOST_CLOSURE_MANIFEST,
         render_host_closure(rows),
     )
     verification_issues, _ = verify_appdir_host_notices(appdir)
@@ -1324,7 +1449,7 @@ def stage_appdir_host_notices(appdir: Path) -> None:
         raise AuditError("; ".join(verification_issues))
     print(
         "staged AppDir host-package notices: "
-        f"{payload_count} ELF payloads, {len({row[1] for row in rows})} packages"
+        f"{payload_count} ELF payloads, {len({row[2] for row in rows})} packages"
     )
 
 

@@ -55,6 +55,7 @@ CARGO_TARGET_DIR="$test_root/cua-target" \
 
 python3 -m unittest discover -s "$project_dir/guest/tests" -v
 python3 -m unittest discover -s "$project_dir/oci/tests" -v
+python3 -m unittest discover -s "$project_dir/tools/tests" -v
 for script in \
     "$project_dir/guest/install-rootfs-assets.sh" \
     "$project_dir/guest/assets/wildbuzzard-init" \

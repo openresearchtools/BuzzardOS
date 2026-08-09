@@ -20,7 +20,13 @@ use wb_core::{
     RuntimeState, WaylandCapabilities, WbPaths, host_control_socket,
 };
 
-const DEFAULT_IMAGE: &str = "ghcr.io/openresearchtools/buzzardos-desktop:latest";
+const ROOTFS_SEED_ARCHIVE: &str = "WildBuzzard-rootfs-linux-x86_64.tar.zst";
+const ROOTFS_SEED_MANIFEST: &str = "WildBuzzard-rootfs-linux-x86_64.json";
+const ROOTFS_SEED_KIND: &str = "wildbuzzard-flat-rootfs";
+const ROOTFS_SEED_MEDIA_TYPE: &str = "application/vnd.wildbuzzard.rootfs.v1.tar+zstd";
+const ROOTFS_SEED_SCHEMA: u32 = 1;
+const MAX_GUEST_ID: u64 = 65_535;
+const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
 const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
 const LEGACY_REFERENCE_CUA_SHA256: &str =
@@ -303,11 +309,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Pull an OCI image once and create a persistent mutable machine.
+    /// Create a persistent mutable machine from the bundled seed or an OCI image.
     Create {
         name: String,
-        #[arg(long, default_value = DEFAULT_IMAGE)]
-        image: String,
+        /// Explicit OCI image reference. Without this, use the portable bundled rootfs seed.
+        #[arg(long)]
+        image: Option<String>,
         #[arg(long, value_enum, default_value_t = NetworkArg::User)]
         network: NetworkArg,
         /// NVIDIA GPU index/UUID to expose; repeat for multiple GPUs.
@@ -345,6 +352,24 @@ enum Commands {
         rootfs: PathBuf,
         #[arg(long)]
         work_dir: PathBuf,
+    },
+    #[command(name = "__apply-rootfs", hide = true)]
+    ApplyRootfs {
+        #[arg(long)]
+        archive: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        expected_digest: String,
+        #[arg(long)]
+        rootfs: PathBuf,
+    },
+    #[command(name = "__cleanup-staging", hide = true)]
+    CleanupStaging {
+        #[arg(long)]
+        staging: PathBuf,
+        #[arg(long)]
+        machines: PathBuf,
     },
     #[command(name = "__install-guest-assets", hide = true)]
     InstallGuestAssets {
@@ -420,6 +445,26 @@ fn run() -> Result<()> {
         }
         return Ok(());
     }
+    if let Some(Commands::ApplyRootfs {
+        archive,
+        manifest,
+        expected_digest,
+        rootfs,
+    }) = &cli.command
+    {
+        apply_rootfs_seed(archive, manifest, expected_digest, rootfs)?;
+        if !guest_assets_are_current(rootfs)? {
+            install_guest_assets(rootfs)?;
+        }
+        if !guest_assets_are_current(rootfs)? {
+            bail!("new machine guest asset revision was not committed");
+        }
+        return Ok(());
+    }
+    if let Some(Commands::CleanupStaging { staging, machines }) = &cli.command {
+        remove_machine_staging_tree(staging, machines)?;
+        return Ok(());
+    }
     if let Some(Commands::InstallGuestAssets { rootfs }) = &cli.command {
         let rootfs = rootfs
             .canonicalize()
@@ -448,7 +493,7 @@ fn run() -> Result<()> {
             image,
             network,
             gpus,
-        }) => create(&paths, &name, &image, network.into(), gpus),
+        }) => create(&paths, &name, image.as_deref(), network.into(), gpus),
         Some(Commands::Start { name, detach }) => {
             start(&paths, &name, detach, appimage_lease.as_ref())
         }
@@ -458,6 +503,12 @@ fn run() -> Result<()> {
         Some(Commands::List) => list(&paths),
         Some(Commands::Doctor) => doctor(),
         Some(Commands::ApplyImage { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::ApplyRootfs { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::CleanupStaging { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         Some(Commands::InstallGuestAssets { .. }) => {
@@ -489,13 +540,7 @@ fn open_portable_desktop(
         [] => {
             let name = "default";
             println!("Creating persistent desktop machine '{name}' for first launch...");
-            create(
-                paths,
-                name,
-                DEFAULT_IMAGE,
-                NetworkMode::User,
-                vec!["all".into()],
-            )?;
+            create(paths, name, None, NetworkMode::User, vec!["all".into()])?;
             name.to_owned()
         }
         [name] => name.clone(),
@@ -512,13 +557,13 @@ fn open_portable_desktop(
 fn create(
     paths: &WbPaths,
     name: &str,
-    image: &str,
+    image: Option<&str>,
     network: NetworkMode,
     gpus: Vec<String>,
 ) -> Result<()> {
     MachineConfig::validate_name(name)?;
     MachineConfig::validate_gpus(&gpus)?;
-    if image.trim().is_empty() {
+    if image.is_some_and(|image| image.trim().is_empty()) {
         bail!("--image cannot be empty");
     }
 
@@ -528,78 +573,177 @@ fn create(
     }
 
     let resources = ResourceLocator::discover()?;
-    // Release AppImages always resolve the bundled copy. PATH fallback only makes
-    // source-tree development convenient and is never required of end users.
-    let crane = resources.helper_or_path("crane")?;
     let stage = tempfile::Builder::new()
         .prefix(&format!(".{name}-creating-"))
         .tempdir_in(paths.machines())
         .context("creating machine staging directory")?;
     let machine_dir = stage.path();
-    let rootfs = machine_dir.join("rootfs");
-    fs::create_dir(&rootfs).context("creating persistent rootfs")?;
+    let creation_result = (|| -> Result<()> {
+        let rootfs = machine_dir.join("rootfs");
+        fs::create_dir(&rootfs).context("creating persistent rootfs")?;
 
-    let platform = oci_platform()?;
-    let digest_output = Command::new(&crane)
-        .args(["digest", "--platform", platform, image])
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("resolving image digest with {}", crane.display()))?;
-    if !digest_output.status.success() {
-        bail!("OCI digest resolution failed with {}", digest_output.status);
+        let (source_reference, image_digest) = if let Some(image) = image {
+            // Release AppImages always resolve the bundled copy. PATH fallback only makes
+            // source-tree development convenient and is never required of end users.
+            let crane = resources.helper_or_path("crane")?;
+            let platform = oci_platform()?;
+            let digest_output = Command::new(&crane)
+                .args(["digest", "--platform", platform, image])
+                .stdin(Stdio::null())
+                .output()
+                .with_context(|| format!("resolving image digest with {}", crane.display()))?;
+            if !digest_output.status.success() {
+                bail!("OCI digest resolution failed with {}", digest_output.status);
+            }
+            let image_digest =
+                String::from_utf8(digest_output.stdout).context("OCI digest is not UTF-8")?;
+            let image_digest = image_digest.trim().to_owned();
+            validate_sha256_digest(&image_digest)?;
+            let immutable_image = format!("{image}@{image_digest}");
+
+            let image_archive = machine_dir.join("image-layout");
+            let image_cache = paths.cache().join("oci-blobs");
+            fs::create_dir_all(&image_cache).context("creating OCI download cache")?;
+            eprintln!("Pulling {image}…");
+            let status = Command::new(&crane)
+                .args(["pull", "--platform", platform, "--format", "oci"])
+                .arg("--cache_path")
+                .arg(&image_cache)
+                .arg(&immutable_image)
+                .arg(&image_archive)
+                .stdin(Stdio::null())
+                .status()
+                .with_context(|| format!("starting {}", crane.display()))?;
+            if !status.success() {
+                bail!("OCI pull failed with {status}");
+            }
+
+            eprintln!("Applying OCI layers to the persistent root filesystem…");
+            apply_image_in_user_namespace(
+                &resources,
+                &image_archive,
+                &image_digest,
+                &rootfs,
+                machine_dir,
+            )?;
+            fs::remove_dir_all(&image_archive).context("removing temporary OCI layout")?;
+            (image.to_owned(), image_digest)
+        } else {
+            let seed = bundled_rootfs_seed(paths)?.with_context(|| {
+                format!(
+                    "no bundled rootfs seed was found at runtime/{ROOTFS_SEED_ARCHIVE}; download and extract the full Wild Buzzard portable bundle beside the AppImage, or create from an OCI image explicitly with `wildbuzzard create {name} --image IMAGE_REFERENCE`"
+                )
+            })?;
+            eprintln!("Applying the bundled rootfs seed to the persistent root filesystem…");
+            apply_rootfs_in_user_namespace(&resources, &seed, &rootfs)?;
+            (
+                format!("bundle:runtime/{ROOTFS_SEED_ARCHIVE}"),
+                format!("sha256:{}", seed.manifest.archive.sha256),
+            )
+        };
+
+        let config = MachineConfig::new(
+            name.to_owned(),
+            source_reference.clone(),
+            image_digest,
+            network,
+            gpus,
+        );
+        config.save(machine_dir)?;
+        RuntimeState::new(MachineState::Stopped).save(machine_dir)?;
+        File::create(machine_dir.join("machine.lock")).context("creating machine lock")?;
+
+        commit_new_machine(stage.path(), &final_dir)
+            .with_context(|| format!("committing machine to {}", final_dir.display()))?;
+        println!(
+            "Created '{name}' from {source_reference}\nPersistent rootfs: {}\nShared data: {}",
+            final_dir.join("rootfs").display(),
+            paths.shared().display()
+        );
+        Ok(())
+    })();
+    if let Err(error) = creation_result {
+        if let Err(cleanup_error) =
+            cleanup_failed_machine_stage(&resources, stage.path(), &paths.machines())
+        {
+            return Err(error).context(format!(
+                "machine creation also failed to remove staging tree {}: {cleanup_error:#}",
+                stage.path().display()
+            ));
+        }
+        return Err(error);
     }
-    let image_digest =
-        String::from_utf8(digest_output.stdout).context("OCI digest is not UTF-8")?;
-    let image_digest = image_digest.trim().to_owned();
-    validate_sha256_digest(&image_digest)?;
-    let immutable_image = format!("{image}@{image_digest}");
+    Ok(())
+}
 
-    let image_archive = machine_dir.join("image-layout");
-    let image_cache = paths.cache().join("oci-blobs");
-    fs::create_dir_all(&image_cache).context("creating OCI download cache")?;
-    eprintln!("Pulling {image}…");
-    let status = Command::new(&crane)
-        .args(["pull", "--platform", platform, "--format", "oci"])
-        .arg("--cache_path")
-        .arg(&image_cache)
-        .arg(&immutable_image)
-        .arg(&image_archive)
+fn cleanup_failed_machine_stage(
+    resources: &ResourceLocator,
+    staging: &Path,
+    machines: &Path,
+) -> Result<()> {
+    match fs::remove_dir_all(staging) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {}
+    }
+
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let launcher = std::env::current_exe().context("locating launcher for staging cleanup")?;
+    let mut command = Command::new(&unshare);
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.unshare_args())
+        .arg(launcher)
+        .arg("__cleanup-staging")
+        .arg("--staging")
+        .arg(staging)
+        .arg("--machines")
+        .arg(machines)
         .stdin(Stdio::null())
         .status()
-        .with_context(|| format!("starting {}", crane.display()))?;
+        .with_context(|| format!("starting cleanup namespace with {}", unshare.display()))?;
     if !status.success() {
-        bail!("OCI pull failed with {status}");
+        bail!("staging cleanup namespace exited with {status}");
     }
+    match fs::symlink_metadata(staging) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!("staging cleanup reported success but the tree still exists"),
+        Err(error) => Err(error).context("verifying staging cleanup"),
+    }
+}
 
-    eprintln!("Applying OCI layers to the persistent root filesystem…");
-    apply_image_in_user_namespace(
-        &resources,
-        &image_archive,
-        &image_digest,
-        &rootfs,
-        machine_dir,
-    )?;
-    fs::remove_dir_all(&image_archive).context("removing temporary OCI layout")?;
-
-    let config = MachineConfig::new(
-        name.to_owned(),
-        image.to_owned(),
-        image_digest,
-        network,
-        gpus,
-    );
-    config.save(machine_dir)?;
-    RuntimeState::new(MachineState::Stopped).save(machine_dir)?;
-    File::create(machine_dir.join("machine.lock")).context("creating machine lock")?;
-
-    commit_new_machine(stage.path(), &final_dir)
-        .with_context(|| format!("committing machine to {}", final_dir.display()))?;
-    println!(
-        "Created '{name}' from {image}\nPersistent rootfs: {}\nShared data: {}",
-        final_dir.join("rootfs").display(),
-        paths.shared().display()
-    );
-    Ok(())
+fn remove_machine_staging_tree(staging: &Path, machines: &Path) -> Result<()> {
+    let machines_metadata = fs::symlink_metadata(machines)
+        .with_context(|| format!("inspecting machine directory {}", machines.display()))?;
+    if machines_metadata.file_type().is_symlink() || !machines_metadata.is_dir() {
+        bail!("machine directory must be a real directory");
+    }
+    let staging_metadata = fs::symlink_metadata(staging)
+        .with_context(|| format!("inspecting staging directory {}", staging.display()))?;
+    if staging_metadata.file_type().is_symlink() || !staging_metadata.is_dir() {
+        bail!("machine staging path must be a real directory");
+    }
+    let name = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("machine staging directory name is not UTF-8")?;
+    if !name.starts_with('.') || !name.contains("-creating-") {
+        bail!("refusing to remove a path that is not a machine creation staging directory");
+    }
+    let expected_parent = machines
+        .canonicalize()
+        .with_context(|| format!("resolving machine directory {}", machines.display()))?;
+    let actual_parent = staging
+        .parent()
+        .context("machine staging path has no parent")?
+        .canonicalize()
+        .context("resolving machine staging parent")?;
+    if actual_parent != expected_parent {
+        bail!("machine staging directory is outside the expected machine directory");
+    }
+    fs::remove_dir_all(staging)
+        .with_context(|| format!("removing failed machine staging tree {}", staging.display()))
 }
 
 fn commit_new_machine(staging: &Path, destination: &Path) -> Result<()> {
@@ -628,6 +772,644 @@ fn commit_new_machine(staging: &Path, destination: &Path) -> Result<()> {
         bail!("machine destination {destination_display} already exists; it was not replaced");
     }
     Err(error).context("atomically renaming the completed machine")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RootfsSeedManifest {
+    schema: u32,
+    kind: String,
+    platform: RootfsSeedPlatform,
+    archive: RootfsSeedArchive,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RootfsSeedPlatform {
+    os: String,
+    architecture: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RootfsSeedArchive {
+    name: String,
+    media_type: String,
+    size: u64,
+    sha256: String,
+    uncompressed_size: u64,
+    uncompressed_sha256: String,
+}
+
+#[derive(Debug)]
+struct BundledRootfsSeed {
+    archive: PathBuf,
+    manifest_path: PathBuf,
+    manifest: RootfsSeedManifest,
+}
+
+fn bundled_rootfs_seed(paths: &WbPaths) -> Result<Option<BundledRootfsSeed>> {
+    let runtime = paths.base().join("runtime");
+    let archive = runtime.join(ROOTFS_SEED_ARCHIVE);
+    let manifest_path = runtime.join(ROOTFS_SEED_MANIFEST);
+    let archive_exists = fs::symlink_metadata(&archive).is_ok();
+    let manifest_exists = fs::symlink_metadata(&manifest_path).is_ok();
+    if !archive_exists && !manifest_exists {
+        return Ok(None);
+    }
+
+    let runtime_metadata = fs::symlink_metadata(&runtime)
+        .with_context(|| format!("inspecting bundled runtime directory {}", runtime.display()))?;
+    if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
+        bail!(
+            "bundled runtime path {} must be a real directory, not a symlink",
+            runtime.display()
+        );
+    }
+    if !archive_exists || !manifest_exists {
+        bail!(
+            "portable bundle is incomplete: runtime/{ROOTFS_SEED_ARCHIVE} and runtime/{ROOTFS_SEED_MANIFEST} must both be present"
+        );
+    }
+
+    let manifest = read_rootfs_seed_manifest(&manifest_path)?;
+    validate_rootfs_seed_archive_header(&archive, &manifest.archive)?;
+    Ok(Some(BundledRootfsSeed {
+        archive,
+        manifest_path,
+        manifest,
+    }))
+}
+
+fn open_regular_nofollow(path: &Path, description: &str) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("opening {description} {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {description} {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("{description} {} is not a regular file", path.display());
+    }
+    Ok(file)
+}
+
+fn read_rootfs_seed_manifest(path: &Path) -> Result<RootfsSeedManifest> {
+    if path.file_name() != Some(std::ffi::OsStr::new(ROOTFS_SEED_MANIFEST)) {
+        bail!("bundled rootfs manifest must be named {ROOTFS_SEED_MANIFEST}");
+    }
+    let mut file = open_regular_nofollow(path, "bundled rootfs manifest")?;
+    let size = file.metadata()?.len();
+    if size == 0 || size > MAX_ROOTFS_MANIFEST_BYTES {
+        bail!(
+            "bundled rootfs manifest has invalid size {size}; maximum is {MAX_ROOTFS_MANIFEST_BYTES} bytes"
+        );
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut bytes)
+        .context("reading bundled rootfs manifest")?;
+    let manifest: RootfsSeedManifest =
+        serde_json::from_slice(&bytes).context("parsing bundled rootfs manifest")?;
+    validate_rootfs_seed_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_rootfs_seed_manifest(manifest: &RootfsSeedManifest) -> Result<()> {
+    if manifest.schema != ROOTFS_SEED_SCHEMA {
+        bail!(
+            "unsupported bundled rootfs manifest schema {}",
+            manifest.schema
+        );
+    }
+    if manifest.kind != ROOTFS_SEED_KIND {
+        bail!(
+            "bundled rootfs manifest has unexpected kind '{}'",
+            manifest.kind
+        );
+    }
+    if manifest.platform.os != "linux" || manifest.platform.architecture != "amd64" {
+        bail!(
+            "bundled rootfs platform must be linux/amd64, not {}/{}",
+            manifest.platform.os,
+            manifest.platform.architecture
+        );
+    }
+    if std::env::consts::ARCH != "x86_64" {
+        bail!(
+            "the bundled linux/amd64 rootfs cannot run on host architecture '{}'",
+            std::env::consts::ARCH
+        );
+    }
+    if manifest.archive.name != ROOTFS_SEED_ARCHIVE {
+        bail!(
+            "bundled rootfs archive name must be {ROOTFS_SEED_ARCHIVE}, not {}",
+            manifest.archive.name
+        );
+    }
+    if manifest.archive.media_type != ROOTFS_SEED_MEDIA_TYPE {
+        bail!(
+            "unsupported bundled rootfs media type {}",
+            manifest.archive.media_type
+        );
+    }
+    validate_sha256_hex(&manifest.archive.sha256, "rootfs archive")?;
+    validate_sha256_hex(
+        &manifest.archive.uncompressed_sha256,
+        "uncompressed rootfs archive",
+    )?;
+    if manifest.archive.size < 4 || manifest.archive.uncompressed_size < 1024 {
+        bail!("bundled rootfs archive sizes are invalid");
+    }
+    Ok(())
+}
+
+fn validate_sha256_hex(value: &str, description: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("{description} sha256 is not 64 lowercase hexadecimal characters");
+    }
+    Ok(())
+}
+
+fn validate_rootfs_seed_archive_header(path: &Path, archive: &RootfsSeedArchive) -> Result<()> {
+    if path.file_name() != Some(std::ffi::OsStr::new(ROOTFS_SEED_ARCHIVE)) {
+        bail!("bundled rootfs archive must be named {ROOTFS_SEED_ARCHIVE}");
+    }
+    let mut file = open_regular_nofollow(path, "bundled rootfs archive")?;
+    let actual_size = file.metadata()?.len();
+    if actual_size != archive.size {
+        bail!(
+            "bundled rootfs archive size mismatch: manifest says {}, file has {actual_size}",
+            archive.size
+        );
+    }
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic)
+        .context("reading bundled rootfs archive header")?;
+    if magic != [0x28, 0xb5, 0x2f, 0xfd] {
+        bail!("bundled rootfs archive is not a Zstandard frame");
+    }
+    Ok(())
+}
+
+fn apply_rootfs_in_user_namespace(
+    resources: &ResourceLocator,
+    seed: &BundledRootfsSeed,
+    rootfs: &Path,
+) -> Result<()> {
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let launcher = std::env::current_exe().context("locating launcher for rootfs extraction")?;
+    let expected_digest = format!("sha256:{}", seed.manifest.archive.sha256);
+    let mut command = Command::new(&unshare);
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.unshare_args())
+        .arg(launcher)
+        .arg("__apply-rootfs")
+        .arg("--archive")
+        .arg(&seed.archive)
+        .arg("--manifest")
+        .arg(&seed.manifest_path)
+        .arg("--expected-digest")
+        .arg(expected_digest)
+        .arg("--rootfs")
+        .arg(rootfs)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| format!("starting full-ID namespace with {}", unshare.display()))?;
+    if !status.success() {
+        bail!(
+            "bundled rootfs namespace/extraction helper exited with {status}; the preceding child diagnostic identifies whether subordinate-ID setup, archive validation, storage, or metadata restoration failed"
+        );
+    }
+    Ok(())
+}
+
+struct HashingReader<R> {
+    inner: R,
+    hash: Sha256,
+    bytes: u64,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hash: Sha256::new(),
+            bytes: 0,
+        }
+    }
+
+    fn finish(self) -> (R, u64, String) {
+        (
+            self.inner,
+            self.bytes,
+            format!("{:x}", self.hash.finalize()),
+        )
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hash.update(&buffer[..read]);
+        self.bytes = self.bytes.saturating_add(read as u64);
+        Ok(read)
+    }
+}
+
+#[derive(Debug)]
+struct DeferredRootfsDirectory {
+    relative: PathBuf,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    mtime: (i64, i64),
+    xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+fn apply_rootfs_seed(
+    archive_path: &Path,
+    manifest_path: &Path,
+    expected_digest: &str,
+    rootfs: &Path,
+) -> Result<()> {
+    if archive_path.parent() != manifest_path.parent() {
+        bail!("bundled rootfs archive and manifest must share one runtime directory");
+    }
+    let runtime = archive_path
+        .parent()
+        .context("bundled rootfs archive has no runtime directory")?;
+    let runtime_metadata = fs::symlink_metadata(runtime)
+        .with_context(|| format!("inspecting bundled runtime directory {}", runtime.display()))?;
+    if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
+        bail!("bundled rootfs runtime directory must be a real directory");
+    }
+
+    let manifest = read_rootfs_seed_manifest(manifest_path)?;
+    let expected_hex = expected_digest
+        .strip_prefix("sha256:")
+        .context("bundled rootfs expected digest does not use sha256")?;
+    validate_sha256_hex(expected_hex, "expected rootfs archive")?;
+    if expected_hex != manifest.archive.sha256 {
+        bail!(
+            "bundled rootfs manifest digest changed: expected {expected_hex}, manifest says {}",
+            manifest.archive.sha256
+        );
+    }
+
+    let rootfs_metadata = fs::symlink_metadata(rootfs)
+        .with_context(|| format!("inspecting persistent rootfs {}", rootfs.display()))?;
+    if rootfs_metadata.file_type().is_symlink() || !rootfs_metadata.is_dir() {
+        bail!("persistent rootfs must be a real directory, not a symlink");
+    }
+    if fs::read_dir(rootfs)
+        .context("inspecting new persistent rootfs")?
+        .next()
+        .is_some()
+    {
+        bail!("bundled rootfs seed may only be applied to an empty new rootfs");
+    }
+    #[cfg(not(test))]
+    chown(rootfs, Some(Uid::from_raw(0)), Some(Gid::from_raw(0)))
+        .with_context(|| format!("setting root ownership on {}", rootfs.display()))?;
+
+    let mut file = open_regular_nofollow(archive_path, "bundled rootfs archive")?;
+    let actual_size = file.metadata()?.len();
+    if actual_size != manifest.archive.size {
+        bail!(
+            "bundled rootfs archive size mismatch: manifest says {}, file has {actual_size}",
+            manifest.archive.size
+        );
+    }
+    let mut preflight_hash = Sha256::new();
+    std::io::copy(&mut file, &mut preflight_hash).context("hashing bundled rootfs archive")?;
+    let preflight_hash = format!("{:x}", preflight_hash.finalize());
+    if preflight_hash != manifest.archive.sha256 {
+        bail!(
+            "bundled rootfs archive digest mismatch: expected {}, got {preflight_hash}",
+            manifest.archive.sha256
+        );
+    }
+    file.rewind().context("rewinding bundled rootfs archive")?;
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic)
+        .context("reading bundled rootfs archive header")?;
+    if magic != [0x28, 0xb5, 0x2f, 0xfd] {
+        bail!("bundled rootfs archive is not a Zstandard frame");
+    }
+    file.rewind().context("rewinding bundled rootfs archive")?;
+
+    let compressed = HashingReader::new(file);
+    let decoder = zstd::stream::read::Decoder::new(compressed)
+        .context("initializing bundled rootfs Zstandard decoder")?;
+    let uncompressed = HashingReader::new(decoder);
+    let mut tar_archive = tar::Archive::new(uncompressed);
+    tar_archive.set_preserve_permissions(true);
+    tar_archive.set_preserve_mtime(true);
+    tar_archive.set_preserve_ownerships(true);
+    tar_archive.set_unpack_xattrs(false);
+
+    let mut directories = Vec::new();
+    let mut entry_count = 0_u64;
+    {
+        let entries = tar_archive
+            .entries()
+            .context("reading bundled rootfs tar archive")?;
+        for item in entries {
+            let mut entry = item.context("reading bundled rootfs tar entry")?;
+            entry_count = entry_count.saturating_add(1);
+            let raw_path = entry
+                .path()
+                .context("reading bundled rootfs entry path")?
+                .into_owned();
+            let relative = safe_relative_path(&raw_path)?.to_path_buf();
+            if rootfs_path_contains_whiteout(&relative) {
+                bail!(
+                    "flat rootfs archive contains forbidden OCI whiteout {}",
+                    relative.display()
+                );
+            }
+
+            let entry_type = entry.header().entry_type();
+            if !matches!(
+                entry_type,
+                tar::EntryType::Regular
+                    | tar::EntryType::Continuous
+                    | tar::EntryType::GNUSparse
+                    | tar::EntryType::Directory
+                    | tar::EntryType::Symlink
+                    | tar::EntryType::Link
+            ) {
+                bail!(
+                    "flat rootfs archive contains unsupported special entry {} ({entry_type:?})",
+                    relative.display()
+                );
+            }
+            let uid = entry
+                .header()
+                .uid()
+                .context("reading bundled rootfs entry UID")?;
+            let gid = entry
+                .header()
+                .gid()
+                .context("reading bundled rootfs entry GID")?;
+            if uid > MAX_GUEST_ID || gid > MAX_GUEST_ID {
+                bail!(
+                    "flat rootfs entry {} uses unsupported guest ownership {uid}:{gid}; maximum is {MAX_GUEST_ID}",
+                    relative.display()
+                );
+            }
+            if entry_type == tar::EntryType::Link {
+                let target = entry
+                    .link_name()
+                    .context("reading bundled rootfs hardlink target")?
+                    .context("bundled rootfs hardlink has no target")?
+                    .into_owned();
+                let target = safe_relative_path(&target)?;
+                if target.as_os_str().is_empty() {
+                    bail!("bundled rootfs hardlink target cannot be empty");
+                }
+            }
+
+            let mode = entry
+                .header()
+                .mode()
+                .context("reading bundled rootfs entry mode")?;
+            let mut mtime = (
+                i64::try_from(
+                    entry
+                        .header()
+                        .mtime()
+                        .context("reading bundled rootfs entry mtime")?,
+                )
+                .context("bundled rootfs entry mtime is outside the supported range")?,
+                0_i64,
+            );
+            let mut xattrs = Vec::new();
+            if let Some(extensions) = entry
+                .pax_extensions()
+                .context("reading bundled rootfs PAX metadata")?
+            {
+                for extension in extensions {
+                    let extension = extension.context("reading bundled rootfs PAX record")?;
+                    if extension.key_bytes() == b"mtime" {
+                        mtime = parse_pax_timestamp(extension.value_bytes())?;
+                    } else if let Some(name) = extension.key_bytes().strip_prefix(b"SCHILY.xattr.")
+                    {
+                        if name.is_empty() {
+                            bail!("bundled rootfs archive contains an empty xattr name");
+                        }
+                        xattrs.push((name.to_vec(), extension.value_bytes().to_vec()));
+                    }
+                }
+            }
+
+            if entry_type == tar::EntryType::Directory {
+                if !relative.as_os_str().is_empty()
+                    && !entry
+                        .unpack_in(rootfs)
+                        .with_context(|| format!("extracting {}", relative.display()))?
+                {
+                    bail!(
+                        "bundled rootfs entry {} escaped the destination",
+                        relative.display()
+                    );
+                }
+                directories.push(DeferredRootfsDirectory {
+                    relative,
+                    uid: uid as u32,
+                    gid: gid as u32,
+                    mode,
+                    mtime,
+                    xattrs,
+                });
+                continue;
+            }
+            if relative.as_os_str().is_empty() {
+                bail!("bundled rootfs archive contains a non-directory root entry");
+            }
+            if !entry
+                .unpack_in(rootfs)
+                .with_context(|| format!("extracting {}", relative.display()))?
+            {
+                bail!(
+                    "bundled rootfs entry {} escaped the destination",
+                    relative.display()
+                );
+            }
+            let destination = rootfs.join(&relative);
+            // A hardlink is another name for metadata already applied to its
+            // target. Its tar header's placeholder mode/mtime must not mutate
+            // the shared inode after the target was restored.
+            if entry_type != tar::EntryType::Link {
+                for (name, value) in xattrs {
+                    set_link_xattr(&destination, &name, &value)?;
+                }
+                set_link_mtime(&destination, mtime)?;
+            }
+        }
+    }
+
+    let mut uncompressed = tar_archive.into_inner();
+    std::io::copy(&mut uncompressed, &mut std::io::sink())
+        .context("finishing bundled rootfs decompression")?;
+    let (decoder, uncompressed_size, uncompressed_hash) = uncompressed.finish();
+    let compressed_buffer = decoder.finish();
+    let (_file, compressed_size, compressed_hash) = compressed_buffer.into_inner().finish();
+    if compressed_size != manifest.archive.size || compressed_hash != manifest.archive.sha256 {
+        bail!("bundled rootfs archive changed while it was being extracted");
+    }
+    if uncompressed_size != manifest.archive.uncompressed_size
+        || uncompressed_hash != manifest.archive.uncompressed_sha256
+    {
+        bail!("uncompressed bundled rootfs digest or size does not match its provenance manifest");
+    }
+    if entry_count == 0 {
+        bail!("bundled rootfs archive is empty");
+    }
+
+    directories.sort_by_key(|directory| std::cmp::Reverse(directory.relative.components().count()));
+    for directory in directories {
+        apply_deferred_rootfs_directory(rootfs, directory)?;
+    }
+    validate_extracted_rootfs(rootfs)
+}
+
+fn rootfs_path_contains_whiteout(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(name) => name.as_bytes().starts_with(b".wh."),
+        _ => false,
+    })
+}
+
+fn parse_pax_timestamp(value: &[u8]) -> Result<(i64, i64)> {
+    let value = std::str::from_utf8(value).context("PAX mtime is not UTF-8")?;
+    let negative = value.starts_with('-');
+    let unsigned = if matches!(value.as_bytes().first(), Some(b'-' | b'+')) {
+        &value[1..]
+    } else {
+        value
+    };
+    let (seconds, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if seconds.is_empty()
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("invalid PAX mtime '{value}'");
+    }
+    let seconds: i64 = seconds.parse().context("PAX mtime seconds overflow")?;
+    let mut nanoseconds = fraction
+        .bytes()
+        .take(9)
+        .fold(0_i64, |value, digit| value * 10 + i64::from(digit - b'0'));
+    for _ in fraction.len().min(9)..9 {
+        nanoseconds *= 10;
+    }
+    if negative {
+        if nanoseconds == 0 {
+            Ok((-seconds, 0))
+        } else {
+            Ok((
+                seconds
+                    .checked_neg()
+                    .and_then(|seconds| seconds.checked_sub(1))
+                    .context("PAX mtime seconds overflow")?,
+                1_000_000_000 - nanoseconds,
+            ))
+        }
+    } else {
+        Ok((seconds, nanoseconds))
+    }
+}
+
+fn set_link_mtime(path: &Path, mtime: (i64, i64)) -> Result<()> {
+    let path =
+        CString::new(path.as_os_str().as_bytes()).context("mtime path contains a NUL byte")?;
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: mtime.0,
+            tv_nsec: mtime.1,
+        },
+    ];
+    let result = unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("preserving rootfs entry mtime")
+    }
+}
+
+fn apply_deferred_rootfs_directory(
+    rootfs: &Path,
+    directory: DeferredRootfsDirectory,
+) -> Result<()> {
+    let destination = if directory.relative.as_os_str().is_empty() {
+        rootfs.to_path_buf()
+    } else {
+        rootfs.join(&directory.relative)
+    };
+    let metadata = fs::symlink_metadata(&destination)
+        .with_context(|| format!("inspecting extracted directory {}", destination.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "rootfs archive directory {} was replaced with a non-directory",
+            directory.relative.display()
+        );
+    }
+    chown(
+        &destination,
+        Some(Uid::from_raw(directory.uid)),
+        Some(Gid::from_raw(directory.gid)),
+    )
+    .with_context(|| format!("preserving ownership on {}", destination.display()))?;
+    fs::set_permissions(&destination, fs::Permissions::from_mode(directory.mode))
+        .with_context(|| format!("preserving permissions on {}", destination.display()))?;
+    for (name, value) in directory.xattrs {
+        set_link_xattr(&destination, &name, &value)?;
+    }
+    set_link_mtime(&destination, directory.mtime)
+}
+
+fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
+    let canonical_rootfs = rootfs
+        .canonicalize()
+        .with_context(|| format!("resolving extracted rootfs {}", rootfs.display()))?;
+    for required in [
+        "lib/systemd/systemd",
+        "usr/bin/sway",
+        "usr/bin/wildbuzzard-shell",
+        "usr/bin/wildbuzzard-cua-driver",
+        "var/lib/dpkg/status",
+    ] {
+        let path = rootfs.join(required);
+        let resolved = path
+            .canonicalize()
+            .with_context(|| format!("bundled rootfs is missing required file /{required}"))?;
+        if !resolved.starts_with(&canonical_rootfs) {
+            bail!("bundled rootfs /{required} escapes through a symlink");
+        }
+        let metadata = fs::metadata(&resolved)
+            .with_context(|| format!("inspecting bundled rootfs file /{required}"))?;
+        if !metadata.is_file() {
+            bail!("bundled rootfs /{required} must resolve to a regular file");
+        }
+    }
+    Ok(())
 }
 
 fn apply_image_in_user_namespace(
@@ -2368,6 +3150,14 @@ mod layer_tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use tar::{Builder, EntryType, Header};
 
+    struct SeedFixture {
+        _temp: tempfile::TempDir,
+        archive: PathBuf,
+        manifest: PathBuf,
+        rootfs: PathBuf,
+        digest: String,
+    }
+
     #[test]
     fn compiled_guest_assets_match_the_oci_install_manifest() {
         let manifest = include_str!("../../../../guest/asset-manifest.tsv");
@@ -2427,6 +3217,215 @@ mod layer_tests {
         builder.finish().unwrap();
         drop(builder);
         layer
+    }
+
+    fn seed_fixture(build: impl FnOnce(&mut Builder<File>)) -> SeedFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("runtime");
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&runtime).unwrap();
+        fs::create_dir(&rootfs).unwrap();
+        let tar_path = temp.path().join("rootfs.tar");
+        let mut builder = Builder::new(File::create(&tar_path).unwrap());
+        for required in [
+            "lib/systemd/systemd",
+            "usr/bin/sway",
+            "usr/bin/wildbuzzard-shell",
+            "usr/bin/wildbuzzard-cua-driver",
+            "var/lib/dpkg/status",
+        ] {
+            append_file(&mut builder, required, b"fixture", 0o755);
+        }
+        build(&mut builder);
+        builder.finish().unwrap();
+        drop(builder);
+
+        let uncompressed = fs::read(&tar_path).unwrap();
+        let compressed = zstd::stream::encode_all(Cursor::new(&uncompressed), 1).unwrap();
+        let archive = runtime.join(ROOTFS_SEED_ARCHIVE);
+        let manifest = runtime.join(ROOTFS_SEED_MANIFEST);
+        fs::write(&archive, &compressed).unwrap();
+        let compressed_hash = format!("{:x}", Sha256::digest(&compressed));
+        let uncompressed_hash = format!("{:x}", Sha256::digest(&uncompressed));
+        let record = serde_json::json!({
+            "schema": ROOTFS_SEED_SCHEMA,
+            "kind": ROOTFS_SEED_KIND,
+            "platform": {"os": "linux", "architecture": "amd64"},
+            "archive": {
+                "name": ROOTFS_SEED_ARCHIVE,
+                "media_type": ROOTFS_SEED_MEDIA_TYPE,
+                "size": compressed.len(),
+                "sha256": compressed_hash,
+                "uncompressed_size": uncompressed.len(),
+                "uncompressed_sha256": uncompressed_hash,
+            }
+        });
+        fs::write(&manifest, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        SeedFixture {
+            _temp: temp,
+            archive,
+            manifest,
+            rootfs,
+            digest: format!("sha256:{compressed_hash}"),
+        }
+    }
+
+    #[test]
+    fn create_without_image_requires_the_full_portable_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = WbPaths::discover(Some(temp.path())).unwrap();
+        paths.ensure().unwrap();
+        let error = create(
+            &paths,
+            "seedless",
+            None,
+            NetworkMode::User,
+            vec!["all".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("download and extract the full Wild Buzzard portable bundle"));
+        assert!(error.contains("--image IMAGE_REFERENCE"));
+        assert!(!paths.machine("seedless").exists());
+    }
+
+    #[test]
+    fn flat_seed_preserves_hardlinks_modes_mtime_and_xattrs() {
+        let fixture = seed_fixture(|builder| {
+            append_directory(builder, "opt", 0o750);
+            builder
+                .append_pax_extensions([
+                    ("mtime", b"123.456789123".as_slice()),
+                    ("SCHILY.xattr.user.wildbuzzard", b"kept".as_slice()),
+                ])
+                .unwrap();
+            append_file(builder, "opt/original", b"persistent", 0o6750);
+            append_link(
+                builder,
+                EntryType::Link,
+                "opt/hardlink",
+                Path::new("opt/original"),
+            );
+            append_link(
+                builder,
+                EntryType::Symlink,
+                "opt/symlink",
+                Path::new("original"),
+            );
+        });
+
+        apply_rootfs_seed(
+            &fixture.archive,
+            &fixture.manifest,
+            &fixture.digest,
+            &fixture.rootfs,
+        )
+        .unwrap();
+
+        let original = fs::symlink_metadata(fixture.rootfs.join("opt/original")).unwrap();
+        let hardlink = fs::symlink_metadata(fixture.rootfs.join("opt/hardlink")).unwrap();
+        assert_eq!(original.ino(), hardlink.ino());
+        assert_eq!(original.permissions().mode() & 0o7777, 0o6750);
+        assert_eq!(original.mtime(), 123);
+        assert_eq!(original.mtime_nsec(), 456_789_123);
+        assert_eq!(
+            fs::read_link(fixture.rootfs.join("opt/symlink")).unwrap(),
+            Path::new("original")
+        );
+        let path =
+            CString::new(fixture.rootfs.join("opt/original").as_os_str().as_bytes()).unwrap();
+        let mut value = [0_u8; 16];
+        let length = unsafe {
+            libc::lgetxattr(
+                path.as_ptr(),
+                c"user.wildbuzzard".as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+            )
+        };
+        assert_eq!(length, 4);
+        assert_eq!(&value[..4], b"kept");
+    }
+
+    #[test]
+    fn flat_seed_rejects_digest_mismatch_before_extraction() {
+        let fixture = seed_fixture(|_| {});
+        let mut bytes = fs::read(&fixture.archive).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&fixture.archive, bytes).unwrap();
+
+        let error = apply_rootfs_seed(
+            &fixture.archive,
+            &fixture.manifest,
+            &fixture.digest,
+            &fixture.rootfs,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("archive digest mismatch"));
+        assert!(fs::read_dir(&fixture.rootfs).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn flat_seed_rejects_parent_hardlinks_whiteouts_and_unmapped_ids() {
+        let hardlink = seed_fixture(|builder| {
+            append_link(builder, EntryType::Link, "escape", Path::new("../outside"));
+        });
+        assert!(
+            apply_rootfs_seed(
+                &hardlink.archive,
+                &hardlink.manifest,
+                &hardlink.digest,
+                &hardlink.rootfs,
+            )
+            .is_err()
+        );
+
+        let whiteout = seed_fixture(|builder| {
+            append_file(builder, "etc/.wh.forbidden", b"", 0o000);
+        });
+        assert!(
+            apply_rootfs_seed(
+                &whiteout.archive,
+                &whiteout.manifest,
+                &whiteout.digest,
+                &whiteout.rootfs,
+            )
+            .is_err()
+        );
+
+        let unmapped = seed_fixture(|builder| {
+            let mut header = header(EntryType::Regular, 0o644, 1);
+            header.set_uid(MAX_GUEST_ID + 1);
+            header.set_path("unsupported-owner").unwrap();
+            header.set_cksum();
+            builder.append(&header, Cursor::new(b"x")).unwrap();
+        });
+        assert!(
+            apply_rootfs_seed(
+                &unmapped.archive,
+                &unmapped.manifest,
+                &unmapped.digest,
+                &unmapped.rootfs,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn bundled_seed_manifest_rejects_wrong_platform_and_symlink_files() {
+        let fixture = seed_fixture(|_| {});
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.manifest).unwrap()).unwrap();
+        manifest["platform"]["architecture"] = serde_json::json!("arm64");
+        fs::write(&fixture.manifest, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(read_rootfs_seed_manifest(&fixture.manifest).is_err());
+
+        let target = fixture.archive.with_extension("actual");
+        fs::rename(&fixture.archive, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &fixture.archive).unwrap();
+        assert!(open_regular_nofollow(&fixture.archive, "test archive").is_err());
     }
 
     #[test]
@@ -2902,5 +3901,34 @@ mod layer_tests {
             fs::read(destination.join("complete")).unwrap(),
             b"new machine"
         );
+    }
+
+    #[test]
+    fn failed_machine_staging_cleanup_is_confined_to_the_machine_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let machines = temp.path().join("vm");
+        let staging = machines.join(".machine-creating-fixture");
+        fs::create_dir(&machines).unwrap();
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("partial"), b"partial machine").unwrap();
+
+        remove_machine_staging_tree(&staging, &machines).unwrap();
+
+        assert!(!staging.exists());
+        assert!(machines.is_dir());
+    }
+
+    #[test]
+    fn failed_machine_staging_cleanup_rejects_unrelated_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let machines = temp.path().join("vm");
+        let unrelated = machines.join("machine");
+        fs::create_dir(&machines).unwrap();
+        fs::create_dir(&unrelated).unwrap();
+
+        let error = remove_machine_staging_tree(&unrelated, &machines).unwrap_err();
+
+        assert!(error.to_string().contains("not a machine creation staging"));
+        assert!(unrelated.is_dir());
     }
 }

@@ -9,8 +9,11 @@ design decisions must preserve the requirements below.
 Wild Buzzard is a rootless, persistent Linux desktop-machine launcher
 distributed as one native AppImage.
 
-It pulls a configured OCI image once, extracts it into a flat mutable root
-filesystem, and boots that same root filesystem on every later launch. The
+The complete portable download carries a digest-verified, already-flattened
+rootfs seed. First machine creation materializes that seed once into a flat
+mutable root filesystem using the recipient host's subordinate-ID mapping, and
+every later launch boots that same rootfs. An explicitly configured OCI image
+remains an alternative creation source and is pulled and flattened once. The
 guest runs systemd as PID 1 and a complete desktop session. Stock Sway, using
 wlroots' nested Wayland backend, composites the entire guest desktop into
 exactly one native host Wayland window.
@@ -47,13 +50,59 @@ LICENSES/             machine-readable dependency and asset evidence
 - `guest/asset-manifest.tsv` is the authoritative mapping of guest source files
   to rootfs destinations and modes. OCI installation and the host migration
   table must be contract-tested against it.
-- `oci/compose.yaml` and `oci/build-local.sh` are local-only build entry points.
-  They must not authenticate to or push a registry.
+- `oci/compose.yaml` and `oci/build-local.sh` are local developer build entry
+  points. They must not authenticate to or push a registry. The manually
+  dispatched release-assets workflow builds the same OCI definition only as a
+  disposable GitHub-runner intermediate and never publishes that image.
 - Cargo targets, AppDirs, OCI archives, downloaded acceptance applications,
   screenshots, and other generated artifacts are built outside the repository
   by default and are never committed.
-- Until a separate publication decision is made, GitHub Actions must not build
-  or upload an AppImage/OCI artifact, push a package, or create a release.
+- Distribution assembly runs on a disposable GitHub-hosted Linux x86-64
+  runner, never on a maintainer's workstation. The manually dispatched
+  workflow defaults to artifact-only mode and has no trigger for pushes or
+  pull requests. Artifact-only mode uploads its results for inspection and
+  must never create a GitHub Release.
+- The workflow never pushes an OCI image, GHCR image, or GitHub Package. It
+  builds the reference OCI locally in the runner, verifies and flattens it,
+  and discards the OCI intermediate when the runner is destroyed.
+
+## Distribution assets and publication
+
+Every publication build emits exactly two primary distribution files:
+
+```text
+WildBuzzard-x86_64.AppImage
+WildBuzzard-portable-x86_64.tar.zst
+```
+
+- The standalone AppImage is independently downloadable and replaceable so an
+  existing portable folder can update the host application without replacing
+  a persistent machine.
+- The complete portable archive contains that same AppImage, a verified
+  high-compression flat-rootfs seed, initial `vm/`, `shared/`, and `cache/`
+  directories, checksums, provenance, and licenses. On first machine creation
+  the seed is materialized into the normal mutable `vm/<name>/rootfs/`; the
+  compressed seed is not the running rootfs and no overlay is introduced.
+
+The bundle keeps licensing evidence in two explicit groups: host/AppImage
+payload evidence and guest/rootfs payload evidence. Each group contains the
+notices and corresponding-source/provenance records for the exact payload it
+describes. The runner-generated manifest binds the AppImage, flat-rootfs
+archive, source commit, OCI source descriptors, package inventory, and hashes.
+
+`.github/workflows/build-release-assets.yml` supports manually selected
+`artifacts`, `prerelease`, and `release` modes. `artifacts` is the default and
+only uploads short-lived Actions artifacts. Publication additionally requires
+an explicit confirmation, an existing SemVer tag resolving to the selected
+commit, and the strict final licensing gate. Only the publisher job receives
+`contents: write`; all other jobs are read-only. The two mutually exclusive
+publisher jobs use literal `prerelease` and `production` GitHub environments
+and never check out the build commit or execute files from that checkout with
+their write-capable token. Only pinned actions and the workflow's fixed inline
+publication commands run there. A release/prerelease contains the two primary
+files above, not an OCI archive or registry reference. Each primary file must
+be smaller than GitHub Releases' 2 GiB per-asset limit; artifact assembly fails
+before upload if that condition is not met.
 
 ## Portable on-disk layout
 
@@ -62,6 +111,9 @@ All Wild Buzzard files live beside the AppImage by default:
 ```text
 portable-folder/
 ├── WildBuzzard-x86_64.AppImage
+├── runtime/                         # present in the complete first-install bundle
+│   ├── WildBuzzard-rootfs-linux-x86_64.tar.zst
+│   └── WildBuzzard-rootfs-linux-x86_64.json
 ├── vm/
 │   └── <machine-name>/
 │       ├── machine.json
@@ -74,6 +126,9 @@ portable-folder/
 
 - `vm/<machine-name>/rootfs/` is the complete, flat, directly writable guest
   operating system.
+- `runtime/` contains the verified canonical-ID seed used to create new
+  machines offline. It is install media, never the mounted or running rootfs,
+  and is absent when only the independently replaceable AppImage is supplied.
 - `shared/` is user-managed host/guest storage mounted read/write at `/shared`
   in every guest.
 - `cache/` contains only disposable downloads and OCI intermediates.
@@ -624,8 +679,10 @@ arbitrary `/dev`, Docker/Podman sockets, or the real host Wayland socket.
 Creation:
 
 1. Validate the machine name and portable paths.
-2. Pull and digest-verify the OCI image.
-3. Extract on the same filesystem into a staging directory.
+2. Select the verified bundled flat-rootfs seed by default, or resolve, pull,
+   and digest-verify an explicitly requested OCI image.
+3. Materialize the seed or apply the OCI layers on the same filesystem into a
+   staging directory, using the recipient host's full subordinate-ID mapping.
 4. Install versioned guest boot/session assets.
 5. Atomically rename into `vm/<name>/`.
 6. Never replace an existing machine implicitly.

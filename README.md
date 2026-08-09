@@ -8,7 +8,8 @@ session, and selected GPU devices.
 
 ```text
 WildBuzzard-x86_64.AppImage
-  -> persistent flat OCI rootfs (pulled once, no overlay)
+  -> verified flat rootfs seed (or an explicit OCI source), materialized once
+  -> persistent directly writable rootfs (no overlay)
   -> rootless namespaces with systemd as guest PID 1
   -> stock Sway/wlroots + Wild Buzzard's classic Rust desktop shell
   -> private D-Bus + AT-SPI + PipeWire + Xwayland + TryCua
@@ -21,8 +22,10 @@ PipeWire display stream, VNC, or bundled Blender.
 
 ## Persistent and portable
 
-The OCI image is downloaded and flattened once. Every later launch boots the
-same directly writable rootfs. Packages installed with `apt`, user files,
+The complete download includes an already-flattened, compressed rootfs seed.
+First machine creation verifies and materializes it once; an explicit OCI
+reference can instead be pulled and flattened once. Every later launch boots
+the same directly writable rootfs. Packages installed with `apt`, user files,
 agents, applications, services, and desktop settings survive stop/start.
 
 All files live beside the AppImage:
@@ -30,6 +33,9 @@ All files live beside the AppImage:
 ```text
 portable-folder/
 ├── WildBuzzard-x86_64.AppImage
+├── runtime/               # complete-download seed; not the running rootfs
+│   ├── WildBuzzard-rootfs-linux-x86_64.tar.zst
+│   └── WildBuzzard-rootfs-linux-x86_64.json
 ├── vm/
 │   └── <machine-name>/
 │       ├── machine.json
@@ -285,8 +291,12 @@ also available:
 ./WildBuzzard-x86_64.AppImage list
 ```
 
-Creating pulls and extracts once. Starting does not repull. Updating or rebasing
-is a separate explicit operation and never silently discards local changes.
+Without `--image`, creation uses the complete bundle's verified local seed.
+`create NAME --image IMAGE_REFERENCE` instead pulls and flattens that explicit
+OCI image. Either creation path runs once; starting never repulls. Updating or
+rebasing is a separate explicit operation and never silently discards local
+changes. A standalone AppImage can update an existing portable folder; a new
+folder needs the complete bundle or an explicit OCI image reference.
 
 ## Development
 
@@ -326,9 +336,43 @@ WILDBUZZARD_ELECTRON_APPIMAGE=/path/to/LM-Studio-x64.AppImage \
 `oci/build-local.sh` uses `oci/compose.yaml`, verifies the complete installed
 guest contract, and keeps the image local. Set `WILDBUZZARD_EXPORT_ARCHIVE=1`
 to export and checksum a compressed Docker archive outside the repository.
-`host/build-appimage.sh` likewise creates no GitHub release. This repository
-currently has no active GitHub Actions build, artifact upload, package push, or
-release workflow.
+`host/build-appimage.sh` likewise creates no GitHub release by itself.
+
+## Distribution assembly
+
+Distribution builds run on disposable GitHub-hosted x86-64 runners through the
+manually dispatched `Build release assets` workflow. They are not assembled on
+a developer workstation. The workflow builds the reference OCI only inside
+the runner, verifies it, flattens it into a compressed persistent-rootfs seed,
+and discards the OCI intermediate. It does not use GHCR, publish a container
+package, or authenticate to any registry for upload.
+
+The workflow produces two primary files:
+
+- `WildBuzzard-x86_64.AppImage` — the independently replaceable host
+  application.
+- `WildBuzzard-portable-x86_64.tar.zst` — the complete first-install folder,
+  containing the same AppImage, the flat-rootfs seed, empty portable machine
+  and sharing directories, checksums, provenance, and license evidence.
+
+The runner validates the complete file by using the final AppImage to create a
+temporary machine from the bundled seed through the real subordinate-ID path,
+then compares its full content, metadata, and translated ownership with the
+canonical flattened rootfs before upload.
+
+Licensing is grouped by distribution boundary: AppImage/host notices and
+source evidence are separate from guest/rootfs notices and source evidence.
+The default `artifacts` mode retains both outputs as short-lived Actions
+artifacts and cannot publish a Release. The `prerelease` and `release` modes
+require explicit confirmation, an existing SemVer tag pointing at the selected
+commit, and the strict license gate. Only the final publisher has permission to
+create a GitHub Release; the mutually exclusive prerelease and production
+publishers use separately protectable GitHub environments and do not execute
+files from the checked-out build commit with their write token; only pinned
+actions and the workflow's fixed inline publication commands run there. They
+upload the two files above—not an OCI image. Assembly also fails early if
+either primary file is not smaller than GitHub Releases' 2 GiB per-asset
+limit.
 
 Native Electron acceptance uses the official LM Studio AppImage as an external
 test input. It is copied into `/shared` as mode `0644`, must become executable
