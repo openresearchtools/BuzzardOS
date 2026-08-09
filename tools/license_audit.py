@@ -671,8 +671,8 @@ def validate_build_pins() -> None:
             "linuxdeploy_version=1-alpha-20251107-1",
             "linuxdeploy_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d",
             "appimage_runtime_sha256=a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6",
-            "appimage_runtime_relink_manifest_sha256=86468af49dcbe4c24067a6a6091eff2c6676063d4a39e6407f011d26a25f2828",
-            "appimage_runtime_metadata_sha256=73928c6597ace903a8662b66f72906f142ffb2a9c2848b7249a75364c659ef11",
+            "appimage_runtime_relink_manifest_sha256=a956b20085c7ff0b0019a531e51db3dfdf174f6fa9c0c4183baba2c93a0dd772",
+            "appimage_runtime_metadata_sha256=b2182090c84f5cab0b6345d447d54bc39cb31dd348d32b24b90eb8b2c7de55db",
             "zig_version=0.14.1",
             "zig_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
             "cargo_zigbuild_version=0.21.8",
@@ -874,8 +874,8 @@ def validate_embedded_dependency_records() -> None:
         "appimage_mutable_region_offset": 442480,
         "appimage_mutable_region_size": 16,
         "toolchain_sha256": "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
-        "relink_manifest_sha256": "86468af49dcbe4c24067a6a6091eff2c6676063d4a39e6407f011d26a25f2828",
-        "runtime_metadata_sha256": "73928c6597ace903a8662b66f72906f142ffb2a9c2848b7249a75364c659ef11",
+        "relink_manifest_sha256": "a956b20085c7ff0b0019a531e51db3dfdf174f6fa9c0c4183baba2c93a0dd772",
+        "runtime_metadata_sha256": "b2182090c84f5cab0b6345d447d54bc39cb31dd348d32b24b90eb8b2c7de55db",
     }
     if any(runtime.get(key) != value for key, value in expected_runtime.items()):
         raise AuditError("AppImage runtime dependency record changed without updating its pin")
