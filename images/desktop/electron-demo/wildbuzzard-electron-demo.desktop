@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Wild Buzzard Electron
-Comment=Representative accessible Electron application
-Exec=wildbuzzard-electron-demo
-Icon=wildbuzzard
-Terminal=false
-Categories=Development;Utility;

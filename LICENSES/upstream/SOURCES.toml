@@ -1,0 +1,222 @@
+schema = 1
+
+[[file]]
+path = "LICENSES/upstream/go-runtime/go-1.26-LICENSE"
+source = "https://raw.githubusercontent.com/golang/go/go1.26.3/LICENSE and https://raw.githubusercontent.com/golang/go/go1.26.5/LICENSE"
+sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+normalization = "The files at both tags are byte-identical; preserved byte-for-byte."
+
+[[file]]
+path = "LICENSES/upstream/go-runtime/go-1.26-PATENTS"
+source = "https://raw.githubusercontent.com/golang/go/go1.26.3/PATENTS and https://raw.githubusercontent.com/golang/go/go1.26.5/PATENTS"
+sha256 = "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+normalization = "The files at both tags are byte-identical; preserved byte-for-byte."
+
+[[file]]
+path = "LICENSES/upstream/go-containerregistry-v0.21.8-LICENSE"
+source = "https://raw.githubusercontent.com/google/go-containerregistry/2ea098f4b13456cd628460632760b0a74b7488e9/LICENSE"
+sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+normalization = "one trailing LF added; upstream content otherwise byte-identical"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/docker-cli-v29.6.2-LICENSE"
+source = "https://proxy.golang.org/github.com/docker/cli/@v/v29.6.2+incompatible.zip#github.com/docker/cli@v29.6.2+incompatible/LICENSE"
+archive_sha256 = "d07ee7fa418ca5509e4ec79edfc719d5789cc060988bdde8a99e442a7540c9bd"
+sha256 = "2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/docker-cli-v29.6.2-NOTICE"
+source = "https://proxy.golang.org/github.com/docker/cli/@v/v29.6.2+incompatible.zip#github.com/docker/cli@v29.6.2+incompatible/NOTICE"
+archive_sha256 = "d07ee7fa418ca5509e4ec79edfc719d5789cc060988bdde8a99e442a7540c9bd"
+sha256 = "a8c869fbda819afb8d80e0ac19bac52e766bc6c19cb38cf94f52d64c4be2aab6"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/docker-credential-helpers-v0.9.3-LICENSE"
+source = "https://proxy.golang.org/github.com/docker/docker-credential-helpers/@v/v0.9.3.zip#github.com/docker/docker-credential-helpers@v0.9.3/LICENSE"
+archive_sha256 = "d1d7e8680253fa217273bf0df542ae9183b07716a7e52582b7d51347db4db661"
+sha256 = "a6c2a5fdf40879f644bdb0da9042f245e7e263237d623264aafcf2470610ad8c"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/go-cmp-v0.7.0-LICENSE"
+source = "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.7.0.zip#github.com/google/go-cmp@v0.7.0/LICENSE"
+archive_sha256 = "64a9ce046f2c320e3783fba0d1f4a15f8a18f0b009b67bf27f7630919db3f539"
+sha256 = "17b5d209ba8f9684257ecfcff87df6ceda6194143a8fbd074f29727cff6f0c40"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/klauspost-compress-v1.19.1-LICENSE"
+source = "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.19.1.zip#github.com/klauspost/compress@v1.19.1/LICENSE"
+archive_sha256 = "a77e019f60dff8bdf00ad137985c808957cc657381daa4281824843bc6b46910"
+sha256 = "0d9e582ee4bff57bf1189c9e514e6da7ce277f9cd3bc2d488b22fbb39a6d87cf"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/klauspost-compress-v1.19.1-snapref-LICENSE"
+source = "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.19.1.zip#github.com/klauspost/compress@v1.19.1/internal/snapref/LICENSE"
+archive_sha256 = "a77e019f60dff8bdf00ad137985c808957cc657381daa4281824843bc6b46910"
+sha256 = "f69f157b0be75da373605dbc8bbf142e8924ee82d8f44f11bcaf351335bf98cf"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/klauspost-compress-v1.19.1-xxhash-LICENSE"
+source = "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.19.1.zip#github.com/klauspost/compress@v1.19.1/zstd/internal/xxhash/LICENSE.txt"
+archive_sha256 = "a77e019f60dff8bdf00ad137985c808957cc657381daa4281824843bc6b46910"
+sha256 = "f566a9f97bacdaf00d9f21dd991e81dc11201c4e016c86b470799429a1c9a79c"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/opencontainers-go-digest-v1.0.0-LICENSE"
+source = "https://proxy.golang.org/github.com/opencontainers/go-digest/@v/v1.0.0.zip#github.com/opencontainers/go-digest@v1.0.0/LICENSE"
+archive_sha256 = "615efb31ff6cd71035b8aa38c3659d8b4da46f3cd92ac807cb50449adfe37c86"
+sha256 = "aceb55133c41c50c2e170c5918e301fe74f592d0f28724bf2f7a7bfdcff1fc5f"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/opencontainers-image-spec-v1.1.1-LICENSE"
+source = "https://proxy.golang.org/github.com/opencontainers/image-spec/@v/v1.1.1.zip#github.com/opencontainers/image-spec@v1.1.1/LICENSE"
+archive_sha256 = "3a32eeb459719172947c20be78b5b7293c6ea84f4039184e846f6b676bc19574"
+sha256 = "b0a3f39513927db306adabea11d14c23f079d4febcea241d123a68d1a0d45418"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/logrus-v1.9.4-LICENSE"
+source = "https://proxy.golang.org/github.com/sirupsen/logrus/@v/v1.9.4.zip#github.com/sirupsen/logrus@v1.9.4/LICENSE"
+archive_sha256 = "3847d00c5ee6948f1ff0d0120bc343c55ce852becb7720f8f08f53eecfe9e437"
+sha256 = "51a0c9ec7f8b7634181b8d4c03e5b5d204ac21d6e72f46c313973424664b2e6b"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/cobra-v1.10.2-LICENSE"
+source = "https://proxy.golang.org/github.com/spf13/cobra/@v/v1.10.2.zip#github.com/spf13/cobra@v1.10.2/LICENSE.txt"
+archive_sha256 = "a00aae6fcd631e0fde52c98604452ff70e1b73c3b8a560d68db15aff5e26872d"
+sha256 = "5e3400b93bbb099e83e52bab885e7441750673c21f97988ca3f1240639b63283"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/pflag-v1.0.10-LICENSE"
+source = "https://proxy.golang.org/github.com/spf13/pflag/@v/v1.0.10.zip#github.com/spf13/pflag@v1.0.10/LICENSE"
+archive_sha256 = "a246b8c9d3daa87d6c634cdfee1bdf7fa53d5817eeef4fa0c6da43edd12de4ca"
+sha256 = "b8514c577c1c4b46cee454d5a882b15fa411e72c5bd7f801f241591789fce61a"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/golang-x-sync-v0.22.0-LICENSE"
+source = "https://proxy.golang.org/golang.org/x/sync/@v/v0.22.0.zip#golang.org/x/sync@v0.22.0/LICENSE"
+archive_sha256 = "4bc67d258ce7867cfc1a43765c43d98b4c49b90c46dd0b86f896a5a4909fade0"
+sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+
+[[file]]
+path = "LICENSES/upstream/crane-dependencies/golang-x-sys-v0.47.0-LICENSE"
+source = "https://proxy.golang.org/golang.org/x/sys/@v/v0.47.0.zip#golang.org/x/sys@v0.47.0/LICENSE"
+archive_sha256 = "cdac013ddced0262926ec29ffcda645da39670e61c7e5b761e572b6b1809bb1b"
+sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+
+[[file]]
+path = "LICENSES/upstream/slirp4netns-v1.3.4-COPYING"
+source = "https://raw.githubusercontent.com/rootless-containers/slirp4netns/129916bd8dc2b8eaf621671b3431799c827d689e/COPYING"
+sha256 = "58db3cfabf8ec806bc060e54ab5466a31de4a3ae80fe4a8aa02fb6b1c053c93f"
+
+[[file]]
+path = "LICENSES/upstream/libslirp-v4.9.2-LICENSE"
+source = "https://gitlab.freedesktop.org/slirp/libslirp/-/raw/97b325339a1377249e68e6c58e9c15a6e1bba4c1/LICENSE"
+sha256 = "51f17bd7051622101fd3ce477ba3eca5e8f0705a523f3426dfbbddf9973a80bd"
+
+[[file]]
+path = "LICENSES/upstream/libslirp-v4.9.2-COPYRIGHT"
+source = "https://gitlab.freedesktop.org/slirp/libslirp/-/raw/97b325339a1377249e68e6c58e9c15a6e1bba4c1/COPYRIGHT"
+sha256 = "5e81ad3841c9073bee91f65c8c74fdc4b67d1f6742cd35fbd22039bb1e920818"
+
+[[file]]
+path = "LICENSES/upstream/libseccomp-v2.5.3-LICENSE"
+source = "https://raw.githubusercontent.com/seccomp/libseccomp/57357d2741a3b3d3e8425889a6b79a130e0fa2f3/LICENSE"
+sha256 = "102900208eef27b766380135906d431dba87edaa7ec6aa72e6ebd3dd67f3a97b"
+
+[[file]]
+path = "LICENSES/upstream/appimage-type2-runtime-75849dce-LICENSE"
+source = "https://raw.githubusercontent.com/AppImage/type2-runtime/75849dce7cc37e4319b633df1f116ca895c71a12/LICENSE"
+sha256 = "aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1"
+
+[[file]]
+path = "LICENSES/upstream/sway-1.12-LICENSE"
+source = "https://raw.githubusercontent.com/swaywm/sway/88869399f421d9180dd8b6ed0b5a1f4a3585d252/LICENSE"
+sha256 = "bd35722bff46327f5eded1d211207277bbe043d2a22048b282c42ef801593b8b"
+
+[[file]]
+path = "LICENSES/upstream/wlroots-0.20.2-LICENSE"
+source = "https://gitlab.freedesktop.org/wlroots/wlroots/-/raw/d783533489e1f75d6886c2ab5c5960090ef268f8/LICENSE"
+sha256 = "35d427c043dcafe8893b9e7247348f599847c81d9a067703587c80707f3d58df"
+
+[[file]]
+path = "LICENSES/upstream/linuxdeploy-1-alpha-20251107-1-LICENSE"
+source = "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy/cc7b86472c3caa3fd729b9dc502fd2aa78394257/LICENSE.txt"
+sha256 = "1edb41ae7601854ae15d113c3700beebd0ea3ed05b85e3786a94a72bb9916091"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE"
+source = "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE"
+sha256 = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT"
+source = "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT"
+sha256 = "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium"
+source = "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium"
+sha256 = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/jsonschema-LICENSE"
+source = "https://raw.githubusercontent.com/Stranger6667/jsonschema/ecaeceac2340908a8fbf71404442296bd1536520/LICENSE"
+sha256 = "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/uniffi-LICENSE"
+source = "https://raw.githubusercontent.com/mozilla/uniffi-rs/309762f55db3f0548194a9ceba3027fa64b18a93/LICENSE"
+sha256 = "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+
+[[file]]
+path = "LICENSES/upstream/cargo-fallbacks/simd-LICENSE"
+source = "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+sha256 = "14e66de892a0e218a4d60b2cc41a17a28080c46621d812fa2471983d8c524748"
+normalization = "one trailing LF added; upstream content otherwise byte-identical"
+
+[[file]]
+path = "LICENSES/upstream/zig-0.14.1-LICENSE"
+source = "zig-x86_64-linux-0.14.1.tar.xz at source commit d03a147ea0a590ca711b3db07106effc559b0fc6"
+sha256 = "5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177"
+
+[[file]]
+path = "LICENSES/upstream/cargo-zigbuild-0.21.8-LICENSE"
+source = "cargo-zigbuild-0.21.8.crate at source commit f4499cae704a63bae63957f7c4e2caab96df6782"
+sha256 = "74c4c1ce947760824daf396d972a613459c0a4e39d1e6b7c8768a5dc1ab860b8"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/libfuse-3.15.0-LICENSE"
+source = "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz#fuse-3.15.0/LICENSE"
+archive_sha256 = "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0"
+sha256 = "b8832d9caaa075bbbd2aef24efa09f8b7ab66a832812d88c602da0c7b4397fad"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/libfuse-3.15.0-LGPL2"
+source = "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz#fuse-3.15.0/LGPL2.txt"
+archive_sha256 = "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0"
+sha256 = "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/squashfuse-0.5.2-LICENSE"
+source = "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz#squashfuse-0.5.2/LICENSE"
+archive_sha256 = "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3"
+sha256 = "9e909cc8a8ba27b1a649c964cf9eda37de911f3138c2b64e6d2f01703904ac13"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/musl-1.2.5-COPYRIGHT"
+source = "https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT?h=v1.2.5 (retrieved from the upstream GitHub mirror after the primary endpoint reset)"
+sha256 = "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/zstd-1.5.6-LICENSE"
+source = "https://raw.githubusercontent.com/facebook/zstd/v1.5.6/LICENSE"
+sha256 = "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/zlib-1.3.2-LICENSE"
+source = "https://raw.githubusercontent.com/madler/zlib/v1.3.2/LICENSE"
+sha256 = "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+
+[[file]]
+path = "LICENSES/upstream/appimage-runtime-dependencies/mimalloc-2.1.7-LICENSE"
+source = "https://raw.githubusercontent.com/microsoft/mimalloc/v2.1.7/LICENSE"
+sha256 = "19c99805e7a44a34b297a75d1edea9985e300066dfc024d5c99d4236d4573b5d"

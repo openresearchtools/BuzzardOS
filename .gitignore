@@ -2,6 +2,15 @@
 **/target/
 /build/
 /dist/
+/vm/
+/shared/
+/cache/
+/data/
+/acceptance/
 *.AppImage
+*.docker.tar
+*.docker.tar.gz
+*.oci.tar
+*.oci.tar.gz
 __pycache__/
 *.pyc

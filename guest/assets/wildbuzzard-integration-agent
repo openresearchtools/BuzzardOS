@@ -1,0 +1,500 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Guest half of Wild Buzzard's host-authorized live integration boundary.
+
+The host-owned integration.json is mounted read-only. This process can create
+guest listeners and private PipeWire nodes, but it has no host PipeWire socket
+and no route to host loopback. Host capture exists only while the broker also
+installs an internal mapping and runs the corresponding host-side process.
+"""
+
+import asyncio
+import ctypes
+import json
+import os
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CONTROL = Path("/run/wildbuzzard-display-state/integration.json")
+STATUS = Path("/run/wildbuzzard-host/integration-status.json")
+REVERSE_ROOT = Path("/run/wildbuzzard-host/reverse")
+POLL_SECONDS = 0.10
+AUDIO_PORT = 47130
+MICROPHONE_PORT = 47131
+CAMERA_PORT = 47132
+MEDIA_PORTS = {
+    "guest_audio_output": AUDIO_PORT,
+    "host_microphone": MICROPHONE_PORT,
+    "host_camera": CAMERA_PORT,
+}
+PR_SET_PDEATHSIG = 1
+LIBC = ctypes.CDLL(None, use_errno=True)
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def gst_process(arguments: list[str], label: str) -> subprocess.Popen:
+    log = open(STATUS.parent / f"integration-{label}.log", "ab", buffering=0)
+    command = ["gst-launch-1.0", "-q", *arguments]
+    parent_pid = os.getpid()
+
+    def bind_lifetime_to_agent() -> None:
+        # Popen executes this after fork and before exec. Keep it to
+        # async-signal-safe libc calls: an abrupt integration-agent death must
+        # not orphan a virtual microphone listener/source in the guest.
+        if LIBC.prctl(PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0) != 0:
+            os._exit(127)
+        if os.getppid() != parent_pid:
+            os._exit(127)
+
+    return subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        preexec_fn=bind_lifetime_to_agent,
+        close_fds=True,
+    )
+
+
+def stop_process(process: subprocess.Popen | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=2)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def tcp_listener_exists(port: int) -> bool:
+    """Observe LISTEN state without consuming a single-client media socket."""
+    encoded_port = f"{port:04X}"
+    for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = table.read_text(encoding="ascii").splitlines()[1:]
+        except (FileNotFoundError, PermissionError):
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1].rsplit(":", 1)[-1] == encoded_port:
+                if fields[3] == "0A":
+                    return True
+    return False
+
+
+class ReverseTcp:
+    def __init__(self, mapping: dict):
+        self.mapping = mapping
+        self.server: asyncio.Server | None = None
+        self.connections: set[asyncio.Task] = set()
+
+    async def start(self) -> None:
+        self.server = await asyncio.start_server(
+            self._accept,
+            self.mapping["guest_address"],
+            int(self.mapping["guest_port"]),
+            start_serving=True,
+        )
+
+    async def stop(self) -> None:
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
+        for task in list(self.connections):
+            task.cancel()
+        if self.connections:
+            await asyncio.gather(*self.connections, return_exceptions=True)
+        self.connections.clear()
+
+    async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self.connections.add(task)
+        relay_writer = None
+        try:
+            socket_path = REVERSE_ROOT / f"reverse-{self.mapping['id']}.sock"
+            relay_reader, relay_writer = await asyncio.open_unix_connection(socket_path)
+            left = asyncio.create_task(self._pump(reader, relay_writer))
+            right = asyncio.create_task(self._pump(relay_reader, writer))
+            done, pending = await asyncio.wait(
+                (left, right), return_when=asyncio.FIRST_COMPLETED
+            )
+            for pending_task in pending:
+                pending_task.cancel()
+            await asyncio.gather(*done, *pending, return_exceptions=True)
+        except (ConnectionError, FileNotFoundError, asyncio.CancelledError):
+            pass
+        finally:
+            writer.close()
+            if relay_writer is not None:
+                relay_writer.close()
+            await asyncio.gather(
+                writer.wait_closed(),
+                *([] if relay_writer is None else [relay_writer.wait_closed()]),
+                return_exceptions=True,
+            )
+            if task is not None:
+                self.connections.discard(task)
+
+    @staticmethod
+    async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while True:
+            payload = await reader.read(64 * 1024)
+            if not payload:
+                return
+            writer.write(payload)
+            await writer.drain()
+
+
+class ReverseUdp(asyncio.DatagramProtocol):
+    def __init__(self, mapping: dict):
+        self.mapping = mapping
+        self.transport: asyncio.DatagramTransport | None = None
+        self.unix: socket.socket | None = None
+        self.client_path = REVERSE_ROOT / f"reverse-client-{mapping['id']}.sock"
+        self.host_path = REVERSE_ROOT / f"reverse-{mapping['id']}.sock"
+        self.next_token = 1
+        self.peer_tokens: dict[tuple, int] = {}
+        self.token_peers: dict[int, tuple] = {}
+
+    async def start(self) -> None:
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: self,
+            local_addr=(self.mapping["guest_address"], int(self.mapping["guest_port"])),
+        )
+        self.transport = transport
+        try:
+            self.client_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.unix = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.unix.bind(str(self.client_path))
+        os.chmod(self.client_path, 0o666)
+        self.unix.setblocking(False)
+        loop.add_reader(self.unix.fileno(), self._from_host)
+
+    async def stop(self) -> None:
+        if self.unix is not None:
+            asyncio.get_running_loop().remove_reader(self.unix.fileno())
+            self.unix.close()
+            self.unix = None
+        if self.transport is not None:
+            self.transport.close()
+            self.transport = None
+        try:
+            self.client_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def datagram_received(self, data: bytes, address: tuple) -> None:
+        if self.unix is None:
+            return
+        token = self.peer_tokens.get(address)
+        if token is None:
+            token = self.next_token
+            self.next_token += 1
+            self.peer_tokens[address] = token
+            self.token_peers[token] = address
+        try:
+            self.unix.sendto(struct.pack("!Q", token) + data, str(self.host_path))
+        except (BlockingIOError, FileNotFoundError):
+            pass
+
+    def _from_host(self) -> None:
+        if self.unix is None or self.transport is None:
+            return
+        while True:
+            try:
+                packet = self.unix.recv(65_535)
+            except BlockingIOError:
+                return
+            if len(packet) < 8:
+                continue
+            token = struct.unpack("!Q", packet[:8])[0]
+            address = self.token_peers.get(token)
+            if address is not None:
+                self.transport.sendto(packet[8:], address)
+
+
+class ForwardUdpResponse(asyncio.DatagramProtocol):
+    def __init__(self, parent: "ForwardUdp", token: int):
+        self.parent = parent
+        self.token = token
+
+    def datagram_received(self, data: bytes, _address: tuple) -> None:
+        self.parent.to_host(self.token, data)
+
+
+class ForwardUdp:
+    """Host listener -> private Unix datagram -> exact guest UDP endpoint."""
+
+    def __init__(self, mapping: dict):
+        self.mapping = mapping
+        self.unix: socket.socket | None = None
+        self.client_path = REVERSE_ROOT / f"forward-client-{mapping['id']}.sock"
+        self.host_path = REVERSE_ROOT / f"forward-{mapping['id']}.sock"
+        self.transports: dict[int, asyncio.DatagramTransport] = {}
+        self.pending: set[asyncio.Task] = set()
+
+    async def start(self) -> None:
+        try:
+            self.client_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.unix = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.unix.bind(str(self.client_path))
+        os.chmod(self.client_path, 0o666)
+        self.unix.setblocking(False)
+        asyncio.get_running_loop().add_reader(self.unix.fileno(), self.from_host)
+
+    async def stop(self) -> None:
+        if self.unix is not None:
+            asyncio.get_running_loop().remove_reader(self.unix.fileno())
+            self.unix.close()
+            self.unix = None
+        for task in list(self.pending):
+            task.cancel()
+        if self.pending:
+            await asyncio.gather(*self.pending, return_exceptions=True)
+        self.pending.clear()
+        for transport in self.transports.values():
+            transport.close()
+        self.transports.clear()
+        try:
+            self.client_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def from_host(self) -> None:
+        if self.unix is None:
+            return
+        while True:
+            try:
+                packet, address = self.unix.recvfrom(65_535)
+            except BlockingIOError:
+                return
+            if Path(address).name != self.host_path.name or len(packet) < 8:
+                continue
+            token = struct.unpack("!Q", packet[:8])[0]
+            task = asyncio.create_task(self.deliver(token, packet[8:]))
+            self.pending.add(task)
+            task.add_done_callback(self.pending.discard)
+
+    async def deliver(self, token: int, data: bytes) -> None:
+        transport = self.transports.get(token)
+        if transport is None:
+            loop = asyncio.get_running_loop()
+            candidate, _ = await loop.create_datagram_endpoint(
+                lambda: ForwardUdpResponse(self, token),
+                remote_addr=(
+                    self.mapping["guest_address"],
+                    int(self.mapping["guest_port"]),
+                ),
+            )
+            transport = self.transports.setdefault(token, candidate)
+            if transport is not candidate:
+                candidate.close()
+        transport.sendto(data)
+
+    def to_host(self, token: int, data: bytes) -> None:
+        if self.unix is None:
+            return
+        try:
+            self.unix.sendto(struct.pack("!Q", token) + data, str(self.host_path))
+        except (BlockingIOError, FileNotFoundError):
+            pass
+
+
+class IntegrationAgent:
+    def __init__(self) -> None:
+        self.generation = -1
+        self.reverse: dict[str, ReverseTcp | ReverseUdp] = {}
+        self.forward_udp: dict[str, ForwardUdp] = {}
+        self.media_processes: dict[str, subprocess.Popen] = {}
+        self.running = True
+
+    async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        for event in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(event, self.request_stop)
+        while self.running:
+            try:
+                control = json.loads(CONTROL.read_text(encoding="utf-8"))
+                if control.get("schema") != 1:
+                    raise ValueError("unsupported integration control schema")
+                if self.needs_reconcile(control):
+                    await self.reconcile(control)
+            except FileNotFoundError:
+                pass
+            except Exception as error:  # surfaced to the host through status
+                self.write_status(str(error))
+            await asyncio.sleep(POLL_SECONDS)
+        await self.shutdown()
+
+    def request_stop(self) -> None:
+        self.running = False
+
+    def needs_reconcile(self, control: dict) -> bool:
+        if int(control.get("generation", -1)) != self.generation:
+            return True
+        media = control.get("media", {})
+        for name in MEDIA_PORTS:
+            wanted = bool(media.get(name))
+            process = self.media_processes.get(name)
+            running = process is not None and process.poll() is None
+            if wanted != running:
+                return True
+        return False
+
+    async def reconcile(self, control: dict) -> None:
+        wanted = {str(item["id"]): item for item in control.get("reverse_ports", [])}
+        for identifier in list(self.reverse):
+            if identifier not in wanted or self.reverse[identifier].mapping != wanted[identifier]:
+                await self.reverse.pop(identifier).stop()
+        for identifier, mapping in wanted.items():
+            if identifier not in self.reverse:
+                relay = ReverseUdp(mapping) if mapping.get("protocol") == "udp" else ReverseTcp(mapping)
+                await relay.start()
+                self.reverse[identifier] = relay
+
+        wanted_forward_udp = {
+            str(item["id"]): item for item in control.get("forward_udp_ports", [])
+        }
+        for identifier in list(self.forward_udp):
+            if (
+                identifier not in wanted_forward_udp
+                or self.forward_udp[identifier].mapping != wanted_forward_udp[identifier]
+            ):
+                await self.forward_udp.pop(identifier).stop()
+        for identifier, mapping in wanted_forward_udp.items():
+            if identifier not in self.forward_udp:
+                relay = ForwardUdp(mapping)
+                await relay.start()
+                self.forward_udp[identifier] = relay
+
+        media = control.get("media", {})
+        self.reconcile_media("guest_audio_output", bool(media.get("guest_audio_output")))
+        self.reconcile_media("host_microphone", bool(media.get("host_microphone")))
+        self.reconcile_media("host_camera", bool(media.get("host_camera")))
+        for name, port in MEDIA_PORTS.items():
+            if bool(media.get(name)):
+                await self.wait_for_listener(name, port)
+        self.generation = int(control["generation"])
+        self.write_status(None)
+
+    async def wait_for_listener(self, name: str, port: int) -> None:
+        deadline = time.monotonic() + 5.0
+        while True:
+            process = self.media_processes.get(name)
+            if process is None or process.poll() is not None:
+                code = None if process is None else process.returncode
+                raise RuntimeError(f"{name} bridge exited before listening (status {code})")
+            if tcp_listener_exists(port):
+                return
+            if time.monotonic() >= deadline:
+                stop_process(process)
+                self.media_processes.pop(name, None)
+                raise RuntimeError(f"{name} bridge did not open TCP port {port}")
+            await asyncio.sleep(0.025)
+
+    def reconcile_media(self, name: str, enabled: bool) -> None:
+        current = self.media_processes.get(name)
+        if current is not None and current.poll() is not None:
+            self.media_processes.pop(name, None)
+            current = None
+        if not enabled:
+            stop_process(current)
+            self.media_processes.pop(name, None)
+            return
+        if current is not None:
+            return
+
+        if name == "guest_audio_output":
+            arguments = [
+                "pipewiresrc",
+                "client-name=Wild Buzzard Guest Audio",
+                "do-timestamp=true",
+                "stream-properties=props,stream.capture.sink=true,stream.monitor=true",
+                "!", "audioconvert", "!", "audioresample", "!",
+                "audio/x-raw,format=S16LE,rate=48000,channels=2", "!",
+                "gdppay", "!", "tcpserversink", "host=0.0.0.0",
+                f"port={AUDIO_PORT}", "sync=false",
+            ]
+        elif name == "host_microphone":
+            arguments = [
+                "tcpserversrc", "host=0.0.0.0", f"port={MICROPHONE_PORT}", "!",
+                "gdpdepay", "!", "pipewiresink", "mode=provide",
+                "async=false",
+                "client-name=Wild Buzzard Host Microphone",
+                "stream-properties=props,media.class=Audio/Source,node.name=wildbuzzard_host_microphone,node.description=Host_Microphone,node.virtual=true",
+            ]
+        else:
+            arguments = [
+                "tcpserversrc", "host=0.0.0.0", f"port={CAMERA_PORT}", "!",
+                "gdpdepay", "!", "pipewiresink", "mode=provide",
+                "async=false",
+                "client-name=Wild Buzzard Host Camera",
+                "stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=wildbuzzard_host_camera,node.description=Host_Camera,node.virtual=true",
+            ]
+        self.media_processes[name] = gst_process(arguments, name)
+
+    def write_status(self, error: str | None) -> None:
+        processes = {
+            name: {
+                "pid": process.pid,
+                "running": process.poll() is None,
+                "exit_code": process.poll(),
+            }
+            for name, process in self.media_processes.items()
+        }
+        atomic_json(
+            STATUS,
+            {
+                "schema": 1,
+                "generation": self.generation,
+                "updated_monotonic_ns": time.monotonic_ns(),
+                "reverse_ports": sorted(self.reverse),
+                "forward_udp_ports": sorted(self.forward_udp),
+                "media": processes,
+                "error": error,
+            },
+        )
+
+    async def shutdown(self) -> None:
+        for relay in list(self.reverse.values()):
+            await relay.stop()
+        self.reverse.clear()
+        for relay in list(self.forward_udp.values()):
+            await relay.stop()
+        self.forward_udp.clear()
+        for process in list(self.media_processes.values()):
+            stop_process(process)
+        self.media_processes.clear()
+        self.write_status(None)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(IntegrationAgent().run())
+    except KeyboardInterrupt:
+        sys.exit(0)

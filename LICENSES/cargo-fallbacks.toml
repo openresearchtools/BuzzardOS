@@ -1,0 +1,36 @@
+schema = 1
+
+# These crates declare a standard license in Cargo metadata but omit the
+# corresponding text from their crates.io package.  Fallbacks are copied from
+# the exact VCS commit recorded in that package's .cargo_vcs_info.json.
+
+[[fallback]]
+packages = ["accesskit@0.24.1"]
+repository = "https://github.com/AccessKit/accesskit"
+vcs_commit = "a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969"
+files = ["LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE", "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT", "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium"]
+
+[[fallback]]
+packages = ["accesskit_atspi_common@0.19.1", "accesskit_consumer@0.38.0", "accesskit_unix@0.22.1"]
+repository = "https://github.com/AccessKit/accesskit"
+vcs_commit = "c88605b96d04431f9c3c792464a0f2f253480e94"
+files = ["LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE", "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT", "LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium"]
+
+[[fallback]]
+packages = ["jsonschema-regex@0.46.10"]
+repository = "https://github.com/Stranger6667/jsonschema"
+vcs_commit = "ecaeceac2340908a8fbf71404442296bd1536520"
+files = ["LICENSES/upstream/cargo-fallbacks/jsonschema-LICENSE"]
+
+[[fallback]]
+packages = ["uniffi@0.31.0", "uniffi_core@0.31.0", "uniffi_internal_macros@0.31.0", "uniffi_macros@0.31.0", "uniffi_meta@0.31.0", "uniffi_pipeline@0.31.0"]
+repository = "https://github.com/mozilla/uniffi-rs"
+vcs_commit = "309762f55db3f0548194a9ceba3027fa64b18a93"
+files = ["LICENSES/upstream/cargo-fallbacks/uniffi-LICENSE"]
+
+[[fallback]]
+packages = ["uuid-simd@0.8.0", "vsimd@0.8.0"]
+repository = "https://github.com/Nugine/simd"
+vcs_commit = "d74c030d9dc4f3cae02146d1f497ff62726ef09a"
+files = ["LICENSES/upstream/cargo-fallbacks/simd-LICENSE"]
+

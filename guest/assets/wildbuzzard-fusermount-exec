@@ -1,0 +1,390 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Guest-root half of the narrowly scoped Type-2 AppImage FUSE bridge."""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import os
+import socket
+import stat
+import struct
+import sys
+
+
+REAL_FUSERMOUNT = "/run/wildbuzzard-appimage-helper/fusermount3.real"
+SYS_PIDFD_GETFD = 438
+INTERACTIVE_UID = 1000
+INTERACTIVE_GID = 1000
+ALLOWED_MOUNT_ROOTS = (
+    ("tmp",),
+    ("run", "user", "1000"),
+    ("home", "wildbuzzard"),
+    ("shared",),
+)
+ALLOWED_MOUNT_OPTIONS = {
+    "ro,nosuid,nodev",
+    "ro,nosuid,nodev,subtype=squashfuse",
+}
+DIRECTORY_OPEN_FLAGS = (
+    os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_PATH", os.O_RDONLY)
+)
+
+
+class ValidationError(Exception):
+    """An invocation failed the fixed bridge security contract."""
+
+
+class Invocation:
+    __slots__ = ("arguments", "kind", "mountpoint", "requires_communication_fd")
+
+    def __init__(
+        self,
+        kind: str,
+        arguments: list[str],
+        mountpoint: str | None,
+        requires_communication_fd: bool,
+    ) -> None:
+        self.kind = kind
+        self.arguments = arguments
+        self.mountpoint = mountpoint
+        self.requires_communication_fd = requires_communication_fd
+
+
+def fail(message: str) -> "NoReturn":
+    print(f"wildbuzzard-fusermount: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def parse_caller_status(status: str) -> int:
+    fields_by_name: dict[str, list[str]] = {}
+    for line in status.splitlines():
+        name, separator, value = line.partition(":")
+        if separator:
+            fields_by_name[name] = value.split()
+    expected_uid = [str(INTERACTIVE_UID)] * 4
+    expected_gid = [str(INTERACTIVE_GID)] * 4
+    if fields_by_name.get("Uid") != expected_uid:
+        raise ValidationError("caller UID is not 1000 in every credential slot")
+    if fields_by_name.get("Gid") != expected_gid:
+        raise ValidationError("caller GID is not 1000 in every credential slot")
+    parent = fields_by_name.get("PPid", [])
+    if len(parent) != 1 or not parent[0].isdigit() or int(parent[0]) < 2:
+        raise ValidationError("caller has an invalid parent process")
+    return int(parent[0])
+
+
+def read_caller_status(process_id: int) -> str:
+    path = f"/proc/{process_id}/status"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValidationError(f"cannot inspect caller {process_id}: {error}") from error
+    try:
+        payload = os.read(descriptor, 1024 * 1024)
+    except OSError as error:
+        raise ValidationError(f"cannot read caller {process_id}: {error}") from error
+    finally:
+        os.close(descriptor)
+    try:
+        return payload.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValidationError("caller status is not ASCII") from error
+
+
+def pin_and_validate_caller(
+    process_id: int,
+    pidfd_open=os.pidfd_open,
+    status_reader=read_caller_status,
+) -> tuple[int, int]:
+    """Pin the task identity before reading any PID-indexed credentials."""
+    try:
+        pidfd = pidfd_open(process_id, 0)
+    except OSError as error:
+        raise ValidationError(f"cannot open caller pidfd: {error}") from error
+    try:
+        parent_process_id = parse_caller_status(status_reader(process_id))
+    except Exception:
+        os.close(pidfd)
+        raise
+    return pidfd, parent_process_id
+
+
+def parse_mountpoint_path(mountpoint: str) -> tuple[str, ...]:
+    if not mountpoint.startswith("/") or os.path.normpath(mountpoint) != mountpoint:
+        raise ValidationError("mountpoint must be a normalized absolute path")
+    parts = tuple(mountpoint.split("/")[1:])
+    if not parts or any(not part or part in (".", "..") for part in parts):
+        raise ValidationError("mountpoint contains an invalid path component")
+    if not parts[-1].startswith(".mount_") or len(parts[-1]) == len(".mount_"):
+        raise ValidationError("mountpoint must use the pinned .mount_* runtime name")
+    if not any(
+        len(parts) > len(root) and parts[: len(root)] == root
+        for root in ALLOWED_MOUNT_ROOTS
+    ):
+        raise ValidationError("mountpoint is outside the allowed guest-owned roots")
+    return parts
+
+
+def parse_invocation(arguments: list[str], requested_fd: int) -> Invocation:
+    if arguments == ["--version"]:
+        invocation = Invocation("version", arguments.copy(), None, False)
+    elif (
+        len(arguments) == 4
+        and arguments[0] == "-o"
+        and arguments[1] in ALLOWED_MOUNT_OPTIONS
+        and arguments[2] == "--"
+    ):
+        invocation = Invocation("mount", arguments.copy(), arguments[3], True)
+    elif len(arguments) == 5 and arguments[:4] == ["-u", "-q", "-z", "--"]:
+        invocation = Invocation("unmount", arguments.copy(), arguments[4], False)
+    elif len(arguments) == 3 and arguments[:2] == ["--auto-unmount", "--"]:
+        invocation = Invocation("auto-unmount", arguments.copy(), arguments[2], True)
+    else:
+        raise ValidationError("invocation is not emitted by the pinned Type-2 runtime")
+
+    if invocation.mountpoint is not None:
+        parse_mountpoint_path(invocation.mountpoint)
+    if invocation.requires_communication_fd:
+        if requested_fd < 3:
+            raise ValidationError(f"{invocation.kind} requires a communication descriptor")
+    elif requested_fd != -1:
+        raise ValidationError(f"{invocation.kind} must not carry a communication descriptor")
+    return invocation
+
+
+def pidfd_getfd(pidfd: int, descriptor: int) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    duplicated = libc.syscall(SYS_PIDFD_GETFD, pidfd, descriptor, 0)
+    if duplicated < 0:
+        code = ctypes.get_errno()
+        raise ValidationError(
+            f"cannot duplicate libfuse communication fd: {os.strerror(code)}"
+        )
+    return int(duplicated)
+
+
+def duplicate_communication_fd(
+    pidfd: int,
+    descriptor: int,
+    expected_peer_pid: int,
+    duplicator=pidfd_getfd,
+) -> int:
+    duplicated = duplicator(pidfd, descriptor)
+    try:
+        if not stat.S_ISSOCK(os.fstat(duplicated).st_mode):
+            raise ValidationError("libfuse communication fd is not a socket")
+        probe = socket.socket(fileno=os.dup(duplicated))
+        try:
+            if probe.family != socket.AF_UNIX:
+                raise ValidationError("libfuse communication fd is not AF_UNIX")
+            if probe.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM:
+                raise ValidationError("libfuse communication fd is not SOCK_STREAM")
+            try:
+                probe.getpeername()
+            except OSError as error:
+                raise ValidationError("libfuse communication socket is not connected") from error
+            credentials = probe.getsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_PEERCRED,
+                struct.calcsize("3i"),
+            )
+            peer_pid, peer_uid, peer_gid = struct.unpack("3i", credentials)
+            if (
+                peer_pid != expected_peer_pid
+                or peer_uid != INTERACTIVE_UID
+                or peer_gid != INTERACTIVE_GID
+            ):
+                raise ValidationError(
+                    "libfuse communication peer is not the caller's UID/GID 1000 parent"
+                )
+        finally:
+            probe.close()
+        os.set_inheritable(duplicated, True)
+        return duplicated
+    except Exception:
+        os.close(duplicated)
+        raise
+
+
+def decode_mountinfo_path(value: str) -> str:
+    for escaped, decoded in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+        value = value.replace(escaped, decoded)
+    return value
+
+
+def is_approved_fuse_mount(mountpoint: str, mountinfo: str) -> bool:
+    for line in mountinfo.splitlines():
+        before, separator, after = line.partition(" - ")
+        before_fields = before.split()
+        after_fields = after.split()
+        if not separator or len(before_fields) < 6 or len(after_fields) < 1:
+            continue
+        if decode_mountinfo_path(before_fields[4]) != mountpoint:
+            continue
+        options = set(before_fields[5].split(","))
+        return (
+            after_fields[0] in ("fuse", "fuse.squashfuse")
+            and {"ro", "nosuid", "nodev"}.issubset(options)
+        )
+    return False
+
+
+def read_mountinfo() -> str:
+    try:
+        with open("/proc/self/mountinfo", encoding="ascii") as stream:
+            return stream.read()
+    except OSError as error:
+        raise ValidationError(f"cannot inspect guest mounts: {error}") from error
+
+
+def open_validated_mountpoint(
+    mountpoint: str,
+    kind: str,
+    mountinfo_reader=read_mountinfo,
+) -> int:
+    parts = parse_mountpoint_path(mountpoint)
+    try:
+        current = os.open("/", DIRECTORY_OPEN_FLAGS)
+        for part in parts:
+            following = os.open(part, DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            os.close(current)
+            current = following
+    except OSError as error:
+        try:
+            os.close(current)
+        except (OSError, UnboundLocalError):
+            pass
+        raise ValidationError(
+            f"mountpoint is not a real symlink-free directory: {error}"
+        ) from error
+
+    try:
+        metadata = os.fstat(current)
+        if kind == "mount":
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+                or metadata.st_uid != INTERACTIVE_UID
+                or metadata.st_gid != INTERACTIVE_GID
+            ):
+                raise ValidationError(
+                    "mountpoint must be a mode-0700 UID/GID 1000 directory"
+                )
+        elif not is_approved_fuse_mount(mountpoint, mountinfo_reader()):
+            raise ValidationError(
+                "unmount target is not an approved read-only AppImage FUSE mount"
+            )
+        os.set_inheritable(current, True)
+        return current
+    except Exception:
+        os.close(current)
+        raise
+
+
+def open_real_fusermount(path: str = REAL_FUSERMOUNT) -> int:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValidationError(f"native fusermount helper is unavailable: {error}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        mode = stat.S_IMODE(metadata.st_mode)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or not mode & stat.S_IXUSR
+            or mode & 0o022
+        ):
+            raise ValidationError(
+                "native fusermount helper must be a root-owned, non-writable executable"
+            )
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def drop_to_fusermount_credentials(
+    setgroups=os.setgroups,
+    setresgid=os.setresgid,
+    setresuid=os.setresuid,
+) -> None:
+    setgroups([])
+    setresgid(INTERACTIVE_GID, INTERACTIVE_GID, INTERACTIVE_GID)
+    setresuid(INTERACTIVE_UID, 0, 0)
+
+
+def fexecve_real(
+    executable_fd: int,
+    arguments: list[str],
+    environment: dict[str, str],
+    executor=os.execve,
+) -> None:
+    """Execute the already-open helper; never resolve its pathname again."""
+    executor(executable_fd, arguments, environment)
+
+
+def execute_request(process_id: int, requested_fd: int, arguments: list[str]) -> int:
+    pidfd, parent_process_id = pin_and_validate_caller(process_id)
+    communication_fd = -1
+    mountpoint_fd = -1
+    executable_fd = -1
+    try:
+        invocation = parse_invocation(arguments, requested_fd)
+        if invocation.mountpoint is not None:
+            mountpoint_fd = open_validated_mountpoint(invocation.mountpoint, invocation.kind)
+            invocation.arguments[-1] = f"/proc/self/fd/{mountpoint_fd}"
+        if invocation.requires_communication_fd:
+            communication_fd = duplicate_communication_fd(
+                pidfd,
+                requested_fd,
+                parent_process_id,
+            )
+        executable_fd = open_real_fusermount()
+        os.close(pidfd)
+        pidfd = -1
+
+        environment = {}
+        if communication_fd >= 0:
+            environment["_FUSE_COMMFD"] = str(communication_fd)
+        drop_to_fusermount_credentials()
+        fexecve_real(
+            executable_fd,
+            [REAL_FUSERMOUNT, *invocation.arguments],
+            environment,
+        )
+        return 127
+    finally:
+        for descriptor in (pidfd, communication_fd, mountpoint_fd, executable_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        fail("helper must run as guest root")
+    if len(sys.argv) < 4 or sys.argv[3] != "--":
+        fail("invalid invocation envelope")
+    try:
+        process_id = int(sys.argv[1], 10)
+        requested_fd = int(sys.argv[2], 10)
+    except ValueError:
+        fail("invalid caller process or descriptor")
+    if process_id < 2 or requested_fd < -1:
+        fail("invalid caller process or descriptor")
+    try:
+        return execute_request(process_id, requested_fd, sys.argv[4:])
+    except ValidationError as error:
+        fail(str(error))
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

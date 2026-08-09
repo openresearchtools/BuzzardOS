@@ -1,0 +1,276 @@
+schema = 1
+audited_at = "2026-08-09"
+
+[[component]]
+id = "wildbuzzard-project-notice"
+surface = ["source", "appimage", "oci"]
+name = "Wild Buzzard project license and attribution"
+license = "AGPL-3.0-or-later"
+evidence = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+status = "recorded-project-copyright-and-license"
+
+[[component]]
+id = "rust-mpl-source-availability"
+surface = ["appimage", "oci"]
+name = "MPL-2.0 Rust dependency source availability"
+packages = ["option-ext 0.2.0", "uniffi 0.31.0", "uniffi_core 0.31.0", "uniffi_internal_macros 0.31.0", "uniffi_macros 0.31.0", "uniffi_meta 0.31.0", "uniffi_pipeline 0.31.0"]
+license = "MPL-2.0"
+evidence = ["LICENSES/generated/cargo-cua.tsv", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.txt", "LICENSES/mpl-sources.tsv", "tools/fetch-mpl-sources.sh"]
+source_code_form = "Every AppImage and OCI image contains the checksum-verified original .crate Source Code Form archives under /usr/share/doc/wildbuzzard/sources/mpl/. The manifest and fetcher reproduce the exact archive set from immutable crates.io content URLs."
+status = "exact-source-code-form-bundled-and-checksummed"
+
+[[component]]
+id = "rust-standard-library"
+surface = ["appimage", "oci"]
+name = "Rust standard library and compiler runtime"
+version = "1.96.0"
+license = "Apache-2.0 OR MIT AND bundled-third-party-terms"
+evidence = ["LICENSES/rust-runtime.toml"]
+bundle_notice = ["appimage:/usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html", "oci:/usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html"]
+status = "pinned-toolchain-and-verified-standard-library-notice-bundle"
+
+[[component]]
+id = "go-standard-library"
+surface = ["appimage"]
+name = "Go standard library and compiler runtime in downloaded helpers"
+versions = ["1.26.3", "1.26.5"]
+license = "BSD-3-Clause plus per-file and bundled-third-party terms"
+evidence = ["LICENSES/go-runtime.toml", "LICENSES/go-source-archives.tsv", "tools/fetch-go-source-archives.sh", "LICENSES/upstream/go-runtime/go-1.26-LICENSE", "LICENSES/upstream/go-runtime/go-1.26-PATENTS"]
+bundle_notice = ["appimage:/usr/share/doc/wildbuzzard/licenses/upstream/go-runtime/go-1.26-LICENSE", "appimage:/usr/share/doc/wildbuzzard/licenses/upstream/go-runtime/go-1.26-PATENTS", "appimage:/usr/share/doc/wildbuzzard/sources/go/"]
+status = "exact-go-source-and-all-bundled-notices-shipped"
+
+[[component]]
+id = "trycua-cua-driver"
+surface = ["source", "appimage", "oci"]
+name = "Wild Buzzard CUA Driver fork"
+version = "0.17.0"
+source = "https://github.com/trycua/cua"
+source_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
+source_tag = "cua-driver-rs-v0.17.0"
+license = "MIT"
+evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/CITATION.cff", "guest/third_party/trycua-cua/UPSTREAM.toml", "guest/third_party/trycua-cua/LINUX_SCOPE.toml", "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md", "guest/third_party/trycua-cua/README.WILDBUZZARD.md"]
+bundle_notice = ["appimage:/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md", "appimage:/usr/share/doc/wildbuzzard-cua/CITATION.cff", "appimage:/usr/share/doc/wildbuzzard-cua/UPSTREAM.toml", "appimage:/usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md", "oci:/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md", "oci:/usr/share/doc/wildbuzzard-cua/CITATION.cff", "oci:/usr/share/doc/wildbuzzard-cua/UPSTREAM.toml", "oci:/usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md"]
+vendored_scope_observation = "Reviewed Linux subset: eight Cargo workspace packages and five Linux/shared skill files. Every selected package inherits MIT metadata. Reviewed macOS/Windows-only build resources, guides, test modules, harnesses, and direct dependencies are absent and regression-tested. Shared wire-contract source retains serialized platform-labelled compatibility variants; the Linux clipboard dependency retains platform-targeted transitive lockfile metadata, but no non-Linux backend package is selected or built."
+status = "reviewed-linux-only-source-scope-and-attribution-recorded"
+
+[[component]]
+id = "trycua-inter-font"
+surface = ["source", "appimage", "oci"]
+name = "Inter font"
+version = "vendored upstream asset"
+source = "https://github.com/rsms/inter"
+license = "OFL-1.1"
+evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt"]
+status = "recorded"
+
+[[component]]
+id = "wayland-virtual-keyboard-protocol"
+surface = ["source", "appimage", "oci"]
+name = "virtual-keyboard-unstable-v1 protocol definition"
+version = "vendored upstream XML"
+source = "https://gitlab.freedesktop.org/wayland/wayland-protocols"
+license = "MIT"
+evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml"]
+status = "recorded-inline"
+
+[[component]]
+id = "sway"
+surface = ["oci"]
+name = "Sway"
+version = "1.12"
+source = "https://github.com/swaywm/sway"
+source_commit = "88869399f421d9180dd8b6ed0b5a1f4a3585d252"
+license = "MIT"
+evidence = ["oci/desktop/SWAY_UPSTREAM.toml", "LICENSES/upstream/sway-1.12-LICENSE"]
+bundle_notice = ["oci:/usr/share/doc/wildbuzzard-sway/LICENSE.sway", "oci:/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml"]
+status = "recorded"
+
+[[component]]
+id = "wlroots"
+surface = ["oci"]
+name = "wlroots"
+version = "0.20.2"
+source = "https://gitlab.freedesktop.org/wlroots/wlroots"
+source_commit = "d783533489e1f75d6886c2ab5c5960090ef268f8"
+license = "MIT"
+evidence = ["oci/desktop/SWAY_UPSTREAM.toml", "LICENSES/upstream/wlroots-0.20.2-LICENSE"]
+bundle_notice = ["oci:/usr/share/doc/wildbuzzard-sway/LICENSE.wlroots", "oci:/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml"]
+status = "recorded"
+
+[[component]]
+id = "crane"
+surface = ["appimage"]
+name = "go-containerregistry crane"
+version = "0.21.8"
+source = "https://github.com/google/go-containerregistry"
+source_commit = "2ea098f4b13456cd628460632760b0a74b7488e9"
+source_tag = "v0.21.8"
+download = "https://github.com/google/go-containerregistry/releases/download/v0.21.8/go-containerregistry_Linux_x86_64.tar.gz"
+sha256 = "59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67"
+license = "Apache-2.0"
+binary_sha256 = "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7"
+evidence = ["LICENSES/upstream/go-containerregistry-v0.21.8-LICENSE", "LICENSES/crane-dependencies.toml"]
+bundle_notice = ["appimage:/usr/share/doc/wildbuzzard/licenses/upstream/go-containerregistry-v0.21.8-LICENSE", "appimage:/usr/share/doc/wildbuzzard/licenses/upstream/crane-dependencies/"]
+status = "exact-binary-and-module-notices-bundled"
+
+[[component]]
+id = "slirp4netns"
+surface = ["appimage"]
+name = "slirp4netns Ubuntu dynamic package"
+version = "1.3.3-1"
+source = "https://github.com/rootless-containers/slirp4netns"
+source_commit = "944fa94090e1fd1312232cbc0e6b43585553d824"
+download = "https://archive.ubuntu.com/ubuntu/pool/universe/s/slirp4netns/slirp4netns_1.3.3-1_amd64.deb"
+sha256 = "dda3ca5101c58e9585bfd6e7b9d26831090327120cfb5092172ead355f968dd4"
+binary_sha256 = "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325"
+license = "GPL-2.0-or-later AND LGPL-2.1-only AND MIT"
+dynamic_dependencies = ["glibc", "GLib", "libslirp", "libseccomp"]
+evidence = ["LICENSES/slirp4netns-sources.tsv", "tools/fetch-slirp4netns-sources.sh"]
+bundle_notice = ["appimage:/usr/share/doc/slirp4netns/copyright"]
+corresponding_source = "The signed Ubuntu .dsc, exact upstream source archive, and exact Debian packaging archive are checksum-verified and bundled under /usr/share/doc/wildbuzzard/sources/slirp4netns/. The executable is dynamically linked, so recipients can replace modified LGPL libraries without relinking Wild Buzzard. Its dynamic dependency binaries and exact package notices are covered by the AppImage host-package artifact gate."
+status = "exact-binary-notice-and-corresponding-source-bundled-dynamic-link"
+
+[[component]]
+id = "nvidia-container-toolkit"
+surface = ["appimage"]
+name = "NVIDIA Container Toolkit base"
+version = "1.19.1-1"
+source = "https://github.com/NVIDIA/nvidia-container-toolkit"
+source_commit = "09ceee5dde66ba9ce25c7cc69b1ebd5e6e3266fa"
+source_tag = "v1.19.1"
+artifacts = ["nvidia-container-toolkit-base_1.19.1-1_amd64.deb"]
+sha256 = "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"
+license = "Apache-2.0"
+bundle_notice = ["appimage:/usr/share/doc/nvidia-container-toolkit-base/copyright", "appimage:/usr/share/doc/wildbuzzard/sources/go/"]
+evidence = ["LICENSES/nvidia-go-dependencies.toml", "LICENSES/go-source-archives.tsv", "tools/fetch-go-source-archives.sh"]
+status = "exact-go-module-sources-expressions-and-notices-shipped"
+
+[[component]]
+id = "libnvidia-container"
+surface = ["appimage"]
+name = "libnvidia-container tools and runtime"
+version = "1.19.1-1"
+source = "https://github.com/NVIDIA/libnvidia-container"
+source_commit = "7585946c6471402577e14474d7c56ca5be0348d7"
+source_tag = "v1.19.1"
+artifacts = ["libnvidia-container-tools_1.19.1-1_amd64.deb", "libnvidia-container1_1.19.1-1_amd64.deb"]
+sha256 = "5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268,d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b"
+license = "Apache-2.0 AND BSD-3-Clause AND MIT"
+conditional_license = "LGPL-3.0-or-later when built with libelf"
+bundle_notice = ["appimage:/usr/share/doc/libnvidia-container-tools/copyright", "appimage:/usr/share/doc/libnvidia-container1/copyright"]
+status = "recorded-top-level-notice"
+
+[[component]]
+id = "appimage-type2-runtime"
+surface = ["appimage"]
+name = "AppImage type-2 runtime"
+version = "source build at commit 75849dce7cc37e4319b633df1f116ca895c71a12"
+source = "https://github.com/AppImage/type2-runtime"
+source_commit = "75849dce7cc37e4319b633df1f116ca895c71a12"
+source_archive = "https://github.com/AppImage/type2-runtime/archive/75849dce7cc37e4319b633df1f116ca895c71a12.tar.gz"
+source_archive_sha256 = "b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443"
+build_script = "tools/build-appimage-runtime.sh"
+target = "x86_64-linux-musl"
+sha256 = "a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6"
+license = "MIT"
+evidence = ["LICENSES/upstream/appimage-type2-runtime-75849dce-LICENSE", "LICENSES/wildbuzzard-appimage-runtime-patch-MIT"]
+runtime_size = 455096
+digest_patch_offset = 442480
+digest_patch_size = 16
+relink_manifest_sha256 = "86468af49dcbe4c24067a6a6091eff2c6676063d4a39e6407f011d26a25f2828"
+runtime_metadata_sha256 = "73928c6597ace903a8662b66f72906f142ffb2a9c2848b7249a75364c659ef11"
+embedded_dependency_evidence = ["LICENSES/appimage-runtime-dependencies.toml"]
+artifact_evidence = ["appimage:/usr/share/doc/wildbuzzard/sources/appimage-runtime/runtime-metadata.toml", "appimage:/usr/share/doc/wildbuzzard/sources/appimage-runtime/relink-kit/BUILD-INPUTS.sha256"]
+bundle_notice = ["appimage:/usr/share/doc/wildbuzzard/licenses/upstream/appimage-type2-runtime-75849dce-LICENSE", "appimage:/usr/share/doc/wildbuzzard/licenses/wildbuzzard-appimage-runtime-patch-MIT", "appimage:/usr/share/doc/wildbuzzard/licenses/upstream/appimage-runtime-dependencies/", "appimage:/usr/share/doc/wildbuzzard/sources/appimage-runtime/relink-kit/"]
+status = "reproducibly-built-source-objects-and-lgpl-relink-kit-bundled"
+
+[[component]]
+id = "cuda-cudart"
+surface = ["oci"]
+name = "NVIDIA CUDA Runtime"
+version = "13.1.80-1"
+package = "cuda-cudart-13-1"
+source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
+sha256 = "b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84"
+license = "LicenseRef-NVIDIA-CUDA-EULA"
+bundle_notice = ["oci:/usr/share/doc/cuda-cudart-13-1/copyright"]
+status = "requires-distribution-rights-review"
+
+[[component]]
+id = "cuda-cublas"
+surface = ["oci"]
+name = "NVIDIA cuBLAS runtime"
+version = "13.2.2.2-1"
+package = "libcublas-13-1"
+source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
+sha256 = "0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7"
+license = "LicenseRef-NVIDIA-CUDA-EULA AND LicenseRef-NVIDIA-Bundled-Third-Party"
+bundle_notice = ["oci:/usr/share/doc/libcublas-13-1/copyright"]
+status = "requires-distribution-rights-review"
+
+[[component]]
+id = "appimage-host-package-closure"
+surface = ["appimage"]
+name = "Build-host binaries, GStreamer/SPA plugins, PipeWire client, and linuxdeploy library closure"
+version = "artifact-specific; recorded in host-package-closure.tsv"
+source = "build host dpkg database"
+license = "per-package Debian copyright"
+direct_packages = ["bubblewrap", "util-linux", "gstreamer1.0-tools", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "libpulse0", "libpipewire-0.3-0t64", "libspa-0.2-modules", "pipewire-bin"]
+configured_notice_loop_packages = ["bubblewrap", "util-linux", "gstreamer1.0-tools", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "libpulse0", "libpipewire-0.3-0t64", "libspa-0.2-modules", "pipewire-bin"]
+observed_versions_2026_08_09 = ["bubblewrap=0.11.1-1ubuntu0.1", "util-linux=2.41.3-3ubuntu2", "gstreamer1.0-tools=1.28.2-1", "gstreamer1.0-pipewire=1.6.2-1ubuntu1.1", "gstreamer1.0-plugins-base=1.28.2-1", "gstreamer1.0-plugins-good=1.28.2-2ubuntu0.1", "gstreamer1.0-plugins-bad=1.28.2-1ubuntu1.1", "libpulse0=1:17.0+dfsg1-2ubuntu4", "libpipewire-0.3-0t64=1.6.2-1ubuntu1.1", "libspa-0.2-modules=1.6.2-1ubuntu1.1", "pipewire-bin=1.6.2-1ubuntu1.1"]
+artifact_evidence = ["appimage:/usr/share/doc/wildbuzzard/host-package-closure.tsv"]
+status = "artifact-gated-exact-build-id-package-version-and-copyright-closure"
+
+[[component]]
+id = "oci-debian-package-closure"
+surface = ["oci"]
+name = "Debian sid base and apt dependency closure"
+version = "local image built 2026-08-09"
+source = "docker.io/library/debian:sid plus Debian sid repositories"
+license = "per-package Debian copyright"
+image_reference = "docker.io/library/wildbuzzard-desktop:final"
+image_manifest_digest = "sha256:0a81eb7a00e99022e3dc333ebe101e1478341e90c9d897cfb188fee2f3ce99a9"
+image_config_digest = "sha256:2f1ebc8a2a617667f4b7d87021740855c5b5c7d4f1acedac4caca734496247dd"
+archive_sha256 = "6778e504b2d9d135557c78f063f112292137feff69491038b0edcba22906a2bf"
+package_count = 773
+package_inventory_sha256 = "b01c129ed68c5a193ad92b48af208c6e9b5089fc9eea64a548af0d46c4e91142"
+evidence = ["LICENSES/generated/oci-packages.tsv"]
+status = "current-built-image-package-inventory-recorded-and-audited"
+
+[[component]]
+id = "zig"
+surface = ["build-only"]
+name = "Zig compiler"
+version = "0.14.1"
+source = "https://github.com/ziglang/zig"
+download = "https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
+sha256 = "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
+license = "MIT"
+source_commit = "d03a147ea0a590ca711b3db07106effc559b0fc6"
+evidence = ["LICENSES/upstream/zig-0.14.1-LICENSE"]
+status = "build-only-recorded"
+
+[[component]]
+id = "cargo-zigbuild"
+surface = ["build-only"]
+name = "cargo-zigbuild"
+version = "0.21.8"
+source = "https://crates.io/crates/cargo-zigbuild/0.21.8"
+sha256 = "8b01479e140c27740fc1c4127839396f8faecc41f4e558f87a7695c5c59b0ffe"
+license = "MIT"
+source_commit = "f4499cae704a63bae63957f7c4e2caab96df6782"
+evidence = ["LICENSES/upstream/cargo-zigbuild-0.21.8-LICENSE"]
+status = "build-only-recorded"
+
+[[component]]
+id = "linuxdeploy"
+surface = ["build-only"]
+name = "linuxdeploy AppImage"
+version = "1-alpha-20251107-1"
+source = "https://github.com/linuxdeploy/linuxdeploy"
+source_commit = "cc7b86472c3caa3fd729b9dc502fd2aa78394257"
+download = "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+sha256 = "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+license = "MIT"
+evidence = ["LICENSES/upstream/linuxdeploy-1-alpha-20251107-1-LICENSE"]
+status = "build-only-recorded"

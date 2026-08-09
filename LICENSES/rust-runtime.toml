@@ -1,0 +1,17 @@
+schema = 1
+audited_at = "2026-08-09"
+name = "Rust standard library and compiler runtime linked into Wild Buzzard binaries"
+observed_rustc = "rustc 1.96.0 (ac68faa20 2026-05-25)"
+rustc_commit = "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96"
+llvm_version = "22.1.2"
+host_target = "x86_64-unknown-linux-gnu"
+source_toolchain = "rust-toolchain.toml pins 1.96.0 with the minimal profile plus clippy and rustfmt"
+oci_builder = "docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4"
+vendored_cua_toolchain_file = "guest/third_party/trycua-cua/cua-driver/rust/rust-toolchain.toml declares 1.97.1, but the current explicit build entry points select the outer Rust 1.96 toolchain"
+license = "Apache-2.0 OR MIT, plus per-file and bundled third-party terms"
+standard_library_notice = "share/doc/rust/COPYRIGHT-library.html"
+standard_library_notice_size = 425651
+standard_library_notice_sha256 = "78c163fcec50e64bfd85fedb850c273595602fafa2b41f30f75d4e410b80ee83"
+notice_license_expressions = ["Apache-2.0 OR MIT", "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT", "BSD-2-Clause AND (Apache-2.0 OR MIT)", "MIT", "MIT OR Apache-2.0", "MIT OR Apache-2.0 OR LGPL-2.1-or-later", "MIT/Apache-2.0", "MPL-2.0", "Unicode-3.0", "Zlib"]
+notes = "Cargo metadata does not enumerate libstd, compiler-builtins, panic runtime, allocator, unwind glue, or their bundled third-party code. The exact COPYRIGHT-library.html generated for pinned Rust 1.96.0 is the authoritative notice bundle; the AppImage build copies it from the selected immutable toolchain and the artifact audit verifies its hash."
+status = "pinned-toolchain-and-verified-standard-library-notice-bundle"

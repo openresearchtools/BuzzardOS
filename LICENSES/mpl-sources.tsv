@@ -1,0 +1,8 @@
+# name	version	sha256	url
+option-ext	0.2.0	04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d	https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate
+uniffi	0.31.0	b8c6dec3fc6645f71a16a3fa9ff57991028153bd194ca97f4b55e610c73ce66a	https://static.crates.io/crates/uniffi/uniffi-0.31.0.crate
+uniffi_core	0.31.0	b0ef62e69762fbb9386dcb6c87cd3dd05d525fa8a3a579a290892e60ddbda47e	https://static.crates.io/crates/uniffi_core/uniffi_core-0.31.0.crate
+uniffi_internal_macros	0.31.0	98f51ebca0d9a4b2aa6c644d5ede45c56f73906b96403c08a1985e75ccb64a01	https://static.crates.io/crates/uniffi_internal_macros/uniffi_internal_macros-0.31.0.crate
+uniffi_macros	0.31.0	db9d12529f1223d014fd501e5f29ca0884d15d6ed5ddddd9f506e55350327dc3	https://static.crates.io/crates/uniffi_macros/uniffi_macros-0.31.0.crate
+uniffi_meta	0.31.0	9df6d413db2827c68588f8149d30d49b71d540d46539e435b23a7f7dbd4d4f86	https://static.crates.io/crates/uniffi_meta/uniffi_meta-0.31.0.crate
+uniffi_pipeline	0.31.0	a806dddc8208f22efd7e95a5cdf88ed43d0f3271e8f63b47e757a8bbdb43b63a	https://static.crates.io/crates/uniffi_pipeline/uniffi_pipeline-0.31.0.crate

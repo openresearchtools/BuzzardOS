@@ -26,6 +26,35 @@ Wild Buzzard is not an ephemeral application container:
 - The nested compositor is the guest display, input, screenshot, and
   accessibility boundary.
 
+## Repository and build boundaries
+
+The source tree mirrors the three independently understandable deployment
+parts:
+
+```text
+host/                 native host application and AppImage packaging
+guest/                guest shell, managed rootfs assets, and pinned CUA fork
+oci/                  local Debian OCI assembly consuming guest outputs
+tests/acceptance/     hardware/session/CUA journeys and fixtures
+tools/                local tests and licensing gates
+LICENSES/             machine-readable dependency and asset evidence
+```
+
+- `host/` and `guest/` are separate locked Cargo workspaces. Host crates do not
+  belong to the OCI build context. The AppImage packager may build guest
+  outputs only because it carries them as managed migration assets for
+  persistent rootfses.
+- `guest/asset-manifest.tsv` is the authoritative mapping of guest source files
+  to rootfs destinations and modes. OCI installation and the host migration
+  table must be contract-tested against it.
+- `oci/compose.yaml` and `oci/build-local.sh` are local-only build entry points.
+  They must not authenticate to or push a registry.
+- Cargo targets, AppDirs, OCI archives, downloaded acceptance applications,
+  screenshots, and other generated artifacts are built outside the repository
+  by default and are never committed.
+- Until a separate publication decision is made, GitHub Actions must not build
+  or upload an AppImage/OCI artifact, push a package, or create a release.
+
 ## Portable on-disk layout
 
 All Wild Buzzard files live beside the AppImage by default:
@@ -74,6 +103,11 @@ Normal host prerequisites are limited to:
   `newuidmap`/`newgidmap` authorization gates.
 - A host Wayland session.
 - A working host GPU kernel driver and permission to selected devices.
+- For optional audio, microphone, and camera integration, a working host
+  PipeWire session, its standard PulseAudio-compatible recording service, and
+  permission to the explicitly enabled device. Wild Buzzard bundles its
+  PipeWire/GStreamer/PulseAudio client stack; users do not install or configure
+  Wild Buzzard-specific host services or helpers.
 - Standard facilities required to execute an AppImage, with extract-and-run
   support when FUSE is unavailable.
 
@@ -115,6 +149,16 @@ The broker:
 - Passes one filtered host Wayland connection to the nested compositor without
   exposing the host Wayland socket path.
 - Provides private user-mode networking by default.
+- Reconciles typed host-authorized port mappings live. Host-to-guest mappings
+  use the bundled slirp4netns private API. Guest-to-host mappings terminate in
+  machine-private relays that can reach only the configured host destination;
+  they never re-enable unrestricted host-loopback access.
+- Owns independent live media bridges for guest audio output, host microphone
+  input, and host camera input. It never mounts the host PipeWire socket into
+  the guest.
+- Opens microphones only as named recording streams in the host desktop audio
+  session, with Wild Buzzard's application identity. It must never bypass host
+  recording/privacy accounting by opening an ALSA capture endpoint directly.
 - Injects every explicitly selected DRM/NVIDIA device plus matching host driver
   userspace, including multi-GPU selection and `all`.
 - Supervises PID 1 and cleans ephemeral runtime state without discarding the
@@ -140,14 +184,27 @@ The native host application:
   correctly scaled client-side frame; controls must never be clipped or
   positioned using negative child surfaces outside an unrelated guest
   toplevel.
-- Has a conventional application menu/toolbar. `Machine` exposes Start, Stop,
-  Restart, orderly Shut Down, machine state, and exit/close. `Settings`
+- Uses one compact native header bar. `Machine`, `Ports`, `Devices`, and
+  `Settings` are direct header-bar controls beside the machine title, lifecycle
+  state, and native window controls; there is no second menu/toolbar row and no
+  bottom informational banner consuming monitor space. `Machine` exposes Start,
+  Stop, Restart, orderly Shut Down, machine state, and exit/close. `Settings`
   exposes initial monitor size, network mode, explicit GPU selection including
   `all`, and diagnostics. Start/Stop/Restart are host lifecycle actions, never
   guest taskbar or guest power buttons.
+- Provides `Ports` and `Devices` controls. Port rows contain direction,
+  protocol, host address/port, guest address/port, and enabled state. Device
+  controls independently toggle guest audio to host speakers, host microphone
+  to guest, and host camera to guest. These integrations apply live and report
+  rejection or runtime failure without restarting PID 1.
 - Shows explicit `Stopped`, `Starting`, `Running`, `Stopping`, and `Failed`
   monitor states in the same window. A failed boot leaves the host application
   open with the error and a retry action.
+- Its native header labels every actively shared host microphone and camera for
+  the complete capture interval. In addition, microphone capture must register
+  as a host desktop recording stream so GNOME and other compatible shells show
+  their normal global microphone/privacy indication. Startup fails rather than
+  silently capturing if that host-visible registration cannot be observed.
 - Keeps all lifecycle and settings controls outside the embedded guest monitor.
   Pointer or keyboard events over host chrome are consumed by the host
   application and are never forwarded into the guest. Events over the monitor
@@ -246,6 +303,8 @@ The reference image is a Debian-family desktop with:
 - Passwordless sudo confined to the guest.
 - A private system D-Bus and private interactive session D-Bus.
 - Private PipeWire and WirePlumber services.
+- The fixed GStreamer/PipeWire elements required by the private, host-gated
+  media endpoints. These elements connect only to the guest PipeWire service.
 - A private AT-SPI registry and accessibility tree.
 - Unmodified upstream Sway 1.12, pinned to source commit
   `88869399f421d9180dd8b6ed0b5a1f4a3585d252`, and upstream wlroots 0.20.2,
@@ -256,6 +315,10 @@ The reference image is a Debian-family desktop with:
 - Wild Buzzard's native Rust desktop shell.
 - TryCua Cua Driver running as the interactive user.
 - GTK, Qt/KDE, Electron, Chromium, Vulkan, and OpenGL application support.
+- Native Type-2 AppImage support: `libfuse.so.2`, FUSE 3 utilities, the
+  explicitly filtered `/dev/fuse` device, and automatic owner-execute
+  authorization for genuine AppImage ELF files arriving in guest-owned
+  storage. Ordinary files and symlinks must not gain execute permission.
 - Noto Core, CJK, and Color Emoji fonts so normal multilingual Unicode text
   renders as glyphs instead of missing-character boxes.
 
@@ -265,6 +328,15 @@ wlroots fork. Users may install or replace desktop software inside their
 persistent machine. That cannot alter the host, but replacing the reference
 compositor or boot assets may make Wild Buzzard integration diagnostics fail.
 
+The persistent rootfs remains `nosuid` and the guest retains Linux
+`no_new_privs`. Native AppImage execution must not solve FUSE authorization by
+granting `CAP_SYS_ADMIN` (ambient or otherwise) to the interactive session,
+AppImage runtime, or application tree. A narrowly scoped guest-root mount
+broker may duplicate libfuse's private Unix descriptor and execute the pinned
+distribution `fusermount3` with setuid-equivalent requester credentials. That
+broker is inside the already authorized guest-root boundary and cannot access
+the host mount namespace.
+
 ## Classic guest desktop
 
 The Rust shell provides a simple classic XFCE/Openbox-style desktop, not a
@@ -273,6 +345,9 @@ full-screen launcher or a tile-grid dashboard:
 - One desktop only; no numbered workspace buttons are shown.
 - A persistent, compact bottom taskbar.
 - A left-aligned `Applications` button.
+- A narrow, textless `Show Desktop` button at the far right of the taskbar
+  that minimizes every visible guest application through confirmed Sway IPC
+  state changes without hiding the desktop icons or panel.
 - Exactly one simple task button per running application.
 - No pinned application launcher is duplicated beside a running-window task
   button.
@@ -282,6 +357,11 @@ full-screen launcher or a tile-grid dashboard:
   real FreeDesktop theme icons, scrolling for narrow/small outputs, installed
   `.desktop` discovery, each installed entry shown once, and a clearly
   separated `Shut Down Machine` item.
+- The Applications menu measures installed labels, icons, header controls, and
+  the current guest logical output instead of using a fixed package-time
+  width. Its height is content-sized until it reaches the usable guest output;
+  only overflowing rows scroll. A labelled, AT-SPI-visible close button sits
+  at the right of the menu header.
 - Desktop shortcuts for `Files` and `Shared`; `Shared` opens `/shared`.
 - New `.desktop` files installed by the user appear without rebuilding the
   image.
@@ -293,6 +373,11 @@ authoritative tree and every state/geometry mutation is issued and confirmed
 through Sway IPC. Do not introduce a layer-shell titlebar overlay, geometry
 polling, or taskbar window-control copies. The frame and application content
 must move in the same compositor transaction.
+
+Secondary-clicking a guest titlebar opens its window-control menu horizontally
+at the actual guest pointer coordinate, clamped to the output; it must not
+default to the window's left edge. Human host input and in-guest CUA input use
+the same logical guest coordinate contract for this action.
 
 The desktop must remain usable at small window sizes: task buttons page rather
 than overflow, the menu scrolls rather than dropping entries, and the panel
@@ -484,6 +569,39 @@ Default networking is a private network namespace with bundled user-mode
 networking and host-loopback disabled. Explicit host and no-network modes may
 be configured.
 
+The host may explicitly authorize live bidirectional mappings while private
+networking is active:
+
+- Host-to-guest TCP and UDP mappings publish exactly one selected guest
+  address and port on exactly one selected host bind address and port.
+- Guest-to-host mappings publish exactly one selected listener inside the
+  guest and terminate at exactly one selected host destination. Turning a
+  mapping off closes its listener and active relay connections.
+- Mapping configuration lives in host-owned machine metadata outside the
+  rootfs. Guest processes cannot add mappings or change their destinations.
+
+Media sharing is default-deny and independently revocable:
+
+- Guest audio output may be connected to the host's default PipeWire output.
+- Host microphone and host camera capture are separate opt-in toggles.
+- Enabling microphone or camera starts a host-owned capture process, installs
+  one machine-private internal mapping, and creates one corresponding source
+  in the private guest PipeWire graph. Capture remains active for the complete
+  enabled interval; the host UI states this explicitly and never presents the
+  switch as dormant per-application permission.
+- Microphone capture uses the host PipeWire-Pulse source-output path with a
+  stable Wild Buzzard application identity. The broker verifies a running,
+  correctly targeted `Stream/Input/Audio` node before reporting the bridge
+  active, allowing the host shell to expose its standard recording indicator.
+- Disabling either input first terminates host capture, then removes the
+  internal mapping and guest source. When disabled, the guest has no host
+  device node, host PipeWire socket, capture process, reusable stream endpoint,
+  or other route to that input.
+- The AppImage bundles the client libraries, GStreamer launcher, plugins, and
+  bridge code. It uses the already-running desktop PipeWire service in the
+  same way as a native application; it never asks the user to install global
+  bridge packages.
+
 The guest receives no host filesystem or desktop-service access except:
 
 - its persistent rootfs mounted as `/`;
@@ -492,7 +610,7 @@ The guest receives no host filesystem or desktop-service access except:
 - the one filtered Wayland connection;
 - narrow read-only kernel/runtime mounts required to boot.
 
-Never expose host home, host D-Bus, host PipeWire, host SSH agent, host AT-SPI,
+Never expose host home, host D-Bus, the host PipeWire socket, host SSH agent, host AT-SPI,
 arbitrary `/dev`, Docker/Podman sockets, or the real host Wayland socket.
 
 ## Lifecycle
@@ -541,6 +659,36 @@ not stop after compilation, unit tests, process-start checks, or API exit
 status while any safe in-scope acceptance scenario remains untested.
 
 - The AppImage runs without separately installed Wild Buzzard helpers.
+- The final OCI already contains every managed guest asset and both compiled
+  guest executables before the launcher performs any persistent-rootfs
+  migration. Its installed manifest, paths, modes, Sway/wlroots pins, CUA
+  attribution, and required commands pass `oci/verify-image.sh`.
+- Download the current official x86-64 LM Studio AppImage outside the
+  repository, verify its vendor-published digest, copy it into `/shared` with
+  mode `0644`, and prove the generic watcher adds owner execute permission.
+  Launch it directly with no `--appimage-extract-and-run`, extracted cache, or
+  vendor-specific command-line workaround; require the FUSE mount, Electron
+  startup, a real Sway window, CUA focus/screenshot, and clean unmount to work
+  while the application process has UID 1000 and no `CAP_SYS_ADMIN`.
+- Live host-to-guest and guest-to-host port mappings can be added, changed,
+  exercised with real TCP/UDP traffic, and removed without changing the
+  container PID. Removal closes existing relays, conflicting binds fail with a
+  precise diagnostic, and unrestricted host loopback remains unreachable.
+- Guest audio reaches the physical host output with a generated signal and
+  measured sample flow. The explicitly selected physical host microphone and
+  camera are exercised through their real host-advertised backends, appear as
+  guest-private sources only while enabled, carry verifiable non-placeholder
+  samples/frames, and disappear after toggling off. Synthetic PipeWire sources
+  are permitted only in unit/CI coverage and never satisfy hardware or release
+  acceptance. While the microphone is enabled, the host graph must contain a
+  running PipeWire-Pulse recording source-output with Wild Buzzard's application
+  ID, selected target, and capture-process PID; this must drive the standard
+  host desktop recording/privacy indication and disappear on disable. After
+  disablement, attempts from the guest to reconnect to the old endpoint fail
+  and no host capture process remains.
+- The release AppImage passes the same media tests with host PATH stripped;
+  its GStreamer/PipeWire executables, plugins, libraries, and licenses resolve
+  only from the mounted AppDir.
 - All machine state is beside the AppImage, including `shared/`, never
   `~/.wb`.
 - Copying the portable folder needs no metadata rewrite.
@@ -555,6 +703,9 @@ status while any safe in-scope acceptance scenario remains untested.
   Machine menu, Settings menu, Start, Stop, Restart, retry after failure, GPU
   selection, network selection, and initial monitor size. No action leaks a
   click or keystroke to the guest.
+- `Machine`, `Ports`, `Devices`, and `Settings` remain in the native header bar
+  at every tested size and scale. No separate toolbar or bottom confinement
+  banner reduces the embedded guest monitor viewport.
 - The host frame and menu span the complete window at 100%, 125%, 133%, 150%,
   175%, and 200% scale; no titlebar or control is clipped.
 - Host resize and fractional scale yield the exact guest logical/physical

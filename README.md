@@ -82,13 +82,51 @@ resolution instead of stretching an image. The final Sway dmabuf always
 matches the host viewport's native physical pixels. Guest desktop density is a
 separate setting: Follow Host, 100%, 125%, 150%, 175%, or 200%.
 
-The host-owned `Machine` menu reports the running state and provides GPU
-passthrough selection, the initial guest-monitor size, maximize/restore, and
-orderly machine shutdown. GPU, initial-size, and desktop-scale changes are
-saved in portable `machine.json` and clearly take effect on the next start.
+The host-owned `Machine` control reports the running state and provides Start,
+Stop, Restart, orderly Shut Down, and exit/close actions. The native window
+controls own host maximize/restore. `Settings` owns the initial guest-monitor
+size, network mode, explicit GPU selection (including `all`), desktop density,
+and diagnostics. Settings that change namespace or device construction are
+saved in portable `machine.json` and clearly require a machine restart.
 Double-clicking the AppImage starts the machine; closing either the host frame
 or `Shut Down Machine` powers the guest off cleanly before the window
 disappears.
+
+## Live ports and media
+
+The native title/header bar contains `Machine`, `Ports`, `Devices`, and
+`Settings` directly; there is no separate toolbar or bottom status banner. The
+embedded monitor receives all remaining vertical space.
+
+The host-owned `Ports` menu adds and removes TCP or UDP mappings in either
+direction while the machine is running. `Host → Guest` publishes a chosen
+guest service on a chosen host address and port. `Guest → Host` exposes only
+one chosen host destination through a private guest listener. Applying a
+change does not restart the machine or change its namespace PID.
+
+The host-owned `Devices` menu independently controls guest audio output, host
+microphone input, and host camera input. A normal Wayland desktop already runs
+the per-user PipeWire service used by native applications such as browsers and
+screen recorders. Wild Buzzard connects to that existing session and bundles
+its own PipeWire/GStreamer client libraries, plugins, scanner, launcher, and
+bridge code in the AppImage. The user installs no PipeWire bridge package,
+creates no service, and edits no configuration file.
+
+Microphone and camera access is off by default. Turning one on creates only its
+machine-private capture bridge and guest PipeWire source. Capture is continuous
+for the enabled interval, and the native Wild Buzzard header labels every
+active input. Microphone capture also registers with the host desktop audio
+session as an explicit `Wild Buzzard Microphone` recording stream, so GNOME and
+compatible shells show their normal microphone/privacy indicator. Wild Buzzard
+refuses to report the microphone active if that tracked host recording stream
+cannot be observed, continuously rechecks the stream while sharing remains
+enabled, and terminates an unaccounted bridge before retrying it. The media
+helper is bound to the broker's lifetime and Wild Buzzard never bypasses host
+accounting through direct ALSA capture. Turning it off kills
+the host capture process, removes the relay, and removes the guest source. The
+host PipeWire socket is never mounted into the guest. A host without a usable
+PipeWire session can still run the desktop machine, but enabling a media bridge
+returns a precise unsupported-host diagnostic.
 
 ## Full computer use inside the guest
 
@@ -145,6 +183,16 @@ SSH server or host-network control port is added.
 
 The interactive user has passwordless sudo inside the rootless machine and can
 install arbitrary packages and agents. Guest root is never host root.
+
+Native Type-2 AppImages run inside the guest without extraction flags. The
+reference image carries the conventional Electron runtime libraries,
+`libfuse.so.2`, FUSE 3 utilities, and the narrowly exposed `/dev/fuse` device.
+An in-guest watcher adds only the owner execute bit to genuine AppImage ELF
+files arriving in `/home/wildbuzzard` or `/shared`; ordinary files and symlinks
+are not authorized. Because the persistent rootfs remains `nosuid` and the
+whole guest inherits Linux `no_new_privs`, a scoped guest-root broker performs
+only libfuse's mount-helper exchange. It does not grant `CAP_SYS_ADMIN` to the
+AppImage or its application tree.
 
 ## Display and isolation
 
@@ -209,6 +257,8 @@ Host prerequisites are:
 - subordinate UID/GID ranges and trusted `newuidmap`/`newgidmap`;
 - a Wayland desktop session;
 - working GPU kernel drivers and device permissions; and
+- for optional audio, microphone, or camera sharing, the normal per-user host
+  PipeWire session and permission to the explicitly enabled input;
 - AppImage execution, with extract-and-run when FUSE is unavailable.
 
 Wild Buzzard installs no permanent daemon, setuid Wild Buzzard helper, system
@@ -233,12 +283,60 @@ is a separate explicit operation and never silently discards local changes.
 
 ## Development
 
-```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-./scripts/build-appimage.sh
-./scripts/hardware-acceptance.sh ./dist/WildBuzzard-x86_64.AppImage acceptance
+The repository is split along its actual deployment boundaries:
+
+```text
+host/                    native launcher, broker, display, AppImage packaging
+guest/                   shell, boot/session assets, CUA fork, guest installer
+oci/                     Debian reference-image assembly and local Compose build
+tests/acceptance/        real session, GPU, media, CUA, and visual journeys
+tools/                   local source tests and dependency/license audit
+LICENSES/                machine-readable release-component evidence
 ```
+
+The host and guest are separate Cargo workspaces and have independent lock
+files. OCI assembly consumes only `guest/` outputs and pinned compositor
+sources; it does not compile or copy host runtime code. The AppImage build does
+consume the guest shell/CUA payload because it migrates those managed assets
+into existing persistent machines.
+
+All generated targets, AppDirs, image archives, and acceptance artifacts are
+placed under `${TMPDIR:-/tmp}/wildbuzzard-build-$(id -u)` by default, outside
+the checkout. Override `WILDBUZZARD_BUILD_ROOT` or the component-specific
+output variables when needed.
+
+```sh
+./tools/test-local.sh
+./host/build-appimage.sh
+./oci/build-local.sh
+
+WILDBUZZARD_ELECTRON_APPIMAGE=/path/to/LM-Studio-x64.AppImage \
+  WILDBUZZARD_ACCEPT_FULL_MATRIX=1 \
+  ./tests/acceptance/hardware-acceptance.sh \
+  /tmp/wildbuzzard-build-$(id -u)/out/WildBuzzard-x86_64.AppImage acceptance
+```
+
+`oci/build-local.sh` uses `oci/compose.yaml`, verifies the complete installed
+guest contract, and keeps the image local. Set `WILDBUZZARD_EXPORT_ARCHIVE=1`
+to export and checksum a compressed Docker archive outside the repository.
+`host/build-appimage.sh` likewise creates no GitHub release. This repository
+currently has no active GitHub Actions build, artifact upload, package push, or
+release workflow.
+
+Native Electron acceptance uses the official LM Studio AppImage as an external
+test input. It is copied into `/shared` as mode `0644`, must become executable
+through the generic guest policy, and is launched directly—never through
+`--appimage-extract-and-run`. The vendor binary is not committed or bundled in
+the reference image.
+
+The live-integration hardware test selects and exercises real host microphone
+and camera backends. It verifies TCP and UDP in both directions, physical
+audio/video payloads, host-session recording registration, off-state
+revocation, bridge recovery, and unchanged namespace PID. Synthetic sources
+may cover deterministic unit/CI behavior but never count as hardware or
+release acceptance. Full hardware acceptance runs
+the physical test by default; set `WILDBUZZARD_ACCEPT_INTEGRATIONS=0` only on an
+intentionally media-less CI worker.
 
 [`AGENTS.md`](AGENTS.md) is the complete authoritative product and release
 acceptance specification.

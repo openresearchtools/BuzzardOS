@@ -1,0 +1,116 @@
+schema = 1
+audited_at = "2026-08-09"
+runtime_source = "https://github.com/AppImage/type2-runtime"
+runtime_source_commit = "75849dce7cc37e4319b633df1f116ca895c71a12"
+runtime_source_archive = "type2-runtime-75849dce.tar.gz"
+runtime_source_archive_sha256 = "b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443"
+runtime_source_date_epoch = 1782256868
+runtime_build_script = "tools/build-appimage-runtime.sh"
+runtime_target = "x86_64-linux-musl"
+runtime_elf_type = "DYN"
+runtime_static_pie = true
+runtime_binary_sha256 = "a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6"
+runtime_binary_size = 455096
+appimage_marker_offset = 1024
+static_marker_offset = 2048
+appimage_mutable_region_offset = 442480
+appimage_mutable_region_size = 16
+appimage_mutable_region_purpose = ".digest_md5 is filled by appimagetool; zeroing this region restores the checksum-pinned runtime bytes"
+toolchain = "Zig 0.14.1 x86_64-linux binary distribution targeting x86_64-linux-musl"
+toolchain_download = "https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
+toolchain_sha256 = "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
+relink_manifest_sha256 = "86468af49dcbe4c24067a6a6091eff2c6676063d4a39e6407f011d26a25f2828"
+runtime_metadata_sha256 = "73928c6597ace903a8662b66f72906f142ffb2a9c2848b7249a75364c659ef11"
+relink_kit_artifact = "appimage:/usr/share/doc/wildbuzzard/sources/appimage-runtime/relink-kit"
+runtime_metadata_artifact = "appimage:/usr/share/doc/wildbuzzard/sources/appimage-runtime/runtime-metadata.toml"
+notes = "Wild Buzzard builds this runtime locally from the exact archives below with Zig's checksum-pinned musl target. It does not consume Alpine packages, host GCC, or the mutable AppImage continuous runtime binary. Wild Buzzard's emitted C changes are additionally licensed under MIT in LICENSES/wildbuzzard-appimage-runtime-patch-MIT. Two clean external builds produced byte-identical runtime, debug, source, object, and relink-kit outputs. The deterministic build script applies Wild Buzzard's native-FUSE-first automatic extract-and-run fallback and fixes the upstream musl cleanup descriptor budget before compilation. The bundled relink kit contains the complete libfuse and runtime source archives, the upstream libfuse patch, all non-LGPL static objects/archives, the linker script, and a deterministic relink command. A recipient supplies a modified x86_64-linux-musl libfuse3.a and can reproduce the shipped runtime byte-for-byte with the pinned Zig toolchain."
+
+[[dependency]]
+name = "type2-runtime"
+version = "commit 75849dce7cc37e4319b633df1f116ca895c71a12"
+source = "https://github.com/AppImage/type2-runtime/archive/75849dce7cc37e4319b633df1f116ca895c71a12.tar.gz"
+archive = "type2-runtime-75849dce.tar.gz"
+source_sha256 = "b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443"
+license = "MIT"
+evidence = ["LICENSES/upstream/appimage-type2-runtime-75849dce-LICENSE", "LICENSES/wildbuzzard-appimage-runtime-patch-MIT"]
+relink_kit_input = true
+
+[[dependency]]
+name = "libfuse"
+version = "3.15.0, patched by type2-runtime"
+source = "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz"
+archive = "fuse-3.15.0.tar.xz"
+source_sha256 = "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0"
+license = "LGPL-2.1-only"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/libfuse-3.15.0-LICENSE", "LICENSES/upstream/appimage-runtime-dependencies/libfuse-3.15.0-LGPL2"]
+relink_kit_input = true
+relinkable = true
+
+[[dependency]]
+name = "squashfuse"
+version = "0.5.2"
+source = "https://github.com/vasi/squashfuse/archive/0.5.2.tar.gz"
+archive = "squashfuse-0.5.2.tar.gz"
+source_sha256 = "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3"
+license = "BSD-2-Clause"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/squashfuse-0.5.2-LICENSE"]
+relink_kit_input = true
+
+[[dependency]]
+name = "musl"
+version = "snapshot bundled by Zig 0.14.1; COPYRIGHT matches musl 1.2.5"
+source = "Zig 0.14.1 lib/libc/musl in the checksum-pinned toolchain archive"
+source_container_sha256 = "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
+license = "MIT AND LicenseRef-musl-permissive-file-exceptions"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/musl-1.2.5-COPYRIGHT"]
+
+[[dependency]]
+name = "Zig compiler-rt"
+version = "snapshot bundled by Zig 0.14.1"
+source = "Zig 0.14.1 lib/compiler_rt in the checksum-pinned toolchain archive"
+source_container_sha256 = "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c"
+license = "MIT"
+evidence = ["LICENSES/upstream/zig-0.14.1-LICENSE"]
+
+[[dependency]]
+name = "zstd"
+version = "1.5.6"
+source = "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz"
+archive = "zstd-1.5.6.tar.gz"
+download_sha256 = "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
+source_sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7"
+normalization = "The checksum-verified upstream gzip is decompressed and recompressed with gzip -n at its default level; the tar stream is unchanged and the normalized bytes are the recorded relink-kit input."
+license = "BSD-3-Clause OR GPL-2.0-only"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/zstd-1.5.6-LICENSE"]
+relink_kit_input = true
+
+[[dependency]]
+name = "zlib"
+version = "1.3.2"
+source = "https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz"
+archive = "zlib-1.3.2.tar.gz"
+source_sha256 = "b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1"
+license = "Zlib"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/zlib-1.3.2-LICENSE"]
+relink_kit_input = true
+
+[[dependency]]
+name = "mimalloc"
+version = "2.1.7"
+source = "https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.7.tar.gz"
+archive = "mimalloc-2.1.7.tar.gz"
+source_sha256 = "0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d"
+license = "MIT"
+evidence = ["LICENSES/upstream/appimage-runtime-dependencies/mimalloc-2.1.7-LICENSE"]
+relink_kit_input = true
+
+[[dependency]]
+name = "Meson"
+version = "1.7.2 wheel; build-only input retained in the exact source kit"
+source = "https://files.pythonhosted.org/packages/e5/2b/46bda4ef5a7ae4135dbfe27fc0368c44e5a349a897a54fdf2cedb8dcb66e/meson-1.7.2-py3-none-any.whl"
+archive = "meson-1.7.2-py3-none-any.whl"
+source_sha256 = "82c6818dc81743c96de3a458f06175776ebfde4081195ea31ea6971838f25e38"
+license = "Apache-2.0"
+evidence = ["LICENSES/upstream/go-containerregistry-v0.21.8-LICENSE"]
+evidence_note = "This standard Apache-2.0 text is byte-identical to meson-1.7.2.dist-info/COPYING in the checksum-pinned wheel."
+relink_kit_input = true

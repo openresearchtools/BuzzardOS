@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/wb-core",
+    "crates/wildbuzzard",
+    "crates/wildbuzzard-broker",
+    "crates/wildbuzzard-display",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/openresearchtools/BuzzardOS"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+flate2 = "1.1"
+fs2 = "0.4"
+libc = "0.2"
+nix = { version = "0.30", features = ["fs", "process", "signal", "socket", "uio", "user"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3.20"
+gtk4 = { version = "0.10.3", features = ["v4_18"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
+wayland-protocols = { version = "0.32", features = ["client", "server", "staging", "unstable"] }
+wayland-server = "0.31"
+xkbcommon = "0.8"
+zstd = "0.13"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

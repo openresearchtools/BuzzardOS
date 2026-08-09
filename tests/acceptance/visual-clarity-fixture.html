@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wild Buzzard native-pixel clarity fixture</title>
+<style>
+  :root { color-scheme: light; font-family: "Noto Sans", sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #17384f; color: #10202c; }
+  main {
+    width: 1120px; margin: 24px auto; padding: 24px;
+    background: #fff; border: 8px solid #ff00a8;
+  }
+  h1 { margin: 0 0 8px; font-size: 32px; font-weight: 700; }
+  p { margin: 8px 0; font-size: 18px; }
+  #identity { font-family: monospace; font-size: 16px; }
+  #native-stripes {
+    width: 800px; height: 96px; display: block; margin: 20px 0;
+    border: 4px solid #00ffd5; image-rendering: pixelated;
+  }
+  .edge {
+    width: 800px; height: 96px; margin: 20px 0;
+    background: linear-gradient(90deg, #000 0 50%, #fff 50% 100%);
+    border: 4px solid #ff8a00;
+  }
+  .fine { font-size: 13px; font-weight: 400; }
+</style>
+<main>
+  <h1>Wild Buzzard — native-pixel browser clarity</h1>
+  <p>café — 日本語 中文 한국어 — 😀 🦅</p>
+  <p class="fine">Fine text: Sphinx of black quartz, judge my vow. 0123456789</p>
+  <p id="identity"></p>
+  <canvas id="native-stripes" aria-label="alternating native pixel stripes"></canvas>
+  <div class="edge" aria-label="hard black to white edge"></div>
+</main>
+<script>
+  const canvas = document.querySelector("#native-stripes");
+  const cssWidth = 800, cssHeight = 96, dpr = window.devicePixelRatio;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  const context = canvas.getContext("2d", {alpha: false});
+  for (let x = 0; x < canvas.width; x++) {
+    context.fillStyle = x % 2 ? "#fff" : "#000";
+    context.fillRect(x, 0, 1, canvas.height);
+  }
+  document.querySelector("#identity").textContent =
+    `devicePixelRatio=${dpr}; backing=${canvas.width}x${canvas.height}; ` +
+    `screen=${screen.width}x${screen.height}`;
+</script>
+</html>

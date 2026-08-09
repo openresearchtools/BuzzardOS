@@ -1,0 +1,32 @@
+schema = 1
+resolved_at = "2026-08-09T13:57:10Z"
+platform = "linux/amd64"
+
+[frontend]
+reference = "docker/dockerfile:1.7"
+registry_reference = "docker.io/docker/dockerfile:1.7"
+index_digest = "sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
+manifest_digest = "sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720"
+config_digest = "sha256:68ebc061390d9a7d6e194f9d58309c754a53cb8b4e3b0d89593920f42f4a9da4"
+layer_digests = [
+    "sha256:96918c57e42509b97f10c074d80672ecdbd3bb7dcd38c1bd95960cf291207416",
+]
+
+[[image]]
+reference = "docker.io/library/debian:sid"
+index_digest = "sha256:24c766c06ebdbda66a026e92361ede7d9212819701b2fca82e347ef0c240cb2c"
+manifest_digest = "sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b"
+config_digest = "sha256:15dd6807acddbf899c8e143476abd25e83b23d928a44608690bf1ec4e73347a5"
+layer_digests = ["sha256:15e2aa5eaf636a71504bd52ce7c8344290aaa10d75e6a3774b131afd96ad5ed6"]
+apt_snapshot = "20260803T000000Z"
+
+[[image]]
+reference = "docker.io/library/rust:1.96-slim"
+index_digest = "sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523"
+manifest_digest = "sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4"
+config_digest = "sha256:ef7774afa8fa5ea5aedfbfdfd3684d130a9c824508cfc0d373e7c3eaa8b546af"
+layer_digests = [
+    "sha256:e95a6c7ea7d49b37920899b023ecd0e32796c976c1748491f76cae53ba86d13a",
+    "sha256:5169cf74e23b4eb5efada4feddccfe1372ad72000179e789555e16a4739b3cfa",
+]
+apt_snapshot = "20260623T000000Z"

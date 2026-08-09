@@ -1,0 +1,34 @@
+schema = 1
+audited_at = "2026-08-09"
+name = "Go standard library and compiler runtime linked into downloaded helpers"
+license = "BSD-3-Clause plus per-file and bundled third-party terms"
+root_license = "LICENSES/upstream/go-runtime/go-1.26-LICENSE"
+patent_grant = "LICENSES/upstream/go-runtime/go-1.26-PATENTS"
+root_license_sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+patent_grant_sha256 = "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+source_archive_manifest = "LICENSES/go-source-archives.tsv"
+source_archive_fetcher = "tools/fetch-go-source-archives.sh"
+bundle_path = "/usr/share/doc/wildbuzzard/sources/go"
+notes = "The root Go LICENSE and PATENTS files are byte-identical in tags go1.26.3 and go1.26.5 and are preserved here. Go build information identifies the exact compiler versions below. The checksum-pinned official source archives for both compiler versions are bundled in every AppImage together with every LICENSE, COPYING, NOTICE, and PATENTS file discovered inside them. This conservative source-and-notice delivery covers the compiled standard library without guessing a package set from stripped binary symbols."
+status = "exact-go-source-and-all-bundled-notices-shipped"
+
+[[binary]]
+name = "crane"
+version = "0.21.8"
+sha256 = "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7"
+go_version = "go1.26.5"
+dependency_inventory = "LICENSES/crane-dependencies.toml"
+
+[[binary]]
+name = "nvidia-ctk"
+version = "1.19.1"
+sha256 = "891cc1c4055da8e98892d6e3ade5aae87c11b0b1e17115e74c2861d86e2f6eb9"
+go_version = "go1.26.3"
+dependency_inventory = "LICENSES/nvidia-go-dependencies.toml"
+
+[[binary]]
+name = "nvidia-cdi-hook"
+version = "1.19.1"
+sha256 = "cca9969335a8d84d59611ee3da0de9c7942ad2202e927c75ec0735df79052a75"
+go_version = "go1.26.3"
+dependency_inventory = "LICENSES/nvidia-go-dependencies.toml"

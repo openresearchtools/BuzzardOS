@@ -1,0 +1,10 @@
+name: wildbuzzard-local
+
+services:
+  desktop:
+    image: ${WILDBUZZARD_OCI_TAG:-wildbuzzard-desktop:local}
+    build:
+      context: ..
+      dockerfile: oci/desktop/Containerfile
+      platforms:
+        - linux/amd64

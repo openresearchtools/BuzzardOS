@@ -1,0 +1,63 @@
+schema = 1
+audited_at = "2026-08-09"
+
+[[asset]]
+id = "wildbuzzard-project-assets"
+paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/WildBuzzard.desktop"]
+exclude = ["guest/assets/themes/WildBuzzard/**", "guest/assets/icons/WildBuzzard/**"]
+license = "AGPL-3.0-or-later"
+evidence = ["LICENSE"]
+status = "covered-by-repository-license"
+
+[[asset]]
+id = "wildbuzzard-metainfo"
+paths = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml"]
+license = "CC0-1.0"
+evidence = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml:metadata_license"]
+status = "declared-inline"
+
+[[asset]]
+id = "wildbuzzard-application-icon"
+paths = ["host/packaging/wildbuzzard.svg"]
+license = "AGPL-3.0-or-later"
+evidence = ["NOTICE", "LICENSE"]
+provenance = "Independently authored geometric SVG for this project; no third-party path data or artwork was copied."
+status = "project-authored-and-licensed"
+
+[[asset]]
+id = "wildbuzzard-graphite-gtk-theme"
+paths = ["guest/assets/themes/WildBuzzard/**"]
+license = "AGPL-3.0-or-later"
+runtime_import = "resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css"
+evidence = ["NOTICE", "LICENSE", "guest/assets/themes/WildBuzzard/gtk-3.0/gtk.css"]
+notes = "Independently authored project CSS. The palette was selected by visual observation of common dark creative-tool interfaces; no third-party stylesheet or artwork was copied. GTK 3 imports the guest's separately packaged Adwaita resource rather than copying it."
+status = "project-authored-and-licensed"
+
+[[asset]]
+id = "wildbuzzard-folder-icon-theme"
+paths = ["guest/assets/icons/WildBuzzard/**"]
+license = "AGPL-3.0-or-later"
+evidence = ["NOTICE", "LICENSE", "guest/assets/icons/WildBuzzard/index.theme"]
+notes = "Independently authored simple folder SVG geometry and symbolic paths. A warm orange palette was requested by the product design; no Mint-Y SVG path data or artwork was copied."
+status = "project-authored-and-licensed"
+
+[[asset]]
+id = "trycua-default-cursor-assets"
+paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/cua.default.lottie", "guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/cua.default.cua-theme"]
+license = "MIT"
+evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/UPSTREAM.toml"]
+status = "covered-by-vendored-upstream-license"
+
+[[asset]]
+id = "trycua-inter-font"
+paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter.ttf"]
+license = "OFL-1.1"
+evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt"]
+status = "recorded"
+
+[[asset]]
+id = "wayland-virtual-keyboard-protocol"
+paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml"]
+license = "MIT"
+evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml:copyright"]
+status = "recorded-inline"
