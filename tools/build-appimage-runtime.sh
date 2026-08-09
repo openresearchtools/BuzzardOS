@@ -104,9 +104,13 @@ for command_name in curl cut dd file find gzip install make ninja od patch pytho
         exit 1
     fi
 done
-if [[ "$self_test" == true ]] && ! command -v mksquashfs >/dev/null 2>&1; then
-    echo "runtime self-test dependency missing: mksquashfs" >&2
-    exit 1
+if [[ "$self_test" == true ]]; then
+    for command_name in mksquashfs setpriv; do
+        if ! command -v "$command_name" >/dev/null 2>&1; then
+            echo "runtime self-test dependency missing: $command_name" >&2
+            exit 1
+        fi
+    done
 fi
 
 zig=$(realpath -- "$zig")
@@ -1311,10 +1315,21 @@ PY
     rm -rf -- "$no_cleanup_appdir"
 
     # Deterministically exercise the automatic fallback without depending on
-    # the build host's confinement policy. The helper passes discovery but
-    # rejects the actual mount, exactly like a host that closes or denies the
-    # libfuse communication descriptor during the privileged transition.
-    mkdir -p "$test_root/fallback-tmp"
+    # the build host's confinement policy. A privileged CI container can mount
+    # FUSE directly and bypass FUSERMOUNT_PROG, so run only these fallback
+    # cases as an unprivileged user. The helper passes discovery but rejects
+    # the actual mount, exactly like a host that closes or denies the libfuse
+    # communication descriptor during the privileged transition.
+    fallback_state="$test_root/fallback-state"
+    fallback_tmp="$fallback_state/tmp"
+    mkdir -p "$fallback_tmp"
+    fallback_runner=()
+    if [[ "$(id -u)" == 0 ]]; then
+        chown -R 65534:65534 "$fallback_state"
+        fallback_runner=(
+            setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs --
+        )
+    fi
     cat > "$test_root/reject-fusermount3" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then
@@ -1324,28 +1339,33 @@ fi
 exit 1
 EOF
     chmod 755 "$test_root/reject-fusermount3"
-    fallback_output=$(
-        TMPDIR="$test_root/fallback-tmp" \
+    fallback_appdir_record="$fallback_state/appdir"
+    env \
+        TMPDIR="$fallback_tmp" \
         FUSERMOUNT_PROG="$test_root/reject-fusermount3" \
-            "$test_root/test.AppImage" fallback
-    )
-    [[ "$fallback_output" == wildbuzzard-runtime-self-test:fallback ]]
-    if find "$test_root/fallback-tmp" -mindepth 1 -print -quit | grep -q .; then
+        "${fallback_runner[@]}" \
+        "$test_root/test.AppImage" record-appdir "$fallback_appdir_record"
+    fallback_appdir=$(<"$fallback_appdir_record")
+    [[ "$fallback_appdir" == "$fallback_tmp/appimage_extracted_"* ]]
+    [[ ! -e "$fallback_appdir" ]]
+    if find "$fallback_tmp" -mindepth 1 -print -quit | grep -q .; then
         echo "runtime automatic extract-and-run fallback left temporary files" >&2
         exit 1
     fi
 
-    fallback_first_gate="$test_root/fallback-lease-first-gate"
-    fallback_first="$test_root/fallback-lease-first"
-    fallback_second_gate="$test_root/fallback-lease-second-gate"
-    fallback_second="$test_root/fallback-lease-second"
-    fallback_appdir_record="$test_root/fallback-lease-appdir"
-    fallback_output_file="$test_root/fallback-lease-output"
-    fallback_returned="$test_root/fallback-lease-returned"
+    fallback_first_gate="$fallback_state/lease-first-gate"
+    fallback_first="$fallback_state/lease-first"
+    fallback_second_gate="$fallback_state/lease-second-gate"
+    fallback_second="$fallback_state/lease-second"
+    fallback_appdir_record="$fallback_state/lease-appdir"
+    fallback_output_file="$fallback_state/lease-output"
+    fallback_returned="$fallback_state/lease-returned"
     (
         fallback_lease_output=$(
-            TMPDIR="$test_root/fallback-tmp" \
-            FUSERMOUNT_PROG="$test_root/reject-fusermount3" \
+            env \
+                TMPDIR="$fallback_tmp" \
+                FUSERMOUNT_PROG="$test_root/reject-fusermount3" \
+                "${fallback_runner[@]}" \
                 "$test_root/test.AppImage" detached-lease \
                     "$fallback_first_gate" "$fallback_first" \
                     "$fallback_second_gate" "$fallback_second" \
@@ -1364,8 +1384,8 @@ EOF
     wait "$fallback_caller"
     [[ "$(<"$fallback_output_file")" == wildbuzzard-runtime-lease-launched ]]
     fallback_lease_appdir=$(<"$fallback_appdir_record")
-    [[ "$fallback_lease_appdir" == "$test_root/fallback-tmp/appimage_extracted_"* ]]
-    if find "$test_root/fallback-tmp" -maxdepth 1 -type d -name '.mount_*' \
+    [[ "$fallback_lease_appdir" == "$fallback_tmp/appimage_extracted_"* ]]
+    if find "$fallback_tmp" -maxdepth 1 -type d -name '.mount_*' \
         -print -quit | grep -q .; then
         echo "failed native FUSE attempt left its mount directory" >&2
         exit 1
@@ -1378,7 +1398,7 @@ EOF
     wait_for_file "$fallback_second"
     [[ "$(<"$fallback_second")" == wildbuzzard-runtime-lease:second ]]
     wait_for_absent "$fallback_lease_appdir"
-    if find "$test_root/fallback-tmp" -mindepth 1 -print -quit | grep -q .; then
+    if find "$fallback_tmp" -mindepth 1 -print -quit | grep -q .; then
         echo "detached automatic fallback left temporary files" >&2
         exit 1
     fi
