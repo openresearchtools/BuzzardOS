@@ -161,7 +161,12 @@ jobs:
                 libpulse-dev \
                 libspa-0.2-modules \
                 libwayland-dev \
+                libx11-dev \
+                libxfixes-dev \
+                libxi-dev \
                 libxkbcommon-dev \
+                libxrandr-dev \
+                libxtst-dev \
                 make \
                 ninja-build \
                 patch \
