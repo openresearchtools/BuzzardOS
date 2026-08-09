@@ -185,11 +185,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -c /dev/fuse ]]; then
+            sudo modprobe fuse
+          fi
+          test -c /dev/fuse || {
+            echo 'GitHub runner did not provide the FUSE device required by the AppImage runtime self-test' >&2
+            exit 1
+          }
           mkdir -p \
             "$RUNNER_TEMP/wildbuzzard-appimage-build" \
             "$RUNNER_TEMP/wildbuzzard-appimage-output"
           docker run --rm \
             --platform linux/amd64 \
+            --device /dev/fuse:/dev/fuse \
+            --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --volume "$RUNNER_TEMP/wildbuzzard-appimage-build:/build" \
             --volume "$RUNNER_TEMP/wildbuzzard-appimage-output:/output" \
