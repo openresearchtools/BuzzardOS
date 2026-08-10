@@ -4,6 +4,11 @@ This file is the source of truth for every contributor and coding agent working
 in this repository. Implementations, tests, documentation, packaging, and
 design decisions must preserve the requirements below.
 
+The approved guest Settings, desktop-file operations, AppImage registration,
+updates, theming, sound, scaling, and branding contract is incorporated by
+reference from `docs/GUEST_SETTINGS_DESKTOP_INTEGRATION_PLAN.md`. Changes to
+those features must update that plan and this specification together.
+
 ## Product
 
 Wild Buzzard is a rootless, persistent Linux desktop-machine launcher
