@@ -258,6 +258,13 @@ The native host application:
   controls independently toggle guest audio to host speakers, host microphone
   to guest, and host camera to guest. These integrations apply live and report
   rejection or runtime failure without restarting PID 1.
+- Every new port row prepopulates the host address as `127.0.0.1` and resolves
+  the current guest address automatically from the active machine network;
+  users never have to discover the guest's private IP. An explicit
+  `0.0.0.0` host bind exposes a guest service on every host IPv4 interface and
+  must work for LAN clients when host routing/firewall policy permits it. The
+  UI warns before enabling that wider exposure and never changes loopback to
+  all interfaces implicitly.
 - Shows explicit `Stopped`, `Starting`, `Running`, `Stopping`, and `Failed`
   monitor states in the same window. A failed boot leaves the host application
   open with the error and a retry action.

@@ -263,6 +263,15 @@ focus, window-frame, taskbar, and file-manager accents are replaced with the
 theme's accessible cinnamon accent. Selection must remain distinguishable
 from hover and focus in both themes.
 
+Light mode is a conservative color translation of Dark mode, not a second
+visual design. It keeps exactly the same widget geometry, spacing, padding,
+border widths, corner treatment, titlebar and taskbar dimensions, typography,
+icon geometry, shadows, and interaction states. Only shared palette tokens
+change from dark graphite neutrals to restrained warm-light neutrals while
+retaining the cinnamon accent. It must not introduce bright blue accents,
+stark-white expanses, different control shapes, or larger “light theme”
+metrics.
+
 Applications that do not support live recoloring may require reopening. The
 UI states that limitation instead of claiming the application changed.
 
@@ -272,6 +281,8 @@ Theme values are typed tokens in `desktop-core`, not independently copied
 color literals. The shell reloads its palette and redraws surfaces on a
 settings-generation change. Toolkit and application configuration is written
 atomically, then the appropriate guest-only settings notifications are sent.
+Dark and Light consume one shared geometry stylesheet and two palette maps so
+their layout cannot drift.
 
 ## 6. Display and internal UI scaling
 
@@ -357,6 +368,32 @@ Host media permissions remain host-owned:
 
 Camera permission remains in the host Devices control and is not duplicated
 as a guest Settings page in this milestone.
+
+### 7.1 Host port-sharing behavior
+
+The existing host `Ports` control remains the owner of port forwarding. Every
+new rule is usable without researching namespace addresses:
+
+- the host address is prepopulated as `127.0.0.1`;
+- the guest address is prepopulated from the active machine network and is
+  refreshed automatically when that runtime address changes;
+- both directions show plain-language endpoint labels in addition to the
+  technical Host → Guest or Guest → Host direction; and
+- advanced address fields remain editable, but never start blank.
+
+For exposing a guest service through the host, `127.0.0.1` remains the safe
+default. The user may explicitly change the host listener to `0.0.0.0` to
+listen on every host IPv4 interface. That rule must then be reachable from a
+different machine on the local network when host routing and firewall policy
+allow it. The UI warns that `0.0.0.0` can expose the service on every reachable
+host interface, not only a trusted LAN. It never widens a listener
+automatically.
+
+TCP and UDP rules apply live. Bind conflicts, unavailable guest addresses,
+firewall/routing failures, and disabled listeners report their real state.
+Acceptance tests cover host-loopback access, a separate LAN client,
+host-to-guest and guest-to-host traffic, automatic guest-address resolution,
+rule disable/re-enable, and Stop/Start persistence.
 
 ## 8. Application discovery
 
@@ -697,16 +734,18 @@ the [RSPB Common buzzard guide](https://www.rspb.org.uk/birds-and-wildlife/buzza
 the [RSPB bird-of-prey identification guide](https://www.rspb.org.uk/birds-and-wildlife/identifying-birds/whats-that-bird-of-prey),
 and the [BTO Buzzard profile](https://www.bto.org/learn/about-birds/birdfacts/buzzard).
 
-Use an original underside-view “Thermal Buzzard” in a shallow soaring V:
+The previous generated flying/underside concepts are rejected and must not be
+used as production artwork. The new direction is an original **front-facing
+common buzzard**: a balanced portrait showing the head, upper chest, and
+folded-wing shoulders, with the bird looking toward the viewer. It must read
+as a whole bird portrait rather than a detached mascot eye or abstract wing
+symbol.
 
-- stocky body and compressed neck;
-- modest, broad head with little forward projection;
-- exceptionally broad, rounded wings;
-- five visible fingered primaries per wing at normal sizes; and
-- a short, broad, slightly fanned, non-forked tail.
-
-Avoid heraldic shields, bald heads, owl faces, central eye symbols, giant
-beaks, long hawk tails, forked kite tails, and pointed falcon wings.
+Preserve common-buzzard traits visible from the front: a compact broad head,
+short neck, substantial chest, modest hooked beak, natural raptor eyes, and
+rounded folded shoulders. Avoid eagle heraldry, a giant eagle beak, a bald
+vulture head, an owl facial disc or oversized owl eyes, a falcon helmet shape,
+shields, letters, and a central cyclops-eye motif.
 
 ### 14.2 Vector construction
 
@@ -714,23 +753,49 @@ The production logo is a hand-audited original SVG, not a traced reference
 photograph and not a raw generated raster:
 
 - 256 by 256 master artboard;
-- mark aspect ratio 2.1–2.35:1;
-- at least 9% horizontal clear margin;
-- body length 42–47% of wingspan;
-- head width 8–10% of wingspan;
-- head projection no more than 5% of wingspan;
-- tail width 18–22% and length 13–16% of wingspan;
-- wing tips 6–8% of wingspan above the shoulder line;
+- centered front-facing portrait with safe space on every side;
+- recognizable head, chest, and folded-wing shoulder silhouette before
+  plumage details are added;
+- slight natural asymmetry is allowed, but the optical weight remains
+  balanced;
 - two to four filled paths;
 - no filters, blur, gradients, photographic texture, or scale-dependent
   strokes; and
-- a simplified four-notch symbolic variant at 16–24 pixels.
+- a separately simplified symbolic variant that remains recognizable at
+  16–24 pixels.
 
+Generate several genuinely different front-facing concepts for comparison,
+then manually reconstruct the selected direction as vector geometry.
 Generated concepts may guide anatomy and composition only. They are not
 production assets until manually reconstructed, simplified, visually audited,
-and checked for originality and licensing.
+and checked for originality and licensing. None of the previously generated
+concept images is an approved candidate.
 
-### 14.3 Palette and placement
+### 14.3 Similarity and trademark screening
+
+Every shortlisted vector candidate and the final mark must be checked for
+confusing similarity before it is accepted:
+
+1. render clean color and monochrome images at high resolution;
+2. run each through Google Lens/Google Images reverse-image search and at
+   least one independent reverse/similarity search service;
+3. perform ordinary image searches for front-facing buzzard, hawk, eagle,
+   raptor, Linux, software, security, AI, and technology logos;
+4. search relevant public trademark/logo databases in intended publication
+   territories;
+5. record the date, candidate hash, services, queries, closest results, URLs,
+   and a written comparison in a committed clearance report without copying
+   third-party artwork into the repository; and
+6. reject or substantially redesign a candidate whose overall silhouette,
+   face/beak construction, negative space, eye treatment, color lockup, or
+   composition is materially close to an existing organization or product.
+
+Repeat the searches after every material redesign and once more immediately
+before publication. Reverse-image and database searches reduce risk but do
+not guarantee legal trademark clearance; obtain professional trademark review
+before treating the public brand as legally cleared.
+
+### 14.4 Palette and placement
 
 ```text
 Dark icon background     #181818
@@ -839,9 +904,14 @@ end-to-end testing, and final evidence.
 
 ### Phase 2: branding and theming
 
-- Construct and independently audit the final buzzard SVG.
+- Create multiple front-facing common-buzzard concepts, reject the previous
+  flying concepts, and construct the selected design as an original SVG.
+- Complete and document reverse-image, visual-similarity, and trademark
+  database screening before accepting the mark.
 - Produce dark, light, symbolic, icon, and wallpaper variants from one
   geometry source.
+- Keep Dark and Light geometry identical through one shared layout stylesheet;
+  change only conservative palette tokens.
 - Implement runtime shell palette reload and toolkit/application propagation.
 - Remove unconditional dark-mode startup behavior.
 
@@ -904,9 +974,13 @@ test evidence and must not silently weaken this contract to make tests pass.
   representative Electron application.
 - Verify selected, hover, focused, disabled, warning, and destructive states
   in both themes.
+- Compare widget allocations and shell surface geometry between Dark and
+  Light; require them to be identical apart from color values.
 - Inspect the logo at 16, 24, 32, 64, 256 pixels and on multiple wallpaper
-  aspect ratios. Reject blur, gradients, wrong bird anatomy, and stretched
-  raster output.
+  aspect ratios. Require a front-facing common-buzzard portrait and reject
+  blur, gradients, wrong bird anatomy, and stretched raster output.
+- Review the recorded reverse-image, similarity, and trademark searches for
+  every shortlisted candidate and the final asset.
 
 ### 19.3 Scale
 
@@ -925,6 +999,19 @@ test evidence and must not silently weaken this contract to make tests pass.
 - Verify opening Settings does not activate the microphone.
 - Verify level tests release devices and host privacy indication remains
   truthful.
+
+### 19.4.1 Port sharing
+
+- Create both forwarding directions and verify the host and guest address
+  fields are already populated with correct runtime values.
+- Expose a guest TCP and UDP service on host `127.0.0.1` and verify it remains
+  unreachable from a separate LAN client.
+- Explicitly change the host bind to `0.0.0.0` and verify the same service is
+  reachable from a separate LAN client when the test firewall permits it.
+- Disable the rule and verify both loopback and LAN listeners close
+  immediately; re-enable it and verify recovery without restarting PID 1.
+- Stop/Start the machine and verify the rule persists while the guest address
+  is resolved again rather than relying on a stale hardcoded value.
 
 ### 19.5 Debian applications and updates
 
