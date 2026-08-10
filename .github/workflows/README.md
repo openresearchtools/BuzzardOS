@@ -22,6 +22,15 @@ ownership against the canonical flattened rootfs, then deletes the temporary
 machine. This is an offline first-creation acceptance check, not a second
 packaging implementation.
 
+Ubuntu 24.04 runners keep their global unprivileged-user-namespace AppArmor
+restriction enabled. For this recipient-path check only, the workflow copies
+the checksum-verified AppImage to a root-owned, non-writable, run-specific
+path and temporarily loads Canonical's exact-path `flags=(unconfined)` profile
+with `userns` permission. An early `doctor` probe must prove the complete
+keep-ID subordinate UID/GID map before the OCI build begins. The profile is
+removed in an unconditional cleanup step; it does not change the AppImage or
+the runtime policy on an end user's host.
+
 This is the workflow's only mode. It has no automatic trigger, publisher job,
 release/prerelease input, or write permission. It cannot create or modify a
 GitHub Release, tag, environment, package, GHCR image, or other registry

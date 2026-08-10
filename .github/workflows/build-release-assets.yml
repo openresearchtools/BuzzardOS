@@ -216,6 +216,12 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 360
+    env:
+      CI_APPIMAGE_DIR: /opt/wildbuzzard-actions-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_APPIMAGE_INPUT: /opt/wildbuzzard-actions-${{ github.run_id }}-${{ github.run_attempt }}/WildBuzzard-x86_64.AppImage
+      CI_APPARMOR_PROFILE: wildbuzzard_actions_${{ github.run_id }}_${{ github.run_attempt }}
+      CI_APPARMOR_POLICY: /opt/wildbuzzard-actions-${{ github.run_id }}-${{ github.run_attempt }}/wildbuzzard-userns.apparmor
+      CI_APPARMOR_MARKER: /opt/wildbuzzard-actions-${{ github.run_id }}-${{ github.run_attempt }}/.apparmor-loaded
     steps:
       - name: Check out the selected commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -246,6 +252,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             acl \
+            apparmor \
             attr \
             jq \
             rsync \
@@ -261,6 +268,92 @@ jobs:
             cd "$(dirname -- "$APPIMAGE_INPUT")"
             sha256sum --check SHA256SUMS
           )
+          appimage_sha256=$(sha256sum "$APPIMAGE_INPUT" | awk '{print $1}')
+          [[ "$appimage_sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "APPIMAGE_SHA256=$appimage_sha256" >>"$GITHUB_ENV"
+
+      - name: Prepare exact-path rootless namespace policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -ne 0 || {
+            echo 'the recipient-path namespace test must run as the ordinary runner user' >&2
+            exit 1
+          }
+          [[ "$CI_APPIMAGE_DIR" =~ ^/opt/wildbuzzard-actions-[0-9]+-[0-9]+$ ]]
+          [[ "$CI_APPIMAGE_INPUT" == "$CI_APPIMAGE_DIR/WildBuzzard-x86_64.AppImage" ]]
+          [[ "$CI_APPARMOR_POLICY" == "$CI_APPIMAGE_DIR/wildbuzzard-userns.apparmor" ]]
+          [[ "$CI_APPARMOR_MARKER" == "$CI_APPIMAGE_DIR/.apparmor-loaded" ]]
+          [[ "$CI_APPARMOR_PROFILE" =~ ^wildbuzzard_actions_[0-9]+_[0-9]+$ ]]
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 || {
+            echo 'runner must retain Ubuntu unprivileged-userns restriction during the smoke test' >&2
+            exit 1
+          }
+
+          profile_loaded=false
+          profile_staging=
+          cleanup_failed_setup() {
+            status=$?
+            trap - EXIT
+            if [[ -n "$profile_staging" ]]; then
+              rm -f -- "$profile_staging"
+            fi
+            if [[ "$status" -ne 0 ]]; then
+              if [[ "$profile_loaded" == true ]]; then
+                sudo apparmor_parser -K -R "$CI_APPARMOR_POLICY" || true
+              fi
+              sudo rm -rf -- "$CI_APPIMAGE_DIR"
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_setup EXIT
+
+          sudo install -d -o root -g root -m 0755 "$CI_APPIMAGE_DIR"
+          sudo install -o root -g root -m 0555 \
+            "$APPIMAGE_INPUT" "$CI_APPIMAGE_INPUT"
+          cmp "$APPIMAGE_INPUT" "$CI_APPIMAGE_INPUT"
+          test -f "$CI_APPIMAGE_INPUT" && test ! -L "$CI_APPIMAGE_INPUT"
+          test "$(stat -c '%u:%g:%a' "$CI_APPIMAGE_INPUT")" = '0:0:555'
+          test "$(sha256sum "$CI_APPIMAGE_INPUT" | awk '{print $1}')" = \
+            "$APPIMAGE_SHA256"
+
+          profile_staging=$(mktemp "$RUNNER_TEMP/wildbuzzard-userns-profile.XXXXXX")
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            '' \
+            "profile $CI_APPARMOR_PROFILE \"$CI_APPIMAGE_INPUT\" flags=(unconfined) {" \
+            '  userns,' \
+            '}' >"$profile_staging"
+          sudo install -o root -g root -m 0600 \
+            "$profile_staging" "$CI_APPARMOR_POLICY"
+          rm -f -- "$profile_staging"
+          profile_staging=
+          sudo apparmor_parser -K -a "$CI_APPARMOR_POLICY"
+          profile_loaded=true
+          sudo install -o root -g root -m 0400 /dev/null "$CI_APPARMOR_MARKER"
+          echo "APPIMAGE_INPUT=$CI_APPIMAGE_INPUT" >>"$GITHUB_ENV"
+          trap - EXIT
+
+      - name: Verify the exact rootless subordinate-ID path
+        shell: bash
+        run: |
+          set -euo pipefail
+          doctor_output="$RUNNER_TEMP/wildbuzzard-rootless-doctor.txt"
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_INPUT" doctor \
+            >"$doctor_output" 2>&1
+          doctor_status=$?
+          set -e
+          cat "$doctor_output"
+          grep -Eq \
+            '^[[:space:]]*full UID/GID mapping: yes \(required\)$' \
+            "$doctor_output" || {
+              echo 'the exact AppImage could not construct its full keep-ID subordinate UID/GID map' >&2
+              exit 1
+            }
+          printf 'Rootless ID-map preflight passed (doctor exit %s; headless runner checks may remain unavailable).\n' \
+            "$doctor_status"
 
       - name: Build and verify flattened rootfs payload
         shell: bash
@@ -281,6 +374,22 @@ jobs:
           test -s "$RELEASE_OUTPUT/SHA256SUMS"
           cmp "$APPIMAGE_INPUT" "$RELEASE_OUTPUT/WildBuzzard-x86_64.AppImage"
           (cd "$RELEASE_OUTPUT" && sha256sum --check SHA256SUMS)
+
+      - name: Remove runner-only namespace policy
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CI_APPIMAGE_DIR" =~ ^/opt/wildbuzzard-actions-[0-9]+-[0-9]+$ ]]
+          [[ "$CI_APPARMOR_POLICY" == "$CI_APPIMAGE_DIR/wildbuzzard-userns.apparmor" ]]
+          [[ "$CI_APPARMOR_MARKER" == "$CI_APPIMAGE_DIR/.apparmor-loaded" ]]
+          if [[ -e "$CI_APPARMOR_MARKER" ]]; then
+            sudo apparmor_parser -K -R "$CI_APPARMOR_POLICY"
+          fi
+          if [[ -d "$CI_APPIMAGE_DIR" ]]; then
+            sudo rm -rf -- "$CI_APPIMAGE_DIR"
+          fi
+          test ! -e "$CI_APPIMAGE_DIR"
 
       - name: Upload complete portable-bundle artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
