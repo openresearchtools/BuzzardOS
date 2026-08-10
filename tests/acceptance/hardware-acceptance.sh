@@ -208,6 +208,40 @@ wait_native_window_frame() {
     exit 1
 }
 
+wait_configured_initial_window_frame() {
+    local configured_width=$1
+    local configured_height=$2
+    local deadline=$((SECONDS + 30))
+    while ((SECONDS < deadline)); do
+        if jq -e \
+            --argjson configured_width "$configured_width" \
+            --argjson configured_height "$configured_height" '
+            def gcd(a; b):
+                if b == 0 then a else gcd(b; a % b) end;
+            def aligned_extent(extent; scale_120):
+                (120 / gcd(scale_120; 120)) as $denominator |
+                (((extent + $denominator - 1) / $denominator | floor) * $denominator);
+            (aligned_extent($configured_width; .display.presentation.scale_120)) as $expected_width |
+            (aligned_extent($configured_height; .display.presentation.scale_120)) as $expected_height |
+            .display.presentation.scale_120 >= 120 and
+            .display.window.width == $expected_width and
+            .display.window.height == $expected_height and
+            .display.presentation.viewport_width == $expected_width and
+            .display.presentation.viewport_height == $expected_height and
+            .display.presentation.width ==
+                (($expected_width * .display.presentation.scale_120 + 119) / 120 | floor) and
+            .display.presentation.height ==
+                (($expected_height * .display.presentation.scale_120 + 119) / 120 | floor) and
+            .display.presentation.native_resolution == true
+        ' "$runtime" >/dev/null; then
+            return
+        fi
+        sleep 0.1
+    done
+    echo "native monitor did not reach the pixel-aligned viewport for configured ${configured_width}x${configured_height}" >&2
+    exit 1
+}
+
 wait_native_window_frame_after() {
     local previous=$1
     local deadline=$((SECONDS + 30))
@@ -766,6 +800,8 @@ if [[ ! -f "$portable_dir/vm/$machine/machine.json" ]]; then
     fi
     wb "${create_arguments[@]}"
 fi
+configured_width=$(jq -er '.width' "$portable_dir/vm/$machine/machine.json")
+configured_height=$(jq -er '.height' "$portable_dir/vm/$machine/machine.json")
 # Stop deliberately preserves the native host window and its supervising
 # broker. Close any live supervisor instead, including one already in Stopped
 # state, so the lease test below unequivocally exercises this AppImage/runtime
@@ -782,11 +818,7 @@ fi
 wb start "$machine" --detach
 wait_running
 refresh_pid
-wait_native_window_frame
-configured_width=$(jq -er '.width' "$portable_dir/vm/$machine/machine.json")
-configured_height=$(jq -er '.height' "$portable_dir/vm/$machine/machine.json")
-[[ $(jq -r '.display.window.width' "$runtime") == "$configured_width" ]]
-[[ $(jq -r '.display.window.height' "$runtime") == "$configured_height" ]]
+wait_configured_initial_window_frame "$configured_width" "$configured_height"
 
 # `wb` deliberately forces the AppImage runtime's FUSE-less path. Its direct
 # AppRun/launcher process returns after readiness, but the detached broker must

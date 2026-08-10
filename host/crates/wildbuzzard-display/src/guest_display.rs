@@ -2280,6 +2280,52 @@ mod tests {
     }
 
     #[test]
+    fn delayed_configuration_unblocks_a_preconnected_guest() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("guest.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let (notification_reader, mut notification_writer) = UnixStream::pair().unwrap();
+        notification_reader.set_nonblocking(true).unwrap();
+        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        let (waiting_sender, waiting_receiver) = std::sync::mpsc::channel();
+
+        let guest_thread = std::thread::spawn(move || {
+            waiting_sender.send(()).unwrap();
+            let configured = wait_for_configuration(&command_receiver, &notification_reader)
+                .expect("delayed native configuration");
+            listener.accept().expect("queued guest connection");
+            configured
+        });
+
+        waiting_receiver.recv().unwrap();
+        // The private socket is bound before GTK knows its exact monitor
+        // allocation. A compositor that connects in that interval queues in
+        // the listener backlog while the gateway waits for Configure.
+        let _queued_guest = UnixStream::connect(&socket_path).unwrap();
+        let format = DmabufFormat {
+            fourcc: DRM_FORMAT_XRGB8888,
+            modifier: DRM_FORMAT_MOD_INVALID,
+        };
+        let mode = OutputMode {
+            logical_width: 1280,
+            logical_height: 800,
+            physical_width: 1600,
+            physical_height: 1000,
+            scale_120: 150,
+            refresh_mhz: 60_000,
+        };
+        command_sender
+            .send(GatewayCommand::Configure {
+                formats: vec![format],
+                mode,
+            })
+            .unwrap();
+        notification_writer.write_all(&[1]).unwrap();
+
+        assert_eq!(guest_thread.join().unwrap(), (vec![format], mode));
+    }
+
+    #[test]
     fn known_drm_fourcc_values_are_little_endian() {
         assert_eq!(DRM_FORMAT_ARGB8888, 0x3432_5241);
         assert_eq!(DRM_FORMAT_XRGB8888, 0x3432_5258);

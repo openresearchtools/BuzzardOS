@@ -30,9 +30,8 @@ use crate::gateway::{
 use crate::launch::Launch;
 use crate::offload_verifier::{OffloadExpectation, OffloadResetKind, OffloadVerifier, SurfaceRect};
 
-const HEADERBAR_HEIGHT_ESTIMATE: u32 = 48;
-const MAX_INITIAL_SIZE_CORRECTIONS: u8 = 8;
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const INITIAL_MONITOR_SIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTINUITY_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const BACKGROUND_CLOCK_GRACE: Duration = Duration::from_millis(50);
 const DEFAULT_REFRESH_MHZ: u32 = 60_000;
@@ -143,8 +142,8 @@ struct NativeWindow {
     /// Independently selected guest desktop UI scale.
     guest_scale_120: Cell<u32>,
     refresh_mhz: Cell<u32>,
-    initial_monitor_target: Cell<Option<(u32, u32)>>,
-    initial_size_corrections: Cell<u8>,
+    initial_monitor_sizing: RefCell<InitialMonitorSizing>,
+    gateway_configured: Cell<bool>,
     failure: RefCell<Option<String>>,
     last_runtime_check: Cell<Instant>,
     last_host_frame_tick: Cell<Instant>,
@@ -209,6 +208,154 @@ struct FrameMetadata {
     modifier: u64,
     planes: u32,
     explicit_sync: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InitialSizeRequest {
+    viewport_width: u32,
+    viewport_height: u32,
+    target_width: u32,
+    target_height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitialSizeDecision {
+    AlreadySettled,
+    AlreadyFailed,
+    Settled,
+    Waiting,
+    Request {
+        window_width: i32,
+        window_height: i32,
+    },
+    TimedOut {
+        target_width: u32,
+        target_height: u32,
+        viewport_width: u32,
+        viewport_height: u32,
+    },
+}
+
+#[derive(Debug)]
+struct InitialMonitorSizing {
+    configured_width: u32,
+    configured_height: u32,
+    started_at: Option<Instant>,
+    settled: bool,
+    failed: bool,
+    last_request: Option<InitialSizeRequest>,
+}
+
+impl InitialMonitorSizing {
+    fn new(configured_width: u32, configured_height: u32) -> Self {
+        Self {
+            configured_width,
+            configured_height,
+            started_at: None,
+            settled: false,
+            failed: false,
+            last_request: None,
+        }
+    }
+
+    fn begin(&mut self, now: Instant) {
+        self.started_at.get_or_insert(now);
+    }
+
+    fn check_timeout(
+        &mut self,
+        now: Instant,
+        viewport_width: u32,
+        viewport_height: u32,
+        scale_denominator: u32,
+    ) -> Option<InitialSizeDecision> {
+        if self.settled || self.failed {
+            return None;
+        }
+        let started_at = self.started_at?;
+        if now.saturating_duration_since(started_at) < INITIAL_MONITOR_SIZE_TIMEOUT {
+            return None;
+        }
+        let target_width = align_extent_up(self.configured_width, scale_denominator)
+            .unwrap_or(self.configured_width);
+        let target_height = align_extent_up(self.configured_height, scale_denominator)
+            .unwrap_or(self.configured_height);
+        self.failed = true;
+        self.last_request = None;
+        Some(InitialSizeDecision::TimedOut {
+            target_width,
+            target_height,
+            viewport_width,
+            viewport_height,
+        })
+    }
+
+    fn observe(
+        &mut self,
+        now: Instant,
+        window_width: i32,
+        window_height: i32,
+        viewport_width: u32,
+        viewport_height: u32,
+        scale_denominator: u32,
+    ) -> InitialSizeDecision {
+        if self.settled {
+            return InitialSizeDecision::AlreadySettled;
+        }
+        if self.failed {
+            return InitialSizeDecision::AlreadyFailed;
+        }
+        let target_width = align_extent_up(self.configured_width, scale_denominator)
+            .unwrap_or(self.configured_width);
+        let target_height = align_extent_up(self.configured_height, scale_denominator)
+            .unwrap_or(self.configured_height);
+        if viewport_width == target_width && viewport_height == target_height {
+            self.settled = true;
+            self.last_request = None;
+            return InitialSizeDecision::Settled;
+        }
+        if let Some(timeout) =
+            self.check_timeout(now, viewport_width, viewport_height, scale_denominator)
+        {
+            return timeout;
+        }
+        self.begin(now);
+
+        let request = InitialSizeRequest {
+            viewport_width,
+            viewport_height,
+            target_width,
+            target_height,
+        };
+        // A Wayland resize request is asynchronous. At high refresh rates the
+        // same stale allocation can be observed by many frame callbacks
+        // before the compositor answers. Reissuing and counting every frame
+        // can abandon the configured size before the first response arrives.
+        if self.last_request == Some(request) {
+            return InitialSizeDecision::Waiting;
+        }
+        self.last_request = Some(request);
+        let (window_width, window_height) = corrected_window_size(
+            window_width,
+            window_height,
+            viewport_width,
+            viewport_height,
+            target_width,
+            target_height,
+        );
+        InitialSizeDecision::Request {
+            window_width,
+            window_height,
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.failed
+    }
+
+    fn pending(&self) -> bool {
+        !self.settled && !self.failed
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,19 +590,16 @@ impl NativeWindow {
         launch: Launch,
         connection: GatewayConnection,
     ) -> Result<Rc<Self>> {
-        let initial_monitor_target = (launch.initial_width, launch.initial_height);
         let initial_guest_scale_120 = launch.guest_scale_120.unwrap_or(120);
+        let initial_monitor_sizing =
+            InitialMonitorSizing::new(launch.initial_width, launch.initial_height);
         let offload_verifier = OffloadVerifier::new(launch.status_dir.join("display-gateway.log"))
             .context("opening GTK offload verification log tail")?;
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title(&launch.title)
             .default_width(launch.initial_width as i32)
-            .default_height(
-                launch
-                    .initial_height
-                    .saturating_add(HEADERBAR_HEIGHT_ESTIMATE) as i32,
-            )
+            .default_height(launch.initial_height as i32)
             .resizable(true)
             .decorated(true)
             .build();
@@ -480,6 +624,12 @@ impl NativeWindow {
         // The parent pixels exposed in that interval must be black, never the
         // cached Starting/Failed lifecycle page.
         let monitor_view = gtk::Overlay::builder().hexpand(true).vexpand(true).build();
+        // The configured size describes the embedded monitor, not the outer
+        // toplevel. Prime GTK's layout with a temporary child minimum so the
+        // header bar and client-side frame are added outside that monitor.
+        // The request is removed after the compositor grants the first exact
+        // allocation, preserving unrestricted user resizing thereafter.
+        monitor_view.set_size_request(launch.initial_width as i32, launch.initial_height as i32);
         monitor_view.set_direction(gtk::TextDirection::Ltr);
         let monitor_backing = gtk::DrawingArea::builder()
             .hexpand(true)
@@ -561,8 +711,8 @@ impl NativeWindow {
             scale_120: Cell::new(120),
             guest_scale_120: Cell::new(initial_guest_scale_120),
             refresh_mhz: Cell::new(0),
-            initial_monitor_target: Cell::new(Some(initial_monitor_target)),
-            initial_size_corrections: Cell::new(0),
+            initial_monitor_sizing: RefCell::new(initial_monitor_sizing),
+            gateway_configured: Cell::new(false),
             failure: RefCell::new(None),
             last_runtime_check: Cell::new(Instant::now() - RUNTIME_POLL_INTERVAL),
             last_host_frame_tick: Cell::new(Instant::now()),
@@ -612,11 +762,15 @@ impl NativeWindow {
         native.save_input()?;
         native.save_continuity()?;
         native.continuity_dirty.set(false);
-        native.configure_gateway()?;
         Ok(native)
     }
 
     fn present(self: &Rc<Self>) {
+        // This is the first point at which GTK's configured child minimum and
+        // toplevel default size become a concrete request to the compositor.
+        self.initial_monitor_sizing
+            .borrow_mut()
+            .begin(Instant::now());
         self.window.present();
     }
 
@@ -661,30 +815,10 @@ impl NativeWindow {
             let Some(surface) = this.window.surface() else {
                 return;
             };
-            match this.align_monitor_offload() {
-                Ok(_) => {
-                    this.refresh_offload_geometry_generation();
-                    let width = this.picture.width().max(1) as u32;
-                    let height = this.picture.height().max(1) as u32;
-                    this.update_viewport(width, height);
-                }
-                Err(error) => {
-                    *this.failure.borrow_mut() = Some(error.to_string());
-                    this.set_state(MonitorState::Failed);
-                }
-            }
+            this.reconcile_monitor_allocation();
             let scale_this = Rc::clone(&this);
-            surface.connect_scale_notify(move |_| match scale_this.align_monitor_offload() {
-                Ok(_) => {
-                    scale_this.refresh_offload_geometry_generation();
-                    let width = scale_this.picture.width().max(1) as u32;
-                    let height = scale_this.picture.height().max(1) as u32;
-                    scale_this.update_viewport(width, height);
-                }
-                Err(error) => {
-                    *scale_this.failure.borrow_mut() = Some(error.to_string());
-                    scale_this.set_state(MonitorState::Failed);
-                }
+            surface.connect_scale_notify(move |_| {
+                scale_this.reconcile_monitor_allocation();
             });
         });
 
@@ -710,24 +844,7 @@ impl NativeWindow {
         self.monitor_view
             .add_tick_callback(move |_widget, frame_clock| {
                 this.last_host_frame_tick.set(Instant::now());
-                match this.align_monitor_offload() {
-                    Ok(true) => {
-                        this.refresh_offload_geometry_generation();
-                        // Margin changes queue a new allocation. Do not publish
-                        // the pre-alignment child size as a guest output mode.
-                    }
-                    Ok(false) => {
-                        this.refresh_offload_geometry_generation();
-                        let width = this.picture.width().max(1) as u32;
-                        let height = this.picture.height().max(1) as u32;
-                        this.correct_initial_monitor_size(width, height);
-                        this.update_viewport(width, height);
-                    }
-                    Err(error) => {
-                        *this.failure.borrow_mut() = Some(error.to_string());
-                        this.set_state(MonitorState::Failed);
-                    }
-                }
+                this.reconcile_monitor_allocation();
                 this.finish_presentation_feedback(frame_clock);
                 // Return the actual host Wayland frame clock to the nested
                 // compositor. This completes parent wl_surface.frame requests
@@ -763,6 +880,13 @@ impl NativeWindow {
 
         let this = Rc::clone(self);
         glib::timeout_add_local(RUNTIME_POLL_INTERVAL, move || {
+            // Tick callbacks may stop for an occluded or minimized native
+            // window. Continue driving only the bootstrap sizing handshake so
+            // an ignored/clamped request still reaches its wall-clock failure
+            // instead of leaving startup blocked forever.
+            if this.initial_monitor_sizing.borrow().pending() {
+                this.reconcile_monitor_allocation();
+            }
             this.poll();
             glib::ControlFlow::Continue
         });
@@ -770,10 +894,45 @@ impl NativeWindow {
         self.install_input_handlers();
     }
 
-    fn correct_initial_monitor_size(&self, viewport_width: u32, viewport_height: u32) {
-        let Some((target_width, target_height)) = self.initial_monitor_target.get() else {
-            return;
-        };
+    /// Returns true only when an allocation is safe to publish as the guest
+    /// monitor. In particular, the bootstrap allocation never becomes a
+    /// transient guest mode or satisfies machine readiness.
+    fn settle_initial_monitor_size(&self, viewport_width: u32, viewport_height: u32) -> bool {
+        let denominator = self.initial_monitor_scale_denominator();
+        let decision = self.initial_monitor_sizing.borrow_mut().observe(
+            Instant::now(),
+            self.window.width().max(1),
+            self.window.height().max(1),
+            viewport_width,
+            viewport_height,
+            denominator,
+        );
+        match decision {
+            InitialSizeDecision::AlreadySettled => true,
+            InitialSizeDecision::AlreadyFailed => false,
+            InitialSizeDecision::Settled => {
+                self.monitor_view.set_size_request(-1, -1);
+                true
+            }
+            InitialSizeDecision::Waiting => false,
+            InitialSizeDecision::Request {
+                window_width,
+                window_height,
+            } => {
+                self.window.set_default_size(window_width, window_height);
+                false
+            }
+            timeout @ InitialSizeDecision::TimedOut { .. } => {
+                self.report_initial_monitor_timeout(
+                    timeout,
+                    "the host allocation remained different from the requested native viewport",
+                );
+                false
+            }
+        }
+    }
+
+    fn initial_monitor_scale_denominator(&self) -> u32 {
         let scale_120 = self
             .window
             .surface()
@@ -781,37 +940,86 @@ impl NativeWindow {
                 effective_scale_120(self.launch.test_fractional_scale_120, surface.scale()).ok()
             })
             .unwrap_or_else(|| self.scale_120.get());
-        let denominator = scale_denominator(scale_120).unwrap_or(1);
-        // A GraphicsOffload child must have an integral physical extent.
-        // Round configured logical dimensions upward to the smallest exact
-        // extent so the monitor never becomes smaller than requested.
-        let target_width = align_extent_up(target_width, denominator).unwrap_or(target_width);
-        let target_height = align_extent_up(target_height, denominator).unwrap_or(target_height);
-        if viewport_width == target_width && viewport_height == target_height {
-            self.initial_monitor_target.set(None);
-            return;
-        }
-        let attempt = self.initial_size_corrections.get();
-        if attempt >= MAX_INITIAL_SIZE_CORRECTIONS {
-            eprintln!(
-                "wildbuzzard-display: host compositor did not grant the configured \
-                 {target_width}x{target_height} initial monitor after {attempt} corrections; \
-                 using {viewport_width}x{viewport_height}"
-            );
-            self.initial_monitor_target.set(None);
-            return;
-        }
-        let (requested_width, requested_height) = corrected_window_size(
-            self.window.width().max(1),
-            self.window.height().max(1),
+        scale_denominator(scale_120).unwrap_or(1)
+    }
+
+    fn expire_initial_monitor_size(
+        &self,
+        viewport_width: u32,
+        viewport_height: u32,
+        reason: &'static str,
+    ) {
+        let denominator = self.initial_monitor_scale_denominator();
+        let decision = self.initial_monitor_sizing.borrow_mut().check_timeout(
+            Instant::now(),
             viewport_width,
             viewport_height,
+            denominator,
+        );
+        if let Some(timeout) = decision {
+            self.report_initial_monitor_timeout(timeout, reason);
+        }
+    }
+
+    fn report_initial_monitor_timeout(&self, timeout: InitialSizeDecision, reason: &'static str) {
+        let InitialSizeDecision::TimedOut {
             target_width,
             target_height,
+            viewport_width,
+            viewport_height,
+        } = timeout
+        else {
+            return;
+        };
+        let message = format!(
+            "host compositor did not grant a stable native {target_width}x{target_height} initial \
+             monitor within {} seconds (last child allocation \
+             {viewport_width}x{viewport_height}; {reason}); refusing to start the guest at a \
+             reduced or resampled resolution",
+            INITIAL_MONITOR_SIZE_TIMEOUT.as_secs()
         );
-        self.initial_size_corrections.set(attempt + 1);
-        self.window
-            .set_default_size(requested_width, requested_height);
+        eprintln!("wildbuzzard-display: {message}");
+        *self.failure.borrow_mut() = Some(message);
+        self.set_state(MonitorState::Failed);
+    }
+
+    fn update_allocated_viewport(&self) {
+        let width = self.picture.width().max(1) as u32;
+        let height = self.picture.height().max(1) as u32;
+        if !self.offload_geometry.borrow().allocation_settled {
+            self.expire_initial_monitor_size(
+                width,
+                height,
+                "the offload child never settled on an integral native rectangle",
+            );
+            return;
+        }
+        if self.settle_initial_monitor_size(width, height) {
+            self.update_viewport(width, height);
+        }
+    }
+
+    fn reconcile_monitor_allocation(&self) {
+        match self.align_monitor_offload() {
+            Ok(true) => {
+                self.refresh_offload_geometry_generation();
+                // Margin changes queue a new allocation. Do not publish the
+                // pre-alignment child size as a guest output mode.
+                self.expire_initial_monitor_size(
+                    self.picture.width().max(1) as u32,
+                    self.picture.height().max(1) as u32,
+                    "the offload child geometry kept changing before a native rectangle settled",
+                );
+            }
+            Ok(false) => {
+                self.refresh_offload_geometry_generation();
+                self.update_allocated_viewport();
+            }
+            Err(error) => {
+                *self.failure.borrow_mut() = Some(error.to_string());
+                self.set_state(MonitorState::Failed);
+            }
+        }
     }
 
     fn install_input_handlers(self: &Rc<Self>) {
@@ -1230,12 +1438,16 @@ impl NativeWindow {
         let Ok(Some(runtime)) = RuntimeState::load(&self.launch.machine_dir) else {
             return;
         };
-        let state = match runtime.state {
-            MachineState::Starting => MonitorState::Starting,
-            MachineState::Running => MonitorState::Running,
-            MachineState::Stopping => MonitorState::Stopping,
-            MachineState::Stopped => MonitorState::Stopped,
-            MachineState::Failed => MonitorState::Failed,
+        let state = if self.initial_monitor_sizing.borrow().failed() {
+            MonitorState::Failed
+        } else {
+            match runtime.state {
+                MachineState::Starting => MonitorState::Starting,
+                MachineState::Running => MonitorState::Running,
+                MachineState::Stopping => MonitorState::Stopping,
+                MachineState::Stopped => MonitorState::Stopped,
+                MachineState::Failed => MonitorState::Failed,
+            }
         };
         if matches!(state, MonitorState::Stopped | MonitorState::Failed) {
             self.detach_monitor("runtime-terminal-state");
@@ -2100,26 +2312,30 @@ impl NativeWindow {
             if let Err(error) = self.save_window() {
                 eprintln!("wildbuzzard-display: saving resized host window: {error:#}");
             }
-            if let Err(error) = self
-                .commands
-                .send(GatewayCommand::SetOutputMode(self.output_mode()))
-            {
-                eprintln!("wildbuzzard-display: sending resized guest output: {error:#}");
+            if let Err(error) = self.publish_output_mode() {
+                *self.failure.borrow_mut() = Some(format!(
+                    "publishing native guest monitor mode {width}x{height}: {error:#}"
+                ));
+                self.set_state(MonitorState::Failed);
             }
         }
     }
 
-    fn configure_gateway(&self) -> Result<()> {
+    fn publish_output_mode(&self) -> Result<()> {
+        let mode = self.output_mode();
+        if self.gateway_configured.get() {
+            return self.commands.send(GatewayCommand::SetOutputMode(mode));
+        }
         let display = gdk::Display::default().context("GTK has no active Wayland display")?;
         let advertised = display.dmabuf_formats();
         let formats = (0..advertised.n_formats())
             .map(|index| advertised.format(index))
             .map(|(fourcc, modifier)| DmabufFormat { fourcc, modifier })
             .collect();
-        self.commands.send(GatewayCommand::Configure {
-            formats,
-            mode: self.output_mode(),
-        })
+        self.commands
+            .send(GatewayCommand::Configure { formats, mode })?;
+        self.gateway_configured.set(true);
+        Ok(())
     }
 
     fn output_mode(&self) -> OutputMode {
@@ -3930,6 +4146,157 @@ mod tests {
             corrected_window_size(1400, 900, 1320, 820, 1280, 800),
             (1360, 880)
         );
+    }
+
+    #[test]
+    fn configured_initial_monitor_aligns_up_for_exact_fractional_pixels() {
+        // 160/120 is 4/3, so both logical axes must be divisible by three.
+        // The configured size is a minimum: alignment grows 1280x800 to
+        // 1281x801 instead of shrinking it or accepting resampled pixels.
+        let denominator = scale_denominator(160).unwrap();
+        assert_eq!(denominator, 3);
+        assert_eq!(align_extent_up(1280, denominator), Some(1281));
+        assert_eq!(align_extent_up(800, denominator), Some(801));
+
+        let now = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        assert_eq!(
+            sizing.observe(now, 1280, 800, 1280, 800, denominator),
+            InitialSizeDecision::Request {
+                window_width: 1281,
+                window_height: 801,
+            }
+        );
+        assert_eq!(
+            sizing.observe(now, 1281, 801, 1281, 801, denominator),
+            InitialSizeDecision::Settled
+        );
+        let mapping = PixelMapping::new(1281, 801, 160).unwrap();
+        assert_eq!(
+            (mapping.physical_width, mapping.physical_height),
+            (1708, 1068)
+        );
+        assert!(mapping.is_integral());
+    }
+
+    #[test]
+    fn initial_window_correction_waits_for_wayland_resize_response() {
+        let started_at = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        assert_eq!(
+            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            InitialSizeDecision::Request {
+                window_width: 1284,
+                window_height: 848,
+            }
+        );
+        for _ in 0..32 {
+            assert_eq!(
+                sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+                InitialSizeDecision::Waiting
+            );
+        }
+        assert_eq!(
+            sizing.observe(started_at, 1284, 848, 1280, 800, 4),
+            InitialSizeDecision::Settled
+        );
+        assert_eq!(
+            sizing.observe(started_at, 1284, 848, 1280, 800, 4),
+            InitialSizeDecision::AlreadySettled
+        );
+    }
+
+    #[test]
+    fn initial_window_correction_reacts_to_a_distinct_allocation() {
+        let started_at = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        assert!(matches!(
+            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            InitialSizeDecision::Request { .. }
+        ));
+        assert_eq!(
+            sizing.observe(started_at, 1284, 848, 1278, 798, 4),
+            InitialSizeDecision::Request {
+                window_width: 1286,
+                window_height: 850,
+            }
+        );
+    }
+
+    #[test]
+    fn ignored_initial_resize_fails_on_wall_clock_without_reduced_mode() {
+        let started_at = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        sizing.begin(started_at);
+        assert!(matches!(
+            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            InitialSizeDecision::Request { .. }
+        ));
+        assert_eq!(
+            sizing.observe(
+                started_at + INITIAL_MONITOR_SIZE_TIMEOUT - Duration::from_nanos(1),
+                1280,
+                800,
+                1276,
+                752,
+                4,
+            ),
+            InitialSizeDecision::Waiting
+        );
+        assert_eq!(
+            sizing.observe(
+                started_at + INITIAL_MONITOR_SIZE_TIMEOUT,
+                1280,
+                800,
+                1276,
+                752,
+                4,
+            ),
+            InitialSizeDecision::TimedOut {
+                target_width: 1280,
+                target_height: 800,
+                viewport_width: 1276,
+                viewport_height: 752,
+            }
+        );
+        assert_eq!(
+            sizing.observe(
+                started_at + INITIAL_MONITOR_SIZE_TIMEOUT + Duration::from_secs(1),
+                1280,
+                800,
+                1276,
+                752,
+                4,
+            ),
+            InitialSizeDecision::AlreadyFailed
+        );
+        assert!(sizing.failed());
+    }
+
+    #[test]
+    fn initial_window_deadline_expires_before_geometry_settles() {
+        let started_at = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        sizing.begin(started_at);
+        assert_eq!(
+            sizing.check_timeout(
+                started_at + INITIAL_MONITOR_SIZE_TIMEOUT - Duration::from_nanos(1),
+                1,
+                1,
+                4,
+            ),
+            None
+        );
+        assert_eq!(
+            sizing.check_timeout(started_at + INITIAL_MONITOR_SIZE_TIMEOUT, 1, 1, 4,),
+            Some(InitialSizeDecision::TimedOut {
+                target_width: 1280,
+                target_height: 800,
+                viewport_width: 1,
+                viewport_height: 1,
+            })
+        );
+        assert!(sizing.failed());
     }
 
     #[test]
