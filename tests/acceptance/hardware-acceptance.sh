@@ -208,6 +208,47 @@ wait_native_window_frame() {
     exit 1
 }
 
+wait_native_window_frame_after() {
+    local previous=$1
+    local deadline=$((SECONDS + 30))
+    while ((SECONDS < deadline)); do
+        if jq -e --argjson previous "$previous" '
+            .display.presentation.native_resolution == true and
+            .display.presentation.scale_120 >= 120 and
+            .display.presentation.width ==
+                ((.display.window.width * .display.presentation.scale_120 + 119) / 120 | floor) and
+            .display.presentation.height ==
+                ((.display.window.height * .display.presentation.scale_120 + 119) / 120 | floor) and
+            .display.presentation.viewport_width == .display.window.width and
+            .display.presentation.viewport_height == .display.window.height and
+            .display.presentation.submitted_frames > $previous.submitted_frames and
+            .display.presentation.painted_frames > $previous.painted_frames
+        ' "$runtime" >/dev/null; then
+            return
+        fi
+        sleep 0.25
+    done
+    echo "guest output did not submit and paint a native frame after Sway reload" >&2
+    exit 1
+}
+
+wait_sway_config_contains() {
+    local expected=$1
+    local deadline=$((SECONDS + 15))
+    local current_config
+    while ((SECONDS < deadline)); do
+        if current_config=$(guest swaymsg -r -t get_config 2>/dev/null) &&
+            jq -e --arg expected "$expected" \
+                '.config | contains($expected)' \
+                <<<"$current_config" >/dev/null; then
+            return
+        fi
+        sleep 0.1
+    done
+    echo "Sway did not finish loading the requested configuration" >&2
+    exit 1
+}
+
 wait_scaled_window_frame() {
     local scale_120=$1
     local deadline=$((SECONDS + 20))
@@ -878,8 +919,41 @@ guest sh -c 'printf "%s\n" "$1" \
 guest sudo -n sh -c \
     'printf "%s\n" "# persistent guest OS edit: $1" >> /etc/wildbuzzard/sway-config' \
     sh "$marker"
-guest kill -HUP "$compositor_pid"
-wait_native_window_frame
+compositor_start_time=$(guest awk '{print $22}' "/proc/$compositor_pid/stat")
+reload_output_before=$(guest jq -ce '{
+    scale_120,
+    guest_logical_width,
+    guest_logical_height,
+    physical_width,
+    physical_height
+}' /run/wildbuzzard-display-state/output-state.json)
+reload_frame_counters=$(jq -ce '{
+    submitted_frames: .display.presentation.submitted_frames,
+    painted_frames: .display.presentation.painted_frames
+}' "$runtime")
+reload_result=$(guest swaymsg -r reload)
+jq -e '
+    type == "array" and
+    length == 1 and
+    .[0].success == true
+' <<<"$reload_result" >/dev/null
+wait_sway_config_contains "# persistent guest OS edit: $marker"
+[[ $(guest pgrep -xo sway) == "$compositor_pid" ]]
+[[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
+    "$compositor_start_time" ]]
+wait_sway_output_matches_runtime
+[[ $(guest jq -ce '{
+    scale_120,
+    guest_logical_width,
+    guest_logical_height,
+    physical_width,
+    physical_height
+}' /run/wildbuzzard-display-state/output-state.json) == "$reload_output_before" ]]
+wait_native_window_frame_after "$reload_frame_counters"
+[[ $(guest pgrep -xo sway) == "$compositor_pid" ]]
+[[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
+    "$compositor_start_time" ]]
+wait_cua_capture_matches_runtime
 guest install -d -m 0700 /home/wildbuzzard/.local/bin
 guest sh -c 'cat > /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent' <<'AGENT'
 #!/bin/sh

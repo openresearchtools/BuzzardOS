@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -283,7 +283,7 @@ fn launch_container(
     state: &mut RuntimeState,
 ) -> Result<SessionResult> {
     let (block_read, mut block_write) = pipe().context("creating container start barrier")?;
-    let (status_read, status_write) = pipe().context("creating container status pipe")?;
+    let (info_read, info_write) = pipe().context("creating container information pipe")?;
     let guest_runtime = &runtime.guest;
     let host_status = &runtime.host_status;
     let display_state = &runtime.display_state;
@@ -475,9 +475,9 @@ fn launch_container(
         .arg(&hostname)
         .arg("/etc/hostname")
         .arg("--block-fd")
-        .arg(block_read.to_string())
-        .arg("--json-status-fd")
-        .arg(status_write.as_raw_fd().to_string())
+        .arg(block_read.to_string());
+    add_bubblewrap_pid_report(&mut command, info_write.as_raw_fd());
+    command
         .args(["--setenv", "container", "wildbuzzard"])
         .args([
             "--setenv",
@@ -520,9 +520,9 @@ fn launch_container(
             .with_context(|| format!("starting bundled sandbox helper {}", bwrap.display()))?,
     };
     close_fd(block_read);
-    drop(status_write);
+    drop(info_write);
 
-    let container_pid = read_container_pid(status_read).inspect_err(|_| {
+    let container_pid = read_container_pid(info_read).inspect_err(|_| {
         terminate(&mut container.child);
     })?;
     state.container_pid = Some(container_pid);
@@ -1273,24 +1273,30 @@ fn lock_machine(machine_dir: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn read_container_pid(status_read: RawFd) -> Result<u32> {
+fn add_bubblewrap_pid_report(command: &mut Command, info_fd: RawFd) {
+    // `--info-fd` is deliberately one-shot: Bubblewrap writes the child PID
+    // after setup and closes its copy of the descriptor immediately. Do not
+    // replace this with `--json-status-fd` unless its multi-record stream is
+    // kept open and drained until Bubblewrap writes the final exit-code. An
+    // early close makes that final write hit EPIPE and can turn an orderly
+    // guest shutdown into a SIGPIPE exit from Bubblewrap itself.
+    command.arg("--info-fd").arg(info_fd.to_string());
+}
+
+fn read_container_pid(info_read: RawFd) -> Result<u32> {
     // SAFETY: pipe() returned this new descriptor and ownership is transferred
     // to the File exactly once here.
-    let file = unsafe { fs::File::from_raw_fd(status_read) };
-    let mut line = String::new();
-    BufReader::new(file)
-        .read_line(&mut line)
-        .context("reading container status")?;
-    if line.is_empty() {
-        bail!("sandbox helper exited before reporting the systemd process");
-    }
+    let file = unsafe { fs::File::from_raw_fd(info_read) };
+    // Bubblewrap's one-shot information document is pretty-printed across
+    // multiple lines. `from_reader` consumes it through EOF, which arrives as
+    // soon as Bubblewrap closes its information descriptor after setup.
     let value: serde_json::Value =
-        serde_json::from_str(&line).context("parsing container status")?;
+        serde_json::from_reader(file).context("parsing container information")?;
     value
         .get("child-pid")
         .and_then(serde_json::Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok())
-        .context("sandbox status did not contain a valid child-pid")
+        .context("sandbox information did not contain a valid child-pid")
 }
 
 struct TerminateOnDrop {
@@ -3018,6 +3024,41 @@ fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bubblewrap_pid_reporting_is_one_shot_not_a_lifecycle_status_stream() {
+        let mut command = Command::new("bwrap");
+
+        add_bubblewrap_pid_report(&mut command, 42);
+
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(arguments, ["--info-fd", "42"]);
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument == "--json-status-fd")
+        );
+    }
+
+    #[test]
+    fn reads_complete_multiline_one_shot_bubblewrap_information() {
+        let (info_read, mut info_write) = pipe().unwrap();
+        info_write
+            .write_all(
+                br#"{
+    "child-pid": 4242,
+    "mnt-namespace": 123456
+}
+"#,
+            )
+            .unwrap();
+        drop(info_write);
+
+        assert_eq!(read_container_pid(info_read).unwrap(), 4242);
+    }
 
     #[test]
     fn guest_pseudo_filesystems_include_posix_message_queues_before_pid_one() {

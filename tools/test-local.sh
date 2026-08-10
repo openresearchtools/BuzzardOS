@@ -65,7 +65,8 @@ done
 for script in \
     "$project_dir/host/build-appimage.sh" \
     "$project_dir/oci/build-local.sh" \
-    "$project_dir/oci/verify-image.sh"; do
+    "$project_dir/oci/verify-image.sh" \
+    "$project_dir/tests/acceptance/hardware-acceptance.sh"; do
     bash -n "$script"
 done
 
