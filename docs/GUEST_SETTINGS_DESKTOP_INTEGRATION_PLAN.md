@@ -242,6 +242,23 @@ Appearance provides:
 - a preview containing text, controls, selection, folders, the taskbar, and
   the Buzzard mark.
 
+Desktop Background provides four built-in suggestions plus a custom solid
+colour:
+
+- Dark Plain;
+- Dark + Logo;
+- Light Plain;
+- Light + Logo; and
+- Custom Solid Colour.
+
+The plain and logo variants of each theme use the same recommended background
+colour, so adding the mark never changes the surrounding desktop colour. The
+custom option is a native accessible colour control and always produces one
+uniform colour: it does not introduce gradients, images, remote downloads, or
+per-monitor bitmap scaling. Background choice and theme mode persist
+independently, allowing a user to retain an explicitly chosen background while
+changing application colours.
+
 The selected mode persists across Stop/Start. Session startup reads the
 setting instead of unconditionally forcing dark mode.
 
@@ -734,18 +751,20 @@ the [RSPB Common buzzard guide](https://www.rspb.org.uk/birds-and-wildlife/buzza
 the [RSPB bird-of-prey identification guide](https://www.rspb.org.uk/birds-and-wildlife/identifying-birds/whats-that-bird-of-prey),
 and the [BTO Buzzard profile](https://www.bto.org/learn/about-birds/birdfacts/buzzard).
 
-The previous generated flying/underside concepts are rejected and must not be
-used as production artwork. The new direction is an original **front-facing
-common buzzard**: a balanced portrait showing the head, upper chest, and
-folded-wing shoulders, with the bird looking toward the viewer. It must read
-as a whole bird portrait rather than a detached mascot eye or abstract wing
-symbol.
+The previous generated flying/underside and direct-staring concepts are
+rejected and must not be used as production artwork. The new direction is an
+original **near-front three-quarter common buzzard**: a balanced portrait
+showing the head, upper chest, and folded-wing shoulders. The head and gaze
+turn slightly off-axis so the bird remains recognizable and alert without
+making direct eye contact with the viewer. It must read as a whole bird
+portrait rather than a detached mascot eye or abstract wing symbol.
 
-Preserve common-buzzard traits visible from the front: a compact broad head,
-short neck, substantial chest, modest hooked beak, natural raptor eyes, and
-rounded folded shoulders. Avoid eagle heraldry, a giant eagle beak, a bald
-vulture head, an owl facial disc or oversized owl eyes, a falcon helmet shape,
-shields, letters, and a central cyclops-eye motif.
+Preserve common-buzzard traits visible from the near-front angle: a compact
+broad head, short neck, substantial chest, modest hooked beak, natural raptor
+eyes, and rounded folded shoulders. Avoid direct-staring mascot expressions,
+perfectly mirrored eyes, eagle heraldry, a giant eagle beak, a bald vulture
+head, an owl facial disc or oversized owl eyes, a falcon helmet shape, shields,
+letters, and a central cyclops-eye motif.
 
 ### 14.2 Vector construction
 
@@ -753,7 +772,7 @@ The production logo is a hand-audited original SVG, not a traced reference
 photograph and not a raw generated raster:
 
 - 256 by 256 master artboard;
-- centered front-facing portrait with safe space on every side;
+- centered near-front three-quarter portrait with safe space on every side;
 - recognizable head, chest, and folded-wing shoulder silhouette before
   plumage details are added;
 - slight natural asymmetry is allowed, but the optical weight remains
@@ -764,7 +783,7 @@ photograph and not a raw generated raster:
 - a separately simplified symbolic variant that remains recognizable at
   16–24 pixels.
 
-Generate several genuinely different front-facing concepts for comparison,
+Generate several genuinely different near-front three-quarter concepts for comparison,
 then manually reconstruct the selected direction as vector geometry.
 Generated concepts may guide anatomy and composition only. They are not
 production assets until manually reconstructed, simplified, visually audited,
@@ -807,14 +826,20 @@ Light main mark          #24272A
 Light accent             #BD4218
 Symbolic                 currentColor
 Dark wallpaper           #202225
+Light wallpaper          #F4F1EC
 ```
 
-The wallpaper is generated or rendered from the SVG at the guest output's
-current physical resolution. It uses the existing plain background and
-centers the mark at 18–22% of the output's shorter dimension. It never
-stretches a fixed-resolution bitmap. Idle wallpaper is static; an optional
-boot animation may use the same paths without changing the logo geometry or
-remaining active after desktop readiness.
+The four built-in wallpaper presets are deterministic: Dark Plain is solid
+`#202225`, Dark + Logo uses that same solid with the dark-theme mark, Light
+Plain is solid `#F4F1EC`, and Light + Logo uses that same solid with the
+light-theme mark. A custom background is one user-selected solid colour.
+
+For logo presets, the wallpaper is generated or rendered from the SVG at the
+guest output's current physical resolution and centers the mark at 18–22% of
+the output's shorter dimension. It never stretches a fixed-resolution bitmap.
+Plain presets render only the selected solid colour. Idle wallpaper is static;
+an optional boot animation may use the same paths without changing the logo
+geometry or remaining active after desktop readiness.
 
 Use one reviewed source of geometry for the host icon, guest Applications
 icon, Settings/About, symbolic icons, and wallpaper variants.
@@ -904,8 +929,9 @@ end-to-end testing, and final evidence.
 
 ### Phase 2: branding and theming
 
-- Create multiple front-facing common-buzzard concepts, reject the previous
-  flying concepts, and construct the selected design as an original SVG.
+- Create multiple calm near-front three-quarter common-buzzard concepts,
+  reject the previous flying and direct-staring concepts, and construct the
+  selected design as an original SVG.
 - Complete and document reverse-image, visual-similarity, and trademark
   database screening before accepting the mark.
 - Produce dark, light, symbolic, icon, and wallpaper variants from one
@@ -970,6 +996,9 @@ test evidence and must not silently weaken this contract to make tests pass.
 ### 19.2 Appearance and branding
 
 - Switch Light to Dark and Dark to Light.
+- Exercise Dark Plain, Dark + Logo, Light Plain, Light + Logo, and Custom Solid
+  Colour; verify exact persistence across Stop/Start and native-resolution
+  regeneration after output resize.
 - Verify shell, wallpaper, Settings, Thunar, Mousepad, Foot, GTK4, Qt, and a
   representative Electron application.
 - Verify selected, hover, focused, disabled, warning, and destructive states
@@ -977,7 +1006,8 @@ test evidence and must not silently weaken this contract to make tests pass.
 - Compare widget allocations and shell surface geometry between Dark and
   Light; require them to be identical apart from color values.
 - Inspect the logo at 16, 24, 32, 64, 256 pixels and on multiple wallpaper
-  aspect ratios. Require a front-facing common-buzzard portrait and reject
+  aspect ratios. Require a calm near-front three-quarter common-buzzard
+  portrait with an off-axis gaze and reject direct-staring mascot treatment,
   blur, gradients, wrong bird anatomy, and stretched raster output.
 - Review the recorded reverse-image, similarity, and trademark searches for
   every shortlisted candidate and the final asset.

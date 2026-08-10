@@ -438,8 +438,19 @@ full-screen launcher or a tile-grid dashboard:
   only overflowing rows scroll. A labelled, AT-SPI-visible close button sits
   at the right of the menu header.
 - Desktop shortcuts for `Files` and `Shared`; `Shared` opens `/shared`.
+- Appearance settings provide `Dark Plain`, `Dark + Logo`, `Light Plain`, and
+  `Light + Logo` desktop backgrounds plus an accessible custom solid-colour
+  choice. Plain and logo variants share the same recommended dark or light
+  background colour, render at the guest output's native physical resolution,
+  and persist independently from toolkit theme selection.
 - New `.desktop` files installed by the user appear without rebuilding the
   image.
+
+The Buzzard mark is an original calm near-front three-quarter European common
+buzzard portrait. Its head and gaze are slightly off-axis; direct-staring,
+perfectly mirrored mascot treatment and owl/eagle/falcon substitutions are not
+acceptable. Dark, light, symbolic, icon, and wallpaper variants derive from
+one audited vector geometry source.
 
 The Sway session provides synchronized compositor-side guest decorations and
 window operations for normal Wayland and Xwayland windows: title, drag,
