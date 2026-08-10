@@ -1,36 +1,17 @@
-name: Build release assets
+name: Build Actions artifacts
 
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Keep outputs as Actions artifacts or publish an existing tag.
-        required: true
-        default: artifacts
-        type: choice
-        options:
-          - artifacts
-          - prerelease
-          - release
-      release_tag:
-        description: Existing SemVer tag to publish (required outside artifacts mode).
-        required: false
-        type: string
-      confirm_publish:
-        description: Confirm that prerelease/release publication is intentional.
-        required: true
-        default: false
-        type: boolean
 
 permissions: {}
 
 concurrency:
-  group: wildbuzzard-release-assets-${{ github.ref }}
+  group: wildbuzzard-actions-artifacts-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   validate-request:
-    name: Validate request
+    name: Validate artifact build
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -60,43 +41,12 @@ jobs:
             tools/release_metadata.py
           python3 -m unittest discover -s tools/tests -v
 
-      - name: Validate artifact or publication mode
+      - name: Enforce artifact-only policy
         shell: bash
-        env:
-          BUILD_MODE: ${{ inputs.mode }}
-          CONFIRM_PUBLISH: ${{ inputs.confirm_publish }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SELECTED_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [[ "$BUILD_MODE" == artifacts ]]; then
-            printf 'Artifact-only mode selected; no GitHub Release can be created.\n'
-            ./tools/check-licenses.sh --structural
-            exit 0
-          fi
-
-          [[ "$CONFIRM_PUBLISH" == true ]] || {
-            echo 'confirm_publish must be enabled for prerelease/release mode' >&2
-            exit 1
-          }
-          semver='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-          [[ "$RELEASE_TAG" =~ $semver ]] || {
-            echo 'release_tag must be an existing SemVer tag (an optional v prefix is accepted)' >&2
-            exit 1
-          }
-          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || {
-            echo "release tag does not exist: $RELEASE_TAG" >&2
-            exit 1
-          }
-          tag_commit=$(git rev-parse --verify "$RELEASE_TAG^{commit}")
-          [[ "$tag_commit" == "$SELECTED_COMMIT" ]] || {
-            echo "tag $RELEASE_TAG resolves to $tag_commit, not selected commit $SELECTED_COMMIT" >&2
-            exit 1
-          }
-
-          # Refuse known policy/provenance blockers before doing the expensive
-          # build. The publisher repeats this strict gate against the checkout.
-          ./tools/check-licenses.sh
+          printf 'Actions-artifact-only workflow; no release or package publisher exists.\n'
+          ./tools/check-licenses.sh --structural
 
   build-appimage:
     name: Build standalone AppImage
@@ -342,177 +292,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-
-  verify-publication:
-    name: Verify immutable publication inputs
-    if: ${{ inputs.mode != 'artifacts' }}
-    needs:
-      - validate-request
-      - build-appimage
-      - build-portable
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    timeout-minutes: 30
-    steps:
-      - name: Check out the selected commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Download standalone AppImage artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-x86_64.AppImage
-          path: ${{ runner.temp }}/publish/appimage
-
-      - name: Download complete portable-bundle artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-portable-x86_64.tar.zst
-          path: ${{ runner.temp }}/publish/portable
-
-      - name: Repeat strict publication gate
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SELECTED_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse --verify "$RELEASE_TAG^{commit}")" = "$SELECTED_COMMIT"
-          (
-            cd "$RUNNER_TEMP/publish/appimage"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          (
-            cd "$RUNNER_TEMP/publish/portable"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          ./tools/check-licenses.sh
-
-  publish-prerelease:
-    name: Publish prerelease
-    if: ${{ inputs.mode == 'prerelease' }}
-    needs: verify-publication
-    runs-on: ubuntu-24.04
-    environment: prerelease
-    permissions:
-      contents: write
-    timeout-minutes: 15
-    steps:
-      - name: Download verified standalone AppImage artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-x86_64.AppImage
-          path: ${{ runner.temp }}/publish/appimage
-
-      - name: Download verified complete portable-bundle artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-portable-x86_64.tar.zst
-          path: ${{ runner.temp }}/publish/portable
-
-      - name: Create GitHub prerelease from immutable same-run artifacts
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          REPOSITORY: ${{ github.repository }}
-          SELECTED_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          (
-            cd "$RUNNER_TEMP/publish/appimage"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          (
-            cd "$RUNNER_TEMP/publish/portable"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          object=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + " " + .object.sha')
-          read -r object_type object_sha <<<"$object"
-          for _ in 1 2 3 4; do
-            [[ "$object_type" == tag ]] || break
-            object=$(gh api "repos/$REPOSITORY/git/tags/$object_sha" --jq '.object.type + " " + .object.sha')
-            read -r object_type object_sha <<<"$object"
-          done
-          [[ "$object_type" == commit && "$object_sha" == "$SELECTED_COMMIT" ]] || {
-            echo "release tag no longer resolves to selected commit $SELECTED_COMMIT" >&2
-            exit 1
-          }
-          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release already exists for $RELEASE_TAG; refusing to replace it" >&2
-            exit 1
-          fi
-          gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/publish/appimage/WildBuzzard-x86_64.AppImage" \
-            "$RUNNER_TEMP/publish/portable/WildBuzzard-portable-x86_64.tar.zst" \
-            --repo "$REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "Wild Buzzard $RELEASE_TAG" \
-            --prerelease
-
-  publish-release:
-    name: Publish production release
-    if: ${{ inputs.mode == 'release' }}
-    needs: verify-publication
-    runs-on: ubuntu-24.04
-    environment: production
-    permissions:
-      contents: write
-    timeout-minutes: 15
-    steps:
-      - name: Download verified standalone AppImage artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-x86_64.AppImage
-          path: ${{ runner.temp }}/publish/appimage
-
-      - name: Download verified complete portable-bundle artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WildBuzzard-portable-x86_64.tar.zst
-          path: ${{ runner.temp }}/publish/portable
-
-      - name: Create GitHub release from immutable same-run artifacts
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          REPOSITORY: ${{ github.repository }}
-          SELECTED_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          (
-            cd "$RUNNER_TEMP/publish/appimage"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          (
-            cd "$RUNNER_TEMP/publish/portable"
-            sha256sum --check --ignore-missing SHA256SUMS
-          )
-          object=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + " " + .object.sha')
-          read -r object_type object_sha <<<"$object"
-          for _ in 1 2 3 4; do
-            [[ "$object_type" == tag ]] || break
-            object=$(gh api "repos/$REPOSITORY/git/tags/$object_sha" --jq '.object.type + " " + .object.sha')
-            read -r object_type object_sha <<<"$object"
-          done
-          [[ "$object_type" == commit && "$object_sha" == "$SELECTED_COMMIT" ]] || {
-            echo "release tag no longer resolves to selected commit $SELECTED_COMMIT" >&2
-            exit 1
-          }
-          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release already exists for $RELEASE_TAG; refusing to replace it" >&2
-            exit 1
-          fi
-          gh release create "$RELEASE_TAG" \
-            "$RUNNER_TEMP/publish/appimage/WildBuzzard-x86_64.AppImage" \
-            "$RUNNER_TEMP/publish/portable/WildBuzzard-portable-x86_64.tar.zst" \
-            --repo "$REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "Wild Buzzard $RELEASE_TAG" \
-            --latest

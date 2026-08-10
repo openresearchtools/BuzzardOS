@@ -29,7 +29,9 @@ in each guest. `cache/` is disposable. All three are intentionally empty in a
 new bundle. No Docker/Podman store, GHCR package, or hidden home-directory
 state is part of this bundle.
 
-The plain AppImage is also published separately so an existing portable folder
-can update only the launcher. The AppImage and rootfs each carry a separate
-notice/provenance group. `SHA256SUMS` authenticates every regular file in this
-directory except itself, including both exact project-source archives.
+The artifact workflow also emits the plain AppImage as its own short-lived
+Actions artifact so an existing portable folder can update only the launcher.
+The AppImage and rootfs each carry a separate notice/provenance group.
+`SHA256SUMS` authenticates every regular file in this directory except itself,
+including both exact project-source archives. The checked-in workflow does not
+publish a GitHub Release or prerelease.

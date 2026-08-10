@@ -66,9 +66,9 @@ LICENSES/             machine-readable dependency and asset evidence
   builds the reference OCI locally in the runner, verifies and flattens it,
   and discards the OCI intermediate when the runner is destroyed.
 
-## Distribution assets and publication
+## Distribution artifacts and future publication
 
-Every publication build emits exactly two primary distribution files:
+The checked-in artifact workflow emits exactly two primary files:
 
 ```text
 WildBuzzard-x86_64.AppImage
@@ -90,19 +90,20 @@ notices and corresponding-source/provenance records for the exact payload it
 describes. The runner-generated manifest binds the AppImage, flat-rootfs
 archive, source commit, OCI source descriptors, package inventory, and hashes.
 
-`.github/workflows/build-release-assets.yml` supports manually selected
-`artifacts`, `prerelease`, and `release` modes. `artifacts` is the default and
-only uploads short-lived Actions artifacts. Publication additionally requires
-an explicit confirmation, an existing SemVer tag resolving to the selected
-commit, and the strict final licensing gate. Only the publisher job receives
-`contents: write`; all other jobs are read-only. The two mutually exclusive
-publisher jobs use literal `prerelease` and `production` GitHub environments
-and never check out the build commit or execute files from that checkout with
-their write-capable token. Only pinned actions and the workflow's fixed inline
-publication commands run there. A release/prerelease contains the two primary
-files above, not an OCI archive or registry reference. Each primary file must
-be smaller than GitHub Releases' 2 GiB per-asset limit; artifact assembly fails
-before upload if that condition is not met.
+`.github/workflows/build-release-assets.yml` is manually dispatched and
+artifact-only. It has no push or pull-request trigger, no release/prerelease
+mode, no publisher job, and no write permission. A successful run uploads
+exactly two short-lived Actions artifacts named for the two files above. It
+must never create or modify a GitHub Release, tag, environment, package, or
+registry object.
+
+GitHub Release or prerelease publishing may be designed only through a later,
+separately reviewed explicit change. That future change must add its own strict
+final licensing gate, tag/commit validation, approval boundary, and
+least-privilege publication design; none of those future capabilities may be
+inferred from the current artifact workflow. Artifact assembly currently
+retains the under-2-GiB per-file guard so both outputs remain eligible for such
+a future review.
 
 ## Portable on-disk layout
 

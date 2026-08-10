@@ -362,17 +362,17 @@ canonical flattened rootfs before upload.
 
 Licensing is grouped by distribution boundary: AppImage/host notices and
 source evidence are separate from guest/rootfs notices and source evidence.
-The default `artifacts` mode retains both outputs as short-lived Actions
-artifacts and cannot publish a Release. The `prerelease` and `release` modes
-require explicit confirmation, an existing SemVer tag pointing at the selected
-commit, and the strict license gate. Only the final publisher has permission to
-create a GitHub Release; the mutually exclusive prerelease and production
-publishers use separately protectable GitHub environments and do not execute
-files from the checked-out build commit with their write token; only pinned
-actions and the workflow's fixed inline publication commands run there. They
-upload the two files above—not an OCI image. Assembly also fails early if
-either primary file is not smaller than GitHub Releases' 2 GiB per-asset
-limit.
+The workflow is artifact-only: it has no release/prerelease mode, publisher
+job, or write permission. A successful manual run uploads exactly two
+short-lived Actions artifacts, one for each file above, and cannot create or
+modify a GitHub Release, package, or registry object. Assembly also rejects a
+primary file at or above 2 GiB so the outputs remain eligible for a possible
+future GitHub Release design.
+
+Publishing is intentionally not implemented. Adding GitHub Release or
+prerelease support requires a separate, explicit review that designs the
+strict licensing gate, tag validation, approvals, and least-privilege write
+boundary; the current workflow must not be treated as a publisher.
 
 Native Electron acceptance uses the official LM Studio AppImage as an external
 test input. It is copied into `/shared` as mode `0644`, must become executable

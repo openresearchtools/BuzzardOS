@@ -93,7 +93,10 @@ def require_regular(path: Path, description: str) -> os.stat_result:
 
 
 def normalize_tar_name(raw: str, description: str) -> str:
-    if not raw or "\0" in raw or "\n" in raw or "\r" in raw or "\\" in raw:
+    # Tar member names use POSIX path semantics. A backslash is a legal literal
+    # filename byte on Linux (and appears in systemd's escaped unit names); it
+    # is not a separator and therefore is not a traversal signal here.
+    if not raw or "\0" in raw or "\n" in raw or "\r" in raw:
         raise MetadataError(f"{description} has an unsafe name: {raw!r}")
     path = PurePosixPath(raw)
     if path.is_absolute() or ".." in path.parts:

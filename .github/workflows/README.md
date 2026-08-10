@@ -6,8 +6,7 @@ logs in to a container registry and never publishes GHCR or another GitHub
 Package. The OCI image exists only inside that runner as a verified assembly
 intermediate; the workflow flattens it into the persistent-rootfs seed.
 
-The default `artifacts` mode uploads two seven-day Actions artifacts and cannot
-create a GitHub Release:
+The workflow uploads exactly two seven-day Actions artifacts:
 
 - `WildBuzzard-x86_64.AppImage`
 - `WildBuzzard-portable-x86_64.tar.zst`
@@ -23,13 +22,13 @@ ownership against the canonical flattened rootfs, then deletes the temporary
 machine. This is an offline first-creation acceptance check, not a second
 packaging implementation.
 
-`prerelease` and `release` modes additionally require an explicit confirmation
-and an existing SemVer tag that resolves to the selected workflow commit. They
-run the strict licensing gate and grant `contents: write` only to the final
-publisher job. Prereleases and production releases use the literal
-`prerelease` and `production` GitHub environments respectively, so repository
-owners can attach independent reviewers and protection rules. The selected
-publisher creates a new Release with exactly the two files above and refuses
-to replace an existing Release. Known unresolved licensing blockers therefore
-prevent publication while still allowing artifact-only assembly for
-engineering verification.
+This is the workflow's only mode. It has no automatic trigger, publisher job,
+release/prerelease input, or write permission. It cannot create or modify a
+GitHub Release, tag, environment, package, GHCR image, or other registry
+object. The two Actions artifacts are engineering outputs for inspection, not
+a publication action.
+
+Release or prerelease publishing may be added only by a later, separately
+reviewed explicit change. Such a change must design its own strict licensing
+gate, tag/commit validation, approvals, and least-privilege write boundary;
+none of that authority exists in the checked-in artifact workflow.

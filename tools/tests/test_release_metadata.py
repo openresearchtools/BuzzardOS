@@ -91,6 +91,23 @@ class RootfsArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(release_metadata.MetadataError, "escapes"):
                 release_metadata.inspect_zstd_archive(archive)
 
+    def test_archive_accepts_literal_backslash_in_posix_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "systemd-name.tar.zst"
+            systemd_name = (
+                r"./usr/lib/systemd/system/"
+                r"system-systemd\x2dmute\x2dconsole.slice"
+            )
+            entry = member(systemd_name, tarfile.REGTYPE, 1)
+            compress_tar(
+                archive,
+                [member(".", tarfile.DIRTYPE), entry],
+                {systemd_name: b"x"},
+            )
+
+            record = release_metadata.inspect_zstd_archive(archive)
+            self.assertEqual(record["tree"]["counts"]["regular_files"], 1)
+
     def test_archive_rejects_special_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "fifo.tar.zst"

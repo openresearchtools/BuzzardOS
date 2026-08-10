@@ -100,9 +100,13 @@ tools/check-licenses.sh --guest-rootfs /path/to/extracted/rootfs
 blockers; it never suppresses stale generated evidence, a checksum mismatch,
 an unclassified asset, or an artifact missing a required notice.
 
-The manually dispatched GitHub workflow performs structural artifact checks in
-default `artifacts` mode so engineering outputs can be inspected without being
-published. `prerelease` and `release` modes run the strict gate, require an
-existing SemVer tag for the exact selected commit, and stop before publication
-while any unresolved blocker remains. No workflow uploads an OCI image or
-container package.
+The manually dispatched GitHub workflow performs structural artifact checks
+and uploads exactly the standalone AppImage and complete portable archive as
+short-lived Actions artifacts. It is artifact-only: it has no publisher job or
+write permission and cannot create a GitHub Release, prerelease, OCI package,
+or container package.
+
+Any future publication workflow requires a separate reviewed change and must
+run the strict gate against its exact outputs before receiving publication
+authority. The current artifact workflow does not satisfy or bypass that
+future publication gate.
