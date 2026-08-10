@@ -441,8 +441,8 @@ def inspect_rootfs(rootfs: Path) -> dict[str, object]:
         "lib/systemd/systemd",
         "usr/libexec/wildbuzzard-init",
         "usr/bin/sway",
-        "usr/bin/wildbuzzard-shell",
-        "usr/bin/wildbuzzard-cua-driver",
+        "usr/libexec/wildbuzzard-shell",
+        "usr/local/bin/cua-driver",
         "var/lib/dpkg/status",
     ]
     missing = [relative for relative in required if not (rootfs / relative).is_file()]

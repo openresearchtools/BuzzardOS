@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -125,6 +126,60 @@ class RootfsArchiveTests(unittest.TestCase):
             compress_tar(archive, [member(".", tarfile.DIRTYPE, owner=100000)], {})
             with self.assertRaisesRegex(release_metadata.MetadataError, "non-canonical owner"):
                 release_metadata.inspect_zstd_archive(archive)
+
+
+class RootfsTreeTests(unittest.TestCase):
+    def test_guest_asset_installer_matches_release_rootfs_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            rootfs = temporary_path / "rootfs"
+            rootfs.mkdir()
+            for relative in [
+                "lib/systemd/systemd",
+                "usr/bin/sway",
+                "var/lib/dpkg/status",
+            ]:
+                path = rootfs / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture")
+
+            shell = temporary_path / "wildbuzzard-shell"
+            cua_driver = temporary_path / "cua-driver"
+            for executable in [shell, cua_driver]:
+                executable.write_bytes(b"fixture")
+                executable.chmod(0o755)
+            subprocess.run(
+                [
+                    str(ROOT / "guest/install-rootfs-assets.sh"),
+                    str(rootfs),
+                    str(shell),
+                    str(cua_driver),
+                ],
+                check=True,
+            )
+
+            canonical_rootfs = rootfs.resolve()
+            original_lstat = Path.lstat
+
+            def canonical_owner(path: Path) -> os.stat_result:
+                metadata = original_lstat(path)
+                if path == canonical_rootfs:
+                    fields = list(metadata)
+                    fields[4] = 0
+                    fields[5] = 0
+                    return os.stat_result(fields)
+                return metadata
+
+            # Release assembly runs this inspection as root. Keep the unit
+            # test unprivileged while modeling only the canonical root owner.
+            with mock.patch.object(Path, "lstat", canonical_owner):
+                record = release_metadata.inspect_rootfs(rootfs)
+
+            self.assertGreater(record["counts"]["regular_files"], 0)
+            self.assertTrue((rootfs / "usr/libexec/wildbuzzard-shell").is_file())
+            self.assertTrue((rootfs / "usr/local/bin/cua-driver").is_file())
+            self.assertFalse((rootfs / "usr/bin/wildbuzzard-shell").exists())
+            self.assertFalse((rootfs / "usr/bin/wildbuzzard-cua-driver").exists())
 
 
 class BundleInventoryTests(unittest.TestCase):

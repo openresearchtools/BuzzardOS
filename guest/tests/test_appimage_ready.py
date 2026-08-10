@@ -92,14 +92,15 @@ class AppImageReadyTests(unittest.TestCase):
                 raise
             try:
                 descriptor = watcher.descriptor
-                real_add_watch = watcher._add_watch
                 calls = 0
 
                 def exhausted_add_watch(*arguments: object) -> int:
                     nonlocal calls
                     calls += 1
                     if calls == 1:
-                        return real_add_watch(*arguments)
+                        # Model one successfully registered watch without
+                        # depending on the host user's shared inotify budget.
+                        return 1234
                     ctypes.set_errno(errno.ENOSPC)
                     return -1
 

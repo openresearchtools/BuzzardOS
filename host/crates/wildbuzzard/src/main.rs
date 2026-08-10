@@ -1392,8 +1392,8 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
     for required in [
         "lib/systemd/systemd",
         "usr/bin/sway",
-        "usr/bin/wildbuzzard-shell",
-        "usr/bin/wildbuzzard-cua-driver",
+        "usr/libexec/wildbuzzard-shell",
+        "usr/local/bin/cua-driver",
         "var/lib/dpkg/status",
     ] {
         let path = rootfs.join(required);
@@ -3180,6 +3180,41 @@ mod layer_tests {
         assert_eq!(declared, compiled);
     }
 
+    #[test]
+    fn guest_installer_output_satisfies_seed_validator() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let binaries = temp.path().join("binaries");
+        fs::create_dir(&rootfs).unwrap();
+        fs::create_dir(&binaries).unwrap();
+        let shell = binaries.join("wildbuzzard-shell");
+        let cua_driver = binaries.join("cua-driver");
+        for executable in [&shell, &cua_driver] {
+            fs::write(executable, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let status = Command::new("sh")
+            .arg(repository.join("guest/install-rootfs-assets.sh"))
+            .arg(&rootfs)
+            .arg(&shell)
+            .arg(&cua_driver)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        for required in ["lib/systemd/systemd", "usr/bin/sway", "var/lib/dpkg/status"] {
+            let destination = rootfs.join(required);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::write(destination, b"fixture\n").unwrap();
+        }
+
+        validate_extracted_rootfs(&rootfs).unwrap();
+    }
+
     fn header(entry_type: EntryType, mode: u32, size: u64) -> Header {
         let mut header = Header::new_gnu();
         header.set_entry_type(entry_type);
@@ -3230,8 +3265,8 @@ mod layer_tests {
         for required in [
             "lib/systemd/systemd",
             "usr/bin/sway",
-            "usr/bin/wildbuzzard-shell",
-            "usr/bin/wildbuzzard-cua-driver",
+            "usr/libexec/wildbuzzard-shell",
+            "usr/local/bin/cua-driver",
             "var/lib/dpkg/status",
         ] {
             append_file(&mut builder, required, b"fixture", 0o755);
