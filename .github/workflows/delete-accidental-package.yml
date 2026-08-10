@@ -1,0 +1,72 @@
+name: Delete accidental container package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  delete-exact-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve, validate, and delete exact package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_NAME: buzzardos-desktopwtf
+          PACKAGE_OWNER: openresearchtools
+          EXPECTED_REPOSITORY: openresearchtools/BuzzardOS
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/users/$PACKAGE_OWNER/packages/container/$PACKAGE_NAME"
+          metadata=$(mktemp)
+          delete_response=$(mktemp)
+          trap 'rm -f -- "$metadata" "$delete_response"' EXIT
+          curl --fail-with-body --silent --show-error --location \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "$metadata" \
+            "$api"
+          python3 - "$metadata" "$PACKAGE_NAME" "$EXPECTED_REPOSITORY" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          record = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected_name, expected_repository = sys.argv[2:]
+          if record.get("name") != expected_name or record.get("package_type") != "container":
+              raise SystemExit("resolved package identity differs from the exact deletion target")
+          repository = record.get("repository")
+          if repository is not None and repository.get("full_name") != expected_repository:
+              raise SystemExit("resolved package belongs to a different repository")
+          print(f"validated exact package id={record.get('id')} name={record['name']}")
+          PY
+          status=$(curl --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "$delete_response" \
+            --write-out '%{http_code}' \
+            "$api")
+          if [[ "$status" != 204 ]]; then
+            echo "GitHub refused exact package deletion with HTTP $status" >&2
+            cat "$delete_response" >&2
+            exit 1
+          fi
+          status=$(curl --silent --show-error --location \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            "$api")
+          [[ "$status" == 404 ]] || {
+            echo "deleted package still resolves with HTTP $status" >&2
+            exit 1
+          }
+          echo "deleted exact package $PACKAGE_OWNER/$PACKAGE_NAME"
