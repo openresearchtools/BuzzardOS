@@ -340,11 +340,12 @@ to export and checksum a compressed Docker archive outside the repository.
 
 ## Distribution assembly
 
-Distribution builds run on disposable GitHub-hosted x86-64 runners through the
-manually dispatched `Build release assets` workflow. They are not assembled on
-a developer workstation. The workflow builds the reference OCI only inside
-the runner, verifies it, flattens it into a compressed persistent-rootfs seed,
-and discards the OCI intermediate. It does not use GHCR, publish a container
+Distribution builds run on disposable GitHub-hosted x86-64 runners through
+the manually dispatched `Build Actions artifacts` workflow. They are not
+assembled on a developer workstation. The workflow builds the reference OCI
+only inside the runner, verifies it, flattens it into a compressed
+persistent-rootfs seed, and discards the OCI intermediate. It does not use
+GHCR, publish a container
 package, or authenticate to any registry for upload.
 
 The workflow produces two primary files:

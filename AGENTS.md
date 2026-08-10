@@ -59,9 +59,9 @@ LICENSES/             machine-readable dependency and asset evidence
   by default and are never committed.
 - Distribution assembly runs on a disposable GitHub-hosted Linux x86-64
   runner, never on a maintainer's workstation. The manually dispatched
-  workflow defaults to artifact-only mode and has no trigger for pushes or
-  pull requests. Artifact-only mode uploads its results for inspection and
-  must never create a GitHub Release.
+  workflow is artifact-only and has no trigger for pushes or pull requests.
+  It uploads its results for inspection and must never create a GitHub
+  Release.
 - The workflow never pushes an OCI image, GHCR image, or GitHub Package. It
   builds the reference OCI locally in the runner, verifies and flattens it,
   and discards the OCI intermediate when the runner is destroyed.
