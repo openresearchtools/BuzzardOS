@@ -340,8 +340,15 @@ jobs:
         run: |
           set -euo pipefail
           doctor_output="$RUNNER_TEMP/wildbuzzard-rootless-doctor.txt"
+          doctor_storage="$RUNNER_TEMP/wildbuzzard-rootless-doctor-storage"
+          mkdir -p "$doctor_storage"
+          cleanup_doctor_storage() {
+            rm -rf -- "$doctor_storage"
+          }
+          trap cleanup_doctor_storage EXIT
           set +e
-          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_INPUT" doctor \
+          APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE_INPUT" \
+            --storage-dir "$doctor_storage" doctor \
             >"$doctor_output" 2>&1
           doctor_status=$?
           set -e

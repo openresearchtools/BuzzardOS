@@ -46,6 +46,7 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
             "flags=(unconfined)",
             "'  userns,'",
             "sudo apparmor_parser -K -a \"$CI_APPARMOR_POLICY\"",
+            '--storage-dir "$doctor_storage" doctor',
             "full UID/GID mapping: yes",
             "sudo apparmor_parser -K -R \"$CI_APPARMOR_POLICY\"",
             "if: ${{ always() }}",
