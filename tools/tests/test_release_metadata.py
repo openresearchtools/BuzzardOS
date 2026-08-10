@@ -487,5 +487,21 @@ class IdMapTests(unittest.TestCase):
             )
 
 
+class ReleaseScriptPrivilegeTests(unittest.TestCase):
+    def test_guest_license_audit_never_mutates_user_cargo_cache_as_root(self) -> None:
+        script = (ROOT / "tools/build-release-rootfs.sh").read_text(encoding="utf-8")
+        invocation = (
+            'env \\\n'
+            '    PATH="$PATH" \\\n'
+            '    CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \\\n'
+            '    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \\\n'
+            '    python3 "$project_dir/tools/license_audit.py" \\\n'
+            '    --guest-rootfs "$rootfs" \\\n'
+            '    --structural'
+        )
+        self.assertIn(invocation, script)
+        self.assertNotIn("sudo " + invocation, script)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -139,7 +139,7 @@ sudo env APPIMAGE_EXTRACT_AND_RUN=1 \
     --rootfs "$rootfs" \
     --work-dir "$work_dir"
 
-sudo env \
+env \
     PATH="$PATH" \
     CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
     RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
