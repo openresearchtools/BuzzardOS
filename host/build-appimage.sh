@@ -45,7 +45,7 @@ case "$(uname -m)" in
         ;;
 esac
 
-for command_name in cargo curl dd file find git id install make mksquashfs ninja patch python3 readelf realpath sha256sum sort tar touch zstd bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
+for command_name in cargo curl dd file find git id install make mksquashfs ninja patch python3 readelf realpath sha256sum sort tar touch unzip zstd bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "build dependency missing: $command_name" >&2
         exit 1

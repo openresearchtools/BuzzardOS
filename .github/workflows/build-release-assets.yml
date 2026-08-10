@@ -176,6 +176,7 @@ jobs:
                 pkg-config \
                 python3 \
                 squashfs-tools \
+                unzip \
                 util-linux \
                 xz-utils \
                 zstd; \
