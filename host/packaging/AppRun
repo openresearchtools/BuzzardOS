@@ -1,8 +1,16 @@
 #!/bin/sh
 set -eu
 
-appdir=${APPDIR:-"$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"}
-export PATH="$appdir/usr/bin:$PATH"
+appdir=${APPDIR:-}
+if [ -z "$appdir" ]; then
+    case $0 in
+        */*) appdir_parent=${0%/*} ;;
+        *) appdir_parent=. ;;
+    esac
+    appdir_parent=${appdir_parent:-/}
+    appdir=$(CDPATH= cd -- "$appdir_parent" && pwd)
+fi
+export PATH="$appdir/usr/bin${PATH:+:$PATH}"
 export LD_LIBRARY_PATH="$appdir/usr/lib:$appdir/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # Release media pipelines may load only the audited plugins shipped in this
 # AppImage. In particular, an inherited host plugin path must not substitute a
@@ -12,8 +20,26 @@ export GST_PLUGIN_SYSTEM_PATH_1_0="$appdir/usr/lib/gstreamer-1.0"
 export GST_PLUGIN_SCANNER="$appdir/usr/libexec/wildbuzzard/gst-plugin-scanner"
 export GST_PLUGIN_SCANNER_1_0="$GST_PLUGIN_SCANNER"
 export SPA_PLUGIN_DIR="$appdir/usr/lib/spa-0.2"
+
+real_uid=
+while IFS=' 	' read -r status_key status_value status_rest; do
+    case $status_key in
+        Uid:)
+            real_uid=$status_value
+            break
+            ;;
+    esac
+done < /proc/self/status
+case $real_uid in
+    ''|*[!0-9]*)
+        printf '%s\n' \
+            'AppRun: could not determine the real UID from /proc/self/status' >&2
+        exit 1
+        ;;
+esac
+
 runtime_dir=${XDG_RUNTIME_DIR:-/tmp}
-export GST_REGISTRY_1_0="$runtime_dir/wildbuzzard-gstreamer-registry-$(id -u).bin"
+export GST_REGISTRY_1_0="$runtime_dir/wildbuzzard-gstreamer-registry-$real_uid.bin"
 desktop_file="$appdir/org.openresearchtools.wildbuzzard.desktop"
 if [ -f "$desktop_file" ]; then
     export GIO_LAUNCHED_DESKTOP_FILE="$desktop_file"

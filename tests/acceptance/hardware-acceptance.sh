@@ -619,6 +619,12 @@ sway_window_state_for_pid() {
                         width: $window.rect.width,
                         height: ($window.rect.height + $window.deco_rect.height)
                     },
+                    decoration: {
+                        x: ($workspace.rect.x + $window.deco_rect.x),
+                        y: ($workspace.rect.y + $window.deco_rect.y),
+                        width: $window.deco_rect.width,
+                        height: $window.deco_rect.height
+                    },
                     workspace: $workspace.rect,
                     workspace_name: $workspace.name,
                     marks: ($window.marks // []),
@@ -629,6 +635,60 @@ sway_window_state_for_pid() {
                     border_width: $window.current_border_width
                 }
             ][0]
+        '
+}
+
+titlebar_drag_for_pid() {
+    local pid=$1
+    local sway_state output_state
+    sway_state=$(sway_window_state_for_pid "$pid")
+    output_state=$(guest cat \
+        /run/wildbuzzard-display-state/output-state.json)
+    jq -ce -n \
+        --argjson state "$sway_state" \
+        --argjson output "$output_state" '
+            def physical_x($logical):
+                (($logical * $output.physical_width /
+                    $output.guest_logical_width) | round);
+            def physical_y($logical):
+                (($logical * $output.physical_height /
+                    $output.guest_logical_height) | round);
+
+            ($state.decoration) as $decoration |
+            ($state.border_width) as $border |
+            if ($output.guest_logical_width <= 0 or
+                $output.guest_logical_height <= 0 or
+                $output.physical_width <= 0 or
+                $output.physical_height <= 0) then
+                error("guest output has no usable logical/physical mapping")
+            elif ($border <= 0 or
+                  $decoration.width <= (2 * $border) or
+                  $decoration.height <= $border) then
+                error("Sway decoration has no titlebar interior outside its resize border")
+            else
+                ($decoration.width - (2 * $border)) as $interior_width |
+                ($decoration.height - $border) as $interior_height |
+                # Sway current_border_width is the authoritative edge-resize
+                # hit region along the top and sides. Aim halfway between the
+                # bottom of that top hit region and the decoration bottom,
+                # then map the logical point into the CUA canonical physical
+                # output space. This remains a titlebar drag at every scale.
+                ($decoration.x + $border + ($interior_width / 2 | floor)) as $from_x |
+                ($decoration.y + $border + ($interior_height / 2 | floor)) as $from_y |
+                # Derive a visible move from the same live decoration instead
+                # of coupling the test to one package-time pixel height.
+                ($decoration.height + $border) as $delta_x |
+                ([($decoration.height - $border), (2 * $border)] | max) as $delta_y |
+                {
+                    scope: "desktop",
+                    from_x: physical_x($from_x),
+                    from_y: physical_y($from_y),
+                    to_x: physical_x($from_x + $delta_x),
+                    to_y: physical_y($from_y + $delta_y),
+                    duration_ms: 220,
+                    steps: 14
+                }
+            end
         '
 }
 
@@ -1142,17 +1202,7 @@ guest swaymsg -r -t get_tree | jq -e --argjson pid "$thunar_pid" '
     .border == "normal" and .deco_rect.height > 0
 ' >/dev/null
 thunar_before_drag=$(window_frame_for_pid "$thunar_pid")
-titlebar_drag=$(jq -c '
-    {
-        scope: "desktop",
-        from_x: (.x + (.width / 2 | floor)),
-        from_y: (.y + 10),
-        to_x: (.x + (.width / 2 | floor) + 36),
-        to_y: (.y + 34),
-        duration_ms: 220,
-        steps: 14
-    }
-' <<<"$thunar_before_drag")
+titlebar_drag=$(titlebar_drag_for_pid "$thunar_pid")
 assert_cua_ok drag "$titlebar_drag"
 thunar_after_drag=$(window_frame_for_pid "$thunar_pid")
 jq -e -n --argjson before "$thunar_before_drag" --argjson after "$thunar_after_drag" '
@@ -1504,20 +1554,10 @@ if [[ "$full_matrix" == 1 ]]; then
     # tests, and all eight live resize paths as the native Wayland window.
     xeyes=$(wait_for_window xeyes)
     xeyes_pid=$(jq -er '.pid' <<<"$xeyes")
-    jq -e '.shell == "xwayland" and .border == "normal" and .border_width == 10' \
+    jq -e '.shell == "xwayland" and .border == "normal" and .border_width == 8' \
         <<<"$(sway_window_state_for_pid "$xeyes_pid")" >/dev/null
     xeyes_before_drag=$(window_frame_for_pid "$xeyes_pid")
-    assert_cua_ok drag "$(jq -c '
-        {
-            scope: "desktop",
-            from_x: (.x + (.width / 2 | floor)),
-            from_y: (.y + 10),
-            to_x: (.x + (.width / 2 | floor) + 36),
-            to_y: (.y + 34),
-            duration_ms: 220,
-            steps: 14
-        }
-    ' <<<"$xeyes_before_drag")"
+    assert_cua_ok drag "$(titlebar_drag_for_pid "$xeyes_pid")"
     xeyes_after_drag=$(window_frame_for_pid "$xeyes_pid")
     jq -e -n --argjson before "$xeyes_before_drag" --argjson after "$xeyes_after_drag" '
         $after.x > $before.x + 20 and $after.y > $before.y + 12 and
@@ -1703,8 +1743,19 @@ fi
 # location without rewriting metadata, verify persistent state, then return it
 # to the original path and boot it once more. This proves real portability,
 # rather than merely testing path construction or listing copied metadata.
+relocation_outbound_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+relocation_outbound_broker_start_time=$(
+    process_start_time "$relocation_outbound_broker_pid"
+)
+relocation_outbound_appdir=$(
+    appdir_for_process "$relocation_outbound_broker_pid"
+)
 wb window "$machine" close
 wait_stopped
+wait_appdir_lease_released \
+    "$relocation_outbound_broker_pid" \
+    "$relocation_outbound_broker_start_time" \
+    "$relocation_outbound_appdir"
 machine_config_hash=$(sha256sum "$portable_dir/vm/$machine/machine.json" | cut -d' ' -f1)
 appimage_name=$(basename -- "$appimage")
 relocation_original=$portable_dir
@@ -1729,8 +1780,19 @@ relocated_machine_config_hash=$(
 [[ "$relocated_machine_config_hash" == "$machine_config_hash" ]]
 wb status "$machine" |
     grep -Fx "rootfs: $portable_dir/vm/$machine/rootfs" >/dev/null
+relocation_return_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+relocation_return_broker_start_time=$(
+    process_start_time "$relocation_return_broker_pid"
+)
+relocation_return_appdir=$(
+    appdir_for_process "$relocation_return_broker_pid"
+)
 wb window "$machine" close
 wait_stopped
+wait_appdir_lease_released \
+    "$relocation_return_broker_pid" \
+    "$relocation_return_broker_start_time" \
+    "$relocation_return_appdir"
 
 mv -- "$relocation_target" "$relocation_original"
 relocation_active=0
@@ -1764,13 +1826,35 @@ refresh_pid
 # Exercise the native fractional-scale bridge around unmodified Sway/wlroots
 # without mutating the host monitor configuration. The test override replaces
 # only the host's preferred-scale value; Sway still renders and submits the
-# resulting dmabuf through the real host compositor.
-wb stop "$machine"
+# resulting dmabuf through the real host compositor. The override is consumed
+# only when the display process starts, while Stop deliberately keeps that
+# process alive. Close the normal display and release its exact AppDir lease so
+# this start cannot silently reuse a process that never received the override.
+fractional_baseline_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+fractional_baseline_broker_start_time=$(
+    process_start_time "$fractional_baseline_broker_pid"
+)
+fractional_baseline_appdir=$(
+    appdir_for_process "$fractional_baseline_broker_pid"
+)
+wb window "$machine" close
+wait_stopped
+wait_appdir_lease_released \
+    "$fractional_baseline_broker_pid" \
+    "$fractional_baseline_broker_start_time" \
+    "$fractional_baseline_appdir"
 WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180 \
     APPIMAGE_EXTRACT_AND_RUN=1 \
     "$appimage" start "$machine" --detach
 wait_running
 refresh_pid
+fractional_override_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+fractional_override_broker_start_time=$(
+    process_start_time "$fractional_override_broker_pid"
+)
+fractional_override_appdir=$(
+    appdir_for_process "$fractional_override_broker_pid"
+)
 wait_scaled_window_frame 180
 guest pgrep -f '^/usr/bin/python3 /usr/libexec/wildbuzzard-output-sync$' >/dev/null
 wait_sway_output_matches_runtime 180
@@ -1788,7 +1872,14 @@ wait_scaled_window_frame 180
 wb window "$machine" restore
 wait_maximized false
 wait_scaled_window_frame 180
-wb stop "$machine"
+# Close and release the overridden display's exact lease before starting
+# normally; otherwise Stop would preserve the startup-only test setting.
+wb window "$machine" close
+wait_stopped
+wait_appdir_lease_released \
+    "$fractional_override_broker_pid" \
+    "$fractional_override_broker_start_time" \
+    "$fractional_override_appdir"
 wb start "$machine" --detach
 wait_running
 refresh_pid

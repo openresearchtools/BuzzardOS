@@ -183,6 +183,34 @@ class OciBuildContractTests(unittest.TestCase):
         ):
             self.assertIn(forbidden, verifier)
 
+    def test_managed_sway_config_does_not_invoke_unpackaged_swaybg(self) -> None:
+        sway_config = (ROOT / "guest/assets/sway-config").read_text(
+            encoding="utf-8"
+        )
+        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
+            encoding="utf-8"
+        )
+        verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
+
+        output_background = re.search(
+            r"(?m)^\s*output\b[^\n]*\sbg(?:\s|$)", sway_config
+        )
+        explicit_swaybg = re.search(
+            r"(?m)^\s*exec(?:_always)?\b[^\n]*\bswaybg(?:\s|$)", sway_config
+        )
+        invokes_swaybg = output_background is not None or explicit_swaybg is not None
+        packages_swaybg = re.search(
+            r"(?m)^\s+swaybg(?:\s+\\|\s+&&)", containerfile
+        ) is not None
+        verifies_swaybg = re.search(
+            r"(?m)^\s+swaybg(?:\s+\\|\s*$)", verifier
+        ) is not None
+
+        self.assertFalse(
+            invokes_swaybg and not (packages_swaybg and verifies_swaybg),
+            "managed Sway config invokes swaybg without packaging and verifying it",
+        )
+
     def test_cuda_packages_are_exact_hash_verified_downloads(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"

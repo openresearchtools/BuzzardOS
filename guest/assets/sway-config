@@ -18,7 +18,6 @@ titlebar_border_thickness 2
 titlebar_padding 6 7
 show_marks no
 
-output * bg #202225 solid_color
 output * scale_filter nearest
 
 # Graphite decorations with a restrained Ubuntu-style orange active accent.
