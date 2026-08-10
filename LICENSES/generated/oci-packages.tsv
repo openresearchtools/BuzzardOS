@@ -200,6 +200,8 @@ libgl1-mesa-dri:amd64	26.1.5-1
 libgl1:amd64	1.7.0-3+b1
 libgles2:amd64	1.7.0-3+b1
 libglib2.0-0t64:amd64	2.88.3-2
+libglib2.0-bin	2.88.3-2
+libglib2.0-data	2.88.3-2
 libglvnd0:amd64	1.7.0-3+b1
 libglx-mesa0:amd64	26.1.5-1
 libglx0:amd64	1.7.0-3+b1

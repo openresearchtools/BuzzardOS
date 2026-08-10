@@ -8,9 +8,10 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard)" = "1000:1000:700"
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard/.config)" = "1000:1000:700"
     for command in \
-        Xwayland cua-driver dbus-daemon ffmpeg firefox-esr foot fusermount3 grim \
-        mako mousepad pipewire sway swaymsg systemctl thunar \
-        wireplumber wtype
+        Xwayland cua-driver dbus-daemon dbus-run-session ffmpeg firefox-esr \
+        foot fusermount3 \
+        gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
+        thunar wireplumber wtype
     do
         command -v "$command" >/dev/null
     done
@@ -31,14 +32,34 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
         test -s "$required"
     done
 	dpkg-query -W \
-	    at-spi2-core ffmpeg firefox-esr foot fuse3 libfuse2t64 mousepad \
+	    at-spi2-core dconf-gsettings-backend ffmpeg firefox-esr foot fuse3 \
+	    gsettings-desktop-schemas libfuse2t64 mousepad \
 	    fonts-noto-color-emoji fonts-noto-core fonts-noto-cjk \
 	    libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libcairo2 \
 	    libcups2t64 libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 \
+	    libglib2.0-bin \
 	    libgtk-3-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
 	    libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 \
 	    libxkbcommon0 libxrandr2 python3-pyatspi \
 	    pipewire wireplumber xwayland >/dev/null
+	settings_root=/tmp/wildbuzzard-gsettings-verifier
+	rm -rf "$settings_root"
+	install -d -m 0700 -o 1000 -g 1000 \
+	    "$settings_root/config" "$settings_root/runtime"
+	setpriv --reuid=1000 --regid=1000 --clear-groups \
+	    env \
+	        HOME=/home/wildbuzzard \
+	        XDG_CONFIG_HOME="$settings_root/config" \
+	        XDG_RUNTIME_DIR="$settings_root/runtime" \
+	        dbus-run-session -- sh -ec "
+	            gsettings set org.gnome.desktop.interface gtk-theme WildBuzzard
+	            gsettings set org.gnome.desktop.interface icon-theme WildBuzzard
+	            gsettings set org.gnome.desktop.interface color-scheme prefer-dark
+	            gsettings get org.gnome.desktop.interface gtk-theme | grep -Fq WildBuzzard
+	            gsettings get org.gnome.desktop.interface icon-theme | grep -Fq WildBuzzard
+	            gsettings get org.gnome.desktop.interface color-scheme | grep -Fq prefer-dark
+	        "
+	rm -rf "$settings_root"
 	case "$(sway --version)" in
 	    "sway version 1.12"*) ;;
 	    *) echo "unexpected Sway version: $(sway --version)" >&2; exit 1 ;;

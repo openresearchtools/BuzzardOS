@@ -135,6 +135,7 @@ class OciBuildContractTests(unittest.TestCase):
             "fuse3",
             "libfuse2t64",
             "libgbm1",
+            "libglib2.0-bin",
             "libgtk-3-0t64",
             "libnss3",
             "libxkbcommon0",
@@ -160,6 +161,11 @@ class OciBuildContractTests(unittest.TestCase):
                 rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
             )
         verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
+        self.assertRegex(verifier, r"(?m)^\s+gsettings(?:\s|\\)")
+        self.assertIn("dconf-gsettings-backend", verifier)
+        self.assertIn("gsettings-desktop-schemas", verifier)
+        self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
+        self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
         for forbidden in (
             "blender",
             "build-essential",

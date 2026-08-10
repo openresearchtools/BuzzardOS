@@ -1,5 +1,5 @@
 schema = 1
-audited_at = "2026-08-09"
+audited_at = "2026-08-10"
 
 [[component]]
 id = "wildbuzzard-project-notice"
@@ -232,8 +232,8 @@ image_reference = "docker.io/library/wildbuzzard-desktop:local"
 image_manifest_digest = "sha256:3e89071f5226861492a84e2a8890b5d0d10d7225bf95b640a6c8cc81512b8dfa"
 image_config_digest = "sha256:ecdddb9ddda32c5fe44b9a7ad108b2b6528e2909943b52f55b24a31ae15876cf"
 archive_sha256 = "6cfed19f7ff1dd34dad0b47ae6738562f9f7a9b75205a31ad43b90d15c7dc0ee"
-package_count = 615
-package_inventory_sha256 = "75b16ab39806da51525623a74e6dd5a1080581e00a049d20abc46b8c3d17c94a"
+package_count = 617
+package_inventory_sha256 = "5091b7e7db8e9df2a9222bad0d33f9746480443b27838e3465b07e55204c8673"
 evidence = ["LICENSES/generated/oci-packages.tsv"]
 status = "current-built-image-package-inventory-recorded-and-audited"
 
