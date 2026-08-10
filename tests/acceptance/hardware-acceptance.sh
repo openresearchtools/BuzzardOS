@@ -274,18 +274,20 @@ wait_scaled_window_frame() {
 wait_sway_output_matches_runtime() {
     local required_scale_120=${1:-}
     local deadline=$((SECONDS + 15))
-    local expected outputs
+    local expected output_state outputs
     while ((SECONDS < deadline)); do
         # The guest scale can be configured independently of the host surface
         # scale. Read the display gateway's atomic guest-output record rather
         # than inferring guest logical dimensions from host-window diagnostics.
-        expected=$(guest jq -c '{
+        output_state=$(guest cat \
+            /run/wildbuzzard-display-state/output-state.json)
+        expected=$(jq -c '{
             scale_120,
             logical_width: .guest_logical_width,
             logical_height: .guest_logical_height,
             physical_width,
             physical_height
-        }' /run/wildbuzzard-display-state/output-state.json)
+        }' <<<"$output_state")
         if [[ -n "$required_scale_120" ]] &&
             [[ $(jq -r '.scale_120' <<<"$expected") != "$required_scale_120" ]]; then
             sleep 0.1
@@ -920,13 +922,15 @@ guest sudo -n sh -c \
     'printf "%s\n" "# persistent guest OS edit: $1" >> /etc/wildbuzzard/sway-config' \
     sh "$marker"
 compositor_start_time=$(guest awk '{print $22}' "/proc/$compositor_pid/stat")
-reload_output_before=$(guest jq -ce '{
+reload_output_state=$(guest cat \
+    /run/wildbuzzard-display-state/output-state.json)
+reload_output_before=$(jq -ce '{
     scale_120,
     guest_logical_width,
     guest_logical_height,
     physical_width,
     physical_height
-}' /run/wildbuzzard-display-state/output-state.json)
+}' <<<"$reload_output_state")
 reload_frame_counters=$(jq -ce '{
     submitted_frames: .display.presentation.submitted_frames,
     painted_frames: .display.presentation.painted_frames
@@ -942,13 +946,16 @@ wait_sway_config_contains "# persistent guest OS edit: $marker"
 [[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
     "$compositor_start_time" ]]
 wait_sway_output_matches_runtime
-[[ $(guest jq -ce '{
+reload_output_state=$(guest cat \
+    /run/wildbuzzard-display-state/output-state.json)
+reload_output_after=$(jq -ce '{
     scale_120,
     guest_logical_width,
     guest_logical_height,
     physical_width,
     physical_height
-}' /run/wildbuzzard-display-state/output-state.json) == "$reload_output_before" ]]
+}' <<<"$reload_output_state")
+[[ "$reload_output_after" == "$reload_output_before" ]]
 wait_native_window_frame_after "$reload_frame_counters"
 [[ $(guest pgrep -xo sway) == "$compositor_pid" ]]
 [[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
@@ -1215,10 +1222,10 @@ assert_cua_confirmed set_window_frame \
 assert_cua_confirmed maximize_window \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
 thunar_maximized=$(sway_window_state_for_pid "$thunar_pid")
-guest_logical_width=$(guest jq -er \
-    '.guest_logical_width' /run/wildbuzzard-display-state/output-state.json)
-guest_logical_height=$(guest jq -er \
-    '.guest_logical_height' /run/wildbuzzard-display-state/output-state.json)
+thunar_output_state=$(guest cat \
+    /run/wildbuzzard-display-state/output-state.json)
+guest_logical_width=$(jq -er '.guest_logical_width' <<<"$thunar_output_state")
+guest_logical_height=$(jq -er '.guest_logical_height' <<<"$thunar_output_state")
 jq -e -n \
     --argjson state "$thunar_maximized" \
     --argjson width "$guest_logical_width" \
@@ -1281,12 +1288,14 @@ extents = button.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
 print(extents.x + extents.width // 2, extents.y + extents.height // 2)
 PY
 )
-read -r logical_width logical_height physical_width physical_height < <(
-    guest jq -r \
-        '[.guest_logical_width, .guest_logical_height,
-          .physical_width, .physical_height] | @tsv' \
-        /run/wildbuzzard-display-state/output-state.json
-)
+task_output_state=$(guest cat \
+    /run/wildbuzzard-display-state/output-state.json)
+task_output_dimensions=$(jq -er \
+    '[.guest_logical_width, .guest_logical_height,
+      .physical_width, .physical_height] | @tsv' \
+    <<<"$task_output_state")
+read -r logical_width logical_height physical_width physical_height \
+    <<<"$task_output_dimensions"
 task_x=$(((task_logical_x * physical_width + logical_width / 2) / logical_width))
 task_y=$(((task_logical_y * physical_height + logical_height / 2) / logical_height))
 assert_cua_ok click \
@@ -1552,12 +1561,14 @@ XEV
     # Convert the logical target once at this API boundary.
     canvas_logical_x=$((canvas_logical_x + canvas_width / 2))
     canvas_logical_y=$((canvas_logical_y + canvas_height / 2))
-    read -r guest_logical_width guest_logical_height physical_width physical_height < <(
-        guest jq -r \
-            '[.guest_logical_width, .guest_logical_height,
-              .physical_width, .physical_height] | @tsv' \
-            /run/wildbuzzard-display-state/output-state.json
-    )
+    canvas_output_state=$(guest cat \
+        /run/wildbuzzard-display-state/output-state.json)
+    canvas_output_dimensions=$(jq -er \
+        '[.guest_logical_width, .guest_logical_height,
+          .physical_width, .physical_height] | @tsv' \
+        <<<"$canvas_output_state")
+    read -r guest_logical_width guest_logical_height physical_width physical_height \
+        <<<"$canvas_output_dimensions"
     canvas_x=$(((canvas_logical_x * physical_width + guest_logical_width / 2) / guest_logical_width))
     canvas_y=$(((canvas_logical_y * physical_height + guest_logical_height / 2) / guest_logical_height))
     assert_cua_ok click \

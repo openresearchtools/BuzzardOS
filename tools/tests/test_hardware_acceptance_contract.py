@@ -32,6 +32,9 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertIn("wait_sway_output_matches_runtime", self.script)
         self.assertIn("wait_cua_capture_matches_runtime", self.script)
 
+    def test_guest_json_is_parsed_by_host_jq(self) -> None:
+        self.assertNotRegex(self.script, r"\bguest\s+jq\b")
+
 
 if __name__ == "__main__":
     unittest.main()
