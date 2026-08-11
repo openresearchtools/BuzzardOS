@@ -629,7 +629,9 @@ fn build_keyboard_page(
 ) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
     let keyboard = store.borrow().settings.keyboard.clone();
-    let controls = section("Keyboard");
+    // The page heading already names this single group.  Adding another
+    // "Keyboard" heading here only repeats the title above the controls.
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let language_names = KEYBOARD_LANGUAGES
         .iter()
         .map(|entry| entry.name)
