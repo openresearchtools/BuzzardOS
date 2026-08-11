@@ -28,9 +28,9 @@ client.urgent #9b2c2c #9b2c2c #ffffff #f07a7a #9b2c2c
 client.placeholder #282828 #282828 #b8b8b8 #545454 #282828
 client.background #181818
 
-input * {
-    xkb_layout us
-}
+# wildbuzzard-output-sync installs the persisted, validated XKB keymap after
+# Sway creates the private nested keyboard. Sway's safe default is used only
+# until that session-private service confirms the managed map.
 
 # This is a classic floating desktop, not Sway's default tiling UI. `[all]`
 # is stock Sway's creation-time catch-all for managed xdg-shell and Xwayland
@@ -42,7 +42,7 @@ for_window [all] floating enable, border normal 8
 # Stock Sway scopes an unqualified mouse binding to the titlebar. Focus the
 # exact container under the pointer, then ask the shell to open its normal
 # accessible window-controls menu. Application content keeps button 3.
-bindsym button3 focus, exec --no-startup-id /usr/libexec/wildbuzzard-shell --request-focused-window-menu
+bindsym button3 focus, exec --no-startup-id /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell --request-focused-window-menu
 
 # Conventional guest shortcuts. There is deliberately no compositor root menu,
 # workspace bar, launcher, or host lifecycle action in this configuration.
@@ -56,7 +56,7 @@ bindsym $mod+Up focus up
 bindsym $mod+Right focus right
 
 workspace 1
-exec_always --no-startup-id /usr/libexec/wildbuzzard-desktop-services
+exec_always --no-startup-id /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-desktop-services
 
 include /run/wildbuzzard-host/initial-output.conf
 include /home/wildbuzzard/.config/sway/config.d/*

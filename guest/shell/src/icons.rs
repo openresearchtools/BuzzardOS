@@ -7,8 +7,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use wildbuzzard_desktop_core::BackgroundChoice;
 
 const ICON_SIZE: u32 = 64;
+const DARK_WALLPAPER_MARK: &str = "/usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg";
+const LIGHT_WALLPAPER_MARK: &str = "/usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg";
+const WALLPAPER_MARK_PERCENT: u32 = 20;
 
 #[derive(Debug)]
 pub struct AppIcon {
@@ -143,13 +147,40 @@ fn load_raster(path: &Path) -> Option<AppIcon> {
 }
 
 fn load_svg(path: &Path) -> Option<AppIcon> {
+    load_svg_at_size(path, ICON_SIZE)
+}
+
+pub fn render_wallpaper_mark(
+    choice: BackgroundChoice,
+    physical_width: u32,
+    physical_height: u32,
+) -> Option<AppIcon> {
+    let path = match choice {
+        BackgroundChoice::DarkLogo => Path::new(DARK_WALLPAPER_MARK),
+        BackgroundChoice::LightLogo => Path::new(LIGHT_WALLPAPER_MARK),
+        BackgroundChoice::DarkPlain
+        | BackgroundChoice::LightPlain
+        | BackgroundChoice::CustomSolid { .. } => return None,
+    };
+    load_svg_at_size(path, wallpaper_mark_extent(physical_width, physical_height))
+}
+
+fn wallpaper_mark_extent(physical_width: u32, physical_height: u32) -> u32 {
+    physical_width
+        .min(physical_height)
+        .saturating_mul(WALLPAPER_MARK_PERCENT)
+        .div_ceil(100)
+        .max(1)
+}
+
+fn load_svg_at_size(path: &Path, target_size: u32) -> Option<AppIcon> {
     let bytes = fs::read(path).ok()?;
     let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).ok()?;
-    let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)?;
+    let mut pixmap = tiny_skia::Pixmap::new(target_size, target_size)?;
     let size = tree.size();
-    let scale = (ICON_SIZE as f32 / size.width()).min(ICON_SIZE as f32 / size.height());
-    let x = (ICON_SIZE as f32 - size.width() * scale) / 2.0;
-    let y = (ICON_SIZE as f32 - size.height() * scale) / 2.0;
+    let scale = (target_size as f32 / size.width()).min(target_size as f32 / size.height());
+    let x = (target_size as f32 - size.width() * scale) / 2.0;
+    let y = (target_size as f32 - size.height() * scale) / 2.0;
     resvg::render(
         &tree,
         tiny_skia::Transform::from_translate(x, y).post_scale(scale, scale),
@@ -161,7 +192,12 @@ fn load_svg(path: &Path) -> Option<AppIcon> {
         .ok()?
         .decode()
         .ok()?;
-    let mut icon = from_image(image);
+    let image = image.into_rgba8();
+    let mut icon = AppIcon {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    };
     if path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -184,5 +220,32 @@ fn from_image(image: DynamicImage) -> AppIcon {
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn wallpaper_mark_tracks_twenty_percent_of_the_short_physical_side() {
+        assert_eq!(wallpaper_mark_extent(1920, 1080), 216);
+        assert_eq!(wallpaper_mark_extent(1595, 940), 188);
+        assert_eq!(wallpaper_mark_extent(1, 1), 1);
+    }
+
+    #[test]
+    fn svg_wallpaper_render_keeps_the_requested_physical_extent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mark.svg");
+        fs::write(
+            &path,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><path fill="#ff7139" d="M0 0h256v256H0z"/></svg>"##,
+        )
+        .unwrap();
+        let rendered = load_svg_at_size(&path, 188).unwrap();
+        assert_eq!((rendered.width, rendered.height), (188, 188));
+        assert_eq!(rendered.rgba.len(), 188 * 188 * 4);
     }
 }

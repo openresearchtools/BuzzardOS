@@ -76,10 +76,17 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir "$asset_root/rootfs"
+mkdir -p "$asset_root/runtime/bin"
+cp /bin/true "$asset_root/runtime/bin/sway"
+cp /bin/true "$asset_root/runtime/bin/swaymsg"
 "$project_dir/guest/install-rootfs-assets.sh" \
     "$asset_root/rootfs" \
     /bin/true \
-    /bin/true
+    /bin/true \
+    /bin/true \
+    /bin/true \
+    /bin/true \
+    "$asset_root/runtime"
 python3 - "$asset_root/rootfs" <<'PY'
 import json
 from pathlib import Path
@@ -94,6 +101,21 @@ for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
     assert path.stat().st_mode & 0o7777 == record["mode"], relative
+revision = (root / "opt/wildbuzzard/runtime/current").readlink()
+runtime = root / "opt/wildbuzzard/runtime" / revision
+runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
+assert runtime_manifest["revision"] == str(revision)
+for required in (
+    "bin/sway",
+    "bin/swaymsg",
+    "bin/cua-driver",
+    "libexec/wildbuzzard-shell",
+    "libexec/wildbuzzard-settings",
+    "libexec/wildbuzzard-shortcut-helper",
+    "libexec/wildbuzzard-clipboard-agent",
+    "libexec/wildbuzzard-updater",
+):
+    assert (runtime / required).is_file(), required
 PY
 trap - EXIT
 cleanup

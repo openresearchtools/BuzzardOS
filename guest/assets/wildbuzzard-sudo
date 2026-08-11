@@ -119,7 +119,7 @@ systemd-run \
     --uid="$target_user" \
     --gid="$target_group" \
     --working-directory="${PWD:-/}" \
-    /usr/libexec/wildbuzzard-sudo-exec \
+    /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-sudo-exec \
     "$output_fifo" \
     -- \
     "$@"

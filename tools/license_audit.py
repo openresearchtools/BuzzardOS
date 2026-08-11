@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -51,7 +52,10 @@ NON_DPKG_APPDIR_ELFS = {
     "usr/bin/wildbuzzard-broker",
     "usr/bin/wildbuzzard-cua-driver",
     "usr/bin/wildbuzzard-display",
+    "usr/bin/wildbuzzard-settings",
+    "usr/bin/wildbuzzard-shortcut-helper",
     "usr/bin/wildbuzzard-shell",
+    "usr/lib/libxkbcommon.so.0",
     "usr/lib/libnvidia-container-go.so.1.19.1",
     "usr/lib/libnvidia-container.so.1.19.1",
     "usr/libexec/wildbuzzard/crane",
@@ -68,6 +72,15 @@ NON_DPKG_APPDIR_MIRRORS = {
     "usr/bin/slirp4netns": "usr/libexec/wildbuzzard/slirp4netns",
 }
 NON_DPKG_APPDIR_ELFS.update(NON_DPKG_APPDIR_MIRRORS)
+GUEST_RUNTIME_APPDIR_PREFIX = "usr/bin/wildbuzzard-guest-runtime/"
+
+
+def is_non_dpkg_appdir_elf(relative: str) -> bool:
+    """Return whether an ELF has independent, non-build-host provenance."""
+    return (
+        relative in NON_DPKG_APPDIR_ELFS
+        or relative.startswith(GUEST_RUNTIME_APPDIR_PREFIX)
+    )
 
 NOTICE_NAME = re.compile(
     r"^(?:LICENSE|COPYING|COPYRIGHT|NOTICE|NOTICES)(?:[-._].*)?$", re.IGNORECASE
@@ -403,7 +416,7 @@ def cargo_outputs() -> tuple[dict[Path, str], list[str]]:
         "host-workspace", HOST_MANIFEST, HOST_LOCK, None, fallbacks
     )
     guest_tsv, guest_local, guest_contents = build_cargo_graph(
-        "guest-shell", GUEST_MANIFEST, GUEST_LOCK, "wildbuzzard-shell", fallbacks
+        "guest-workspace", GUEST_MANIFEST, GUEST_LOCK, None, fallbacks
     )
     cua_tsv, cua_local, cua_contents = build_cargo_graph(
         "cua-driver", CUA_MANIFEST, CUA_LOCK, "cua-driver", fallbacks
@@ -1229,7 +1242,7 @@ def appdir_host_closure(
     payloads = [
         path
         for path in elf_files(appdir)
-        if path.relative_to(appdir).as_posix() not in NON_DPKG_APPDIR_ELFS
+        if not is_non_dpkg_appdir_elf(path.relative_to(appdir).as_posix())
     ]
     candidates = dpkg_candidates({path.name for path in payloads})
     build_ids: dict[Path, str] = {}
@@ -1395,7 +1408,7 @@ def verify_appdir_host_notices(appdir: Path) -> tuple[list[str], int]:
     payloads = {
         path.relative_to(appdir).as_posix(): path
         for path in elf_files(appdir)
-        if path.relative_to(appdir).as_posix() not in NON_DPKG_APPDIR_ELFS
+        if not is_non_dpkg_appdir_elf(path.relative_to(appdir).as_posix())
     }
     recorded_paths = {row[0] for row in rows}
     missing = sorted(payloads.keys() - recorded_paths)
@@ -1459,6 +1472,251 @@ def verify_copy(root: Path, destination: str, source: Path, issues: list[str], l
         issues.append(f"{label} notice missing: {destination}")
     elif sha256_file(target) != sha256_file(source):
         issues.append(f"{label} notice differs from audited source: {destination}")
+
+
+def inspect_xkb_payload(
+    root: Path, manifest: Path, label: str
+) -> tuple[dict[str, str], list[str]]:
+    issues: list[str] = []
+    inventory: dict[str, str] = {}
+    if not root.is_dir() or root.is_symlink():
+        return inventory, [f"{label} XKB root is missing or is a symlink"]
+    for relative in [
+        "compat/complete",
+        "keycodes/evdev",
+        "rules/evdev",
+        "rules/evdev.lst",
+        "symbols/us",
+        "types/complete",
+    ]:
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            issues.append(f"{label} XKB payload is missing regular file: {relative}")
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            issues.append(f"{label} XKB payload contains a symlink: {relative}")
+        elif stat.S_ISDIR(mode):
+            continue
+        elif not stat.S_ISREG(mode):
+            issues.append(f"{label} XKB payload contains a special file: {relative}")
+        elif re.fullmatch(r"[A-Za-z0-9._+/@~-]+", relative) is None or ".." in relative:
+            issues.append(f"{label} XKB payload contains an unsafe path: {relative}")
+        else:
+            inventory[relative] = sha256_file(path)
+    recorded: dict[str, str] = {}
+    if not manifest.is_file() or manifest.is_symlink():
+        issues.append(f"{label} XKB manifest is missing or is a symlink")
+    else:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            digest, separator, relative = line.partition("  ")
+            if (
+                separator != "  "
+                or SHA256_PATTERN.fullmatch(digest) is None
+                or re.fullmatch(r"[A-Za-z0-9._+/@~-]+", relative) is None
+                or ".." in relative
+                or relative in recorded
+            ):
+                issues.append(f"{label} XKB manifest contains an invalid row")
+                continue
+            recorded[relative] = digest
+        canonical = "".join(
+            f"{digest}  {relative}\n"
+            for relative, digest in sorted(recorded.items())
+        )
+        if manifest.read_text(encoding="utf-8") != canonical:
+            issues.append(f"{label} XKB manifest is not canonical")
+    if recorded != inventory:
+        issues.append(f"{label} XKB payload differs from its manifest")
+    return inventory, issues
+
+
+def inspect_pinned_libxkbcommon(
+    library: Path,
+    manifest: Path,
+    version_file: Path,
+    copyright_file: Path,
+    label: str,
+) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    digest = ""
+    if not library.is_file() or library.is_symlink():
+        issues.append(f"{label} libxkbcommon is missing or is a symlink")
+    else:
+        digest = sha256_file(library)
+        dynamic = subprocess.run(
+            ["readelf", "--dynamic", str(library)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if (
+            dynamic.returncode != 0
+            or "Library soname: [libxkbcommon.so.0]" not in dynamic.stdout
+        ):
+            issues.append(f"{label} libxkbcommon has an unexpected SONAME")
+        relocation_environment = dict(os.environ)
+        relocation_environment["LD_LIBRARY_PATH"] = str(library.parent)
+        relocations = subprocess.run(
+            ["ldd", "-r", "--", str(library)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=relocation_environment,
+        )
+        relocation_output = f"{relocations.stdout}\n{relocations.stderr}"
+        if relocations.returncode != 0 or re.search(
+            r"not found|undefined symbol|relocation error|symbol lookup error",
+            relocation_output,
+            flags=re.IGNORECASE,
+        ):
+            issues.append(f"{label} libxkbcommon has an incomplete relocation closure")
+    if not manifest.is_file() or manifest.is_symlink():
+        issues.append(f"{label} libxkbcommon manifest is missing or is a symlink")
+    else:
+        match = re.fullmatch(
+            r"([0-9a-f]{64})  lib/libxkbcommon\.so\.0\n",
+            manifest.read_text(encoding="utf-8"),
+        )
+        if match is None:
+            issues.append(f"{label} libxkbcommon manifest is invalid")
+        elif digest and match.group(1) != digest:
+            issues.append(f"{label} libxkbcommon differs from its manifest")
+    if (
+        not version_file.is_file()
+        or version_file.is_symlink()
+        or re.fullmatch(
+            r"[A-Za-z0-9.+:~_-]+\n",
+            version_file.read_text(encoding="utf-8")
+            if version_file.is_file()
+            else "",
+        )
+        is None
+    ):
+        issues.append(f"{label} libxkbcommon package version is missing or invalid")
+    if not copyright_file.is_file() or copyright_file.is_symlink():
+        issues.append(f"{label} libxkbcommon copyright is missing or is a symlink")
+    return digest, issues
+
+
+def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
+    issues: list[str] = []
+    host_root = appdir / "usr/share/wildbuzzard/xkb"
+    host_manifest = appdir / "usr/share/wildbuzzard/xkb-data.manifest.sha256"
+    host_inventory, host_issues = inspect_xkb_payload(
+        host_root, host_manifest, "AppDir host"
+    )
+    issues.extend(host_issues)
+    host_version = appdir / "usr/share/wildbuzzard/xkb-data.version"
+    host_notice = appdir / "usr/share/doc/xkb-data/copyright"
+    if (
+        not host_version.is_file()
+        or host_version.is_symlink()
+        or re.fullmatch(
+            r"[A-Za-z0-9.+:~_-]+\n",
+            host_version.read_text(encoding="utf-8") if host_version.is_file() else "",
+        )
+        is None
+    ):
+        issues.append("AppDir pinned xkb-data version is missing or invalid")
+    if not host_notice.is_file() or host_notice.is_symlink():
+        issues.append("AppDir xkb-data copyright is missing or is a symlink")
+
+    guest_runtime_root = appdir / "usr/bin/wildbuzzard-guest-runtime"
+    revisions = (
+        sorted(
+            path
+            for path in guest_runtime_root.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        )
+        if guest_runtime_root.is_dir() and not guest_runtime_root.is_symlink()
+        else []
+    )
+    if len(revisions) != 1:
+        issues.append("AppDir must carry exactly one protected guest runtime revision")
+        return issues
+    guest_revision = revisions[0]
+    guest_inventory, guest_issues = inspect_xkb_payload(
+        guest_revision / "share/X11/xkb",
+        guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+        "AppDir guest",
+    )
+    issues.extend(guest_issues)
+    if host_inventory != guest_inventory:
+        issues.append("AppDir host and guest XKB payloads differ")
+    for host_path, guest_path, description in [
+        (
+            host_manifest,
+            guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+            "manifest",
+        ),
+        (
+            host_version,
+            guest_revision / "share/wildbuzzard/xkb-data.version",
+            "version",
+        ),
+        (
+            host_notice,
+            guest_revision / "share/doc/xkb-data/copyright",
+            "copyright",
+        ),
+    ]:
+        if (
+            not host_path.is_file()
+            or host_path.is_symlink()
+            or not guest_path.is_file()
+            or guest_path.is_symlink()
+            or sha256_file(host_path) != sha256_file(guest_path)
+        ):
+            issues.append(f"AppDir host and guest XKB {description} differ")
+
+    host_library_digest, host_library_issues = inspect_pinned_libxkbcommon(
+        appdir / "usr/lib/libxkbcommon.so.0",
+        appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
+        appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
+        appdir / "usr/share/doc/libxkbcommon0/copyright",
+        "AppDir host",
+    )
+    guest_library_digest, guest_library_issues = inspect_pinned_libxkbcommon(
+        guest_revision / "lib/libxkbcommon.so.0",
+        guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
+        guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+        guest_revision / "share/doc/libxkbcommon0/copyright",
+        "AppDir guest",
+    )
+    issues.extend(host_library_issues)
+    issues.extend(guest_library_issues)
+    if host_library_digest != guest_library_digest:
+        issues.append("AppDir host and guest libxkbcommon payloads differ")
+    for host_path, guest_path, description in [
+        (
+            appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
+            guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
+            "manifest",
+        ),
+        (
+            appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
+            guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+            "version",
+        ),
+        (
+            appdir / "usr/share/doc/libxkbcommon0/copyright",
+            guest_revision / "share/doc/libxkbcommon0/copyright",
+            "copyright",
+        ),
+    ]:
+        if (
+            not host_path.is_file()
+            or host_path.is_symlink()
+            or not guest_path.is_file()
+            or guest_path.is_symlink()
+            or sha256_file(host_path) != sha256_file(guest_path)
+        ):
+            issues.append(f"AppDir host and guest libxkbcommon {description} differ")
+    return issues
 
 
 def go_build_modules(path: Path) -> set[tuple[str, str]]:
@@ -1688,6 +1946,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     if not appdir.is_dir():
         raise AuditError(f"AppDir does not exist: {appdir}")
     issues: list[str] = []
+    issues.extend(audit_appdir_xkb_payload(appdir))
     required = {
         "usr/share/doc/wildbuzzard/LICENSE": ROOT / "LICENSE",
         "usr/share/doc/wildbuzzard/NOTICE": ROOT / "NOTICE",

@@ -11,6 +11,7 @@ dbus-update-activation-environment \
     ELECTRON_OZONE_PLATFORM_HINT \
     GTK_MODULES \
     HOME \
+    LD_LIBRARY_PATH \
     MOZ_ENABLE_WAYLAND \
     NO_AT_BRIDGE \
     QT_ACCESSIBILITY \
@@ -19,6 +20,7 @@ dbus-update-activation-environment \
     USER \
     XDG_CONFIG_DIRS \
     XDG_CURRENT_DESKTOP \
+    XKB_CONFIG_ROOT \
     XDG_RUNTIME_DIR \
     XDG_SESSION_DESKTOP \
     XDG_SESSION_TYPE
@@ -38,7 +40,8 @@ export WLR_BACKENDS=wayland
 export WLR_WL_OUTPUTS=1
 export WLR_LIBINPUT_NO_DEVICES=1
 
-sway --unsupported-gpu --config /etc/wildbuzzard/sway-config \
+/opt/wildbuzzard/runtime/current/bin/sway \
+    --unsupported-gpu --config /etc/wildbuzzard/sway-config \
     >>"$log_file" 2>&1 &
 sway_pid=$!
 
@@ -61,7 +64,7 @@ while [ "$attempt" -lt 300 ]; do
             fi
         done
     fi
-    if swaymsg -t get_outputs -r 2>/dev/null |
+    if /opt/wildbuzzard/runtime/current/bin/swaymsg -t get_outputs -r 2>/dev/null |
         grep -q '"active":[[:space:]]*true'; then
         ready=1
         break

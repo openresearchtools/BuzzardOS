@@ -13,8 +13,7 @@
 //!
 //! ## Probe categories
 //!
-//! - **Cross-platform**: version + arch, install layout, home dir,
-//!   telemetry state.
+//! - **Cross-platform**: version + arch, install layout, and home dir.
 //! - **Windows**: interactive desktop session detection (Session 0 warning),
 //!   UI Automation COM availability, top-level window enumeration count.
 //! - **Linux**: `DISPLAY` / `WAYLAND_DISPLAY` presence, X11 connection
@@ -233,27 +232,6 @@ fn probe_home_dir() -> Probe {
             if release_count == 1 { "" } else { "s" },
         ),
     )
-}
-
-/// Probe the same effective persisted/environment state as `telemetry status`.
-fn probe_telemetry() -> Probe {
-    let status = crate::telemetry::status();
-    if status.enabled {
-        let identity = if status.installation_id_present {
-            "install-id present"
-        } else {
-            "install-id not yet generated"
-        };
-        Probe::ok(
-            "telemetry",
-            format!("enabled via {} ({identity})", status.source),
-        )
-    } else {
-        Probe::ok(
-            "telemetry",
-            format!("disabled via {} (installation ID retained)", status.source),
-        )
-    }
 }
 
 /// `$HOME` on Unix, `%USERPROFILE%` on Windows.
@@ -589,7 +567,6 @@ pub fn run() -> Report {
     report.push(probe_version());
     report.push(probe_install_layout());
     report.push(probe_home_dir());
-    report.push(probe_telemetry());
     append_platform_probes(&mut report);
     report
 }
@@ -666,14 +643,12 @@ mod tests {
         assert_eq!(i.label, "install dir");
         let h = probe_home_dir();
         assert_eq!(h.label, "home dir");
-        let t = probe_telemetry();
-        assert_eq!(t.label, "telemetry");
     }
 
     #[test]
     fn run_emits_at_least_cross_platform_probes() {
         let report = run();
-        // 4 cross-platform + at least 1 platform-specific.
-        assert!(report.probes.len() >= 5, "got {}", report.probes.len());
+        // 3 cross-platform + at least 1 platform-specific.
+        assert!(report.probes.len() >= 4, "got {}", report.probes.len());
     }
 }

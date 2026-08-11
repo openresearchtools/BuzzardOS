@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 flate2 = "1.1"
 fs2 = "0.4"
+futures-util = "0.3"
 libc = "0.2"
 nix = { version = "0.30", features = ["fs", "process", "signal", "socket", "uio", "user"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -27,12 +28,15 @@ serde_json = "1.0"
 sha2 = "0.10"
 tar = "0.4"
 tempfile = "3.20"
+tiff = "=0.10.3"
 gtk4 = { version = "0.10.3", features = ["v4_18"] }
+image = { version = "=0.25.8", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff"] }
 uuid = { version = "1.17", features = ["v4", "serde"] }
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging", "unstable"] }
 wayland-server = "0.31"
 xkbcommon = "0.8"
 zstd = "0.13"
+wildbuzzard-clipboard-protocol = { path = "../clipboard-protocol" }
 
 [profile.release]
 lto = "thin"

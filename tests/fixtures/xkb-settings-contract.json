@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "default-us",
+      "valid": true,
+      "keyboard": {"model": "pc105", "layout": "us", "variant": "", "options": ""}
+    },
+    {
+      "name": "aligned-empty-variant-slots",
+      "valid": true,
+      "keyboard": {"model": "pc105", "layout": "us,de", "variant": ",nodeadkeys", "options": "compose:ralt,grp:alt_shift_toggle"}
+    },
+    {
+      "name": "four-layout-groups",
+      "valid": true,
+      "keyboard": {"model": "pc105", "layout": "us,gb,de,fr", "variant": "intl,,nodeadkeys,oss", "options": "grp:alt_shift_toggle"}
+    },
+    {
+      "name": "empty-layout-group",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us,,de", "variant": "", "options": ""}
+    },
+    {
+      "name": "five-layout-groups",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us,gb,de,fr,es", "variant": "", "options": ""}
+    },
+    {
+      "name": "variant-has-more-slots-than-layout",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us", "variant": "intl,nodeadkeys", "options": ""}
+    },
+    {
+      "name": "five-variant-slots",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us,gb,de,fr", "variant": "intl,,nodeadkeys,oss,", "options": ""}
+    },
+    {
+      "name": "empty-option-segment",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us", "variant": "", "options": "compose:ralt,,grp:alt_shift_toggle"}
+    },
+    {
+      "name": "unsupported-ascii-character",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "us/../../etc", "variant": "", "options": ""}
+    },
+    {
+      "name": "non-ascii-component",
+      "valid": false,
+      "keyboard": {"model": "pc105", "layout": "dë", "variant": "", "options": ""}
+    }
+  ]
+}

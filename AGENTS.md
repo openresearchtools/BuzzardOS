@@ -245,10 +245,11 @@ The native host application:
   correctly scaled client-side frame; controls must never be clipped or
   positioned using negative child surfaces outside an unrelated guest
   toplevel.
-- Uses one compact native header bar. `Machine`, `Ports`, `Devices`, and
-  `Settings` are direct header-bar controls beside the machine title, lifecycle
-  state, and native window controls; there is no second menu/toolbar row and no
-  bottom informational banner consuming monitor space. `Machine` exposes Start,
+- Uses one compact native header bar. `Machine`, `Ports`, `Devices`,
+  `Clipboard`, and `Settings` are direct header-bar controls beside the machine
+  title, lifecycle state, and native window controls; there is no second
+  menu/toolbar row and no bottom informational banner consuming monitor space.
+  `Machine` exposes Start,
   Stop, Restart, orderly Shut Down, machine state, and exit/close. `Settings`
   exposes initial monitor size, network mode, explicit GPU selection including
   `all`, and diagnostics. Start/Stop/Restart are host lifecycle actions, never
@@ -258,6 +259,10 @@ The native host application:
   controls independently toggle guest audio to host speakers, host microphone
   to guest, and host camera to guest. These integrations apply live and report
   rejection or runtime failure without restarting PID 1.
+- Provides a `Clipboard` control with exactly two explicit one-shot actions:
+  `Send Host Clipboard to Guest` and `Copy Guest Clipboard to Host`. These
+  actions transfer a bounded snapshot; they never connect or synchronize the
+  host and guest clipboard services.
 - Every new port row prepopulates the host address as `127.0.0.1` and resolves
   the current guest address automatically from the active machine network;
   users never have to discover the guest's private IP. An explicit
@@ -307,6 +312,66 @@ are labeled `Shut Down Machine` and never masquerade as host-window controls.
 The former gateway-client-side negative-subsurface frame is explicitly not an
 acceptable implementation of this contract.
 
+### Explicit one-shot clipboard transfer
+
+The host and guest clipboards remain separate by default. The guest must never
+receive the host clipboard object, host data-device objects, a host clipboard
+socket, a subscription, a history API, or any capability that lets guest code
+decide when to inspect the host clipboard. Clipboard sharing happens only
+after a human activates one of the two native host-header actions for one
+machine:
+
+- `Send Host Clipboard to Guest` causes the host application to read its own
+  clipboard exactly once after that click. It copies the selected value into a
+  bounded in-memory buffer, validates and canonicalizes it, sends only those
+  bytes through the machine's typed clipboard channel, then closes the
+  transaction and clears the host-side transfer buffer best-effort. The guest
+  clipboard agent takes ownership of the copied value inside Sway so normal
+  guest applications and agents can paste it. It receives no reference or
+  continuing route back to the host clipboard.
+- `Copy Guest Clipboard to Host` creates one fresh, unpredictable request with
+  a short deadline. Only while that request is outstanding may the fixed guest
+  clipboard agent return one snapshot of the current private guest clipboard.
+  The host validates the returned value before replacing its clipboard. Guest
+  messages sent without the matching live request are ignored and can never
+  cause the host to read, disclose, or replace its clipboard.
+
+Version 1 provides normal basic clipboard interoperability for valid UTF-8
+plain text without embedded NUL characters and ordinary still images. PNG is
+the canonical private wire format,
+not a requirement on the application that originally placed an image on either
+clipboard. The host/guest native clipboard API negotiates a supported still
+image offering (PNG, JPEG, WebP, BMP, or TIFF), decodes it under limits, and
+re-encodes it to `image/png` entirely in RAM. Native screenshot clipboard
+objects and toolkit texture providers therefore work without a file or a PNG
+source. Text aliases are canonicalized to `text/plain;charset=utf-8`. HTML,
+RTF, SVG, animated images, URI/file lists, serialized objects, executable
+formats, and arbitrary MIME types are rejected. Text is limited to 8 MiB. PNG
+transport is limited to 64 MiB and, after safe decode, 8192 pixels on either
+axis and 64 megapixels. Sources are consumed lazily only after the
+corresponding host click; reads, writes, framing, conversion, and image decode
+have bounded deadlines and memory.
+
+The transport is a fixed, length-delimited, versioned protocol with
+direction-specific messages, peer/provenance validation, a per-request nonce,
+`CLOEXEC` descriptors, single-flight serialization, and no shell commands,
+paths, file payloads, or mutable mount instructions. It uses no network port,
+temporary file, host D-Bus, host PipeWire, host Wayland socket, or generic
+guest-to-host RPC surface. Its Unix listener is guest-owned; the host connects
+to it only after a native action, and there is no host listener that guest code
+can call. Clipboard contents and content hashes are never
+logged or persisted; diagnostics contain only direction, canonical MIME,
+bounded byte count, timestamp, result, and non-content error category.
+
+The actions are enabled only when that machine's interactive guest clipboard
+agent is ready. They are disabled while Stopped, Starting, Stopping, or Failed.
+Each native machine window has independent clipboard state, nonce space, and
+channel. Closing, stopping, timing out, or starting another transfer cancels
+the transaction and releases all transport buffers. A compromised guest may
+offer hostile bytes only after the user explicitly requests a guest-to-host
+copy; host-side type, size, structure, and image-decode validation happens
+before those bytes become a host clipboard value.
+
 ### Complete desktop protocol boundary
 
 The filtered display gateway is a complete virtual-monitor and input backend
@@ -334,9 +399,11 @@ Protocol responsibilities are classified explicitly:
 - Only operations that could escape the one-window boundary are denied:
   creating additional host toplevels or popups, enumerating or capturing the
   host desktop, observing host-global input, controlling host windows,
-  accessing host clipboard or drag-and-drop without an explicit future sharing
-  policy, leasing or reprogramming physical outputs, and binding arbitrary
-  unclassified host globals.
+  accessing host clipboard or host drag-and-drop through the guest Wayland
+  connection, leasing or reprogramming physical outputs, and binding arbitrary
+  unclassified host globals. The explicit host-owned one-shot clipboard policy
+  below is a separate typed byte-transfer capability; it never proxies a host
+  clipboard protocol or object into the guest.
 
 The implementation uses a version-negotiated capability table and modular
 protocol handlers generated from the pinned Wayland protocol definitions.
@@ -379,6 +446,30 @@ The reference image is a Debian-family desktop with:
   pinned to source commit `d783533489e1f75d6886c2ab5c5960090ef268f8`.
   The final image
   contains their licenses but no compositor source or build toolchain.
+- One normalized `xkb-data` tree resolved from the same immutable Debian
+  snapshot as the pinned Sway build. The guest uses only
+  `/opt/wildbuzzard/runtime/current/share/X11/xkb`; the host display uses only
+  the byte-identical AppImage tree at `usr/share/wildbuzzard/xkb`. Both copies
+  use the same sway-builder `libxkbcommon.so.0`, are bound to canonical file
+  manifests and package versions, contain no symlinks or special files, carry
+  the Debian package copyrights, and must never silently fall back to a host
+  or mutable guest XKB data/library directory.
+- Human keyboard layout changes are paired host/guest transactions, never a
+  Sway-only mutation. RMLVO validation is identical in Settings, output-sync,
+  and the host parser: ASCII component syntax and byte limits are exact,
+  layouts contain one to four non-empty groups, variants are globally empty or
+  contain at most the matching number of comma-aligned slots (empty alignment
+  slots are valid), and non-empty options contain no empty segment. The guest
+  sends only that bounded RMLVO plus the canonical digest. Host Prepare queues
+  only physical parent-keyboard events. For Sway, output-sync reads the
+  user-owned recovery snapshot once through `O_NOFOLLOW`, verifies its digest,
+  copies it into a write/grow/shrink/seal-protected memfd, and retains the fd
+  while Sway consumes only `/proc/<output-sync-pid>/fd/<fd>`; the mutable
+  recovery pathname is never passed to Sway. Host Commit activates the
+  matching modifier/group state before replay. Failure restores the prior Sway
+  map before Abort. A private durable in-session journal and a bounded-backoff
+  supervisor reconcile Prepare/Commit response loss and process crashes
+  through typed Status requests before physical input resumes.
 - Xwayland for legacy X11 applications.
 - Wild Buzzard's native Rust desktop shell.
 - TryCua Cua Driver running as the interactive user.
@@ -446,6 +537,18 @@ full-screen launcher or a tile-grid dashboard:
 - New `.desktop` files installed by the user appear without rebuilding the
   image.
 
+Renaming a registered AppImage on the guest Desktop is one authoritative,
+crash-recoverable shortcut-helper transaction. It uses a private durable
+journal and an inter-process lock shared by registration reads and mutations,
+verifies the source identity descriptor-relative to the XDG Desktop, performs
+a same-directory no-replace rename, changes only the stable
+registration's target path, and preserves its ID, launchers, icons, and target
+bytes. Store startup finishes an interrupted transaction from the observed
+inode and record state. Ambiguity or replacement fails closed and never
+deletes a possible target. Because XDG Desktop and XDG state/data can reside
+on different filesystems, the contract is ordered fsync plus deterministic
+journal recovery, not an impossible cross-filesystem atomic rename.
+
 The Buzzard mark is an original calm near-front three-quarter European common
 buzzard portrait. Its head and gaze are slightly off-axis; direct-staring,
 perfectly mirrored mascot treatment and owl/eagle/falcon substitutions are not
@@ -499,6 +602,23 @@ private guest D-Bus session
 - The in-guest agent can take full-output screenshots, move/click/type through
   the guest compositor, inspect AT-SPI, invoke controls, open arbitrary
   installed apps, and automate Xwayland clients when those tools support them.
+- The CUA service may remain running and a CUA session may remain open while a
+  human types through the host window. Its persistent synthetic keyboard never
+  grabs the seat. Named keys, chords, and Unicode text all use that same
+  daemon-owned Wayland object rather than creating and destroying one-shot
+  virtual keyboards. It returns every pressed key and modifier to neutral
+  after success, error, cancellation, unwind, reconnect, session end, and
+  graceful shutdown. Cancellation unconditionally restores the fixed keymap
+  and completes a bounded same-client sync after releases and zero modifiers;
+  session teardown fail-stops if that boundary cannot be proven. A failed roundtrip first drains the local pressed-key
+  ledger on the same keyboard. If that connection is dead, it closes the
+  virtual keyboard so pinned wlroots releases its compositor-side pressed set
+  on that same device before Sway removes it, then reconnects and publishes a
+  zero modifier state. Recovery never replays a press on a replacement device.
+  SDK shutdown resets but does not terminate the reusable process-global owner;
+  abrupt process death uses that same compositor-side destruction path.
+  Exactly simultaneous human and agent events may interleave like two physical
+  keyboards on one Linux seat; an idle CUA must never suppress human input.
 - Every operation above remains available when the one native host window is
   covered, unfocused, on another workspace, or minimized.
 - Canvas/game/non-accessible surfaces remain operable by screenshot and input
@@ -506,6 +626,14 @@ private guest D-Bus session
 - Testing uses the in-guest CUA and AT-SPI interfaces or developer namespace
   entry. It does not add an SSH server or expose a guest control port to the
   host network.
+- Keyboard-coexistence hardware acceptance must inject the human half through
+  the host compositor, native Wild Buzzard monitor, display gateway, and
+  nested parent keyboard while the CUA session remains open. A guest-local
+  `wtype` process is another synthetic guest keyboard and is never accepted as
+  evidence of human-input coexistence. The host monitor must be deterministically
+  focused and unsupported host compositors require an explicit harness input
+  hook or clearly labelled interactive human step; the test fails rather than
+  silently substituting guest input.
 
 ### Wild Buzzard CUA Driver fork
 
@@ -521,6 +649,11 @@ commit. It is not downloaded unpinned during a release build.
   the in-guest Cua Driver and MCP/CLI contract. Record and comply with every
   vendored third-party license; optional components with additional license
   obligations are not silently included.
+- CUA product telemetry is removed from the fork: there is no telemetry
+  endpoint/key, identity/config, sender, lifecycle/tool observer, or telemetry
+  CLI. Vendor update checks, self-update, and remote skill downloads are also
+  removed. Starting or using the bundled driver must not make automatic or
+  user-invoked requests to CUA/trycua services; Wild Buzzard owns updates.
 - The supported execution target is the normal interactive guest session:
   stock Sway/wlroots plus Xwayland. No host automation socket, VNC/RDP
   indirection, host cursor injection, SSH daemon, or direct host compositor
@@ -693,10 +826,14 @@ The guest receives no host filesystem or desktop-service access except:
 - portable `shared/` mounted at `/shared`;
 - selected GPU/device and matching driver resources;
 - the one filtered Wayland connection;
+- the fixed per-machine clipboard-agent endpoint, which can receive only a
+  host-authorized clipboard snapshot and can answer only a matching live
+  host-created guest-snapshot request; and
 - narrow read-only kernel/runtime mounts required to boot.
 
-Never expose host home, host D-Bus, the host PipeWire socket, host SSH agent, host AT-SPI,
-arbitrary `/dev`, Docker/Podman sockets, or the real host Wayland socket.
+Never expose host home, host D-Bus, the host PipeWire socket, host SSH agent,
+host AT-SPI, the host clipboard/data-device service, arbitrary `/dev`,
+Docker/Podman sockets, or the real host Wayland socket.
 
 ## Lifecycle
 
@@ -787,12 +924,23 @@ status while any safe in-scope acceptance scenario remains untested.
   and after a failed start, the same native host application remains usable.
 - Every host application control is driven in a real Wayland session: titlebar
   drag, four-edge/four-corner resize, minimize, maximize, restore, close,
-  Machine menu, Settings menu, Start, Stop, Restart, retry after failure, GPU
-  selection, network selection, and initial monitor size. No action leaks a
-  click or keystroke to the guest.
-- `Machine`, `Ports`, `Devices`, and `Settings` remain in the native header bar
-  at every tested size and scale. No separate toolbar or bottom confinement
-  banner reduces the embedded guest monitor viewport.
+  Machine menu, Clipboard menu, Settings menu, Start, Stop, Restart, retry
+  after failure, GPU selection, network selection, and initial monitor size.
+  No action leaks a click or keystroke to the guest.
+- `Machine`, `Ports`, `Devices`, `Clipboard`, and `Settings` remain in the
+  native header bar at every tested size and scale. No separate toolbar or
+  bottom confinement banner reduces the embedded guest monitor viewport.
+- With no clipboard action, continuously mutate both clipboards and prove that
+  neither side can enumerate, read, subscribe to, or overwrite the other.
+  Activate `Send Host Clipboard to Guest` and prove exactly the clicked host
+  text/still-image snapshot becomes the guest selection while subsequent host
+  changes remain invisible. Activate `Copy Guest Clipboard to Host` and prove exactly
+  one guest snapshot becomes the host selection while unsolicited, replayed,
+  wrong-nonce, late, oversized, invalid-UTF-8, malformed-PNG, unsupported-MIME,
+  and concurrent responses are rejected without changing the host clipboard.
+  Repeat across two simultaneous machines and Stop/Start; require independent
+  state, no transfer history/content logs, bounded memory/time, and disabled
+  actions outside the Running/clipboard-ready state.
 - The host frame and menu span the complete window at 100%, 125%, 133%, 150%,
   175%, and 200% scale; no titlebar or control is clipped.
 - Host resize and fractional scale yield the exact guest logical/physical

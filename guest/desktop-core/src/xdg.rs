@@ -161,10 +161,16 @@ impl XdgPaths {
 }
 
 fn validate_base(name: &'static str, path: &Path) -> Result<(), XdgPathError> {
+    let bytes = path.as_os_str().as_bytes();
+    let relative = bytes
+        .get(1..)
+        .and_then(|value| value.strip_suffix(b"/").or(Some(value)))
+        .unwrap_or_default();
     if !path.is_absolute()
-        || path.as_os_str().as_bytes()[1..]
-            .split(|byte| *byte == b'/')
-            .any(|component| component.is_empty() || component == b"." || component == b"..")
+        || (path != Path::new("/")
+            && relative
+                .split(|byte| *byte == b'/')
+                .any(|component| component.is_empty() || component == b"." || component == b".."))
         || path
             .components()
             .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
@@ -229,6 +235,32 @@ mod tests {
             );
             assert!(matches!(result, Err(XdgPathError::InvalidBase { .. })));
         }
+    }
+
+    #[test]
+    fn standard_glib_system_data_directories_may_have_one_trailing_slash() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = XdgPaths::from_bases(
+            temp.path().join("home"),
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("state"),
+            vec![
+                PathBuf::from("/usr/local/share/"),
+                PathBuf::from("/usr/share/"),
+            ],
+            temp.path().join("Desktop"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            paths.application_dirs(),
+            vec![
+                temp.path().join("data/applications"),
+                PathBuf::from("/usr/local/share/applications"),
+                PathBuf::from("/usr/share/applications"),
+            ]
+        );
     }
 
     #[test]

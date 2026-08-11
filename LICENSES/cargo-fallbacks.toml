@@ -34,3 +34,14 @@ repository = "https://github.com/Nugine/simd"
 vcs_commit = "d74c030d9dc4f3cae02146d1f497ff62726ef09a"
 files = ["LICENSES/upstream/cargo-fallbacks/simd-LICENSE"]
 
+[[fallback]]
+packages = ["zune-core@0.4.12"]
+repository = "https://github.com/etemesi254/zune-image"
+vcs_commit = "f8fbb123d5ed04441e8324a555bfcda0cb1bd28f"
+files = ["LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE.md", "LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE-ZLIB"]
+
+[[fallback]]
+packages = ["zune-jpeg@0.4.21"]
+repository = "https://github.com/etemesi254/zune-image"
+vcs_commit = "fa2c767a01d7d9373911d0bf63e0588553d67e0e"
+files = ["LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE.md", "LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE-ZLIB"]

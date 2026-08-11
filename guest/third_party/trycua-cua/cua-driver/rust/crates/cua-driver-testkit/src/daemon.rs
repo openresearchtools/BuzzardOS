@@ -77,8 +77,7 @@ impl TestDaemon {
             .args(["serve", "--socket", &socket, "--no-permissions-gate"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(stderr)
-            .env("CUA_DRIVER_RS_TELEMETRY_ENABLED", "false");
+            .stderr(stderr);
         if !overlay_enabled {
             command.arg("--no-overlay");
         }
@@ -117,10 +116,8 @@ fn daemon_is_listening(_binary: &Path, socket: &str) -> bool {
     use std::io::{BufRead, BufReader, Write};
 
     // Exercise the real named-pipe protocol instead of spawning `status`.
-    // A finite CLI command is wrapped by the telemetry completion observer,
-    // which makes it an unnecessarily heavy and timing-sensitive readiness
-    // probe on hosted Windows runners. Completing `list` also proves that the
-    // server has progressed past pipe creation and can service the connection.
+    // Completing `list` also proves that the server has progressed past pipe
+    // creation and can service the connection.
     let Ok(pipe) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

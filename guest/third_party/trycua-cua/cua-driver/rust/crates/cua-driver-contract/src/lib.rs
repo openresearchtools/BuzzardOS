@@ -34,6 +34,7 @@ pub use inputs::{
     MinimizeWindowInput, MoveCursorInput, PressKeyInput, RestoreWindowInput, ScrollBy,
     ScrollDirection, ScrollInput, SetAgentCursorEnabledInput, SetAgentCursorMotionInput,
     SetAgentCursorThemeInput, SetWindowFrameInput, StartSessionInput, ToolInput, TypeTextInput,
+    MAX_TYPE_TEXT_CHARS,
 };
 pub use outputs::{
     ActionDelivery, ActionDeliveryMode, ActionEffect, ActionEscalation, ActionEscalationReason,

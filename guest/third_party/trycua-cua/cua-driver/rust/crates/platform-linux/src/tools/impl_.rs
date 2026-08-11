@@ -25,6 +25,20 @@ use cursor_overlay::CursorRegistry;
 // footprint at all animation headings and fractional scales.
 const CURSOR_EVIDENCE_MASK_RADIUS: i32 = 128;
 
+fn keyboard_admission(args: &Value) -> Result<crate::wayland::KeyboardAdmission, ToolResult> {
+    let session = args
+        .get("session")
+        .and_then(Value::as_str)
+        .filter(|session| !session.is_empty() && *session != "default");
+    let leases = cua_driver_core::tool::current_dispatch_session_leases();
+    if session.is_some_and(|session| !leases.iter().any(|lease| lease.session_id() == session)) {
+        return Err(ToolResult::error(
+            "CUA keyboard request has no matching core-owned session lease",
+        ));
+    }
+    crate::wayland::keyboard_admission(leases).map_err(|error| ToolResult::error(error.to_string()))
+}
+
 fn point_near_cursor_path(x: i32, y: i32, cursor_masks: &[(i32, i32)]) -> bool {
     if cursor_masks.iter().any(|(cursor_x, cursor_y)| {
         (x - cursor_x).abs() <= CURSOR_EVIDENCE_MASK_RADIUS
@@ -828,10 +842,15 @@ impl Tool for ListWindowsTool {
         use cua_driver_core::tool_args::ArgsExt;
         let filter_pid = args.opt_u64("pid").map(|v| v as u32);
         let on_screen_only = args.bool_or("on_screen_only", false);
-        let mut windows =
-            tokio::task::spawn_blocking(move || crate::wayland::list_windows_dispatch(filter_pid))
-                .await
-                .unwrap_or_default();
+        let (mut windows, geometry) = match tokio::task::spawn_blocking(move || {
+            crate::wayland::list_windows_dispatch_checked(filter_pid)
+        })
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => return ToolResult::error(error.to_string()),
+            Err(error) => return ToolResult::error(format!("Task error: {error}")),
+        };
         if on_screen_only {
             windows.retain(|window| window.is_on_screen);
         }
@@ -845,8 +864,17 @@ impl Tool for ListWindowsTool {
                 w.xid, w.pid, w.title, w.width, w.height, w.x, w.y
             ));
         }
-        let structured =
+        let mut structured =
             json!({ "windows": windows.iter().map(window_record_json).collect::<Vec<_>>() });
+        if let Some(geometry) = geometry {
+            structured["physical_width"] = json!(geometry.physical_width);
+            structured["physical_height"] = json!(geometry.physical_height);
+            structured["host_surface_scale_120"] = json!(geometry.host_surface_scale_120);
+            structured["guest_ui_scale_120"] = json!(geometry.guest_ui_scale_120);
+            structured["logical_width"] = json!(geometry.logical_width);
+            structured["logical_height"] = json!(geometry.logical_height);
+            structured["geometry_generation"] = json!(geometry.geometry_generation);
+        }
         ToolResult::text(lines.join("\n")).with_structured(structured)
     }
 }
@@ -1847,6 +1875,17 @@ fn type_text_structured(path: &str, characters: usize, verified: bool) -> Value 
         });
     }
     s
+}
+
+fn enforce_type_text_limit(text: &str) -> Result<usize, ToolResult> {
+    let count = text.chars().count();
+    if count > cua_driver_contract::MAX_TYPE_TEXT_CHARS {
+        return Err(ToolResult::error(format!(
+            "type_text contains {count} characters; limit is {}",
+            cua_driver_contract::MAX_TYPE_TEXT_CHARS
+        )));
+    }
+    Ok(count)
 }
 
 /// Structured payload for the Electron/Chromium AX-echo case: the AT-SPI
@@ -3129,7 +3168,7 @@ impl Tool for TypeTextTool {
                     "session": cua_driver_core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
-                    "text":{"type":"string"},
+                    "text":{"type":"string","maxLength":cua_driver_contract::MAX_TYPE_TEXT_CHARS},
                     "element_index": cua_driver_core::tool_schema::element_index_schema(),
                     "element_token": cua_driver_core::tool_schema::element_token_schema(),
                     "snapshot_id": cua_driver_core::tool_schema::snapshot_id_schema(),
@@ -3145,20 +3184,28 @@ impl Tool for TypeTextTool {
 
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
+        let keyboard_admission = match keyboard_admission(&args) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
         if args.opt_str("scope").as_deref() == Some("desktop") && args.get("pid").is_none() {
             let input = match parse_typed_projection::<TypeTextInput>("type_text", &args) {
                 Ok(input) => input,
                 Err(result) => return result,
             };
+            if let Err(result) = enforce_type_text_limit(&input.text) {
+                return result;
+            }
             let text =
                 cua_driver_core::text_sanitize::strip_trailing_agent_protocol_tags(&input.text)
                     .into_owned();
             let wayland = crate::wayland::wayland_input_enabled();
             let path = if wayland { "wayland_focused" } else { "xtest" };
             let visual_before = capture_guest_output().await;
+            let keyboard_admission = keyboard_admission.clone();
             let result = tokio::task::spawn_blocking(move || {
                 if wayland {
-                    crate::wayland::type_text_focused(&text)
+                    crate::wayland::type_text_focused(&keyboard_admission, &text)
                 } else {
                     crate::input::send_type_text_xtest(&text)
                 }
@@ -3181,6 +3228,9 @@ impl Tool for TypeTextTool {
             Ok(v) => v,
             Err(e) => return e,
         };
+        if let Err(result) = enforce_type_text_limit(&text_raw) {
+            return result;
+        }
         // Strip trailing agent-protocol closing tags — see
         // cua_driver_core::text_sanitize docs for rationale.
         let text = cua_driver_core::text_sanitize::strip_trailing_agent_protocol_tags(&text_raw)
@@ -3382,9 +3432,11 @@ impl Tool for TypeTextTool {
                 let (visual_before, cursor_masks) =
                     capture_guest_output_with_current_pointer_mask().await;
                 let text_w = text.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || crate::wayland::type_text(xid, &text_w))
-                        .await;
+                let keyboard_admission = keyboard_admission.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::wayland::type_text(&keyboard_admission, xid, &text_w)
+                })
+                .await;
                 return match result {
                     Ok(Ok(())) => {
                         let observation = observe_typed_text(
@@ -3444,8 +3496,11 @@ impl Tool for TypeTextTool {
             let (visual_before, cursor_masks) =
                 capture_guest_output_with_current_pointer_mask().await;
             let text_w = text.clone();
-            let result =
-                tokio::task::spawn_blocking(move || crate::wayland::type_text(xid, &text_w)).await;
+            let keyboard_admission = keyboard_admission.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::wayland::type_text(&keyboard_admission, xid, &text_w)
+            })
+            .await;
             return match result {
                 Ok(Ok(())) => {
                     let observation =
@@ -3800,6 +3855,10 @@ impl Tool for PressKeyTool {
 
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
+        let keyboard_admission = match keyboard_admission(&args) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
         if args.opt_str("scope").as_deref() == Some("desktop") && args.get("pid").is_none() {
             let input = match parse_typed_projection::<PressKeyInput>("press_key", &args) {
                 Ok(input) => input,
@@ -3811,13 +3870,14 @@ impl Tool for PressKeyTool {
             let wayland = crate::wayland::wayland_input_enabled();
             let path = if wayland { "wayland_focused" } else { "xtest" };
             let visual_before = capture_guest_output().await;
+            let keyboard_admission = keyboard_admission.clone();
             let result = tokio::task::spawn_blocking(move || {
                 if wayland && modifiers.is_empty() {
-                    crate::wayland::press_key_focused(&key)
+                    crate::wayland::press_key_focused(&keyboard_admission, &key)
                 } else if wayland {
                     let mut keys = modifiers;
                     keys.push(key);
-                    crate::wayland::hotkey_focused(&keys)
+                    crate::wayland::hotkey_focused(&keyboard_admission, &keys)
                 } else {
                     let refs: Vec<&str> = modifiers.iter().map(String::as_str).collect();
                     crate::input::send_key_xtest(&key, &refs)
@@ -4013,11 +4073,18 @@ impl Tool for PressKeyTool {
             let result = match press_key_chord(&mods, &key) {
                 None => {
                     let key_w = key.clone();
-                    tokio::task::spawn_blocking(move || crate::wayland::press_key(xid, &key_w))
-                        .await
+                    let keyboard_admission = keyboard_admission.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::wayland::press_key(&keyboard_admission, xid, &key_w)
+                    })
+                    .await
                 }
                 Some(chord) => {
-                    tokio::task::spawn_blocking(move || crate::wayland::hotkey(xid, &chord)).await
+                    let keyboard_admission = keyboard_admission.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::wayland::hotkey(&keyboard_admission, xid, &chord)
+                    })
+                    .await
                 }
             };
             return match result {
@@ -4135,6 +4202,10 @@ impl Tool for HotkeyTool {
 
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
+        let keyboard_admission = match keyboard_admission(&args) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
         if args.opt_str("scope").as_deref() == Some("desktop") && args.get("pid").is_none() {
             let input = match parse_typed_projection::<HotkeyInput>("hotkey", &args) {
                 Ok(input) => input,
@@ -4157,9 +4228,10 @@ impl Tool for HotkeyTool {
             let wayland = crate::wayland::wayland_input_enabled();
             let path = if wayland { "wayland_focused" } else { "xtest" };
             let visual_before = capture_guest_output().await;
+            let keyboard_admission = keyboard_admission.clone();
             let result = tokio::task::spawn_blocking(move || {
                 if wayland {
-                    crate::wayland::hotkey_focused(&keys)
+                    crate::wayland::hotkey_focused(&keyboard_admission, &keys)
                 } else {
                     let refs: Vec<&str> = modifiers.iter().map(String::as_str).collect();
                     crate::input::send_key_xtest(&key, &refs)
@@ -4393,7 +4465,7 @@ impl Tool for HotkeyTool {
                 // state-mask path. window_id is irrelevant once focused.
                 let mut combo: Vec<String> = mods_for_wayland.clone();
                 combo.push(key_for_wayland.clone());
-                return crate::wayland::hotkey(xid, &combo);
+                return crate::wayland::hotkey(&keyboard_admission, xid, &combo);
             }
             let m: Vec<&str> = mods.iter().map(String::as_str).collect();
             // foreground: activate the target first, then inject the accelerator
@@ -5450,6 +5522,10 @@ impl Tool for DragTool {
         })
     }
     async fn invoke(&self, args: Value) -> ToolResult {
+        let keyboard_admission = match keyboard_admission(&args) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
         let cursor_id = resolve_cursor_key(&args);
         if args.opt_str("scope").as_deref() == Some("desktop")
             && args.get("pid").is_none()
@@ -5476,6 +5552,7 @@ impl Tool for DragTool {
             let result = tokio::task::spawn_blocking(move || {
                 if wayland {
                     crate::wayland::drag_desktop(
+                        &keyboard_admission,
                         from_x.round() as i32,
                         from_y.round() as i32,
                         to_x.round() as i32,
@@ -5641,8 +5718,10 @@ impl Tool for DragTool {
         if crate::wayland::wayland_input_enabled() {
             let steps_u32 = steps as u32;
             let drag_result = if crate::wayland::is_inject_mode() {
+                let keyboard_admission = keyboard_admission.clone();
                 tokio::task::spawn_blocking(move || {
                     crate::wayland::inject_drag(
+                        &keyboard_admission,
                         pid,
                         xid,
                         (from_x, from_y),
@@ -5653,12 +5732,14 @@ impl Tool for DragTool {
                     )
                 })
             } else {
+                let keyboard_admission = keyboard_admission.clone();
                 let ((fxi, fyi), (txi, tyi)) = wayland_points.unwrap_or((
                     (from_x.round() as i32, from_y.round() as i32),
                     (to_x.round() as i32, to_y.round() as i32),
                 ));
                 tokio::task::spawn_blocking(move || {
                     crate::wayland::drag(
+                        &keyboard_admission,
                         xid,
                         fxi,
                         fyi,
@@ -6861,16 +6942,9 @@ impl Tool for GetScreenSizeTool {
         }
         let result = tokio::task::spawn_blocking(|| {
             if crate::wayland::is_wayland() {
-                let (w, h, logical_w, logical_h, scale_120) =
-                    crate::wayland::canonical_output_metadata(1, 1);
-                if (w, h) != (1, 1) {
-                    return Ok::<(u32, u32, u32, u32, f64), anyhow::Error>((
-                        w,
-                        h,
-                        logical_w,
-                        logical_h,
-                        f64::from(scale_120) / 120.0,
-                    ));
+                let geometry = crate::wayland::canonical_output_metadata_checked(1, 1)?;
+                if (geometry.physical_width, geometry.physical_height) != (1, 1) {
+                    return Ok::<crate::wayland::CanonicalOutputMetadata, anyhow::Error>(geometry);
                 }
             }
             // X11 reports pixel dimensions; scale factor on X11 is not
@@ -6878,23 +6952,33 @@ impl Tool for GetScreenSizeTool {
             // assumption).  Wayland/HiDPI X11 callers should query
             // `xrandr --query` for true scale.
             let (w, h) = x11_screen_size()?;
-            Ok::<(u32, u32, u32, u32, f64), anyhow::Error>((w, h, w, h, 1.0))
+            Ok::<crate::wayland::CanonicalOutputMetadata, anyhow::Error>(
+                crate::wayland::canonical_output_metadata(w, h),
+            )
         })
         .await;
         match result {
             // Matches Swift text format 1:1.
-            Ok(Ok((w, h, logical_w, logical_h, scale))) => ToolResult::text(format!(
+            Ok(Ok(geometry)) => ToolResult::text(format!(
                 "✅ Main display: {w}x{h} physical pixels; guest logical mode \
-                     {logical_w}x{logical_h} @ {scale}x"
+                     {logical_w}x{logical_h} @ {scale}x",
+                w = geometry.physical_width,
+                h = geometry.physical_height,
+                logical_w = geometry.logical_width,
+                logical_h = geometry.logical_height,
+                scale = f64::from(geometry.guest_ui_scale_120) / 120.0,
             ))
             .with_structured(json!({
-                "width": w,
-                "height": h,
-                "physical_width": w,
-                "physical_height": h,
-                "logical_width": logical_w,
-                "logical_height": logical_h,
-                "scale_factor": scale,
+                "width": geometry.physical_width,
+                "height": geometry.physical_height,
+                "physical_width": geometry.physical_width,
+                "physical_height": geometry.physical_height,
+                "host_surface_scale_120": geometry.host_surface_scale_120,
+                "guest_ui_scale_120": geometry.guest_ui_scale_120,
+                "logical_width": geometry.logical_width,
+                "logical_height": geometry.logical_height,
+                "geometry_generation": geometry.geometry_generation,
+                "scale_factor": f64::from(geometry.guest_ui_scale_120) / 120.0,
                 "coordinate_space": "guest-output-native-physical-dmabuf-pixels"
             })),
             Ok(Err(e)) => ToolResult::error(e.to_string()),
@@ -6964,7 +7048,16 @@ impl Tool for GetDesktopStateTool {
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             // Vision-only: capture the complete guest display. Wild Buzzard's
             // capture boundary preserves the native backing buffer exactly.
-            let png = crate::capture::screenshot_display_bytes()?;
+            let (png, geometry) = if crate::wayland::is_wayland() {
+                crate::wayland::screenshot_display_dispatch_with_metadata()?
+            } else {
+                let png = crate::capture::screenshot_display_bytes()?;
+                let (width, height) = crate::capture::png_dimensions_pub(&png)?;
+                (
+                    png,
+                    crate::wayland::canonical_output_metadata(width, height),
+                )
+            };
             let (shot_w, shot_h) = crate::capture::png_dimensions_pub(&png)?;
             // Wild Buzzard returns native physical dmabuf pixels. Querying the
             // X11 root window here would
@@ -6973,7 +7066,7 @@ impl Tool for GetDesktopStateTool {
             // Only fall back to the X11 root-window geometry off Wayland, so
             // the X11 / XWayland path is unchanged. See #2017 / Sway testing.
             let (screen_w, screen_h) = if crate::wayland::is_wayland() {
-                (shot_w, shot_h)
+                (geometry.physical_width, geometry.physical_height)
             } else {
                 x11_screen_size()?
             };
@@ -6990,26 +7083,12 @@ impl Tool for GetDesktopStateTool {
             } else {
                 Some(B64.encode(&png))
             };
-            let (_, _, logical_w, logical_h, scale_120) =
-                crate::wayland::canonical_output_metadata(screen_w, screen_h);
-            Ok((
-                b64, shot_w, shot_h, screen_w, screen_h, logical_w, logical_h, scale_120, written,
-            ))
+            Ok((b64, shot_w, shot_h, screen_w, screen_h, geometry, written))
         })
         .await;
 
         match result {
-            Ok(Ok((
-                b64_opt,
-                shot_w,
-                shot_h,
-                screen_w,
-                screen_h,
-                logical_w,
-                logical_h,
-                scale_120,
-                written,
-            ))) => {
+            Ok(Ok((b64_opt, shot_w, shot_h, screen_w, screen_h, geometry, written))) => {
                 let mut content = Vec::new();
                 let mut structured = json!({
                     "platform": "linux",
@@ -7018,9 +7097,14 @@ impl Tool for GetDesktopStateTool {
                     "screenshot_height": shot_h,
                     "screen_width": screen_w,
                     "screen_height": screen_h,
-                    "logical_width": logical_w,
-                    "logical_height": logical_h,
-                    "scale_factor": f64::from(scale_120) / 120.0,
+                    "physical_width": geometry.physical_width,
+                    "physical_height": geometry.physical_height,
+                    "host_surface_scale_120": geometry.host_surface_scale_120,
+                    "guest_ui_scale_120": geometry.guest_ui_scale_120,
+                    "logical_width": geometry.logical_width,
+                    "logical_height": geometry.logical_height,
+                    "geometry_generation": geometry.geometry_generation,
+                    "scale_factor": f64::from(geometry.guest_ui_scale_120) / 120.0,
                     "coordinate_space": "guest-output-native-physical-dmabuf-pixels",
                     "screenshot_mime_type": "image/png",
                 });
@@ -8064,9 +8148,10 @@ impl Tool for TypeTextCharsTool {
                 Otherwise identical to type_text (XSendEvent, no focus steal).".into(),
             input_schema: json!({
                 "type":"object","required":["pid","text"],"properties":{
+                    "session": cua_driver_core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
-                    "text":{"type":"string"},
+                    "text":{"type":"string","maxLength":cua_driver_contract::MAX_TYPE_TEXT_CHARS},
                     "delay_ms":{"type":"integer","description":"Milliseconds between chars (default 30)."},
                     "element_index": cua_driver_core::tool_schema::element_index_schema(),
                     "type_chars_only":{"type":"boolean","description":"Skip element focus, type directly. Default false."}
@@ -8078,11 +8163,18 @@ impl Tool for TypeTextCharsTool {
 
     async fn invoke(&self, args: Value) -> ToolResult {
         use cua_driver_core::tool_args::ArgsExt;
+        let keyboard_admission = match keyboard_admission(&args) {
+            Ok(admission) => admission,
+            Err(error) => return error,
+        };
         let pid = args.u64_or("pid", 0) as u32;
         let text_raw = match args.require_str("text") {
             Ok(v) => v,
             Err(e) => return e,
         };
+        if let Err(result) = enforce_type_text_limit(&text_raw) {
+            return result;
+        }
         // Same trailing-protocol-tag scrub as TypeTextTool — see
         // cua_driver_core::text_sanitize for rationale.
         let text = cua_driver_core::text_sanitize::strip_trailing_agent_protocol_tags(&text_raw)
@@ -8109,18 +8201,12 @@ impl Tool for TypeTextCharsTool {
         let text_len = text.chars().count();
         let result = tokio::task::spawn_blocking(move || {
             if crate::wayland::wayland_input_enabled() {
-                // Per-char `wtype` loop with the requested delay — mirrors the
-                // X11 XSendEvent per-char path. Sleeping here is fine because
-                // we're inside spawn_blocking.
-                let mut buf = [0u8; 4];
-                for ch in text.chars() {
-                    let s = ch.encode_utf8(&mut buf);
-                    crate::wayland::type_text(xid, s)?;
-                    if delay_ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    }
-                }
-                return Ok(());
+                return crate::wayland::type_text_with_delay(
+                    &keyboard_admission,
+                    xid,
+                    &text,
+                    delay_ms,
+                );
             }
             crate::input::send_type_text_with_delay(xid, &text, delay_ms)
         })
@@ -8876,6 +8962,10 @@ pub fn build_registry_with_provider(
     compat: bool,
     provider: Option<std::sync::Arc<dyn cua_driver_core::consent::ProtectedConsentProvider>>,
 ) -> ToolRegistry {
+    // Session cancellation must exist before the first keyboard Tool can be
+    // admitted and wait on consent/focus. The Wayland keyboard connection
+    // itself remains lazy and is created only by actual keyboard input.
+    crate::wayland::initialize_keyboard_cancellation();
     let state = ToolState::new();
     let cursor_outcome_reader = {
         let cursor_registry = state.cursor_registry.clone();

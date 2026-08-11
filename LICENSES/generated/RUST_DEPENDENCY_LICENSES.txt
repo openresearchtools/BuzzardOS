@@ -3,284 +3,6 @@ Generated from the x86_64 Linux normal/build release graphs.
 Package versions and crates.io checksums are in the adjacent TSV files.
 
 ================================================================================
-SHA256: 005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d
-Used by:
-- cua-driver: ring 0.17.14 — LICENSE-BoringSSL
-
-
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
-
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-   1. Definitions.
-
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
-
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
-
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
-
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
-
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
-
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
-
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
-
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
-
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
-
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
-
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
-
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
-
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
-
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
-
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
-
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
-
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
-
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright [yyyy] [name of copyright owner]
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-
-
-Licenses for support code
--------------------------
-
-Parts of the TLS test suite are under the Go license. This code is not included
-in BoringSSL (i.e. libcrypto and libssl) when compiled, however, so
-distributing code linked against BoringSSL does not trigger this license:
-
-Copyright (c) 2009 The Go Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-
-BoringSSL uses the Chromium test infrastructure to run a continuous build,
-trybots etc. The scripts which manage this, and the script for generating build
-metadata, are under the Chromium license. Distributing code linked against
-BoringSSL does not trigger this license.
-
-Copyright 2015 The Chromium Authors. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-   * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-   * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-   * Neither the name of Google Inc. nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-================================================================================
 SHA256: 010492e490b92ec85db01daad2a290ea5959f29314a1c4ff25e7a172e223abf9
 Used by:
 - cua-driver: borrow-or-share 0.2.4 — LICENSE
@@ -311,7 +33,7 @@ Used by:
 - cua-driver: byteorder 1.5.0 — COPYING
 - cua-driver: globset 0.4.19 — COPYING
 - cua-driver: memchr 2.8.0 — COPYING
-- guest-shell: memchr 2.8.3 — COPYING
+- guest-workspace: memchr 2.8.3 — COPYING
 - host-workspace: memchr 2.8.3 — COPYING
 
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -321,7 +43,7 @@ You may use this code under the terms of either license.
 ================================================================================
 SHA256: 01e533bd94e8f1c32b2c2531e2c398de7d35d7804add3d574b4e1fe581d53537
 Used by:
-- guest-shell: cursor-icon 1.2.0 — LICENSE-ZLIB
+- guest-workspace: cursor-icon 1.2.0 — LICENSE-ZLIB
 
 Copyright (c) 2023 Kirill Chibisov
 
@@ -546,7 +268,7 @@ limitations under the License.
 SHA256: 025436edff4cfcdde17a5811fdea78892d8482efd1abdec5a17872d07a4f2112
 Used by:
 - cua-driver: flate2 1.1.9 — LICENSE-MIT
-- guest-shell: flate2 1.1.9 — LICENSE-MIT
+- guest-workspace: flate2 1.1.9 — LICENSE-MIT
 - host-workspace: flate2 1.1.9 — LICENSE-MIT
 
 Copyright (c) 2014-2026 Alex Crichton
@@ -640,7 +362,8 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 04ea4849dba9dcae07113850c6f1b1a69052c625210639914eee352023f750ad
 Used by:
-- guest-shell: memmap2 0.9.11 — LICENSE-APACHE
+- cua-driver: memmap2 0.9.10 — LICENSE-APACHE
+- guest-workspace: memmap2 0.9.11 — LICENSE-APACHE
 - host-workspace: memmap2 0.9.11 — LICENSE-APACHE
 
                               Apache License
@@ -846,6 +569,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
+SHA256: 058f01fe181608d027fcde7e528fc03ea3cf90f30903c407644b0a9bbc54f500
+Used by:
+- guest-workspace: quick-error 2.0.1 — LICENSE-MIT
+- host-workspace: quick-error 2.0.1 — LICENSE-MIT
+
+Copyright (c) 2015 The quick-error Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
 SHA256: 0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf
 Used by:
 - cua-driver: chrono-tz 0.10.4 — tz/LICENSE
@@ -942,6 +691,7 @@ THE SOFTWARE.
 ================================================================================
 SHA256: 090a294a492ab2f41388252312a65cf2f0e423330b721a68c6665ac64766753b
 Used by:
+- guest-workspace: cfg-expr 0.20.8 — LICENSE-MIT
 - host-workspace: cfg-expr 0.20.8 — LICENSE-MIT
 
 Copyright (c) 2019 Embark Studios
@@ -974,7 +724,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 0a54e647fe54104658b5e563c04c6f9edf251710e47bce692e0bd990a4ddaa39
 Used by:
 - cua-driver: miniz_oxide 0.8.9 — LICENSE-ZLIB.md
-- guest-shell: miniz_oxide 0.8.9 — LICENSE-ZLIB.md
+- guest-workspace: miniz_oxide 0.8.9 — LICENSE-ZLIB.md
 - host-workspace: miniz_oxide 0.8.9 — LICENSE-ZLIB.md
 
 Copyright 2013-2014 RAD Game Tools and Valve Software
@@ -997,10 +747,10 @@ SHA256: 0ab4d106b6faac07fb6a051815fd1b4d862d730895e2d7d7358c2f13565e7a38
 Used by:
 - cua-driver: phf 0.12.1 — LICENSE
 - cua-driver: phf_shared 0.12.1 — LICENSE
-- guest-shell: phf 0.13.1 — LICENSE
-- guest-shell: phf_generator 0.13.1 — LICENSE
-- guest-shell: phf_macros 0.13.1 — LICENSE
-- guest-shell: phf_shared 0.13.1 — LICENSE
+- guest-workspace: phf 0.13.1 — LICENSE
+- guest-workspace: phf_generator 0.13.1 — LICENSE
+- guest-workspace: phf_macros 0.13.1 — LICENSE
+- guest-workspace: phf_shared 0.13.1 — LICENSE
 
 The MIT License (MIT)
 
@@ -1026,7 +776,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 0b04ee3ce0021a922f43f37a17fee09a5a1ee6d1f4e149d5bf75b72395a49c72
 Used by:
-- cua-driver: zeroize 1.8.2 — LICENSE-MIT
+- guest-workspace: zeroize 1.8.2 — LICENSE-MIT
 
 MIT License
 
@@ -1054,7 +804,7 @@ SOFTWARE.
 SHA256: 0b28172679e0009b655da42797c03fd163a3379d5cfa67ba1f1655e974a2a1a9
 Used by:
 - cua-driver: smallvec 1.15.1 — LICENSE-MIT
-- guest-shell: smallvec 1.15.2 — LICENSE-MIT
+- guest-workspace: smallvec 1.15.2 — LICENSE-MIT
 - host-workspace: smallvec 1.15.2 — LICENSE-MIT
 
 Copyright (c) 2018 The Servo Project Developers
@@ -1086,7 +836,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 0b5f24524360e15bcf9fb79bca875f5aa62f01f94f2988e23238c7ec0e6e8784
 Used by:
-- guest-shell: simplecss 0.2.2 — LICENSE-MIT
+- guest-workspace: simplecss 0.2.2 — LICENSE-MIT
 
 The MIT License (MIT)
 
@@ -1141,7 +891,8 @@ SOFTWARE.
 ================================================================================
 SHA256: 0d25d03b5ab49576178ad0cae7a2648d12c17ad0452fe49c07e55e4b59aa5257
 Used by:
-- guest-shell: memmap2 0.9.11 — LICENSE-MIT
+- cua-driver: memmap2 0.9.10 — LICENSE-MIT
+- guest-workspace: memmap2 0.9.11 — LICENSE-MIT
 - host-workspace: memmap2 0.9.11 — LICENSE-MIT
 
 Copyright (c) 2020 Yevhenii Reizner
@@ -1180,10 +931,14 @@ Used by:
 - cua-driver: pin-project-lite 0.2.17 — LICENSE-APACHE
 - cua-driver: zstd-safe 7.2.4 — LICENSE.Apache-2.0
 - cua-driver: zstd-sys 2.0.16+zstd.1.5.7 — LICENSE.Apache-2.0
-- guest-shell: fdeflate 0.3.7 — LICENSE-APACHE
-- guest-shell: image 0.25.8 — LICENSE-APACHE
-- guest-shell: miniz_oxide 0.8.9 — LICENSE-APACHE.md
-- guest-shell: pin-project-lite 0.2.17 — LICENSE-APACHE
+- guest-workspace: fdeflate 0.3.7 — LICENSE-APACHE
+- guest-workspace: image 0.25.8 — LICENSE-APACHE
+- guest-workspace: image-webp 0.2.4 — LICENSE-APACHE
+- guest-workspace: miniz_oxide 0.8.9 — LICENSE-APACHE.md
+- guest-workspace: pin-project-lite 0.2.17 — LICENSE-APACHE
+- host-workspace: fdeflate 0.3.7 — LICENSE-APACHE
+- host-workspace: image 0.25.8 — LICENSE-APACHE
+- host-workspace: image-webp 0.2.4 — LICENSE-APACHE
 - host-workspace: miniz_oxide 0.8.9 — LICENSE-APACHE.md
 - host-workspace: pin-project-lite 0.2.17 — LICENSE-APACHE
 - host-workspace: zstd-safe 7.2.4 — LICENSE.Apache-2.0
@@ -1371,7 +1126,7 @@ Used by:
 SHA256: 0dd882e53de11566d50f8e8e2d5a651bcf3fabee4987d70f306233cf39094ba7
 Used by:
 - cua-driver: base64 0.22.1 — LICENSE-MIT
-- guest-shell: base64 0.22.1 — LICENSE-MIT
+- guest-workspace: base64 0.22.1 — LICENSE-MIT
 
 The MIT License (MIT)
 
@@ -1403,8 +1158,9 @@ Used by:
 - cua-driver: byteorder-lite 0.1.0 — LICENSE-MIT
 - cua-driver: globset 0.4.19 — LICENSE-MIT
 - cua-driver: memchr 2.8.0 — LICENSE-MIT
-- guest-shell: byteorder-lite 0.1.0 — LICENSE-MIT
-- guest-shell: memchr 2.8.3 — LICENSE-MIT
+- guest-workspace: byteorder-lite 0.1.0 — LICENSE-MIT
+- guest-workspace: memchr 2.8.3 — LICENSE-MIT
+- host-workspace: byteorder-lite 0.1.0 — LICENSE-MIT
 - host-workspace: memchr 2.8.3 — LICENSE-MIT
 
 The MIT License (MIT)
@@ -1462,7 +1218,7 @@ SOFTWARE.
 SHA256: 123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e
 Used by:
 - cua-driver: libc 0.2.186 — LICENSE-MIT
-- guest-shell: libc 0.2.189 — LICENSE-MIT
+- guest-workspace: libc 0.2.189 — LICENSE-MIT
 - host-workspace: libc 0.2.189 — LICENSE-MIT
 
 Copyright (c) The Rust Project Developers
@@ -1544,7 +1300,7 @@ THE SOFTWARE.
 ================================================================================
 SHA256: 13c0147abe1c7607fde840e2dffcde75bf925aea504b2845b7be4869a5af2afc
 Used by:
-- guest-shell: smithay-client-toolkit 0.20.0 — LICENSE.txt
+- guest-workspace: smithay-client-toolkit 0.20.0 — LICENSE.txt
 
 Copyright (c) 2018 Victor Berger
 
@@ -1684,6 +1440,10 @@ SOFTWARE.
 SHA256: 1a2f5c12ddc934d58956aa5dbdd3255fe55fd957633ab7d0d39e4f0daa73f7df
 Used by:
 - cua-driver: zerocopy 0.8.48 — LICENSE-MIT
+- guest-workspace: zerocopy 0.8.56 — LICENSE-MIT
+- guest-workspace: zerocopy-derive 0.8.56 — LICENSE-MIT
+- host-workspace: zerocopy 0.8.56 — LICENSE-MIT
+- host-workspace: zerocopy-derive 0.8.56 — LICENSE-MIT
 
 Copyright 2023 The Fuchsia Authors
 
@@ -1716,7 +1476,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 1bc7e6f475b3ec99b7e2643411950ae2368c250dd4c5c325f80f9811362a94a1
 Used by:
 - cua-driver: arrayref 0.3.9 — LICENSE
-- guest-shell: arrayref 0.3.9 — LICENSE
+- guest-workspace: arrayref 0.3.9 — LICENSE
 
 Copyright (c) 2015 David Roundy <roundyd@physics.oregonstate.edu>
 All rights reserved.
@@ -1754,16 +1514,16 @@ Used by:
 - cua-driver: wayland-protocols-wlr 0.3.12 — LICENSE.txt
 - cua-driver: wayland-scanner 0.31.10 — LICENSE.txt
 - cua-driver: wayland-sys 0.31.11 — LICENSE.txt
-- guest-shell: wayland-backend 0.3.16 — LICENSE.txt
-- guest-shell: wayland-client 0.31.15 — LICENSE.txt
-- guest-shell: wayland-cursor 0.31.14 — LICENSE.txt
-- guest-shell: wayland-protocols 0.32.13 — LICENSE.txt
-- guest-shell: wayland-protocols-experimental 20250721.0.1 — LICENSE.txt
-- guest-shell: wayland-protocols-misc 0.3.12 — LICENSE.txt
-- guest-shell: wayland-protocols-wlr 0.3.12 — LICENSE.txt
-- guest-shell: wayland-scanner 0.31.11 — LICENSE.txt
-- guest-shell: wayland-server 0.31.14 — LICENSE.txt
-- guest-shell: wayland-sys 0.31.11 — LICENSE.txt
+- guest-workspace: wayland-backend 0.3.16 — LICENSE.txt
+- guest-workspace: wayland-client 0.31.15 — LICENSE.txt
+- guest-workspace: wayland-cursor 0.31.14 — LICENSE.txt
+- guest-workspace: wayland-protocols 0.32.13 — LICENSE.txt
+- guest-workspace: wayland-protocols-experimental 20250721.0.1 — LICENSE.txt
+- guest-workspace: wayland-protocols-misc 0.3.12 — LICENSE.txt
+- guest-workspace: wayland-protocols-wlr 0.3.12 — LICENSE.txt
+- guest-workspace: wayland-scanner 0.31.11 — LICENSE.txt
+- guest-workspace: wayland-server 0.31.14 — LICENSE.txt
+- guest-workspace: wayland-sys 0.31.11 — LICENSE.txt
 - host-workspace: wayland-backend 0.3.16 — LICENSE.txt
 - host-workspace: wayland-client 0.31.15 — LICENSE.txt
 - host-workspace: wayland-protocols 0.32.13 — LICENSE.txt
@@ -2237,6 +1997,32 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 
 ================================================================================
+SHA256: 20278f4e2697210305f0a25ef5f3b73fecce789096c0ae55287684ea9282cfcb
+Used by:
+- guest-workspace: libpulse-binding 2.30.1 — LICENSE-MIT
+- guest-workspace: libpulse-sys 1.23.0 — LICENSE-MIT
+
+Copyright (c) 2019 Lyndon Brown
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
 SHA256: 209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b
 Used by:
 - cua-driver: rand 0.10.2 — LICENSE-MIT
@@ -2270,6 +2056,34 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+================================================================================
+SHA256: 20c097d0de27e2adc179140a3d542091951a030699c7e1c78655f2a2d08d4e3e
+Used by:
+- guest-workspace: tiff 0.10.3 — LICENSE
+- host-workspace: tiff 0.10.3 — LICENSE
+
+MIT License
+
+Copyright (c) 2018 PistonDevelopers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ================================================================================
 SHA256: 20c7855c364d57ea4c97889a5e8d98470a9952dade37bd9248b9a54431670e5e
@@ -2306,7 +2120,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 20fe7b00e904ed690e3b9fd6073784d3fc428141dbd10b81c01fd143d0797f58
 Used by:
 - cua-driver: allocator-api2 0.2.21 — LICENSE-APACHE
-- guest-shell: allocator-api2 0.2.21 — LICENSE-APACHE
+- guest-workspace: allocator-api2 0.2.21 — LICENSE-APACHE
 
                               Apache License
                         Version 2.0, January 2004
@@ -2501,7 +2315,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ================================================================================
 SHA256: 23c23145f6eac25c28cdcc03d38506a5712a9a8cffb5bd5301457f6173ea696e
 Used by:
-- guest-shell: kurbo 0.11.3 — LICENSE-MIT
+- guest-workspace: kurbo 0.11.3 — LICENSE-MIT
 
 Copyright (c) 2018 Raph Levien
 
@@ -2587,60 +2401,61 @@ Used by:
 - cua-driver: unicode-ident 1.0.24 — LICENSE-MIT
 - cua-driver: unsafe-libyaml 0.2.11 — LICENSE-MIT
 - cua-driver: utf-8 0.7.6 — LICENSE-MIT
-- cua-driver: utf8-zero 0.8.1 — LICENSE-MIT
 - cua-driver: x11 2.21.0 — LICENSE-MIT
 - cua-driver: zbus-lockstep 0.5.2 — LICENSE-MIT
 - cua-driver: zbus-lockstep-macros 0.5.2 — LICENSE-MIT
 - cua-driver: zmij 1.0.21 — LICENSE-MIT
 - cua-driver: zvariant_utils 3.4.0 — LICENSE
-- guest-shell: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
-- guest-shell: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
-- guest-shell: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
-- guest-shell: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
-- guest-shell: adler2 2.0.1 — LICENSE-MIT
-- guest-shell: anyhow 1.0.104 — LICENSE-MIT
-- guest-shell: async-channel 2.5.0 — LICENSE-MIT
-- guest-shell: async-executor 1.14.0 — LICENSE-MIT
-- guest-shell: async-io 2.6.0 — LICENSE-MIT
-- guest-shell: async-lock 3.4.2 — LICENSE-MIT
-- guest-shell: async-process 2.5.0 — LICENSE-MIT
-- guest-shell: async-signal 0.2.14 — LICENSE-MIT
-- guest-shell: async-task 4.7.1 — LICENSE-MIT
-- guest-shell: async-trait 0.1.92 — LICENSE-MIT
-- guest-shell: atomic-waker 1.1.2 — LICENSE-MIT
-- guest-shell: blocking 1.6.2 — LICENSE-MIT
-- guest-shell: concurrent-queue 2.5.0 — LICENSE-MIT
-- guest-shell: endi 1.1.1 — LICENSE-MIT
-- guest-shell: event-listener 5.4.2 — LICENSE-MIT
-- guest-shell: event-listener-strategy 0.5.4 — LICENSE-MIT
-- guest-shell: fastrand 2.5.0 — LICENSE-MIT
-- guest-shell: futures-lite 2.6.1 — LICENSE-MIT
-- guest-shell: itoa 1.0.18 — LICENSE-MIT
-- guest-shell: linux-raw-sys 0.12.1 — LICENSE-MIT
-- guest-shell: once_cell 1.21.4 — LICENSE-MIT
-- guest-shell: ordered-stream 0.2.0 — LICENSE-MIT
-- guest-shell: parking 2.2.1 — LICENSE-MIT
-- guest-shell: pin-project-lite 0.2.17 — LICENSE-MIT
-- guest-shell: piper 0.2.5 — LICENSE-MIT
-- guest-shell: polling 3.11.0 — LICENSE-MIT
-- guest-shell: proc-macro-crate 3.5.0 — LICENSE-MIT
-- guest-shell: proc-macro2 1.0.107 — LICENSE-MIT
-- guest-shell: quote 1.0.47 — LICENSE-MIT
-- guest-shell: rustix 1.1.4 — LICENSE-MIT
-- guest-shell: serde 1.0.229 — LICENSE-MIT
-- guest-shell: serde_core 1.0.229 — LICENSE-MIT
-- guest-shell: serde_derive 1.0.229 — LICENSE-MIT
-- guest-shell: serde_json 1.0.151 — LICENSE-MIT
-- guest-shell: serde_repr 0.1.21 — LICENSE-MIT
-- guest-shell: syn 2.0.119 — LICENSE-MIT
-- guest-shell: syn 3.0.3 — LICENSE-MIT
-- guest-shell: thiserror 2.0.20 — LICENSE-MIT
-- guest-shell: thiserror-impl 2.0.20 — LICENSE-MIT
-- guest-shell: unicode-ident 1.0.24 — LICENSE-MIT
-- guest-shell: zbus-lockstep 0.5.2 — LICENSE-MIT
-- guest-shell: zbus-lockstep-macros 0.5.2 — LICENSE-MIT
-- guest-shell: zmij 1.0.23 — LICENSE-MIT
-- guest-shell: zvariant_utils 3.5.0 — LICENSE
+- guest-workspace: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
+- guest-workspace: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
+- guest-workspace: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
+- guest-workspace: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-MIT
+- guest-workspace: adler2 2.0.1 — LICENSE-MIT
+- guest-workspace: anyhow 1.0.104 — LICENSE-MIT
+- guest-workspace: async-channel 2.5.0 — LICENSE-MIT
+- guest-workspace: async-executor 1.14.0 — LICENSE-MIT
+- guest-workspace: async-io 2.6.0 — LICENSE-MIT
+- guest-workspace: async-lock 3.4.2 — LICENSE-MIT
+- guest-workspace: async-process 2.5.0 — LICENSE-MIT
+- guest-workspace: async-signal 0.2.14 — LICENSE-MIT
+- guest-workspace: async-task 4.7.1 — LICENSE-MIT
+- guest-workspace: async-trait 0.1.92 — LICENSE-MIT
+- guest-workspace: atomic-waker 1.1.2 — LICENSE-MIT
+- guest-workspace: blocking 1.6.2 — LICENSE-MIT
+- guest-workspace: concurrent-queue 2.5.0 — LICENSE-MIT
+- guest-workspace: endi 1.1.1 — LICENSE-MIT
+- guest-workspace: event-listener 5.4.2 — LICENSE-MIT
+- guest-workspace: event-listener-strategy 0.5.4 — LICENSE-MIT
+- guest-workspace: fastrand 2.5.0 — LICENSE-MIT
+- guest-workspace: futures-lite 2.6.1 — LICENSE-MIT
+- guest-workspace: itoa 1.0.18 — LICENSE-MIT
+- guest-workspace: linux-raw-sys 0.12.1 — LICENSE-MIT
+- guest-workspace: once_cell 1.21.4 — LICENSE-MIT
+- guest-workspace: ordered-stream 0.2.0 — LICENSE-MIT
+- guest-workspace: parking 2.2.1 — LICENSE-MIT
+- guest-workspace: pin-project-lite 0.2.17 — LICENSE-MIT
+- guest-workspace: piper 0.2.5 — LICENSE-MIT
+- guest-workspace: polling 3.11.0 — LICENSE-MIT
+- guest-workspace: proc-macro-crate 3.5.0 — LICENSE-MIT
+- guest-workspace: proc-macro2 1.0.107 — LICENSE-MIT
+- guest-workspace: quote 1.0.47 — LICENSE-MIT
+- guest-workspace: rustix 1.1.4 — LICENSE-MIT
+- guest-workspace: semver 1.0.28 — LICENSE-MIT
+- guest-workspace: serde 1.0.229 — LICENSE-MIT
+- guest-workspace: serde_core 1.0.229 — LICENSE-MIT
+- guest-workspace: serde_derive 1.0.229 — LICENSE-MIT
+- guest-workspace: serde_json 1.0.151 — LICENSE-MIT
+- guest-workspace: serde_repr 0.1.21 — LICENSE-MIT
+- guest-workspace: syn 2.0.119 — LICENSE-MIT
+- guest-workspace: syn 3.0.3 — LICENSE-MIT
+- guest-workspace: system-deps 7.0.8 — LICENSE-MIT
+- guest-workspace: thiserror 2.0.20 — LICENSE-MIT
+- guest-workspace: thiserror-impl 2.0.20 — LICENSE-MIT
+- guest-workspace: unicode-ident 1.0.24 — LICENSE-MIT
+- guest-workspace: zbus-lockstep 0.5.2 — LICENSE-MIT
+- guest-workspace: zbus-lockstep-macros 0.5.2 — LICENSE-MIT
+- guest-workspace: zmij 1.0.23 — LICENSE-MIT
+- guest-workspace: zvariant_utils 4.0.0 — LICENSE
 - host-workspace: adler2 2.0.1 — LICENSE-MIT
 - host-workspace: anyhow 1.0.104 — LICENSE-MIT
 - host-workspace: fastrand 2.5.0 — LICENSE-MIT
@@ -2691,7 +2506,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 24e5860bf589d8501643e6ea51ffb3df66db2867492b09033d486183efbfa970
 Used by:
 - cua-driver: async-broadcast 0.7.2 — LICENSE-MIT
-- guest-shell: async-broadcast 0.7.2 — LICENSE-MIT
+- guest-workspace: async-broadcast 0.7.2 — LICENSE-MIT
 
 The MIT License (MIT)
 
@@ -2751,12 +2566,12 @@ Used by:
 - cua-driver: zbus_xml 5.1.1 — LICENSE
 - cua-driver: zvariant 5.12.0 — LICENSE
 - cua-driver: zvariant_derive 5.12.0 — LICENSE
-- guest-shell: zbus 5.18.0 — LICENSE
-- guest-shell: zbus_macros 5.18.0 — LICENSE
-- guest-shell: zbus_names 4.3.4 — LICENSE
-- guest-shell: zbus_xml 5.2.1 — LICENSE
-- guest-shell: zvariant 5.13.1 — LICENSE
-- guest-shell: zvariant_derive 5.13.1 — LICENSE
+- guest-workspace: zbus 5.19.0 — LICENSE
+- guest-workspace: zbus_macros 5.19.0 — LICENSE
+- guest-workspace: zbus_names 4.3.4 — LICENSE
+- guest-workspace: zbus_xml 5.2.1 — LICENSE
+- guest-workspace: zvariant 5.14.0 — LICENSE
+- guest-workspace: zvariant_derive 5.14.0 — LICENSE
 
 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
 
@@ -2789,8 +2604,9 @@ SHA256: 268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5
 Used by:
 - cua-driver: linux-raw-sys 0.12.1 — LICENSE-Apache-2.0_WITH_LLVM-exception
 - cua-driver: rustix 1.1.4 — LICENSE-Apache-2.0_WITH_LLVM-exception
-- guest-shell: linux-raw-sys 0.12.1 — LICENSE-Apache-2.0_WITH_LLVM-exception
-- guest-shell: rustix 1.1.4 — LICENSE-Apache-2.0_WITH_LLVM-exception
+- guest-workspace: linux-raw-sys 0.12.1 — LICENSE-Apache-2.0_WITH_LLVM-exception
+- guest-workspace: rustix 1.1.4 — LICENSE-Apache-2.0_WITH_LLVM-exception
+- guest-workspace: target-lexicon 0.13.5 — LICENSE
 - host-workspace: linux-raw-sys 0.12.1 — LICENSE-Apache-2.0_WITH_LLVM-exception
 - host-workspace: rustix 1.1.4 — LICENSE-Apache-2.0_WITH_LLVM-exception
 - host-workspace: target-lexicon 0.13.5 — LICENSE
@@ -3025,11 +2841,13 @@ Used by:
 - cua-driver: futures-sink 0.3.32 — LICENSE-APACHE
 - cua-driver: futures-task 0.3.32 — LICENSE-APACHE
 - cua-driver: futures-util 0.3.32 — LICENSE-APACHE
-- guest-shell: futures-core 0.3.33 — LICENSE-APACHE
-- guest-shell: futures-io 0.3.33 — LICENSE-APACHE
-- guest-shell: futures-macro 0.3.33 — LICENSE-APACHE
-- guest-shell: futures-task 0.3.33 — LICENSE-APACHE
-- guest-shell: futures-util 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-channel 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-core 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-executor 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-io 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-macro 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-task 0.3.33 — LICENSE-APACHE
+- guest-workspace: futures-util 0.3.33 — LICENSE-APACHE
 - host-workspace: futures-channel 0.3.33 — LICENSE-APACHE
 - host-workspace: futures-core 0.3.33 — LICENSE-APACHE
 - host-workspace: futures-executor 0.3.33 — LICENSE-APACHE
@@ -3245,7 +3063,7 @@ limitations under the License.
 SHA256: 27995d58ad5c1145c1a8cd86244ce844886958a35eb2b78c6b772748669999ac
 Used by:
 - cua-driver: autocfg 1.5.0 — LICENSE-MIT
-- guest-shell: autocfg 1.5.1 — LICENSE-MIT
+- guest-workspace: autocfg 1.5.1 — LICENSE-MIT
 - host-workspace: autocfg 1.5.1 — LICENSE-MIT
 
 Copyright (c) 2018 Josh Stone
@@ -3601,8 +3419,10 @@ SHA256: 2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff
 Used by:
 - cua-driver: moxcms 0.8.1 — LICENSE.md
 - cua-driver: pxfm 0.1.29 — LICENSE.md
-- guest-shell: moxcms 0.7.11 — LICENSE.md
-- guest-shell: pxfm 0.1.30 — LICENSE.md
+- guest-workspace: moxcms 0.7.11 — LICENSE.md
+- guest-workspace: pxfm 0.1.30 — LICENSE.md
+- host-workspace: moxcms 0.7.11 — LICENSE.md
+- host-workspace: pxfm 0.1.30 — LICENSE.md
 
 Copyright (c) Radzivon Bartoshyk. All rights reserved.
 
@@ -3634,7 +3454,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 SHA256: 2cdce1ff4ca8f455ef169691ea493407e23c32ecdea5fd9b3a6fc82be5b49b5a
 Used by:
-- guest-shell: xmlwriter 0.1.0 — LICENSE
+- guest-workspace: xmlwriter 0.1.0 — LICENSE
 
 The MIT License (MIT)
 
@@ -3662,7 +3482,7 @@ SOFTWARE.
 SHA256: 2e3edd2716fb15616e867bd53f724f0906732242e9ae76bb1faad1d88f7eeebd
 Used by:
 - cua-driver: enumflags2 0.7.12 — LICENSE-MIT
-- guest-shell: enumflags2 0.7.12 — LICENSE-MIT
+- guest-workspace: enumflags2 0.7.12 — LICENSE-MIT
 
 Copyright (c) 2017-2023 Maik Klein, Maja Kądziołka
 
@@ -3694,7 +3514,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 3085885678bb161f6c472bbd331f66a2550b555eb76128f7f8247779128199c0
 Used by:
 - cua-driver: strict-num 0.1.1 — LICENSE
-- guest-shell: strict-num 0.1.1 — LICENSE
+- guest-workspace: strict-num 0.1.1 — LICENSE
 
 Copyright (c) 2022 Yevhenii Reizner
 
@@ -3720,7 +3540,7 @@ THE SOFTWARE.
 SHA256: 30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652
 Used by:
 - cua-driver: async-recursion 1.1.1 — LICENSE-MIT
-- guest-shell: async-recursion 1.1.1 — LICENSE-MIT
+- guest-workspace: async-recursion 1.1.1 — LICENSE-MIT
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -3749,7 +3569,8 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 319736510aa7dbd6f49546f6ee57c787dbe2c7dfa0507dfbd543375f86a4416d
 Used by:
-- guest-shell: xkeysym 0.2.1 — LICENSE-ZLIB
+- cua-driver: xkeysym 0.2.1 — LICENSE-ZLIB
+- guest-workspace: xkeysym 0.2.1 — LICENSE-ZLIB
 - host-workspace: xkeysym 0.2.1 — LICENSE-ZLIB
 
 Copyright (c) 2022-2023 John Nunley
@@ -3782,7 +3603,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ================================================================================
 SHA256: 31dc8e96da19f1bb02bb4b6cd18d35c50287fa778c4722efd349ae2f2d5938be
 Used by:
-- guest-shell: xcursor 0.3.11 — LICENSE
+- guest-workspace: xcursor 0.3.11 — LICENSE
 
 MIT License
 
@@ -3810,6 +3631,7 @@ SOFTWARE.
 SHA256: 3234ac55816264ee7b6c7ee27efd61cf0a1fe775806870e3d9b4c41ea73c5cb1
 Used by:
 - cua-driver: memoffset 0.6.5 — LICENSE
+- guest-workspace: memoffset 0.9.1 — LICENSE
 - host-workspace: memoffset 0.9.1 — LICENSE
 
 Copyright (c) 2017 Gilad Naaman
@@ -3836,7 +3658,7 @@ SOFTWARE.
 SHA256: 3290ae0fbc9ddb77d2239121d710f0bb9d31b3b4744e6d97fe01e652b4c1870b
 Used by:
 - cua-driver: linux-raw-sys 0.12.1 — COPYRIGHT
-- guest-shell: linux-raw-sys 0.12.1 — COPYRIGHT
+- guest-workspace: linux-raw-sys 0.12.1 — COPYRIGHT
 - host-workspace: linux-raw-sys 0.12.1 — COPYRIGHT
 
 Short version for non-lawyers:
@@ -3900,6 +3722,7 @@ SOFTWARE.
 SHA256: 3521672491a3479422d5fe1aca6645dd2984090f85da6e5205abfb18fb7a6897
 Used by:
 - cua-driver: crypto-common 0.1.7 — LICENSE-MIT
+- guest-workspace: crypto-common 0.1.7 — LICENSE-MIT
 - host-workspace: crypto-common 0.1.7 — LICENSE-MIT
 
 Copyright (c) 2021 RustCrypto Developers
@@ -4116,7 +3939,7 @@ SHA256: 36516aefdc84c5d5a1e7485425913a22dbda69eb1930c5e84d6ae4972b5194b9
 Used by:
 - cua-driver: allocator-api2 0.2.21 — LICENSE-MIT
 - cua-driver: fs-err 2.11.0 — LICENSE-MIT
-- guest-shell: allocator-api2 0.2.21 — LICENSE-MIT
+- guest-workspace: allocator-api2 0.2.21 — LICENSE-MIT
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -4146,7 +3969,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 377c2e7c53250cc5905c0b0532d35973392af16ffb9596a41d99d202cf3617c9
 Used by:
 - cua-driver: rustix 1.1.4 — COPYRIGHT
-- guest-shell: rustix 1.1.4 — COPYRIGHT
+- guest-workspace: rustix 1.1.4 — COPYRIGHT
 - host-workspace: rustix 1.1.4 — COPYRIGHT
 
 Short version for non-lawyers:
@@ -4184,15 +4007,14 @@ SHA256: 378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397
 Used by:
 - cua-driver: cc 1.2.62 — LICENSE-MIT
 - cua-driver: cfg-if 1.0.4 — LICENSE-MIT
-- cua-driver: filetime 0.2.29 — LICENSE-MIT
 - cua-driver: find-msvc-tools 0.1.9 — LICENSE-MIT
 - cua-driver: jobserver 0.1.35 — LICENSE-MIT
 - cua-driver: pkg-config 0.3.33 — LICENSE-MIT
 - cua-driver: socket2 0.6.3 — LICENSE-MIT
-- guest-shell: cc 1.4.2 — LICENSE-MIT
-- guest-shell: cfg-if 1.0.4 — LICENSE-MIT
-- guest-shell: find-msvc-tools 0.1.10 — LICENSE-MIT
-- guest-shell: pkg-config 0.3.33 — LICENSE-MIT
+- guest-workspace: cc 1.4.2 — LICENSE-MIT
+- guest-workspace: cfg-if 1.0.4 — LICENSE-MIT
+- guest-workspace: find-msvc-tools 0.1.10 — LICENSE-MIT
+- guest-workspace: pkg-config 0.3.33 — LICENSE-MIT
 - host-workspace: cc 1.4.2 — LICENSE-MIT
 - host-workspace: cfg-if 1.0.4 — LICENSE-MIT
 - host-workspace: filetime 0.2.29 — LICENSE-MIT
@@ -4229,7 +4051,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7
 Used by:
-- guest-shell: libm 0.2.16 — LICENSE.txt
+- guest-workspace: libm 0.2.16 — LICENSE.txt
 
 rust-lang/libm as a whole is available for use under the MIT license:
 
@@ -5000,7 +4822,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 40be1e77825d7e49485a2e43d89bed29dfff29f8f529e71d3c683656021f0d08
 Used by:
-- guest-shell: float-cmp 0.9.0 — LICENSE
+- guest-workspace: float-cmp 0.9.0 — LICENSE
 
 Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd
 
@@ -5026,7 +4848,7 @@ IN THE SOFTWARE.
 SHA256: 4108245a1f2df9d4e94df8abed5b4ba0759bb2f9b40a6b939f1be141077ae50b
 Used by:
 - cua-driver: miniz_oxide 0.8.9 — LICENSE
-- guest-shell: miniz_oxide 0.8.9 — LICENSE
+- guest-workspace: miniz_oxide 0.8.9 — LICENSE
 - host-workspace: miniz_oxide 0.8.9 — LICENSE
 
 MIT License
@@ -5087,7 +4909,7 @@ SOFTWARE.
 SHA256: 41ba8a366e4129d0b7551f8b98211f59635b2e30c0a3c7845e828e2a7ce42064
 Used by:
 - cua-driver: enumflags2 0.7.12 — LICENSE-APACHE
-- guest-shell: enumflags2 0.7.12 — LICENSE-APACHE
+- guest-workspace: enumflags2 0.7.12 — LICENSE-APACHE
 
 Apache License
 
@@ -5162,7 +4984,7 @@ limitations under the License.
 SHA256: 42a35170233e83e18856792e748de4c1ce4a63b2afce9a370c89ef3fe23f9f2d
 Used by:
 - cua-driver: simd-adler32 0.3.9 — LICENSE.md
-- guest-shell: simd-adler32 0.3.10 — LICENSE.md
+- guest-workspace: simd-adler32 0.3.10 — LICENSE.md
 - host-workspace: simd-adler32 0.3.10 — LICENSE.md
 
 MIT License
@@ -5222,7 +5044,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 436637bd4909fde7e14c899e9ff2cdd440b5968df12d431f1651f11db19bc2ef
 Used by:
-- guest-shell: imagesize 0.13.0 — LICENSE
+- guest-workspace: imagesize 0.13.0 — LICENSE
 
 MIT License
 
@@ -5250,7 +5072,7 @@ SOFTWARE.
 SHA256: 436bc5a105d8e57dcd8778730f3754f7bf39c14d2f530e4cde4bd2d17a83ec3d
 Used by:
 - cua-driver: uuid 1.23.1 — LICENSE-MIT
-- guest-shell: uuid 1.24.0 — LICENSE-MIT
+- guest-workspace: uuid 1.24.0 — LICENSE-MIT
 - host-workspace: uuid 1.24.0 — LICENSE-MIT
 
 Copyright (c) 2014 The Rust Project Developers
@@ -5284,7 +5106,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 4455bf75a91154108304cb283e0fea9948c14f13e20d60887cf2552449dea3b1
 Used by:
 - cua-driver: shlex 1.3.0 — LICENSE-MIT
-- guest-shell: shlex 2.0.1 — LICENSE-MIT
+- guest-workspace: shlex 2.0.1 — LICENSE-MIT
 - host-workspace: shlex 2.0.1 — LICENSE-MIT
 
 The MIT License (MIT)
@@ -5312,7 +5134,7 @@ THE SOFTWARE.
 ================================================================================
 SHA256: 457b464bc0fba8a3d67d2458569104f5611869f0c1563a1a12d9c51a0bca9261
 Used by:
-- guest-shell: rgb 0.8.53 — LICENSE
+- guest-workspace: rgb 0.8.53 — LICENSE
 
 MIT License
 
@@ -5366,213 +5188,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA256: 45fd05c4865e7c350b98ad7ac50e1b15462d49af4a91e9b0c9dd933dc9a69742
-Used by:
-- cua-driver: rustls-pki-types 1.14.1 — LICENSE-APACHE
-
-                              Apache License
-                        Version 2.0, January 2004
-                     http://www.apache.org/licenses/
-
-TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-1. Definitions.
-
-   "License" shall mean the terms and conditions for use, reproduction,
-   and distribution as defined by Sections 1 through 9 of this document.
-
-   "Licensor" shall mean the copyright owner or entity authorized by
-   the copyright owner that is granting the License.
-
-   "Legal Entity" shall mean the union of the acting entity and all
-   other entities that control, are controlled by, or are under common
-   control with that entity. For the purposes of this definition,
-   "control" means (i) the power, direct or indirect, to cause the
-   direction or management of such entity, whether by contract or
-   otherwise, or (ii) ownership of fifty percent (50%) or more of the
-   outstanding shares, or (iii) beneficial ownership of such entity.
-
-   "You" (or "Your") shall mean an individual or Legal Entity
-   exercising permissions granted by this License.
-
-   "Source" form shall mean the preferred form for making modifications,
-   including but not limited to software source code, documentation
-   source, and configuration files.
-
-   "Object" form shall mean any form resulting from mechanical
-   transformation or translation of a Source form, including but
-   not limited to compiled object code, generated documentation,
-   and conversions to other media types.
-
-   "Work" shall mean the work of authorship, whether in Source or
-   Object form, made available under the License, as indicated by a
-   copyright notice that is included in or attached to the work
-   (an example is provided in the Appendix below).
-
-   "Derivative Works" shall mean any work, whether in Source or Object
-   form, that is based on (or derived from) the Work and for which the
-   editorial revisions, annotations, elaborations, or other modifications
-   represent, as a whole, an original work of authorship. For the purposes
-   of this License, Derivative Works shall not include works that remain
-   separable from, or merely link (or bind by name) to the interfaces of,
-   the Work and Derivative Works thereof.
-
-   "Contribution" shall mean any work of authorship, including
-   the original version of the Work and any modifications or additions
-   to that Work or Derivative Works thereof, that is intentionally
-   submitted to Licensor for inclusion in the Work by the copyright owner
-   or by an individual or Legal Entity authorized to submit on behalf of
-   the copyright owner. For the purposes of this definition, "submitted"
-   means any form of electronic, verbal, or written communication sent
-   to the Licensor or its representatives, including but not limited to
-   communication on electronic mailing lists, source code control systems,
-   and issue tracking systems that are managed by, or on behalf of, the
-   Licensor for the purpose of discussing and improving the Work, but
-   excluding communication that is conspicuously marked or otherwise
-   designated in writing by the copyright owner as "Not a Contribution."
-
-   "Contributor" shall mean Licensor and any individual or Legal Entity
-   on behalf of whom a Contribution has been received by Licensor and
-   subsequently incorporated within the Work.
-
-2. Grant of Copyright License. Subject to the terms and conditions of
-   this License, each Contributor hereby grants to You a perpetual,
-   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-   copyright license to reproduce, prepare Derivative Works of,
-   publicly display, publicly perform, sublicense, and distribute the
-   Work and such Derivative Works in Source or Object form.
-
-3. Grant of Patent License. Subject to the terms and conditions of
-   this License, each Contributor hereby grants to You a perpetual,
-   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-   (except as stated in this section) patent license to make, have made,
-   use, offer to sell, sell, import, and otherwise transfer the Work,
-   where such license applies only to those patent claims licensable
-   by such Contributor that are necessarily infringed by their
-   Contribution(s) alone or by combination of their Contribution(s)
-   with the Work to which such Contribution(s) was submitted. If You
-   institute patent litigation against any entity (including a
-   cross-claim or counterclaim in a lawsuit) alleging that the Work
-   or a Contribution incorporated within the Work constitutes direct
-   or contributory patent infringement, then any patent licenses
-   granted to You under this License for that Work shall terminate
-   as of the date such litigation is filed.
-
-4. Redistribution. You may reproduce and distribute copies of the
-   Work or Derivative Works thereof in any medium, with or without
-   modifications, and in Source or Object form, provided that You
-   meet the following conditions:
-
-   (a) You must give any other recipients of the Work or
-       Derivative Works a copy of this License; and
-
-   (b) You must cause any modified files to carry prominent notices
-       stating that You changed the files; and
-
-   (c) You must retain, in the Source form of any Derivative Works
-       that You distribute, all copyright, patent, trademark, and
-       attribution notices from the Source form of the Work,
-       excluding those notices that do not pertain to any part of
-       the Derivative Works; and
-
-   (d) If the Work includes a "NOTICE" text file as part of its
-       distribution, then any Derivative Works that You distribute must
-       include a readable copy of the attribution notices contained
-       within such NOTICE file, excluding those notices that do not
-       pertain to any part of the Derivative Works, in at least one
-       of the following places: within a NOTICE text file distributed
-       as part of the Derivative Works; within the Source form or
-       documentation, if provided along with the Derivative Works; or,
-       within a display generated by the Derivative Works, if and
-       wherever such third-party notices normally appear. The contents
-       of the NOTICE file are for informational purposes only and
-       do not modify the License. You may add Your own attribution
-       notices within Derivative Works that You distribute, alongside
-       or as an addendum to the NOTICE text from the Work, provided
-       that such additional attribution notices cannot be construed
-       as modifying the License.
-
-   You may add Your own copyright statement to Your modifications and
-   may provide additional or different license terms and conditions
-   for use, reproduction, or distribution of Your modifications, or
-   for any such Derivative Works as a whole, provided Your use,
-   reproduction, and distribution of the Work otherwise complies with
-   the conditions stated in this License.
-
-5. Submission of Contributions. Unless You explicitly state otherwise,
-   any Contribution intentionally submitted for inclusion in the Work
-   by You to the Licensor shall be under the terms and conditions of
-   this License, without any additional terms or conditions.
-   Notwithstanding the above, nothing herein shall supersede or modify
-   the terms of any separate license agreement you may have executed
-   with Licensor regarding such Contributions.
-
-6. Trademarks. This License does not grant permission to use the trade
-   names, trademarks, service marks, or product names of the Licensor,
-   except as required for reasonable and customary use in describing the
-   origin of the Work and reproducing the content of the NOTICE file.
-
-7. Disclaimer of Warranty. Unless required by applicable law or
-   agreed to in writing, Licensor provides the Work (and each
-   Contributor provides its Contributions) on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-   implied, including, without limitation, any warranties or conditions
-   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-   PARTICULAR PURPOSE. You are solely responsible for determining the
-   appropriateness of using or redistributing the Work and assume any
-   risks associated with Your exercise of permissions under this License.
-
-8. Limitation of Liability. In no event and under no legal theory,
-   whether in tort (including negligence), contract, or otherwise,
-   unless required by applicable law (such as deliberate and grossly
-   negligent acts) or agreed to in writing, shall any Contributor be
-   liable to You for damages, including any direct, indirect, special,
-   incidental, or consequential damages of any character arising as a
-   result of this License or out of the use or inability to use the
-   Work (including but not limited to damages for loss of goodwill,
-   work stoppage, computer failure or malfunction, or any and all
-   other commercial damages or losses), even if such Contributor
-   has been advised of the possibility of such damages.
-
-9. Accepting Warranty or Additional Liability. While redistributing
-   the Work or Derivative Works thereof, You may choose to offer,
-   and charge a fee for, acceptance of support, warranty, indemnity,
-   or other liability obligations and/or rights consistent with this
-   License. However, in accepting such obligations, You may act only
-   on Your own behalf and on Your sole responsibility, not on behalf
-   of any other Contributor, and only if You agree to indemnify,
-   defend, and hold each Contributor harmless for any liability
-   incurred by, or claims asserted against, such Contributor by reason
-   of your accepting any such warranty or additional liability.
-
-END OF TERMS AND CONDITIONS
-
-APPENDIX: How to apply the Apache License to your work.
-
-   To apply the Apache License to your work, attach the following
-   boilerplate notice, with the fields enclosed by brackets "[]"
-   replaced with your own identifying information. (Don't include
-   the brackets!)  The text should be enclosed in the appropriate
-   comment syntax for the file format. We also recommend that a
-   file or class name and description of purpose be included on the
-   same "printed page" as the copyright notice for easier
-   identification within third-party archives.
-
-Copyright 2023 Dirkjan Ochtman
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
 
 ================================================================================
 SHA256: 4789210f4df8abc03fce1cddd9c2ba517f184840687f2815d741de282c1aa93a
@@ -5863,7 +5478,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 SHA256: 4b71658d3410d813b6fc6ceb654ce2aa8c2d3094c944dc59c2041da6227810e3
 Used by:
-- guest-shell: calloop 0.14.4 — LICENSE.txt
+- guest-workspace: calloop 0.14.4 — LICENSE.txt
 
 Copyright (c) 2018 Victor Berger
 
@@ -5948,7 +5563,7 @@ SOFTWARE.
 SHA256: 4da95ec4ecb65b738d470b7d762894ad9c97da93e6cbfb18b570fc2c96f4b871
 Used by:
 - cua-driver: arrayvec 0.7.6 — LICENSE-MIT
-- guest-shell: arrayvec 0.7.8 — LICENSE-MIT
+- guest-workspace: arrayvec 0.7.8 — LICENSE-MIT
 
 Copyright (c) Ulrik Sverdrup "bluss" 2015-2023
 
@@ -5980,6 +5595,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 4dbda04344456f09a7a588140455413a9ac59b6b26a1ef7cdf9c800c012d87f0
 Used by:
 - cua-driver: nom 8.0.0 — LICENSE
+- guest-workspace: nom 8.0.0 — LICENSE
 
 Copyright (c) 2014-2019 Geoffroy Couprie
 
@@ -6006,7 +5622,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 SHA256: 503558bfefe66ca15e4e3f7955b3cb0ec87fd52f29bf24b336af7bd00e946d5c
 Used by:
 - cua-driver: signal-hook-registry 1.4.8 — LICENSE-MIT
-- guest-shell: signal-hook-registry 1.4.8 — LICENSE-MIT
+- guest-workspace: signal-hook-registry 1.4.8 — LICENSE-MIT
 
 Copyright (c) 2017 tokio-jsonrpc developers
 
@@ -6035,15 +5651,41 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
+SHA256: 508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1
+Used by:
+- guest-workspace: half 2.7.1 — LICENSE-MIT
+- host-workspace: half 2.7.1 — LICENSE-MIT
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
 SHA256: 50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a
 Used by:
 - cua-driver: atspi 0.30.0 — LICENSE-APACHE2.txt
 - cua-driver: atspi-common 0.14.0 — LICENSE-APACHE2.txt
 - cua-driver: atspi-connection 0.14.0 — LICENSE-APACHE2.txt
 - cua-driver: atspi-proxies 0.14.0 — LICENSE-APACHE2.txt
-- guest-shell: atspi 0.29.0 — LICENSE-APACHE2.txt
-- guest-shell: atspi-common 0.13.0 — LICENSE-APACHE2.txt
-- guest-shell: atspi-proxies 0.13.0 — LICENSE-APACHE2.txt
+- guest-workspace: atspi 0.29.0 — LICENSE-APACHE2.txt
+- guest-workspace: atspi-common 0.13.0 — LICENSE-APACHE2.txt
+- guest-workspace: atspi-proxies 0.13.0 — LICENSE-APACHE2.txt
 
 Apache License
                            Version 2.0, January 2004
@@ -6251,6 +5893,7 @@ Apache License
 SHA256: 516b24e051bf5630880ebbd55c40a25ce9552ebaf8970a53e8976eb70e522406
 Used by:
 - cua-driver: typenum 1.20.0 — LICENSE-APACHE
+- guest-workspace: typenum 1.20.1 — LICENSE-APACHE
 - host-workspace: typenum 1.20.1 — LICENSE-APACHE
 
                               Apache License
@@ -6459,6 +6102,7 @@ limitations under the License.
 SHA256: 523a42c25d245dde9c015f882cec7f4555aad883382a6cf19b4b7d9b2cd5419b
 Used by:
 - cua-driver: getrandom 0.4.2 — LICENSE-MIT
+- guest-workspace: getrandom 0.4.3 — LICENSE-MIT
 - host-workspace: getrandom 0.4.3 — LICENSE-MIT
 
 Copyright (c) 2018-2026 The rust-random Project Developers
@@ -6492,7 +6136,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583
 Used by:
 - cua-driver: shlex 1.3.0 — LICENSE-APACHE
-- guest-shell: shlex 2.0.1 — LICENSE-APACHE
+- guest-workspace: shlex 2.0.1 — LICENSE-APACHE
 - host-workspace: shlex 2.0.1 — LICENSE-APACHE
 
 Copyright 2015 Nicholas Allegra (comex).
@@ -6514,7 +6158,7 @@ SHA256: 5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab
 Used by:
 - cua-driver: crossbeam-channel 0.5.15 — LICENSE-MIT
 - cua-driver: crossbeam-utils 0.8.21 — LICENSE-MIT
-- guest-shell: crossbeam-utils 0.8.22 — LICENSE-MIT
+- guest-workspace: crossbeam-utils 0.8.22 — LICENSE-MIT
 
 The MIT License (MIT)
 
@@ -6545,10 +6189,39 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
+SHA256: 573f5227db835cd30bbdd3aed3f82615f80119a4d5c82b4daf642dbfe2b6afde
+Used by:
+- guest-workspace: weezl 0.1.12 — LICENSE-MIT
+- host-workspace: weezl 0.1.12 — LICENSE-MIT
+
+The MIT License (MIT)
+
+Copyright (c) HeroicKatora 2020
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
 SHA256: 58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79
 Used by:
 - cua-driver: tracing-core 0.1.36 — src/spin/LICENSE
-- guest-shell: tracing-core 0.1.36 — src/spin/LICENSE
+- guest-workspace: tracing-core 0.1.36 — src/spin/LICENSE
 
 The MIT License (MIT)
 
@@ -6573,10 +6246,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
+SHA256: 59871bb1612f8a0569655c10b995636827eceab42c6578cebdc45ad2922e0142
+Used by:
+- guest-workspace: zcheapstr 1.0.0 — LICENSE
+
+Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
 SHA256: 5b2c207dcf571267ebe0bbdd5bf321f561ddc22ff597e7b363e96f4539507a29
 Used by:
 - cua-driver: quick-xml 0.39.4 — LICENSE-MIT.md
-- guest-shell: quick-xml 0.41.0 — LICENSE-MIT.md
+- guest-workspace: quick-xml 0.41.0 — LICENSE-MIT.md
 - host-workspace: quick-xml 0.41.0 — LICENSE-MIT.md
 
 The MIT License (MIT)
@@ -6602,44 +6306,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-================================================================================
-SHA256: 5b460f37be48ac4cf2181596181cc6cae432fc2caae05944873f380730829a4b
-Used by:
-- cua-driver: ureq-proto 0.6.0 — LICENSE-MIT.txt
-
-Copyright 2022 Martin Algesten
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA256: 5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a
-Used by:
-- cua-driver: rustls-webpki 0.103.13 — LICENSE
-
-Except as otherwise noted, this project is licensed under the following
-(ISC-style) terms:
-
-Copyright 2015 Brian Smith.
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHORS DISCLAIM ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-The files under third-party/chromium are licensed as described in
-third-party/chromium/LICENSE.
 
 ================================================================================
 SHA256: 5e05b024f653a5ce199e77cbbbd42fb5553562ec714b819421ed0c3e552a75d7
@@ -6676,6 +6342,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 608fdcbb7daea2541c57228f21fc97deec310b19dafde70b2f4b84a96bf779f8
 Used by:
 - cua-driver: petgraph 0.8.3 — assets/images/LICENSE.md
+- guest-workspace: petgraph 0.8.3 — assets/images/LICENSE.md
 
 Graphosaurus (c) by the petgraph project.
 
@@ -6689,7 +6356,7 @@ work.  If not, see <http://creativecommons.org/licenses/by-sa/4.0/>.
 SHA256: 61d383b05b87d78f94d2937e2580cce47226d17823c0430fbcad09596537efcf
 Used by:
 - cua-driver: crc32fast 1.5.0 — LICENSE-MIT
-- guest-shell: crc32fast 1.5.0 — LICENSE-MIT
+- guest-workspace: crc32fast 1.5.0 — LICENSE-MIT
 - host-workspace: crc32fast 1.5.0 — LICENSE-MIT
 
 MIT License
@@ -6719,8 +6386,8 @@ SHA256: 6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5
 Used by:
 - cua-driver: atomic-waker 1.1.2 — LICENSE-THIRD-PARTY
 - cua-driver: futures-lite 2.6.1 — LICENSE-THIRD-PARTY
-- guest-shell: atomic-waker 1.1.2 — LICENSE-THIRD-PARTY
-- guest-shell: futures-lite 2.6.1 — LICENSE-THIRD-PARTY
+- guest-workspace: atomic-waker 1.1.2 — LICENSE-THIRD-PARTY
+- guest-workspace: futures-lite 2.6.1 — LICENSE-THIRD-PARTY
 
 ===============================================================================
 
@@ -6797,27 +6464,27 @@ Used by:
 - cua-driver: thiserror-impl 2.0.18 — LICENSE-APACHE
 - cua-driver: unicode-ident 1.0.24 — LICENSE-APACHE
 - cua-driver: utf-8 0.7.6 — LICENSE-APACHE
-- cua-driver: utf8-zero 0.8.1 — LICENSE-APACHE
-- guest-shell: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
-- guest-shell: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
-- guest-shell: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
-- guest-shell: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
-- guest-shell: anyhow 1.0.104 — LICENSE-APACHE
-- guest-shell: async-trait 0.1.92 — LICENSE-APACHE
-- guest-shell: itoa 1.0.18 — LICENSE-APACHE
-- guest-shell: libc 0.2.189 — LICENSE-APACHE
-- guest-shell: proc-macro2 1.0.107 — LICENSE-APACHE
-- guest-shell: quote 1.0.47 — LICENSE-APACHE
-- guest-shell: serde 1.0.229 — LICENSE-APACHE
-- guest-shell: serde_core 1.0.229 — LICENSE-APACHE
-- guest-shell: serde_derive 1.0.229 — LICENSE-APACHE
-- guest-shell: serde_json 1.0.151 — LICENSE-APACHE
-- guest-shell: serde_repr 0.1.21 — LICENSE-APACHE
-- guest-shell: syn 2.0.119 — LICENSE-APACHE
-- guest-shell: syn 3.0.3 — LICENSE-APACHE
-- guest-shell: thiserror 2.0.20 — LICENSE-APACHE
-- guest-shell: thiserror-impl 2.0.20 — LICENSE-APACHE
-- guest-shell: unicode-ident 1.0.24 — LICENSE-APACHE
+- guest-workspace: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
+- guest-workspace: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
+- guest-workspace: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
+- guest-workspace: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE-APACHE
+- guest-workspace: anyhow 1.0.104 — LICENSE-APACHE
+- guest-workspace: async-trait 0.1.92 — LICENSE-APACHE
+- guest-workspace: itoa 1.0.18 — LICENSE-APACHE
+- guest-workspace: libc 0.2.189 — LICENSE-APACHE
+- guest-workspace: proc-macro2 1.0.107 — LICENSE-APACHE
+- guest-workspace: quote 1.0.47 — LICENSE-APACHE
+- guest-workspace: semver 1.0.28 — LICENSE-APACHE
+- guest-workspace: serde 1.0.229 — LICENSE-APACHE
+- guest-workspace: serde_core 1.0.229 — LICENSE-APACHE
+- guest-workspace: serde_derive 1.0.229 — LICENSE-APACHE
+- guest-workspace: serde_json 1.0.151 — LICENSE-APACHE
+- guest-workspace: serde_repr 0.1.21 — LICENSE-APACHE
+- guest-workspace: syn 2.0.119 — LICENSE-APACHE
+- guest-workspace: syn 3.0.3 — LICENSE-APACHE
+- guest-workspace: thiserror 2.0.20 — LICENSE-APACHE
+- guest-workspace: thiserror-impl 2.0.20 — LICENSE-APACHE
+- guest-workspace: unicode-ident 1.0.24 — LICENSE-APACHE
 - host-workspace: anyhow 1.0.104 — LICENSE-APACHE
 - host-workspace: itoa 1.0.18 — LICENSE-APACHE
 - host-workspace: libc 0.2.189 — LICENSE-APACHE
@@ -7027,10 +6694,11 @@ Used by:
 - cua-driver: regex 1.12.3 — LICENSE-MIT
 - cua-driver: regex-automata 0.4.14 — LICENSE-MIT
 - cua-driver: regex-syntax 0.8.10 — LICENSE-MIT
-- guest-shell: bitflags 1.3.2 — LICENSE-MIT
-- guest-shell: bitflags 2.13.1 — LICENSE-MIT
-- guest-shell: log 0.4.33 — LICENSE-MIT
-- guest-shell: num-traits 0.2.19 — LICENSE-MIT
+- guest-workspace: bitflags 1.3.2 — LICENSE-MIT
+- guest-workspace: bitflags 2.13.1 — LICENSE-MIT
+- guest-workspace: log 0.4.33 — LICENSE-MIT
+- guest-workspace: num-derive 0.4.2 — LICENSE-MIT
+- guest-workspace: num-traits 0.2.19 — LICENSE-MIT
 - host-workspace: bitflags 2.13.1 — LICENSE-MIT
 - host-workspace: num-traits 0.2.19 — LICENSE-MIT
 
@@ -7100,11 +6768,13 @@ Used by:
 - cua-driver: futures-sink 0.3.32 — LICENSE-MIT
 - cua-driver: futures-task 0.3.32 — LICENSE-MIT
 - cua-driver: futures-util 0.3.32 — LICENSE-MIT
-- guest-shell: futures-core 0.3.33 — LICENSE-MIT
-- guest-shell: futures-io 0.3.33 — LICENSE-MIT
-- guest-shell: futures-macro 0.3.33 — LICENSE-MIT
-- guest-shell: futures-task 0.3.33 — LICENSE-MIT
-- guest-shell: futures-util 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-channel 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-core 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-executor 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-io 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-macro 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-task 0.3.33 — LICENSE-MIT
+- guest-workspace: futures-util 0.3.33 — LICENSE-MIT
 - host-workspace: futures-channel 0.3.33 — LICENSE-MIT
 - host-workspace: futures-core 0.3.33 — LICENSE-MIT
 - host-workspace: futures-executor 0.3.33 — LICENSE-MIT
@@ -7565,7 +7235,7 @@ at your option.
 SHA256: 68d7c3ae5b131ec533fb33a9fd63753eb82fac77d7597bb5058a5af07adf9f06
 Used by:
 - cua-driver: enumflags2_derive 0.7.12 — LICENSE-APACHE
-- guest-shell: enumflags2_derive 0.7.12 — LICENSE-APACHE
+- guest-workspace: enumflags2_derive 0.7.12 — LICENSE-APACHE
 
 Apache License
 
@@ -7930,8 +7600,8 @@ SHA256: 6d41e05f1d54fe726997cb0334ec539f1dff50600b1d5d90462ec2b392770ced
 Used by:
 - cua-driver: tiny-skia 0.11.4 — LICENSE
 - cua-driver: tiny-skia-path 0.11.4 — LICENSE
-- guest-shell: tiny-skia 0.11.4 — LICENSE
-- guest-shell: tiny-skia-path 0.11.4 — LICENSE
+- guest-workspace: tiny-skia 0.11.4 — LICENSE
+- guest-workspace: tiny-skia-path 0.11.4 — LICENSE
 
 Copyright (c) 2011 Google Inc. All rights reserved.
 Copyright (c) 2020 Yevhenii Reizner All rights reserved.
@@ -8159,35 +7829,6 @@ APPENDIX: How to apply the Apache License to your work.
    identification within third-party archives.
 
 ================================================================================
-SHA256: 6ee2ed6c77710de911761acd5fc1ad1da00f476beb1a7ef27e78c2d1858deafc
-Used by:
-- cua-driver: ring 0.17.14 — src/polyfill/once_cell/LICENSE-MIT
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHOR OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-================================================================================
 SHA256: 6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6
 Used by:
 - cua-driver: serde_spanned 1.1.1 — LICENSE-MIT
@@ -8197,9 +7838,11 @@ Used by:
 - cua-driver: toml_edit 0.25.12+spec-1.1.0 — LICENSE-MIT
 - cua-driver: toml_parser 1.1.2+spec-1.1.0 — LICENSE-MIT
 - cua-driver: toml_writer 1.1.2+spec-1.1.0 — LICENSE-MIT
-- guest-shell: toml_datetime 1.1.1+spec-1.1.0 — LICENSE-MIT
-- guest-shell: toml_edit 0.25.13+spec-1.1.0 — LICENSE-MIT
-- guest-shell: toml_parser 1.1.3+spec-1.1.0 — LICENSE-MIT
+- guest-workspace: serde_spanned 1.1.1 — LICENSE-MIT
+- guest-workspace: toml 1.1.4+spec-1.1.0 — LICENSE-MIT
+- guest-workspace: toml_datetime 1.1.1+spec-1.1.0 — LICENSE-MIT
+- guest-workspace: toml_edit 0.25.13+spec-1.1.0 — LICENSE-MIT
+- guest-workspace: toml_parser 1.1.3+spec-1.1.0 — LICENSE-MIT
 - host-workspace: anstream 1.0.0 — LICENSE-MIT
 - host-workspace: anstyle 1.0.14 — LICENSE-MIT
 - host-workspace: anstyle-parse 1.0.0 — LICENSE-MIT
@@ -8274,41 +7917,24 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-SHA256: 709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c
+SHA256: 7101390b4c8edd752f4c0de47f35d61b44d9cf0ee8dd032115e25644e277cfff
 Used by:
-- cua-driver: rustls 0.23.40 — LICENSE-MIT
+- guest-workspace: fax 0.2.7 — LICENSE
+- host-workspace: fax 0.2.7 — LICENSE
 
-Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+Copyright © 2021 The pdf-rs contributers.
 
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 SHA256: 7365cc8878a1d7ce155a58c4ca09c3d7a6be413efa5334a80ea842912b669349
 Used by:
 - cua-driver: equivalent 1.0.2 — LICENSE-MIT
-- guest-shell: equivalent 1.0.2 — LICENSE-MIT
+- guest-workspace: equivalent 1.0.2 — LICENSE-MIT
 - host-workspace: equivalent 1.0.2 — LICENSE-MIT
 
 Copyright (c) 2016--2023
@@ -8404,6 +8030,7 @@ written authorization of the copyright holder.
 SHA256: 7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545
 Used by:
 - cua-driver: petgraph 0.8.3 — LICENSE-MIT
+- guest-workspace: petgraph 0.8.3 — LICENSE-MIT
 
 Copyright (c) 2015
 
@@ -8435,7 +8062,9 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 769f80b5bcb42ed0af4e4d2fd74e1ac9bf843cb80c5a29219d1ef3544428a6bb
 Used by:
 - cua-driver: async-recursion 1.1.1 — LICENSE-APACHE
-- guest-shell: async-recursion 1.1.1 — LICENSE-APACHE
+- guest-workspace: async-recursion 1.1.1 — LICENSE-APACHE
+- guest-workspace: weezl 0.1.12 — LICENSE-APACHE
+- host-workspace: weezl 0.1.12 — LICENSE-APACHE
 
                               Apache License
                         Version 2.0, January 2004
@@ -8643,7 +8272,7 @@ limitations under the License.
 SHA256: 799e9ca9d179295ef372f25d3769cdda7d25bb2668add6a6a1e22d1e4c678b8d
 Used by:
 - cua-driver: miniz_oxide 0.8.9 — LICENSE-MIT.md
-- guest-shell: miniz_oxide 0.8.9 — LICENSE-MIT.md
+- guest-workspace: miniz_oxide 0.8.9 — LICENSE-MIT.md
 - host-workspace: miniz_oxide 0.8.9 — LICENSE-MIT.md
 
 MIT License
@@ -8672,28 +8301,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-SHA256: 7abd9b6960dcf7d4d0a48606a5b71bfe37d472db68d70637f3a58a56785f1621
-Used by:
-- cua-driver: untrusted 0.9.0 — LICENSE.txt
-
-// Copyright 2015-2016 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHORS DISCLAIM ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR
-// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-================================================================================
 SHA256: 7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0
 Used by:
 - cua-driver: heck 0.5.0 — LICENSE-MIT
+- guest-workspace: heck 0.5.0 — LICENSE-MIT
 - host-workspace: fs2 0.4.3 — LICENSE-MIT
 - host-workspace: heck 0.5.0 — LICENSE-MIT
 
@@ -8722,27 +8333,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA256: 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4
-Used by:
-- cua-driver: rustls 0.23.40 — LICENSE-ISC
-
-ISC License (ISC)
-Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-
-Permission to use, copy, modify, and/or distribute this software for
-any purpose with or without fee is hereby granted, provided that the
-above copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
-WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
-AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
-DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
-PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
-ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-THIS SOFTWARE.
 
 ================================================================================
 SHA256: 7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c
@@ -8952,31 +8542,46 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ================================================================================
-SHA256: 7e5886959f67f8c75063a9d55cd3cb08c5a8cbea9a944fa1df2d4ae038f53721
+SHA256: 7f3a1f49123d3cdc27e9484ea62d1e64f685ee2b141e1fb2e2627189e7e5466b
 Used by:
-- cua-driver: ureq 3.3.0 — LICENSE-MIT
+- guest-workspace: zune-core 0.4.12 — fallback:LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE.md
+- guest-workspace: zune-jpeg 0.4.21 — fallback:LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE.md
+- host-workspace: zune-core 0.4.12 — fallback:LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE.md
+- host-workspace: zune-jpeg 0.4.21 — fallback:LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE.md
 
-MIT License
+Copyright (c) zune-image developers
 
-Copyright (c) 2019 Martin Algesten
+Licensed under the Apache License, Version 2.0
+<LICENSE-APACHE or
+http://www.apache.org/licenses/LICENSE-2.0> or the MIT
+license <LICENSE-MIT or http://opensource.org/licenses/MIT>,
+at your option. All files in the project carrying such
+notice may not be copied, modified, or distributed except
+according to those terms
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+================================================================================
+SHA256: 7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352
+Used by:
+- guest-workspace: zune-core 0.4.12 — fallback:LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE-ZLIB
+- guest-workspace: zune-jpeg 0.4.21 — fallback:LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE-ZLIB
+- host-workspace: zune-core 0.4.12 — fallback:LICENSES/upstream/cargo-fallbacks/zune-core-0.4.12-LICENSE-ZLIB
+- host-workspace: zune-jpeg 0.4.21 — fallback:LICENSES/upstream/cargo-fallbacks/zune-jpeg-0.4.21-LICENSE-ZLIB
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
 
 ================================================================================
 SHA256: 7fea0ee51a4ca5d5cea7464135fd55e8b09caf3a61da3d451ac8a22af95c033f
@@ -9010,7 +8615,8 @@ Used by:
 - cua-driver: bit-set 0.8.0 — LICENSE-APACHE
 - cua-driver: bit-vec 0.8.0 — LICENSE-APACHE
 - cua-driver: downcast-rs 1.2.1 — LICENSE-APACHE
-- guest-shell: downcast-rs 1.2.1 — LICENSE-APACHE
+- guest-workspace: cfg-expr 0.20.8 — LICENSE-APACHE
+- guest-workspace: downcast-rs 1.2.1 — LICENSE-APACHE
 - host-workspace: cfg-expr 0.20.8 — LICENSE-APACHE
 - host-workspace: downcast-rs 1.2.1 — LICENSE-APACHE
 
@@ -9220,6 +8826,10 @@ limitations under the License.
 SHA256: 83c1763356e822adde0a2cae748d938a73fdc263849ccff6b27776dff213bd32
 Used by:
 - cua-driver: zerocopy 0.8.48 — LICENSE-BSD
+- guest-workspace: zerocopy 0.8.56 — LICENSE-BSD
+- guest-workspace: zerocopy-derive 0.8.56 — LICENSE-BSD
+- host-workspace: zerocopy 0.8.56 — LICENSE-BSD
+- host-workspace: zerocopy-derive 0.8.56 — LICENSE-BSD
 
 Copyright 2019 The Fuchsia Authors.
 
@@ -9249,10 +8859,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 SHA256: 845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308
 Used by:
-- guest-shell: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
-- guest-shell: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
-- guest-shell: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
-- guest-shell: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
+- guest-workspace: accesskit 0.24.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
+- guest-workspace: accesskit_atspi_common 0.19.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
+- guest-workspace: accesskit_consumer 0.38.0 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
+- guest-workspace: accesskit_unix 0.22.1 — fallback:LICENSES/upstream/cargo-fallbacks/accesskit-LICENSE.chromium
 
 // Copyright 2015 The Chromium Authors. All rights reserved.
 //
@@ -9286,8 +8896,9 @@ Used by:
 SHA256: 84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151
 Used by:
 - cua-driver: bytemuck 1.25.0 — LICENSE-ZLIB
-- guest-shell: bytemuck 1.25.2 — LICENSE-ZLIB
-- guest-shell: bytemuck_derive 1.12.0 — LICENSE-ZLIB
+- guest-workspace: bytemuck 1.25.2 — LICENSE-ZLIB
+- guest-workspace: bytemuck_derive 1.12.0 — LICENSE-ZLIB
+- host-workspace: bytemuck 1.25.2 — LICENSE-ZLIB
 
 Copyright (c) 2019 Daniel "Lokathor" Gee.
 
@@ -9305,7 +8916,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 SHA256: 861399f8c21c042b110517e76dc6b63a2b334276c8cf17412fc3c8908ca8dc17
 Used by:
 - cua-driver: adler2 2.0.1 — LICENSE-0BSD
-- guest-shell: adler2 2.0.1 — LICENSE-0BSD
+- guest-workspace: adler2 2.0.1 — LICENSE-0BSD
 - host-workspace: adler2 2.0.1 — LICENSE-0BSD
 
 Copyright (C) Jonas Schievink <jonasschievink@gmail.com>
@@ -9324,7 +8935,8 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ================================================================================
 SHA256: 875e64a5df9f892ebd29c71ad0b58a765b5789d7e9142aa70ec07fae74a67686
 Used by:
-- guest-shell: xkeysym 0.2.1 — LICENSE-MIT
+- cua-driver: xkeysym 0.2.1 — LICENSE-MIT
+- guest-workspace: xkeysym 0.2.1 — LICENSE-MIT
 - host-workspace: xkeysym 0.2.1 — LICENSE-MIT
 
 Copyright (c) 2022-2023 John Nunley
@@ -9351,7 +8963,7 @@ SOFTWARE.
 SHA256: 8764a597675778ddfd4e25f81b08a05dbcf089ac05662df7613fe67f150e3aa2
 Used by:
 - cua-driver: errno 0.3.14 — LICENSE-MIT
-- guest-shell: errno 0.3.14 — LICENSE-MIT
+- guest-workspace: errno 0.3.14 — LICENSE-MIT
 
 Copyright (c) 2014 Chris Wong
 
@@ -9594,9 +9206,9 @@ Used by:
 - cua-driver: tracing-core 0.1.36 — LICENSE
 - cua-driver: tracing-log 0.2.0 — LICENSE
 - cua-driver: tracing-subscriber 0.3.23 — LICENSE
-- guest-shell: tracing 0.1.44 — LICENSE
-- guest-shell: tracing-attributes 0.1.31 — LICENSE
-- guest-shell: tracing-core 0.1.36 — LICENSE
+- guest-workspace: tracing 0.1.44 — LICENSE
+- guest-workspace: tracing-attributes 0.1.31 — LICENSE
+- guest-workspace: tracing-core 0.1.36 — LICENSE
 
 Copyright (c) 2019 Tokio Contributors
 
@@ -9630,8 +9242,8 @@ Used by:
 - cua-driver: adler2 2.0.1 — LICENSE-APACHE
 - cua-driver: cargo-platform 0.1.9 — LICENSE-APACHE
 - cua-driver: proc-macro-crate 3.5.0 — LICENSE-APACHE
-- guest-shell: adler2 2.0.1 — LICENSE-APACHE
-- guest-shell: proc-macro-crate 3.5.0 — LICENSE-APACHE
+- guest-workspace: adler2 2.0.1 — LICENSE-APACHE
+- guest-workspace: proc-macro-crate 3.5.0 — LICENSE-APACHE
 - host-workspace: adler2 2.0.1 — LICENSE-APACHE
 - host-workspace: proc-macro-crate 3.5.0 — LICENSE-APACHE
 
@@ -10169,7 +9781,6 @@ limitations under the License.
 ================================================================================
 SHA256: 8ca6b96cea9e67c6c5c63f452c31bd396db8bd2406231fdea5d48ef462b48077
 Used by:
-- cua-driver: tar 0.4.46 — LICENSE-MIT
 - host-workspace: tar 0.4.46 — LICENSE-MIT
 
 Copyright (c) The tar-rs Project Contributors
@@ -10202,7 +9813,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: 8ce0830173fdac609dfb4ea603fdc002c2f4af0dc9b1a005653f5da9cf534b18
 Used by:
 - cua-driver: slab 0.4.12 — LICENSE
-- guest-shell: slab 0.4.12 — LICENSE
+- guest-workspace: slab 0.4.12 — LICENSE
 - host-workspace: slab 0.4.12 — LICENSE
 
 Copyright (c) 2019 Carl Lerche
@@ -10234,6 +9845,27 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: 8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb
 Used by:
+- guest-workspace: cairo-rs 0.21.5 — LICENSE
+- guest-workspace: cairo-sys-rs 0.21.5 — LICENSE
+- guest-workspace: gdk-pixbuf 0.21.5 — LICENSE
+- guest-workspace: gdk-pixbuf-sys 0.21.5 — LICENSE
+- guest-workspace: gdk4 0.10.3 — LICENSE
+- guest-workspace: gdk4-sys 0.10.3 — LICENSE
+- guest-workspace: gio 0.21.5 — LICENSE
+- guest-workspace: gio-sys 0.21.5 — LICENSE
+- guest-workspace: glib 0.21.5 — LICENSE
+- guest-workspace: glib-macros 0.21.5 — LICENSE
+- guest-workspace: glib-sys 0.21.5 — LICENSE
+- guest-workspace: gobject-sys 0.21.5 — LICENSE
+- guest-workspace: graphene-rs 0.21.5 — LICENSE
+- guest-workspace: graphene-sys 0.21.5 — LICENSE
+- guest-workspace: gsk4 0.10.3 — LICENSE
+- guest-workspace: gsk4-sys 0.10.3 — LICENSE
+- guest-workspace: gtk4 0.10.3 — LICENSE
+- guest-workspace: gtk4-macros 0.10.3 — LICENSE
+- guest-workspace: gtk4-sys 0.10.3 — LICENSE
+- guest-workspace: pango 0.21.5 — LICENSE
+- guest-workspace: pango-sys 0.21.5 — LICENSE
 - host-workspace: cairo-rs 0.21.5 — LICENSE
 - host-workspace: cairo-sys-rs 0.21.5 — LICENSE
 - host-workspace: gdk-pixbuf 0.21.5 — LICENSE
@@ -10279,6 +9911,7 @@ SOFTWARE.
 SHA256: 8f71659370c5268d9a1dc962a46232540e8fca63462586d8efaa95aab492a208
 Used by:
 - cua-driver: os_pipe 1.2.3 — LICENSE
+- guest-workspace: os_pipe 1.2.3 — LICENSE
 
 The MIT License (MIT)
 
@@ -10305,8 +9938,10 @@ SHA256: 90bf2d659c43045111b65c733ab2a6d4cbcb422a098368c8c58a9ba3db4ed0c5
 Used by:
 - cua-driver: moxcms 0.8.1 — LICENSE-APACHE.md
 - cua-driver: pxfm 0.1.29 — LICENSE-APACHE.md
-- guest-shell: moxcms 0.7.11 — LICENSE-APACHE.md
-- guest-shell: pxfm 0.1.30 — LICENSE-APACHE.md
+- guest-workspace: moxcms 0.7.11 — LICENSE-APACHE.md
+- guest-workspace: pxfm 0.1.30 — LICENSE-APACHE.md
+- host-workspace: moxcms 0.7.11 — LICENSE-APACHE.md
+- host-workspace: pxfm 0.1.30 — LICENSE-APACHE.md
 
                                  Apache License
                            Version 2.0, January 2004
@@ -10530,37 +10165,6 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 
 The Rand project includes code from the Rust project
 published under these same licenses.
-
-================================================================================
-SHA256: 9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639
-Used by:
-- cua-driver: rustls-pki-types 1.14.1 — LICENSE-MIT
-
-Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 SHA256: 92b81db30f7ab6d693e0af5661a40d273ca1947e891123ed823924192c10cbc7
@@ -10853,7 +10457,7 @@ limitations under the License.
 SHA256: 9a6d7a3c1b8edcc706c4b6c37f8dae9a77f02c7f9051df603f975db136b55419
 Used by:
 - cua-driver: parking 2.2.1 — LICENSE-THIRD-PARTY
-- guest-shell: parking 2.2.1 — LICENSE-THIRD-PARTY
+- guest-workspace: parking 2.2.1 — LICENSE-THIRD-PARTY
 
 ===============================================================================
 
@@ -10869,6 +10473,10 @@ copied, modified, or distributed except according to those terms.
 SHA256: 9d185ac6703c4b0453974c0d85e9eee43e6941009296bb1f5eb0b54e2329e9f3
 Used by:
 - cua-driver: zerocopy 0.8.48 — LICENSE-APACHE
+- guest-workspace: zerocopy 0.8.56 — LICENSE-APACHE
+- guest-workspace: zerocopy-derive 0.8.56 — LICENSE-APACHE
+- host-workspace: zerocopy 0.8.56 — LICENSE-APACHE
+- host-workspace: zerocopy-derive 0.8.56 — LICENSE-APACHE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -11076,6 +10684,7 @@ Used by:
 ================================================================================
 SHA256: 9dd44491b4cf95dcfa2963943b3ae91bff9a78d13049a9e0b53e0d0b0a9c8f4e
 Used by:
+- guest-workspace: field-offset 0.3.6 — LICENSE-MIT
 - host-workspace: field-offset 0.3.6 — LICENSE-MIT
 
 MIT License
@@ -11104,8 +10713,9 @@ SOFTWARE.
 SHA256: 9df9ba60a11af705f2e451b53762686e615d86f76b169cf075c3237730dbd7e2
 Used by:
 - cua-driver: bytemuck 1.25.0 — LICENSE-MIT
-- guest-shell: bytemuck 1.25.2 — LICENSE-MIT
-- guest-shell: bytemuck_derive 1.12.0 — LICENSE-MIT
+- guest-workspace: bytemuck 1.25.2 — LICENSE-MIT
+- guest-workspace: bytemuck_derive 1.12.0 — LICENSE-MIT
+- host-workspace: bytemuck 1.25.2 — LICENSE-MIT
 
 MIT License
 
@@ -11121,6 +10731,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 SHA256: 9e0dfd2dd4173a530e238cb6adb37aa78c34c6bc7444e0e10c1ab5d8881f63ba
 Used by:
 - cua-driver: digest 0.10.7 — LICENSE-MIT
+- guest-workspace: digest 0.10.7 — LICENSE-MIT
 - host-workspace: digest 0.10.7 — LICENSE-MIT
 
 Copyright (c) 2017 Artyom Pavlov
@@ -11150,30 +10761,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-SHA256: 9eacbcb81be660840c714a560a9d65ba07913db98dd4baf969f78dd499fdd60f
-Used by:
-- cua-driver: ring 0.17.14 — third_party/fiat/LICENSE
-
-The Apache License, Version 2.0 (Apache-2.0)
-
-Copyright 2015-2020 the fiat-crypto authors (see the AUTHORS file)
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-================================================================================
 SHA256: 9ebf8c4cc0b735ca13a766451f7b8097db3185975ceb2ba94b5abf439156a91f
 Used by:
-- guest-shell: core_maths 0.1.1 — LICENSE
+- guest-workspace: core_maths 0.1.1 — LICENSE
 
 MIT License
 
@@ -11333,7 +10923,6 @@ Used by:
 - cua-driver: event-listener 5.4.1 — LICENSE-APACHE
 - cua-driver: event-listener-strategy 0.5.4 — LICENSE-APACHE
 - cua-driver: fastrand 2.4.1 — LICENSE-APACHE
-- cua-driver: filetime 0.2.29 — LICENSE-APACHE
 - cua-driver: find-msvc-tools 0.1.9 — LICENSE-APACHE
 - cua-driver: fixedbitset 0.5.7 — LICENSE-APACHE
 - cua-driver: flate2 1.1.9 — LICENSE-APACHE
@@ -11379,16 +10968,13 @@ Used by:
 - cua-driver: regex 1.12.3 — LICENSE-APACHE
 - cua-driver: regex-automata 0.4.14 — LICENSE-APACHE
 - cua-driver: regex-syntax 0.8.10 — LICENSE-APACHE
-- cua-driver: ring 0.17.14 — src/polyfill/once_cell/LICENSE-APACHE
 - cua-driver: rustc_version 0.4.1 — LICENSE-APACHE
 - cua-driver: rustix 1.1.4 — LICENSE-APACHE
-- cua-driver: rustls 0.23.40 — LICENSE-APACHE
 - cua-driver: scopeguard 1.2.0 — LICENSE-APACHE
 - cua-driver: signal-hook-registry 1.4.8 — LICENSE-APACHE
 - cua-driver: smallvec 1.15.1 — LICENSE-APACHE
 - cua-driver: socket2 0.6.3 — LICENSE-APACHE
 - cua-driver: stable_deref_trait 1.2.1 — LICENSE-APACHE
-- cua-driver: tar 0.4.46 — LICENSE-APACHE
 - cua-driver: tempfile 3.27.0 — LICENSE-APACHE
 - cua-driver: thread_local 1.1.9 — LICENSE-APACHE
 - cua-driver: ttf-parser 0.21.1 — LICENSE-APACHE
@@ -11397,56 +10983,66 @@ Used by:
 - cua-driver: uuid 1.23.1 — LICENSE-APACHE
 - cua-driver: version_check 0.9.5 — LICENSE-APACHE
 - cua-driver: wl-clipboard-rs 0.9.3 — LICENSE-APACHE
-- guest-shell: arrayvec 0.7.8 — LICENSE-APACHE
-- guest-shell: async-channel 2.5.0 — LICENSE-APACHE
-- guest-shell: async-executor 1.14.0 — LICENSE-APACHE
-- guest-shell: async-io 2.6.0 — LICENSE-APACHE
-- guest-shell: async-lock 3.4.2 — LICENSE-APACHE
-- guest-shell: async-process 2.5.0 — LICENSE-APACHE
-- guest-shell: async-signal 0.2.14 — LICENSE-APACHE
-- guest-shell: async-task 4.7.1 — LICENSE-APACHE
-- guest-shell: atomic-waker 1.1.2 — LICENSE-APACHE
-- guest-shell: autocfg 1.5.1 — LICENSE-APACHE
-- guest-shell: base64 0.22.1 — LICENSE-APACHE
-- guest-shell: bitflags 1.3.2 — LICENSE-APACHE
-- guest-shell: bitflags 2.13.1 — LICENSE-APACHE
-- guest-shell: blocking 1.6.2 — LICENSE-APACHE
-- guest-shell: cc 1.4.2 — LICENSE-APACHE
-- guest-shell: cfg-if 1.0.4 — LICENSE-APACHE
-- guest-shell: concurrent-queue 2.5.0 — LICENSE-APACHE
-- guest-shell: crossbeam-utils 0.8.22 — LICENSE-APACHE
-- guest-shell: data-url 0.3.2 — LICENSE-APACHE
-- guest-shell: equivalent 1.0.2 — LICENSE-APACHE
-- guest-shell: errno 0.3.14 — LICENSE-APACHE
-- guest-shell: event-listener 5.4.2 — LICENSE-APACHE
-- guest-shell: event-listener-strategy 0.5.4 — LICENSE-APACHE
-- guest-shell: fastrand 2.5.0 — LICENSE-APACHE
-- guest-shell: find-msvc-tools 0.1.10 — LICENSE-APACHE
-- guest-shell: flate2 1.1.9 — LICENSE-APACHE
-- guest-shell: futures-lite 2.6.1 — LICENSE-APACHE
-- guest-shell: hashbrown 0.15.5 — LICENSE-APACHE
-- guest-shell: hashbrown 0.16.1 — LICENSE-APACHE
-- guest-shell: hashbrown 0.17.1 — LICENSE-APACHE
-- guest-shell: indexmap 2.14.0 — LICENSE-APACHE
-- guest-shell: linux-raw-sys 0.12.1 — LICENSE-APACHE
-- guest-shell: log 0.4.33 — LICENSE-APACHE
-- guest-shell: num-traits 0.2.19 — LICENSE-APACHE
-- guest-shell: once_cell 1.21.4 — LICENSE-APACHE
-- guest-shell: ordered-stream 0.2.0 — LICENSE-APACHE
-- guest-shell: parking 2.2.1 — LICENSE-APACHE
-- guest-shell: piper 0.2.5 — LICENSE-APACHE
-- guest-shell: pkg-config 0.3.33 — LICENSE-APACHE
-- guest-shell: png 0.17.16 — LICENSE-APACHE
-- guest-shell: png 0.18.1 — LICENSE-APACHE
-- guest-shell: polling 3.11.0 — LICENSE-APACHE
-- guest-shell: roxmltree 0.20.0 — LICENSE-APACHE
-- guest-shell: rustix 1.1.4 — LICENSE-APACHE
-- guest-shell: signal-hook-registry 1.4.8 — LICENSE-APACHE
-- guest-shell: simplecss 0.2.2 — LICENSE-APACHE
-- guest-shell: smallvec 1.15.2 — LICENSE-APACHE
-- guest-shell: svgtypes 0.15.3 — LICENSE-APACHE
-- guest-shell: ttf-parser 0.25.1 — LICENSE-APACHE
-- guest-shell: uuid 1.24.0 — LICENSE-APACHE
+- guest-workspace: arrayvec 0.7.8 — LICENSE-APACHE
+- guest-workspace: async-channel 2.5.0 — LICENSE-APACHE
+- guest-workspace: async-executor 1.14.0 — LICENSE-APACHE
+- guest-workspace: async-io 2.6.0 — LICENSE-APACHE
+- guest-workspace: async-lock 3.4.2 — LICENSE-APACHE
+- guest-workspace: async-process 2.5.0 — LICENSE-APACHE
+- guest-workspace: async-signal 0.2.14 — LICENSE-APACHE
+- guest-workspace: async-task 4.7.1 — LICENSE-APACHE
+- guest-workspace: atomic-waker 1.1.2 — LICENSE-APACHE
+- guest-workspace: autocfg 1.5.1 — LICENSE-APACHE
+- guest-workspace: base64 0.22.1 — LICENSE-APACHE
+- guest-workspace: bitflags 1.3.2 — LICENSE-APACHE
+- guest-workspace: bitflags 2.13.1 — LICENSE-APACHE
+- guest-workspace: blocking 1.6.2 — LICENSE-APACHE
+- guest-workspace: cc 1.4.2 — LICENSE-APACHE
+- guest-workspace: cfg-if 1.0.4 — LICENSE-APACHE
+- guest-workspace: concurrent-queue 2.5.0 — LICENSE-APACHE
+- guest-workspace: crossbeam-utils 0.8.22 — LICENSE-APACHE
+- guest-workspace: data-url 0.3.2 — LICENSE-APACHE
+- guest-workspace: equivalent 1.0.2 — LICENSE-APACHE
+- guest-workspace: errno 0.3.14 — LICENSE-APACHE
+- guest-workspace: event-listener 5.4.2 — LICENSE-APACHE
+- guest-workspace: event-listener-strategy 0.5.4 — LICENSE-APACHE
+- guest-workspace: fastrand 2.5.0 — LICENSE-APACHE
+- guest-workspace: find-msvc-tools 0.1.10 — LICENSE-APACHE
+- guest-workspace: fixedbitset 0.5.7 — LICENSE-APACHE
+- guest-workspace: flate2 1.1.9 — LICENSE-APACHE
+- guest-workspace: futures-lite 2.6.1 — LICENSE-APACHE
+- guest-workspace: hashbrown 0.15.5 — LICENSE-APACHE
+- guest-workspace: hashbrown 0.16.1 — LICENSE-APACHE
+- guest-workspace: hashbrown 0.17.1 — LICENSE-APACHE
+- guest-workspace: heck 0.5.0 — LICENSE-APACHE
+- guest-workspace: indexmap 2.14.0 — LICENSE-APACHE
+- guest-workspace: libpulse-binding 2.30.1 — LICENSE-APACHE
+- guest-workspace: libpulse-sys 1.23.0 — LICENSE-APACHE
+- guest-workspace: linux-raw-sys 0.12.1 — LICENSE-APACHE
+- guest-workspace: log 0.4.33 — LICENSE-APACHE
+- guest-workspace: num-derive 0.4.2 — LICENSE-APACHE
+- guest-workspace: num-traits 0.2.19 — LICENSE-APACHE
+- guest-workspace: once_cell 1.21.4 — LICENSE-APACHE
+- guest-workspace: ordered-stream 0.2.0 — LICENSE-APACHE
+- guest-workspace: parking 2.2.1 — LICENSE-APACHE
+- guest-workspace: petgraph 0.8.3 — LICENSE-APACHE
+- guest-workspace: piper 0.2.5 — LICENSE-APACHE
+- guest-workspace: pkg-config 0.3.33 — LICENSE-APACHE
+- guest-workspace: png 0.17.16 — LICENSE-APACHE
+- guest-workspace: png 0.18.1 — LICENSE-APACHE
+- guest-workspace: polling 3.11.0 — LICENSE-APACHE
+- guest-workspace: roxmltree 0.20.0 — LICENSE-APACHE
+- guest-workspace: rustc_version 0.4.1 — LICENSE-APACHE
+- guest-workspace: rustix 1.1.4 — LICENSE-APACHE
+- guest-workspace: signal-hook-registry 1.4.8 — LICENSE-APACHE
+- guest-workspace: simplecss 0.2.2 — LICENSE-APACHE
+- guest-workspace: smallvec 1.15.2 — LICENSE-APACHE
+- guest-workspace: svgtypes 0.15.3 — LICENSE-APACHE
+- guest-workspace: system-deps 7.0.8 — LICENSE-APACHE
+- guest-workspace: ttf-parser 0.25.1 — LICENSE-APACHE
+- guest-workspace: uuid 1.24.0 — LICENSE-APACHE
+- guest-workspace: version_check 0.9.5 — LICENSE-APACHE
+- guest-workspace: wl-clipboard-rs 0.9.3 — LICENSE-APACHE
 - host-workspace: autocfg 1.5.1 — LICENSE-APACHE
 - host-workspace: bitflags 2.13.1 — LICENSE-APACHE
 - host-workspace: cc 1.4.2 — LICENSE-APACHE
@@ -11465,6 +11061,7 @@ Used by:
 - host-workspace: num-traits 0.2.19 — LICENSE-APACHE
 - host-workspace: once_cell 1.21.4 — LICENSE-APACHE
 - host-workspace: pkg-config 0.3.33 — LICENSE-APACHE
+- host-workspace: png 0.18.1 — LICENSE-APACHE
 - host-workspace: rustc_version 0.4.1 — LICENSE-APACHE
 - host-workspace: rustix 1.1.4 — LICENSE-APACHE
 - host-workspace: smallvec 1.15.2 — LICENSE-APACHE
@@ -11681,10 +11278,13 @@ limitations under the License.
 SHA256: a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9
 Used by:
 - cua-driver: fontdue 0.9.3 — LICENSE-APACHE
-- guest-shell: fontdue 0.9.4 — LICENSE-APACHE
-- guest-shell: resvg 0.45.1 — LICENSE-APACHE
-- guest-shell: usvg 0.45.1 — LICENSE-APACHE
+- guest-workspace: field-offset 0.3.6 — LICENSE-APACHE
+- guest-workspace: fontdue 0.9.4 — LICENSE-APACHE
+- guest-workspace: half 2.7.1 — LICENSE-APACHE
+- guest-workspace: resvg 0.45.1 — LICENSE-APACHE
+- guest-workspace: usvg 0.45.1 — LICENSE-APACHE
 - host-workspace: field-offset 0.3.6 — LICENSE-APACHE
+- host-workspace: half 2.7.1 — LICENSE-APACHE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -11867,7 +11467,7 @@ Used by:
 SHA256: a72354dd6206c20dff7c9fd45b137261e00a31f71ffb8fe67d5ca0c8170b5fd5
 Used by:
 - cua-driver: fontdue 0.9.3 — LICENSE-MIT
-- guest-shell: fontdue 0.9.4 — LICENSE-MIT
+- guest-workspace: fontdue 0.9.4 — LICENSE-MIT
 
 MIT License
 
@@ -11937,6 +11537,7 @@ MIT or Apache-2.0
 SHA256: a7cea8a5a56ba02950d098a7c56eed312fc745ceecd437e4aad2f7f8d38661b8
 Used by:
 - cua-driver: tree_magic_mini 3.2.2 — LICENSE
+- guest-workspace: tree_magic_mini 3.2.2 — LICENSE
 
 MIT License
 
@@ -11964,6 +11565,7 @@ SOFTWARE.
 SHA256: a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f
 Used by:
 - cua-driver: typenum 1.20.0 — LICENSE-MIT
+- guest-workspace: typenum 1.20.1 — LICENSE-MIT
 - host-workspace: typenum 1.20.1 — LICENSE-MIT
 
 The MIT License (MIT)
@@ -11999,6 +11601,11 @@ Used by:
 - cua-driver: digest 0.10.7 — LICENSE-APACHE
 - cua-driver: sha1 0.10.6 — LICENSE-APACHE
 - cua-driver: sha2 0.10.9 — LICENSE-APACHE
+- guest-workspace: block-buffer 0.10.4 — LICENSE-APACHE
+- guest-workspace: cpufeatures 0.2.17 — LICENSE-APACHE
+- guest-workspace: crypto-common 0.1.7 — LICENSE-APACHE
+- guest-workspace: digest 0.10.7 — LICENSE-APACHE
+- guest-workspace: sha2 0.10.9 — LICENSE-APACHE
 - host-workspace: block-buffer 0.10.4 — LICENSE-APACHE
 - host-workspace: cpufeatures 0.2.17 — LICENSE-APACHE
 - host-workspace: crypto-common 0.1.7 — LICENSE-APACHE
@@ -12214,9 +11821,9 @@ Used by:
 - cua-driver: atspi-common 0.14.0 — LICENSE-MIT.txt
 - cua-driver: atspi-connection 0.14.0 — LICENSE-MIT.txt
 - cua-driver: atspi-proxies 0.14.0 — LICENSE-MIT.txt
-- guest-shell: atspi 0.29.0 — LICENSE-MIT.txt
-- guest-shell: atspi-common 0.13.0 — LICENSE-MIT.txt
-- guest-shell: atspi-proxies 0.13.0 — LICENSE-MIT.txt
+- guest-workspace: atspi 0.29.0 — LICENSE-MIT.txt
+- guest-workspace: atspi-common 0.13.0 — LICENSE-MIT.txt
+- guest-workspace: atspi-proxies 0.13.0 — LICENSE-MIT.txt
 
 Copyright (c) 2022 Tait Hoyem <tait@tait.tech>
 
@@ -12241,7 +11848,8 @@ THE SOFTWARE.
 ================================================================================
 SHA256: aab1dc4d53ee52f6ad44bc11321b753c9e8c9b15e89ff533535753bbd5bceff5
 Used by:
-- guest-shell: xkbcommon 0.8.0 — LICENSE
+- cua-driver: xkbcommon 0.9.0 — LICENSE
+- guest-workspace: xkbcommon 0.8.0 — LICENSE
 - host-workspace: xkbcommon 0.8.0 — LICENSE
 
 Copyright (c) 2016 Remi Thebault <remi.thebault@gmail.com>
@@ -12277,6 +11885,7 @@ Used by:
 - cua-driver: getrandom 0.3.4 — LICENSE-APACHE
 - cua-driver: getrandom 0.4.2 — LICENSE-APACHE
 - cua-driver: rand_chacha 0.3.1 — LICENSE-APACHE
+- guest-workspace: getrandom 0.4.3 — LICENSE-APACHE
 - host-workspace: getrandom 0.4.3 — LICENSE-APACHE
 
                               Apache License
@@ -12513,6 +12122,7 @@ SHA256: ae9baa7beea910273c2f384c2a6b721fb7bd02bda3436074a1072e4ee689f985
 Used by:
 - cua-driver: cpufeatures 0.2.17 — LICENSE-MIT
 - cua-driver: cpufeatures 0.3.0 — LICENSE-MIT
+- guest-workspace: cpufeatures 0.2.17 — LICENSE-MIT
 - host-workspace: cpufeatures 0.2.17 — LICENSE-MIT
 
 Copyright (c) 2020-2025 The RustCrypto Project Developers
@@ -12546,8 +12156,8 @@ SHA256: b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744
 Used by:
 - cua-driver: foldhash 0.1.5 — LICENSE
 - cua-driver: foldhash 0.2.0 — LICENSE
-- guest-shell: foldhash 0.1.5 — LICENSE
-- guest-shell: foldhash 0.2.0 — LICENSE
+- guest-workspace: foldhash 0.1.5 — LICENSE
+- guest-workspace: foldhash 0.2.0 — LICENSE
 
 Copyright (c) 2024 Orson Peters
 
@@ -13174,7 +12784,7 @@ Used by:
 - cua-driver: idna 1.1.0 — LICENSE-MIT
 - cua-driver: percent-encoding 2.3.2 — LICENSE-MIT
 - cua-driver: url 2.5.8 — LICENSE-MIT
-- guest-shell: data-url 0.3.2 — LICENSE-MIT
+- guest-workspace: data-url 0.3.2 — LICENSE-MIT
 
 Copyright (c) 2013-2025 The rust-url developers
 
@@ -13201,21 +12811,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA256: b3d734001a94efff3579978d953391aa7115f877657d25eb54037a43875d078a
-Used by:
-- cua-driver: ring 0.17.14 — LICENSE
-
-*ring* uses an "ISC" license, like BoringSSL used to use, for new code
-files. See LICENSE-other-bits for the text of that license.
-
-See LICENSE-BoringSSL for code that was sourced from BoringSSL under the
-Apache 2.0 license. Some code that was sourced from BoringSSL under the ISC
-license. In each case, the license info is at the top of the file.
-
-See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
-for the license to code that was sourced from the once_cell project.
 
 ================================================================================
 SHA256: b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1
@@ -13430,6 +13025,7 @@ SHA256: b4eb00df6e2a4d22518fcaa6a2b4646f249b3a3c9814509b22bd2091f1392ff1
 Used by:
 - cua-driver: sha1 0.10.6 — LICENSE-MIT
 - cua-driver: sha2 0.10.9 — LICENSE-MIT
+- guest-workspace: sha2 0.10.9 — LICENSE-MIT
 - host-workspace: sha2 0.10.9 — LICENSE-MIT
 
 Copyright (c) 2006-2009 Graydon Hoare
@@ -13463,7 +13059,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: b59affd015e517ed998dd735757f9a3693643cd389609947ed54074234a10784
 Used by:
-- guest-shell: cursor-icon 1.2.0 — LICENSE-APACHE
+- guest-workspace: cursor-icon 1.2.0 — LICENSE-APACHE
 
 
                                  Apache License
@@ -13700,6 +13296,7 @@ SOFTWARE.
 SHA256: b7e650f3fce5c53249d1cdc608b54df156a97edd636cf9d23498d0cfe7aec63e
 Used by:
 - cua-driver: version_check 0.9.5 — LICENSE-MIT
+- guest-workspace: version_check 0.9.5 — LICENSE-MIT
 - host-workspace: version_check 0.9.5 — LICENSE-MIT
 
 The MIT License (MIT)
@@ -13757,6 +13354,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: c09aae9d3c77b531f56351a9947bc7446511d6b025b3255312d3e3442a9a7583
 Used by:
 - cua-driver: generic-array 0.14.7 — LICENSE
+- guest-workspace: generic-array 0.14.7 — LICENSE
 - host-workspace: generic-array 0.14.7 — LICENSE
 
 The MIT License (MIT)
@@ -13784,8 +13382,8 @@ SOFTWARE.
 ================================================================================
 SHA256: c138726a726ac37bae09d0f8a48e74e8e3aa8a8952fcd10fae0fb224cc1c05f1
 Used by:
-- guest-shell: cursor-icon 1.2.0 — LICENSE-MIT
-- guest-shell: wayland-csd-frame 0.3.0 — LICENSE
+- guest-workspace: cursor-icon 1.2.0 — LICENSE-MIT
+- guest-workspace: wayland-csd-frame 0.3.0 — LICENSE
 
 Copyright (c) 2023 Kirill Chibisov
 
@@ -13883,6 +13481,17 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 
 ================================================================================
+SHA256: c341a79df284be8a0321dabda4aa1aeea053b55b4e0db827940c221fcaf29b7b
+Used by:
+- guest-workspace: tiff 0.10.3 — tests/COPYRIGHT
+- host-workspace: tiff 0.10.3 — tests/COPYRIGHT
+
+subsubifd.tif:
+  url: https://data.kitware.com/api/v1/file/hashsum/sha512/372ca32735c8a8fdbe2286dabead9e779da63f10ba81eda84625e5273f76d74ca1a47a978f67e9c00c12f7f72009c7b2c07a641e643bb0c463812f4ae7f15d6e/download
+  credit: https://github.com/DigitalSlideArchive/tifftools/commit/4d00c70dbce828262f86c1431f7c66b1748965ac
+  license: CC0
+
+================================================================================
 SHA256: c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08
 Used by:
 - cua-driver: cobs 0.3.0 — LICENSE-APACHE
@@ -13895,11 +13504,14 @@ Used by:
 - cua-driver: toml_edit 0.25.12+spec-1.1.0 — LICENSE-APACHE
 - cua-driver: toml_parser 1.1.2+spec-1.1.0 — LICENSE-APACHE
 - cua-driver: toml_writer 1.1.2+spec-1.1.0 — LICENSE-APACHE
-- guest-shell: crc32fast 1.5.0 — LICENSE-APACHE
-- guest-shell: hex 0.4.3 — LICENSE-APACHE
-- guest-shell: toml_datetime 1.1.1+spec-1.1.0 — LICENSE-APACHE
-- guest-shell: toml_edit 0.25.13+spec-1.1.0 — LICENSE-APACHE
-- guest-shell: toml_parser 1.1.3+spec-1.1.0 — LICENSE-APACHE
+- guest-workspace: crc32fast 1.5.0 — LICENSE-APACHE
+- guest-workspace: hex 0.4.3 — LICENSE-APACHE
+- guest-workspace: quick-error 2.0.1 — LICENSE-APACHE
+- guest-workspace: serde_spanned 1.1.1 — LICENSE-APACHE
+- guest-workspace: toml 1.1.4+spec-1.1.0 — LICENSE-APACHE
+- guest-workspace: toml_datetime 1.1.1+spec-1.1.0 — LICENSE-APACHE
+- guest-workspace: toml_edit 0.25.13+spec-1.1.0 — LICENSE-APACHE
+- guest-workspace: toml_parser 1.1.3+spec-1.1.0 — LICENSE-APACHE
 - host-workspace: anstream 1.0.0 — LICENSE-APACHE
 - host-workspace: anstyle 1.0.14 — LICENSE-APACHE
 - host-workspace: anstyle-parse 1.0.0 — LICENSE-APACHE
@@ -13911,6 +13523,7 @@ Used by:
 - host-workspace: colorchoice 1.0.5 — LICENSE-APACHE
 - host-workspace: crc32fast 1.5.0 — LICENSE-APACHE
 - host-workspace: is_terminal_polyfill 1.70.2 — LICENSE-APACHE
+- host-workspace: quick-error 2.0.1 — LICENSE-APACHE
 - host-workspace: serde_spanned 1.1.1 — LICENSE-APACHE
 - host-workspace: toml 1.1.4+spec-1.1.0 — LICENSE-APACHE
 - host-workspace: toml_datetime 1.1.1+spec-1.1.0 — LICENSE-APACHE
@@ -14123,7 +13736,6 @@ Used by:
 ================================================================================
 SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4
 Used by:
-- cua-driver: ureq 3.3.0 — LICENSE-APACHE
 - cua-driver: zune-core 0.5.1 — LICENSE-APACHE
 - cua-driver: zune-jpeg 0.5.15 — LICENSE-APACHE
 
@@ -14334,8 +13946,12 @@ SHA256: c77a4cf9da729987d0fe7ccd811e3bd27393914ddf3d23467c18cc22954513b3
 Used by:
 - cua-driver: fdeflate 0.3.7 — LICENSE-MIT
 - cua-driver: image 0.25.10 — LICENSE-MIT
-- guest-shell: fdeflate 0.3.7 — LICENSE-MIT
-- guest-shell: image 0.25.8 — LICENSE-MIT
+- guest-workspace: fdeflate 0.3.7 — LICENSE-MIT
+- guest-workspace: image 0.25.8 — LICENSE-MIT
+- guest-workspace: image-webp 0.2.4 — LICENSE-MIT
+- host-workspace: fdeflate 0.3.7 — LICENSE-MIT
+- host-workspace: image 0.25.8 — LICENSE-MIT
+- host-workspace: image-webp 0.2.4 — LICENSE-MIT
 
 MIT License
 
@@ -14367,7 +13983,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: c962ee4d1d05ddc138b202b2540219ebc57893fcf97b364852094a9a94ce1365
 Used by:
 - cua-driver: siphasher 1.0.2 — COPYING
-- guest-shell: siphasher 1.0.3 — COPYING
+- guest-workspace: siphasher 1.0.3 — COPYING
 
 Copyright 2012-2016 The Rust Project Developers.
 Copyright 2016-2026 Frank Denis.
@@ -14416,6 +14032,7 @@ Used by:
 - cua-driver: parking_lot_core 0.9.12 — LICENSE-MIT
 - cua-driver: rustc_version 0.4.1 — LICENSE-MIT
 - cua-driver: thread_local 1.1.9 — LICENSE-MIT
+- guest-workspace: rustc_version 0.4.1 — LICENSE-MIT
 - host-workspace: rustc_version 0.4.1 — LICENSE-MIT
 
 Copyright (c) 2016 The Rust Project Developers
@@ -14478,7 +14095,7 @@ SHA256: cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d
 Used by:
 - cua-driver: winnow 0.7.15 — LICENSE-MIT
 - cua-driver: winnow 1.0.3 — LICENSE-MIT
-- guest-shell: winnow 1.0.4 — LICENSE-MIT
+- guest-workspace: winnow 1.0.4 — LICENSE-MIT
 - host-workspace: winnow 1.0.4 — LICENSE-MIT
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -14504,6 +14121,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 SHA256: ce592787ff2321feab698a4c612237f4378cc658ebb1d472913e5802cc47afb4
 Used by:
 - cua-driver: fixedbitset 0.5.7 — LICENSE-MIT
+- guest-workspace: fixedbitset 0.5.7 — LICENSE-MIT
 
 Copyright (c) 2015-2017
 
@@ -14534,6 +14152,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: cedfcc7ace1639adb054bd4a19b6f8585ccb2429a60b4bf51bfeb0601058c22c
 Used by:
+- guest-workspace: version-compare 0.2.1 — LICENSE
 - host-workspace: version-compare 0.2.1 — LICENSE
 
 Copyright (c) 2017 Tim Visée
@@ -14564,9 +14183,9 @@ Used by:
 - cua-driver: utf8_iter 1.0.4 — LICENSE-APACHE
 - cua-driver: x11rb 0.13.2 — LICENSE-APACHE
 - cua-driver: x11rb-protocol 0.13.2 — LICENSE-APACHE
-- cua-driver: zeroize 1.8.2 — LICENSE-APACHE
-- guest-shell: kurbo 0.11.3 — LICENSE-APACHE
-- guest-shell: static_assertions 1.1.0 — LICENSE-APACHE
+- guest-workspace: kurbo 0.11.3 — LICENSE-APACHE
+- guest-workspace: static_assertions 1.1.0 — LICENSE-APACHE
+- guest-workspace: zeroize 1.8.2 — LICENSE-APACHE
 
 
                                  Apache License
@@ -14775,6 +14394,7 @@ Used by:
 SHA256: d0235d2a1f657b6fd18fd4ce98988348969a9284d94281b6d117830aa259a07a
 Used by:
 - cua-driver: wl-clipboard-rs 0.9.3 — LICENSE-MIT
+- guest-workspace: wl-clipboard-rs 0.9.3 — LICENSE-MIT
 
 Copyright (c) 2019 Ivan Molodetskikh
 
@@ -14806,7 +14426,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: d13669f0eaff9b7015bff0d8637297213b53d9f239826636c07a15633acf7052
 Used by:
 - cua-driver: enumflags2_derive 0.7.12 — LICENSE-MIT
-- guest-shell: enumflags2_derive 0.7.12 — LICENSE-MIT
+- guest-workspace: enumflags2_derive 0.7.12 — LICENSE-MIT
 
 Copyright (c) 2017 Maik Klein
 
@@ -14833,41 +14453,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA256: d1fc1bc0d155df60b2e7705b6b2ae02a05c96f948e1cec6e2fb86360b09f346b
-Used by:
-- cua-driver: subtle 2.6.1 — LICENSE
-
-Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
-Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-
-1. Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright
-notice, this list of conditions and the following disclaimer in the
-documentation and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its
-contributors may be used to endorse or promote products derived from
-this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
-IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
-TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
-PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
-TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
-PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
 ================================================================================
 SHA256: d201d14804d3bcd3b944147173175e4abfbd838b7c8069b6bd3452496bf13e6c
@@ -15107,7 +14692,8 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 ================================================================================
 SHA256: d4aca2f5936fa638b062f0585df37eec086ca8620d437b2d6be2c95f01199d1a
 Used by:
-- guest-shell: xkeysym 0.2.1 — LICENSE-APACHE
+- cua-driver: xkeysym 0.2.1 — LICENSE-APACHE
+- guest-workspace: xkeysym 0.2.1 — LICENSE-APACHE
 - host-workspace: xkeysym 0.2.1 — LICENSE-APACHE
 
 
@@ -15317,6 +14903,7 @@ Used by:
 SHA256: d5c22aa3118d240e877ad41c5d9fa232f9c77d757d4aac0c2f943afc0a95e0ef
 Used by:
 - cua-driver: block-buffer 0.10.4 — LICENSE-MIT
+- guest-workspace: block-buffer 0.10.4 — LICENSE-MIT
 - host-workspace: block-buffer 0.10.4 — LICENSE-MIT
 
 Copyright (c) 2018-2019 The RustCrypto Project Developers
@@ -15349,7 +14936,7 @@ DEALINGS IN THE SOFTWARE.
 SHA256: d829cfa632d2a44fe9e303ff293add677ed70e4b8f5e2176aa7a19d0936e61ac
 Used by:
 - cua-driver: fontdue 0.9.3 — LICENSE-ZLIB
-- guest-shell: fontdue 0.9.4 — LICENSE-ZLIB
+- guest-workspace: fontdue 0.9.4 — LICENSE-ZLIB
 
 Zlib License
 
@@ -15408,6 +14995,17 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: dae402989de65164815b7e2b6bc2b9576285434c3785934c8b6ece0fa055960d
 Used by:
+- guest-workspace: cairo-rs 0.21.5 — COPYRIGHT
+- guest-workspace: gdk-pixbuf 0.21.5 — COPYRIGHT
+- guest-workspace: gdk4 0.10.3 — COPYRIGHT
+- guest-workspace: gio 0.21.5 — COPYRIGHT
+- guest-workspace: glib 0.21.5 — COPYRIGHT
+- guest-workspace: glib-macros 0.21.5 — COPYRIGHT
+- guest-workspace: graphene-rs 0.21.5 — COPYRIGHT
+- guest-workspace: gsk4 0.10.3 — COPYRIGHT
+- guest-workspace: gtk4 0.10.3 — COPYRIGHT
+- guest-workspace: gtk4-macros 0.10.3 — COPYRIGHT
+- guest-workspace: pango 0.21.5 — COPYRIGHT
 - host-workspace: cairo-rs 0.21.5 — COPYRIGHT
 - host-workspace: gdk-pixbuf 0.21.5 — COPYRIGHT
 - host-workspace: gdk4 0.10.3 — COPYRIGHT
@@ -15439,6 +15037,7 @@ library.
 SHA256: db11fec9946737df39ca3898d9cd8c10ec6f6c3a884a6802b0ad0b81b4e8f23a
 Used by:
 - cua-driver: typenum 1.20.0 — LICENSE
+- guest-workspace: typenum 1.20.1 — LICENSE
 - host-workspace: typenum 1.20.1 — LICENSE
 
 MIT OR Apache-2.0
@@ -15526,78 +15125,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-SHA256: e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8
-Used by:
-- cua-driver: webpki-roots 1.0.7 — LICENSE
-
-# Community Data License Agreement - Permissive - Version 2.0
-
-This is the Community Data License Agreement - Permissive, Version
-2.0 (the "agreement"). Data Provider(s) and Data Recipient(s) agree
-as follows:
-
-## 1. Provision of the Data
-
-1.1. A Data Recipient may use, modify, and share the Data made
-available by Data Provider(s) under this agreement if that Data
-Recipient follows the terms of this agreement.
-
-1.2. This agreement does not impose any restriction on a Data
-Recipient's use, modification, or sharing of any portions of the
-Data that are in the public domain or that may be used, modified,
-or shared under any other legal exception or limitation.
-
-## 2. Conditions for Sharing Data
-
-2.1. A Data Recipient may share Data, with or without modifications, so
-long as the Data Recipient makes available the text of this agreement
-with the shared Data.
-
-## 3. No Restrictions on Results
-
-3.1. This agreement does not impose any restriction or obligations
-with respect to the use, modification, or sharing of Results.
-
-## 4. No Warranty; Limitation of Liability
-
-4.1. All Data Recipients receive the Data subject to the following
-terms:
-
-THE DATA IS PROVIDED ON AN "AS IS" BASIS, WITHOUT REPRESENTATIONS,
-WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED
-INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE,
-NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
-
-NO DATA PROVIDER SHALL HAVE ANY LIABILITY FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING
-WITHOUT LIMITATION LOST PROFITS), HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE DATA OR RESULTS,
-EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
-
-## 5. Definitions
-
-5.1. "Data" means the material received by a Data Recipient under
-this agreement.
-
-5.2. "Data Provider" means any person who is the source of Data
-provided under this agreement and in reliance on a Data Recipient's
-agreement to its terms.
-
-5.3. "Data Recipient" means any person who receives Data directly
-or indirectly from a Data Provider and agrees to the terms of this
-agreement.
-
-5.4. "Results" means any outcome obtained by computational analysis
-of Data, including for example machine learning models and models'
-insights.
-
-================================================================================
 SHA256: e3ba223bb1423f0aad8c3dfce0fe3148db48926d41e6fbc3afbbf5ff9e1c89cb
 Used by:
 - cua-driver: bytemuck 1.25.0 — LICENSE-APACHE
-- guest-shell: bytemuck 1.25.2 — LICENSE-APACHE
-- guest-shell: bytemuck_derive 1.12.0 — LICENSE-APACHE
+- guest-workspace: bytemuck 1.25.2 — LICENSE-APACHE
+- guest-workspace: bytemuck_derive 1.12.0 — LICENSE-APACHE
+- host-workspace: bytemuck 1.25.2 — LICENSE-APACHE
 
 Apache License
 Version 2.0, January 2004
@@ -15665,7 +15198,7 @@ limitations under the License.
 SHA256: e4705ddab847449a2cdcb3c88b005ea10330aa249d9148ca2eef9c84c5d29895
 Used by:
 - cua-driver: async-broadcast 0.7.2 — LICENSE-APACHE
-- guest-shell: async-broadcast 0.7.2 — LICENSE-APACHE
+- guest-workspace: async-broadcast 0.7.2 — LICENSE-APACHE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -15892,7 +15425,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: e7ed841a425ba764fd8599031dcf67c5b3d8de2d638779eb3e740a21d3d6eb1c
 Used by:
-- guest-shell: calloop-wayland-source 0.4.1 — LICENSE.txt
+- guest-workspace: calloop-wayland-source 0.4.1 — LICENSE.txt
 
 Copyright (c) 2023 Kirill Chibisov
 
@@ -15918,7 +15451,7 @@ THE SOFTWARE.
 SHA256: ea084a2373ebc1f0902c09266e7bf25a05ab3814c1805bb017ffa7308f90c061
 Used by:
 - cua-driver: static_assertions 1.1.0 — LICENSE-MIT
-- guest-shell: static_assertions 1.1.0 — LICENSE-MIT
+- guest-workspace: static_assertions 1.1.0 — LICENSE-MIT
 
 MIT License
 
@@ -15946,8 +15479,9 @@ SOFTWARE.
 SHA256: eaf40297c75da471f7cda1f3458e8d91b4b2ec866e609527a13acfa93b638652
 Used by:
 - cua-driver: png 0.18.1 — LICENSE-MIT
-- guest-shell: png 0.17.16 — LICENSE-MIT
-- guest-shell: png 0.18.1 — LICENSE-MIT
+- guest-workspace: png 0.17.16 — LICENSE-MIT
+- guest-workspace: png 0.18.1 — LICENSE-MIT
+- host-workspace: png 0.18.1 — LICENSE-MIT
 
 Copyright (c) 2015 nwin
 
@@ -16004,7 +15538,7 @@ THE SOFTWARE.
 SHA256: ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055
 Used by:
 - cua-driver: indexmap 2.14.0 — LICENSE-MIT
-- guest-shell: indexmap 2.14.0 — LICENSE-MIT
+- guest-workspace: indexmap 2.14.0 — LICENSE-MIT
 - host-workspace: indexmap 2.14.0 — LICENSE-MIT
 
 Copyright (c) 2016--2017
@@ -16034,29 +15568,10 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-SHA256: f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f
-Used by:
-- cua-driver: ring 0.17.14 — LICENSE-other-bits
-
-Copyright 2015-2025 Brian Smith.
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-================================================================================
 SHA256: f1a2b233e8a9a71c40f4aa885be08a0842ac85bb8588703c1dd7e6e6502e3124
 Used by:
 - cua-driver: wayland-protocols 0.32.12 — protocols/COPYING
-- guest-shell: wayland-protocols 0.32.13 — protocols/COPYING
+- guest-workspace: wayland-protocols 0.32.13 — protocols/COPYING
 - host-workspace: wayland-protocols 0.32.13 — protocols/COPYING
 
 Copyright © 2008-2013 Kristian Høgsberg
@@ -16166,8 +15681,8 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 SHA256: f3c9fe731c701ed77fd5fbaac573872af04dc5869385eb9bd5e3c73c42713814
 Used by:
 - cua-driver: ttf-parser 0.21.1 — LICENSE-MIT
-- guest-shell: svgtypes 0.15.3 — LICENSE-MIT
-- guest-shell: ttf-parser 0.25.1 — LICENSE-MIT
+- guest-workspace: svgtypes 0.15.3 — LICENSE-MIT
+- guest-workspace: ttf-parser 0.25.1 — LICENSE-MIT
 
 Copyright (c) 2018 Yevhenii Reizner
 
@@ -16225,8 +15740,8 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: f5d934dc281b44e0003ee461ac740b18b6629a454decd872c774d34e4ee0b21d
 Used by:
-- guest-shell: resvg 0.45.1 — LICENSE-MIT
-- guest-shell: usvg 0.45.1 — LICENSE-MIT
+- guest-workspace: resvg 0.45.1 — LICENSE-MIT
+- guest-workspace: usvg 0.45.1 — LICENSE-MIT
 
 Copyright 2017 the Resvg Authors
 
@@ -16257,7 +15772,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: f71452d91682fdae0ca948b18cfed53a953d1237740dd80371c76a5c1c7bbe91
 Used by:
-- guest-shell: pico-args 0.5.0 — LICENSE
+- guest-workspace: pico-args 0.5.0 — LICENSE
 
 Copyright (c) 2019 Yevhenii Reizner
 
@@ -16311,7 +15826,7 @@ SOFTWARE.
 SHA256: f7bdb3426d045cd50efd4953026e3eb5a83d0199f458a075602611b9344da5b9
 Used by:
 - cua-driver: hex 0.4.3 — LICENSE-MIT
-- guest-shell: hex 0.4.3 — LICENSE-MIT
+- guest-workspace: hex 0.4.3 — LICENSE-MIT
 
 Copyright (c) 2013-2014 The Rust Project Developers.
 Copyright (c) 2015-2020 The rust-hex Developers
@@ -16338,7 +15853,7 @@ SOFTWARE.
 SHA256: f7db81051789b729fea528a63ec4c938fdcb93d9d61d97dc8cc2e9df6d47f2a1
 Used by:
 - cua-driver: unicode-ident 1.0.24 — LICENSE-UNICODE
-- guest-shell: unicode-ident 1.0.24 — LICENSE-UNICODE
+- guest-workspace: unicode-ident 1.0.24 — LICENSE-UNICODE
 - host-workspace: unicode-ident 1.0.24 — LICENSE-UNICODE
 
 UNICODE LICENSE V3
@@ -16731,7 +16246,7 @@ Public License instead of this License.
 SHA256: fb252fecf98d9af8f1d9201c5860319a514f5a8a24700dc84fc6ea287a7a4958
 Used by:
 - cua-driver: downcast-rs 1.2.1 — LICENSE-MIT
-- guest-shell: downcast-rs 1.2.1 — LICENSE-MIT
+- guest-workspace: downcast-rs 1.2.1 — LICENSE-MIT
 - host-workspace: downcast-rs 1.2.1 — LICENSE-MIT
 
 Copyright (c) 2020 Ashish Myles and contributors
@@ -16823,9 +16338,9 @@ Used by:
 - cua-driver: hashbrown 0.15.5 — LICENSE-MIT
 - cua-driver: hashbrown 0.16.1 — LICENSE-MIT
 - cua-driver: hashbrown 0.17.1 — LICENSE-MIT
-- guest-shell: hashbrown 0.15.5 — LICENSE-MIT
-- guest-shell: hashbrown 0.16.1 — LICENSE-MIT
-- guest-shell: hashbrown 0.17.1 — LICENSE-MIT
+- guest-workspace: hashbrown 0.15.5 — LICENSE-MIT
+- guest-workspace: hashbrown 0.16.1 — LICENSE-MIT
+- guest-workspace: hashbrown 0.17.1 — LICENSE-MIT
 - host-workspace: hashbrown 0.17.1 — LICENSE-MIT
 
 Copyright (c) 2016 Amanieu d'Antras
@@ -16857,7 +16372,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA256: fffe218c1e349e1d482a05677f2ce850502f88298174d77f6ac7c04821db7899
 Used by:
-- guest-shell: roxmltree 0.20.0 — LICENSE-MIT
+- guest-workspace: roxmltree 0.20.0 — LICENSE-MIT
 
 The MIT License (MIT)
 

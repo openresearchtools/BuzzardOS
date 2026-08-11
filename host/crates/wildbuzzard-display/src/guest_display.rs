@@ -7,7 +7,7 @@
 //! [`DmabufFrame`] for the GTK monitor; guest-created xdg objects never become
 //! host xdg objects.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
@@ -19,7 +19,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use wayland_protocols::wp::linux_dmabuf::zv1::server::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
@@ -47,8 +47,13 @@ use crate::gateway::{
     CursorImage, CursorStorage, DmabufFormat, DmabufFrame, DmabufPlane, EventSender,
     GatewayCommand, GatewayEvent, OutputMode,
 };
+use crate::keyboard::{
+    CompiledKeymap, KeyboardMapFailure, KeyboardMapReply, KeyboardMapRequest, KeyboardMapResponse,
+    KeyboardMapSpec, KeyboardMapState,
+};
 
 const MAX_DMABUF_PLANES: usize = 4;
+const MAX_PENDING_KEY_EVENTS: usize = 256;
 #[cfg(test)]
 const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
 #[cfg(test)]
@@ -97,6 +102,7 @@ pub(crate) fn run(
     commands: Receiver<GatewayCommand>,
     command_notify: UnixStream,
     sync_drm_device: Option<PathBuf>,
+    xkb_config_root: PathBuf,
 ) -> Result<()> {
     let socket_path = listener
         .local_addr()
@@ -112,7 +118,7 @@ pub(crate) fn run(
     let mut display = Display::<GuestState>::new().context("creating private Wayland display")?;
     let handle = display.handle();
     create_globals(&handle, sync_device.is_some());
-    let mut state = GuestState::new(events.clone(), formats, mode, sync_device)?;
+    let mut state = GuestState::new(events.clone(), formats, mode, sync_device, xkb_config_root)?;
 
     loop {
         let (connection, _) = listener
@@ -163,6 +169,12 @@ fn wait_for_configuration(
                     bail!("host Wayland display advertises no importable dmabuf formats");
                 }
                 return Ok((formats, mode));
+            }
+            GatewayCommand::KeyboardMap { reply, .. } => {
+                let _ = reply.send(Err(KeyboardMapFailure::new(
+                    "display_not_ready",
+                    "guest display owner has not completed initial configuration",
+                )));
             }
             _ => continue,
         }
@@ -275,9 +287,35 @@ struct GuestState {
     cursor_hotspot: (i32, i32),
     keyboard_focused: bool,
     keyboard_entered: bool,
-    keymap: KeymapFile,
+    keymap: CompiledKeymap,
+    xkb_config_root: PathBuf,
+    pending_keymap: Option<PendingKeymap>,
+    completed_keymap: Option<CompletedKeymap>,
     sync_device: Option<Arc<SyncobjDevice>>,
     pressed_keys: BTreeSet<u32>,
+    suppressed_keys: BTreeSet<u32>,
+}
+
+struct PendingKeymap {
+    token: String,
+    digest: String,
+    keymap: CompiledKeymap,
+    input_queue: VecDeque<QueuedKey>,
+    queued_pressed: BTreeSet<u32>,
+    input_overflow: bool,
+}
+
+#[derive(Clone, Copy)]
+struct QueuedKey {
+    key: u32,
+    pressed: bool,
+    host_modifiers: u32,
+}
+
+struct CompletedKeymap {
+    token: String,
+    digest: String,
+    state: KeyboardMapState,
 }
 
 impl GuestState {
@@ -286,7 +324,9 @@ impl GuestState {
         formats: Vec<DmabufFormat>,
         mode: OutputMode,
         sync_device: Option<Arc<SyncobjDevice>>,
+        xkb_config_root: PathBuf,
     ) -> Result<Self> {
+        let keymap = CompiledKeymap::compile(&xkb_config_root, &KeyboardMapSpec::standard_us())?;
         Ok(Self {
             events,
             formats,
@@ -308,9 +348,13 @@ impl GuestState {
             cursor_hotspot: (0, 0),
             keyboard_focused: false,
             keyboard_entered: false,
-            keymap: KeymapFile::create()?,
+            keymap,
+            xkb_config_root,
+            pending_keymap: None,
+            completed_keymap: None,
             sync_device,
             pressed_keys: BTreeSet::new(),
+            suppressed_keys: BTreeSet::new(),
         })
     }
 
@@ -351,16 +395,35 @@ impl GuestState {
             GatewayCommand::FrameTick { frame_time_us } => {
                 self.frame_tick(frame_time_us);
             }
-            GatewayCommand::PointerEnter { x, y } => self.pointer_enter(x, y),
+            GatewayCommand::PointerEnter {
+                x,
+                y,
+                geometry_generation,
+            } if geometry_generation == self.mode.geometry_generation => self.pointer_enter(x, y),
+            GatewayCommand::PointerEnter { .. } => {}
             GatewayCommand::PointerLeave => self.pointer_leave(),
-            GatewayCommand::PointerMotion { x, y } => self.pointer_motion(x, y),
-            GatewayCommand::PointerButton { button, pressed } => {
+            GatewayCommand::PointerMotion {
+                x,
+                y,
+                geometry_generation,
+            } if geometry_generation == self.mode.geometry_generation => self.pointer_motion(x, y),
+            GatewayCommand::PointerMotion { .. } => {}
+            GatewayCommand::PointerButton {
+                button,
+                pressed,
+                geometry_generation,
+            } if geometry_generation == self.mode.geometry_generation => {
                 self.pointer_button(button, pressed)
             }
+            GatewayCommand::PointerButton { .. } => {}
             GatewayCommand::PointerAxis {
                 horizontal,
                 vertical,
-            } => self.pointer_axis(horizontal, vertical),
+                geometry_generation,
+            } if geometry_generation == self.mode.geometry_generation => {
+                self.pointer_axis(horizontal, vertical)
+            }
+            GatewayCommand::PointerAxis { .. } => {}
             GatewayCommand::KeyboardEnter => self.keyboard_enter(),
             GatewayCommand::KeyboardLeave => self.keyboard_leave(),
             GatewayCommand::KeyboardKey {
@@ -368,6 +431,9 @@ impl GuestState {
                 pressed,
                 modifiers,
             } => self.keyboard_key(key, pressed, modifiers),
+            GatewayCommand::KeyboardMap { request, reply } => {
+                let _ = reply.send(self.keyboard_map_request(request));
+            }
         }
         Ok(())
     }
@@ -547,6 +613,13 @@ impl GuestState {
 
     fn keyboard_leave(&mut self) {
         self.keyboard_focused = false;
+        if let Some(pending) = &mut self.pending_keymap {
+            // Input belongs to the focus epoch in which it was received. A
+            // leave is delivered immediately and invalidates that epoch; held
+            // queued keys remain suppressed until their real releases.
+            self.suppressed_keys.append(&mut pending.queued_pressed);
+            pending.input_queue.clear();
+        }
         if !self.keyboard_entered {
             return;
         }
@@ -568,6 +641,54 @@ impl GuestState {
     }
 
     fn keyboard_key(&mut self, key: u32, pressed: bool, _host_modifiers: u32) {
+        // A prepared keymap means Sway may already be using the new map while
+        // this parent keyboard still owns the old one. Do not interpret a key
+        // across that boundary. Keys already held when Prepare arrived remain
+        // suppressed through release; new focused events are bounded and
+        // replayed in order only after Commit/Abort selects the matching map.
+        // CUA's separate virtual keyboard never enters this path.
+        if self.suppressed_keys.contains(&key) {
+            if pressed {
+                self.suppressed_keys.insert(key);
+            } else {
+                self.suppressed_keys.remove(&key);
+            }
+            return;
+        }
+        if let Some(pending) = self.pending_keymap.as_mut() {
+            if !self.keyboard_focused {
+                if pressed {
+                    self.suppressed_keys.insert(key);
+                }
+                return;
+            }
+            if pending.input_overflow || pending.input_queue.len() >= MAX_PENDING_KEY_EVENTS {
+                self.suppressed_keys.append(&mut pending.queued_pressed);
+                pending.input_queue.clear();
+                pending.input_overflow = true;
+                if pressed {
+                    self.suppressed_keys.insert(key);
+                } else {
+                    self.suppressed_keys.remove(&key);
+                }
+                return;
+            }
+            pending.input_queue.push_back(QueuedKey {
+                key,
+                pressed,
+                host_modifiers: _host_modifiers,
+            });
+            if pressed {
+                pending.queued_pressed.insert(key);
+            } else {
+                pending.queued_pressed.remove(&key);
+            }
+            return;
+        }
+        self.forward_keyboard_key(key, pressed, _host_modifiers);
+    }
+
+    fn forward_keyboard_key(&mut self, key: u32, pressed: bool, _host_modifiers: u32) {
         self.keyboard_focused = true;
         self.ensure_keyboard_enter();
         if !self.keyboard_entered {
@@ -604,6 +725,284 @@ impl GuestState {
         for keyboard in &self.keyboards {
             keyboard.key(serial, time, key, state);
             keyboard.modifiers(serial, depressed, latched, locked, group);
+        }
+    }
+
+    fn keyboard_map_request(&mut self, request: KeyboardMapRequest) -> KeyboardMapReply {
+        let method = request.method();
+        match request {
+            KeyboardMapRequest::Prepare {
+                token,
+                spec,
+                keymap_sha256,
+            } => self.prepare_keyboard_map(method, token, spec, keymap_sha256),
+            KeyboardMapRequest::Status { token } => self.keyboard_map_status(method, &token),
+            KeyboardMapRequest::Commit {
+                token,
+                keymap_sha256,
+            } => self.commit_keyboard_map(method, token, keymap_sha256),
+            KeyboardMapRequest::Abort {
+                token,
+                keymap_sha256,
+            } => self.abort_keyboard_map(method, token, keymap_sha256),
+        }
+    }
+
+    fn prepare_keyboard_map(
+        &mut self,
+        method: crate::keyboard::KeyboardMapMethod,
+        token: String,
+        spec: KeyboardMapSpec,
+        requested_digest: String,
+    ) -> KeyboardMapReply {
+        if let Some(pending) = &self.pending_keymap {
+            if pending.token == token && pending.digest == requested_digest {
+                if pending.input_overflow {
+                    return Err(KeyboardMapFailure::new(
+                        "input_overflow",
+                        "physical keyboard queue overflowed; restore the prior Sway map and abort this transaction",
+                    ));
+                }
+                return Ok(self.keyboard_map_response(method, KeyboardMapState::Prepared));
+            }
+            return Err(KeyboardMapFailure::new(
+                "transaction_busy",
+                "another keyboard-map transaction is already prepared",
+            ));
+        }
+        if let Some(completed) = &self.completed_keymap
+            && completed.token == token
+        {
+            if completed.digest != requested_digest {
+                return Err(KeyboardMapFailure::new(
+                    "transaction_conflict",
+                    "keyboard-map token was previously used with another digest",
+                ));
+            }
+            return Ok(self.keyboard_map_response(method, completed.state));
+        }
+        let keymap = CompiledKeymap::compile(&self.xkb_config_root, &spec)
+            .map_err(|error| KeyboardMapFailure::new("invalid_keymap", format!("{error:#}")))?;
+        if keymap.digest != requested_digest {
+            return Err(KeyboardMapFailure::new(
+                "digest_mismatch",
+                format!(
+                    "requested keymap digest does not match the bundled definitions (host {})",
+                    keymap.digest
+                ),
+            ));
+        }
+        self.neutralize_physical_keyboard();
+        self.pending_keymap = Some(PendingKeymap {
+            token,
+            digest: requested_digest,
+            keymap,
+            input_queue: VecDeque::new(),
+            queued_pressed: BTreeSet::new(),
+            input_overflow: false,
+        });
+        Ok(self.keyboard_map_response(method, KeyboardMapState::Prepared))
+    }
+
+    fn keyboard_map_status(
+        &self,
+        method: crate::keyboard::KeyboardMapMethod,
+        token: &str,
+    ) -> KeyboardMapReply {
+        // Status is always a reconciliation operation. Even after an input
+        // queue overflow it must disclose the authoritative prepared token
+        // and digest so a restarted guest can restore its prior Sway map and
+        // issue the one Abort that unfreezes physical input. Commit remains
+        // fail-closed and reports the overflow.
+        let state = self
+            .pending_keymap
+            .as_ref()
+            .filter(|pending| pending.token == token)
+            .map(|_| KeyboardMapState::Prepared)
+            .or_else(|| {
+                self.completed_keymap
+                    .as_ref()
+                    .filter(|completed| completed.token == token)
+                    .map(|completed| completed.state)
+            })
+            .unwrap_or(KeyboardMapState::Unknown);
+        Ok(self.keyboard_map_response(method, state))
+    }
+
+    fn commit_keyboard_map(
+        &mut self,
+        method: crate::keyboard::KeyboardMapMethod,
+        token: String,
+        digest: String,
+    ) -> KeyboardMapReply {
+        if let Some(completed) = &self.completed_keymap
+            && completed.token == token
+        {
+            if completed.digest == digest && completed.state == KeyboardMapState::Committed {
+                return Ok(self.keyboard_map_response(method, KeyboardMapState::Committed));
+            }
+            return Err(KeyboardMapFailure::new(
+                "transaction_conflict",
+                "keyboard-map transaction already finished with different parameters",
+            ));
+        }
+        let Some(pending) = self.pending_keymap.as_ref() else {
+            return Err(KeyboardMapFailure::new(
+                "transaction_unknown",
+                "keyboard-map transaction is not prepared",
+            ));
+        };
+        if pending.token != token || pending.digest != digest {
+            return Err(KeyboardMapFailure::new(
+                "transaction_conflict",
+                "keyboard-map commit does not match the prepared transaction",
+            ));
+        }
+        if pending.input_overflow {
+            return Err(KeyboardMapFailure::new(
+                "input_overflow",
+                "physical keyboard queue overflowed; commit is fail-closed until the guest restores and aborts",
+            ));
+        }
+        let pending = self
+            .pending_keymap
+            .take()
+            .expect("pending keyboard map was checked above");
+        self.keymap = pending.keymap;
+        self.publish_keymap_and_neutral_modifiers();
+        self.replay_queued_keys(pending.input_queue);
+        self.completed_keymap = Some(CompletedKeymap {
+            token,
+            digest,
+            state: KeyboardMapState::Committed,
+        });
+        Ok(self.keyboard_map_response(method, KeyboardMapState::Committed))
+    }
+
+    fn abort_keyboard_map(
+        &mut self,
+        method: crate::keyboard::KeyboardMapMethod,
+        token: String,
+        digest: String,
+    ) -> KeyboardMapReply {
+        if let Some(completed) = &self.completed_keymap
+            && completed.token == token
+        {
+            if completed.digest == digest && completed.state == KeyboardMapState::Aborted {
+                return Ok(self.keyboard_map_response(method, KeyboardMapState::Aborted));
+            }
+            return Err(KeyboardMapFailure::new(
+                "transaction_conflict",
+                "keyboard-map transaction already finished with different parameters",
+            ));
+        }
+        let Some(pending) = self.pending_keymap.as_ref() else {
+            return Err(KeyboardMapFailure::new(
+                "transaction_unknown",
+                "keyboard-map transaction is not prepared",
+            ));
+        };
+        if pending.token != token || pending.digest != digest {
+            return Err(KeyboardMapFailure::new(
+                "transaction_conflict",
+                "keyboard-map abort does not match the prepared transaction",
+            ));
+        }
+        let pending = self
+            .pending_keymap
+            .take()
+            .expect("pending keyboard map was checked above");
+        if pending.input_overflow {
+            // The queue was discarded and every still-held queued key was
+            // moved to suppressed_keys when overflow was detected.
+            self.publish_neutral_modifiers();
+        } else {
+            self.replay_queued_keys(pending.input_queue);
+        }
+        self.completed_keymap = Some(CompletedKeymap {
+            token,
+            digest,
+            state: KeyboardMapState::Aborted,
+        });
+        Ok(self.keyboard_map_response(method, KeyboardMapState::Aborted))
+    }
+
+    fn keyboard_map_response(
+        &self,
+        method: crate::keyboard::KeyboardMapMethod,
+        state: KeyboardMapState,
+    ) -> KeyboardMapResponse {
+        KeyboardMapResponse::success(
+            method,
+            state,
+            self.keymap.digest.clone(),
+            self.pending_keymap
+                .as_ref()
+                .map(|pending| (pending.token.as_str(), pending.digest.as_str())),
+        )
+    }
+
+    fn neutralize_physical_keyboard(&mut self) {
+        let released = std::mem::take(&mut self.pressed_keys);
+        let time = monotonic_ms();
+        for key in &released {
+            self.keymap.state.update_key(
+                xkb::Keycode::new(key.saturating_add(8)),
+                xkb::KeyDirection::Up,
+            );
+            if self.keyboard_entered {
+                let serial = self.next_serial();
+                self.keyboards.retain(Resource::is_alive);
+                for keyboard in &self.keyboards {
+                    keyboard.key(serial, time, *key, wl_keyboard::KeyState::Released);
+                }
+            }
+        }
+        // update_key releases clear depressed keys, but locks and active
+        // groups can survive. Recreate the state from the already verified
+        // immutable keymap so the parent reports exactly neutral masks while
+        // Sway changes its downstream map.
+        self.keymap.reset_state();
+        self.suppressed_keys.extend(released);
+        self.publish_neutral_modifiers();
+    }
+
+    fn publish_keymap_and_neutral_modifiers(&mut self) {
+        self.keyboards.retain(Resource::is_alive);
+        for keyboard in &self.keyboards {
+            keyboard.keymap(
+                wl_keyboard::KeymapFormat::XkbV1,
+                self.keymap.fd.as_fd(),
+                self.keymap.size,
+            );
+        }
+        self.publish_neutral_modifiers();
+    }
+
+    fn publish_neutral_modifiers(&mut self) {
+        if !self.keyboard_entered {
+            return;
+        }
+        let serial = self.next_serial();
+        self.keyboards.retain(Resource::is_alive);
+        for keyboard in &self.keyboards {
+            keyboard.modifiers(serial, 0, 0, 0, 0);
+        }
+    }
+
+    fn replay_queued_keys(&mut self, queue: VecDeque<QueuedKey>) {
+        if !self.keyboard_focused {
+            for event in queue {
+                if event.pressed {
+                    self.suppressed_keys.insert(event.key);
+                } else {
+                    self.suppressed_keys.remove(&event.key);
+                }
+            }
+            return;
+        }
+        for event in queue {
+            self.forward_keyboard_key(event.key, event.pressed, event.host_modifiers);
         }
     }
 
@@ -1080,8 +1479,17 @@ impl GuestState {
         self.keyboards.clear();
         self.focused_surface = None;
         self.pointer_entered = false;
+        self.keyboard_focused = false;
         self.keyboard_entered = false;
-        self.pressed_keys.clear();
+        self.suppressed_keys.append(&mut self.pressed_keys);
+        self.keymap.reset_state();
+        if let Some(pending) = &mut self.pending_keymap {
+            // A queued event belongs to the dead client's focus epoch and may
+            // never be replayed into a replacement compositor connection.
+            // Still-held keys remain suppressed until their physical release.
+            self.suppressed_keys.append(&mut pending.queued_pressed);
+            pending.input_queue.clear();
+        }
     }
 }
 
@@ -1187,54 +1595,6 @@ enum BufferData {
     Shm(ShmBufferData),
 }
 
-struct KeymapFile {
-    fd: OwnedFd,
-    size: u32,
-    state: xkb::State,
-}
-
-impl KeymapFile {
-    fn create() -> Result<Self> {
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context,
-            "",
-            "pc105",
-            "us",
-            "",
-            None,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .ok_or_else(|| anyhow!("compiling standard XKB keymap"))?;
-        let mut text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
-        text.push('\0');
-        let name = b"wildbuzzard-keymap\0";
-        // SAFETY: the name is NUL-terminated and flags are valid.
-        let raw = unsafe {
-            libc::memfd_create(
-                name.as_ptr().cast(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if raw < 0 {
-            return Err(std::io::Error::last_os_error()).context("creating XKB keymap memfd");
-        }
-        // SAFETY: memfd_create returned a new owned descriptor.
-        let mut file = unsafe { File::from_raw_fd(raw) };
-        file.write_all(text.as_bytes())
-            .context("writing XKB keymap")?;
-        file.seek(SeekFrom::Start(0))
-            .context("rewinding XKB keymap")?;
-        let size = text.len() as u32;
-        let state = xkb::State::new(&keymap);
-        Ok(Self {
-            fd: file.into(),
-            size,
-            state,
-        })
-    }
-}
-
 fn create_dmabuf_format_table(formats: &[DmabufFormat]) -> Result<(File, u32)> {
     let size = formats
         .len()
@@ -1330,6 +1690,7 @@ fn frame_from_buffer(
         .collect::<Result<Vec<_>>>()?;
     Ok(DmabufFrame {
         id,
+        geometry_generation: mode.geometry_generation,
         width: data.width,
         height: data.height,
         fourcc: data.fourcc,
@@ -2264,6 +2625,52 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for GuestState {
 mod tests {
     use super::*;
 
+    fn test_state() -> GuestState {
+        let (_event_read, event_write) = UnixStream::pair().unwrap();
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        let events = EventSender {
+            sender: event_sender,
+            wake: Arc::new(event_write),
+        };
+        GuestState::new(
+            events,
+            vec![DmabufFormat {
+                fourcc: DRM_FORMAT_XRGB8888,
+                modifier: DRM_FORMAT_MOD_INVALID,
+            }],
+            OutputMode {
+                logical_width: 1280,
+                logical_height: 800,
+                physical_width: 1280,
+                physical_height: 800,
+                host_surface_scale_120: 120,
+                guest_ui_scale_120: 120,
+                geometry_generation: 1,
+                refresh_mhz: 60_000,
+            },
+            None,
+            PathBuf::from("/usr/share/X11/xkb"),
+        )
+        .unwrap()
+    }
+
+    fn german_prepare(token: &str) -> KeyboardMapRequest {
+        let spec = KeyboardMapSpec {
+            model: "pc105".into(),
+            layout: "de".into(),
+            variant: String::new(),
+            options: String::new(),
+        };
+        let digest = CompiledKeymap::compile(PathBuf::from("/usr/share/X11/xkb").as_path(), &spec)
+            .unwrap()
+            .digest;
+        KeyboardMapRequest::Prepare {
+            token: token.into(),
+            spec,
+            keymap_sha256: digest,
+        }
+    }
+
     #[test]
     fn host_frame_time_converts_to_wayland_callback_milliseconds() {
         assert_eq!(frame_time_us_to_protocol_ms(12_345_678), 12_345);
@@ -2311,7 +2718,9 @@ mod tests {
             logical_height: 800,
             physical_width: 1600,
             physical_height: 1000,
-            scale_120: 150,
+            host_surface_scale_120: 160,
+            guest_ui_scale_120: 150,
+            geometry_generation: 9,
             refresh_mhz: 60_000,
         };
         command_sender
@@ -2330,5 +2739,253 @@ mod tests {
         assert_eq!(DRM_FORMAT_ARGB8888, 0x3432_5241);
         assert_eq!(DRM_FORMAT_XRGB8888, 0x3432_5258);
         assert_eq!(DRM_FORMAT_MOD_INVALID, 0x00ff_ffff_ffff_ffff);
+    }
+
+    #[test]
+    fn keyboard_commit_is_atomic_idempotent_and_suppresses_held_keys() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        state.pressed_keys.insert(14);
+        state
+            .keymap
+            .state
+            .update_key(xkb::Keycode::new(22), xkb::KeyDirection::Down);
+        state
+            .keymap
+            .state
+            .update_key(xkb::Keycode::new(66), xkb::KeyDirection::Down);
+        state
+            .keymap
+            .state
+            .update_key(xkb::Keycode::new(66), xkb::KeyDirection::Up);
+        assert_ne!(state.keymap.state.serialize_mods(xkb::STATE_MODS_LOCKED), 0);
+
+        let unknown = state
+            .keyboard_map_request(KeyboardMapRequest::Status {
+                token: token.into(),
+            })
+            .unwrap();
+        let unknown = serde_json::to_value(unknown).unwrap();
+        assert_eq!(unknown["state"], "unknown");
+        assert!(unknown.get("pending_token").is_none());
+
+        let prepare = german_prepare(token);
+        let digest = match &prepare {
+            KeyboardMapRequest::Prepare { keymap_sha256, .. } => keymap_sha256.clone(),
+            _ => unreachable!(),
+        };
+        let prepared = serde_json::to_value(state.keyboard_map_request(prepare).unwrap()).unwrap();
+        assert_eq!(prepared["state"], "prepared");
+        assert_eq!(prepared["pending_token"], token);
+        assert_eq!(prepared["pending_keymap_sha256"], digest);
+        assert!(state.pressed_keys.is_empty());
+        assert!(state.suppressed_keys.contains(&14));
+        assert_eq!(state.keymap.state.serialize_mods(xkb::STATE_MODS_LOCKED), 0);
+
+        // Right Alt then Q must replay in this exact order under German, so
+        // the level-three modifier and letter state agree after Commit.
+        state.keyboard_key(100, true, 0);
+        state.keyboard_key(16, true, 0);
+
+        let committed = state
+            .keyboard_map_request(KeyboardMapRequest::Commit {
+                token: token.into(),
+                keymap_sha256: digest.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(committed).unwrap()["state"],
+            "committed"
+        );
+        assert_eq!(state.keymap.digest, digest);
+        assert!(
+            state
+                .keymap
+                .state
+                .mod_name_is_active(xkb::MOD_NAME_ISO_LEVEL3_SHIFT, xkb::STATE_MODS_EFFECTIVE)
+        );
+        assert_eq!(state.keymap.state.key_get_utf8(xkb::Keycode::new(24)), "@");
+        assert_eq!(state.pressed_keys, BTreeSet::from([16, 100]));
+        state.keyboard_key(16, false, 0);
+        state.keyboard_key(100, false, 0);
+
+        // A repeat from the still-held old-map key and its eventual release
+        // cannot leak into the new-map stream.
+        state.keyboard_key(14, true, 0);
+        assert!(state.pressed_keys.is_empty());
+        state.keyboard_key(14, false, 0);
+        assert!(!state.suppressed_keys.contains(&14));
+
+        let retry = state
+            .keyboard_map_request(KeyboardMapRequest::Commit {
+                token: token.into(),
+                keymap_sha256: digest,
+            })
+            .unwrap();
+        assert_eq!(serde_json::to_value(retry).unwrap()["state"], "committed");
+        let status = state
+            .keyboard_map_request(KeyboardMapRequest::Status {
+                token: token.into(),
+            })
+            .unwrap();
+        assert_eq!(serde_json::to_value(status).unwrap()["state"], "committed");
+    }
+
+    #[test]
+    fn keyboard_abort_preserves_the_old_map_and_is_reconcilable() {
+        let token = "fedcba9876543210fedcba9876543210";
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        let old_digest = state.keymap.digest.clone();
+        let prepare = german_prepare(token);
+        let digest = match &prepare {
+            KeyboardMapRequest::Prepare { keymap_sha256, .. } => keymap_sha256.clone(),
+            _ => unreachable!(),
+        };
+        state.keyboard_map_request(prepare).unwrap();
+        // Shift then A are queued without being interpreted by the pending
+        // German map. Abort replays them under the old US map.
+        state.keyboard_key(42, true, 0);
+        state.keyboard_key(30, true, 0);
+        let aborted = state
+            .keyboard_map_request(KeyboardMapRequest::Abort {
+                token: token.into(),
+                keymap_sha256: digest.clone(),
+            })
+            .unwrap();
+        assert_eq!(serde_json::to_value(aborted).unwrap()["state"], "aborted");
+        assert_eq!(state.keymap.digest, old_digest);
+        assert!(
+            state
+                .keymap
+                .state
+                .mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE)
+        );
+        assert_eq!(state.keymap.state.key_get_utf8(xkb::Keycode::new(38)), "A");
+        state.keyboard_key(30, false, 0);
+        state.keyboard_key(42, false, 0);
+        let retry = state
+            .keyboard_map_request(KeyboardMapRequest::Abort {
+                token: token.into(),
+                keymap_sha256: digest,
+            })
+            .unwrap();
+        assert_eq!(serde_json::to_value(retry).unwrap()["state"], "aborted");
+    }
+
+    #[test]
+    fn keyboard_focus_loss_discards_queued_input_without_stuck_keys() {
+        let token = "11111111111111111111111111111111";
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        let prepare = german_prepare(token);
+        let digest = match &prepare {
+            KeyboardMapRequest::Prepare { keymap_sha256, .. } => keymap_sha256.clone(),
+            _ => unreachable!(),
+        };
+        state.keyboard_map_request(prepare).unwrap();
+        state.keyboard_key(30, true, 0);
+        state.keyboard_leave();
+        assert!(!state.keyboard_focused);
+        assert!(state.suppressed_keys.contains(&30));
+        state
+            .keyboard_map_request(KeyboardMapRequest::Commit {
+                token: token.into(),
+                keymap_sha256: digest,
+            })
+            .unwrap();
+        assert!(state.pressed_keys.is_empty());
+        state.keyboard_key(30, false, 0);
+        assert!(!state.suppressed_keys.contains(&30));
+    }
+
+    #[test]
+    fn keyboard_queue_overflow_fails_closed_until_abort() {
+        let token = "22222222222222222222222222222222";
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        let prepare = german_prepare(token);
+        let digest = match &prepare {
+            KeyboardMapRequest::Prepare { keymap_sha256, .. } => keymap_sha256.clone(),
+            _ => unreachable!(),
+        };
+        state.keyboard_map_request(prepare).unwrap();
+        for _ in 0..(MAX_PENDING_KEY_EVENTS / 2) {
+            state.keyboard_key(30, true, 0);
+            state.keyboard_key(30, false, 0);
+        }
+        state.keyboard_key(31, true, 0);
+        let status = serde_json::to_value(
+            state
+                .keyboard_map_request(KeyboardMapRequest::Status {
+                    token: token.into(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["state"], "prepared");
+        assert_eq!(status["pending_token"], token);
+        assert_eq!(status["pending_keymap_sha256"], digest);
+        let commit = state.keyboard_map_request(KeyboardMapRequest::Commit {
+            token: token.into(),
+            keymap_sha256: digest.clone(),
+        });
+        assert_eq!(commit.unwrap_err().code, "input_overflow");
+        state
+            .keyboard_map_request(KeyboardMapRequest::Abort {
+                token: token.into(),
+                keymap_sha256: digest,
+            })
+            .unwrap();
+        assert!(state.pressed_keys.is_empty());
+        assert!(state.suppressed_keys.contains(&31));
+        state.keyboard_key(31, false, 0);
+        assert!(!state.suppressed_keys.contains(&31));
+    }
+
+    #[test]
+    fn keyboard_disconnect_neutralizes_and_discards_the_dead_focus_epoch() {
+        let token = "33333333333333333333333333333333";
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        state.pressed_keys.insert(42);
+        state
+            .keymap
+            .state
+            .update_key(xkb::Keycode::new(50), xkb::KeyDirection::Down);
+        assert_ne!(
+            state.keymap.state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+            0
+        );
+
+        let prepare = german_prepare(token);
+        state.keyboard_map_request(prepare).unwrap();
+        // Shift was neutralized at Prepare; A belongs to the now-dead
+        // replacement focus epoch and must not replay after reconnect.
+        state.keyboard_key(30, true, 0);
+        state.drop_client_leases();
+
+        assert!(!state.keyboard_focused);
+        assert!(!state.keyboard_entered);
+        assert!(state.pressed_keys.is_empty());
+        assert_eq!(
+            state.keymap.state.serialize_mods(xkb::STATE_MODS_EFFECTIVE),
+            0
+        );
+        assert!(state.suppressed_keys.contains(&42));
+        assert!(state.suppressed_keys.contains(&30));
+        let pending = state.pending_keymap.as_ref().unwrap();
+        assert!(pending.input_queue.is_empty());
+        assert!(pending.queued_pressed.is_empty());
+
+        state.keyboard_key(30, false, 0);
+        state.keyboard_key(42, false, 0);
+        assert!(state.suppressed_keys.is_empty());
     }
 }

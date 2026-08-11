@@ -29,7 +29,7 @@ class OciBuildContractTests(unittest.TestCase):
             for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
             if match.group(1) != "scratch"
         ]
-        self.assertEqual(len(from_references), 5)
+        self.assertEqual(len(from_references), 6)
         for reference in from_references:
             name, separator, digest = reference.partition("@")
             self.assertEqual(separator, "@", reference)
@@ -100,9 +100,20 @@ class OciBuildContractTests(unittest.TestCase):
             "install-rootfs-assets.sh",
         ):
             self.assertIn(f"!guest/{guest_input}", rules)
-        for guest_directory in ("shell", "assets", "third_party/trycua-cua"):
+        for guest_directory in (
+            "clipboard-agent",
+            "desktop-core",
+            "settings",
+            "shell",
+            "shortcut-helper",
+            "assets",
+            "updater",
+            "third_party/trycua-cua",
+        ):
             self.assertIn(f"!guest/{guest_directory}/", rules)
             self.assertIn(f"!guest/{guest_directory}/**", rules)
+        self.assertIn("!clipboard-protocol/", rules)
+        self.assertIn("!clipboard-protocol/**", rules)
         self.assertIn("!tools/", rules)
         self.assertIn("!tools/fetch-mpl-sources.sh", rules)
         self.assertFalse(any(rule.startswith("!host/") for rule in rules))
@@ -119,10 +130,74 @@ class OciBuildContractTests(unittest.TestCase):
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
-        self.assertIn("/sway-root/usr/include", containerfile)
-        self.assertIn("/sway-root/usr/lib/x86_64-linux-gnu/pkgconfig", containerfile)
+        self.assertIn('"/sway-root$runtime_prefix/include"', containerfile)
+        self.assertIn('"/sway-root$runtime_prefix/lib/pkgconfig"', containerfile)
         self.assertIn("-name '*.a'", containerfile)
         self.assertIn("-name '*.la'", containerfile)
+        self.assertIn("-Wl,-rpath,$ORIGIN/../lib", containerfile)
+        self.assertIn("AS sway-runtime-artifact", containerfile)
+
+    def test_sway_runtime_carries_one_pinned_normalized_xkb_tree(self) -> None:
+        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            containerfile,
+            r"(?m)^\s+xkb-data \\$",
+        )
+        for required in (
+            "xkb_library=$(readlink -f /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0)",
+            "/runtime-payload/lib/libxkbcommon.so.0",
+            "libxkbcommon0.manifest.sha256",
+            "libxkbcommon0.version",
+            "/runtime-payload/share/doc/libxkbcommon0/copyright",
+            "xkb_entry=/usr/share/X11/xkb",
+            'xkb_source=$(readlink -f -- "$xkb_entry")',
+            "/usr/share/xkeyboard-config-[0-9]*",
+            "xkb_destination=/runtime-payload/share/X11/xkb",
+            'case "$resolved" in',
+            'cp -aL "$xkb_source" "$xkb_destination"',
+            "xkb-data.manifest.sha256",
+            "xkb-data.version",
+            "/runtime-payload/share/doc/xkb-data/copyright",
+        ):
+            self.assertIn(required, containerfile)
+        self.assertIn(
+            '! find "$xkb_destination" -type l -print -quit | grep -q .',
+            containerfile,
+        )
+        self.assertIn(
+            '! find "$xkb_destination" -mindepth 1 ! -type d ! -type f',
+            containerfile,
+        )
+
+    def test_appimage_stages_the_same_pinned_xkb_tree_at_a_stable_path(self) -> None:
+        packager = (ROOT / "host/build-appimage.sh").read_text(encoding="utf-8")
+        for required in (
+            'host_xkb_root="$appdir/usr/share/wildbuzzard/xkb"',
+            '"$guest_compositor_runtime/share/X11/xkb/."',
+            '"$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256"',
+            '"$appdir/usr/share/wildbuzzard/xkb-data.version"',
+            '"$appdir/usr/share/doc/xkb-data/copyright"',
+            '"$appdir/usr/lib/libxkbcommon.so.0"',
+            '"$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256"',
+            '"$appdir/usr/share/doc/libxkbcommon0/copyright"',
+            '"$guest_runtime_destination/$guest_revision/share/X11/xkb"',
+            "host and guest pinned XKB manifests differ",
+            "host and guest pinned libxkbcommon payloads differ",
+            "verify_elf_relocation_closure",
+            'ldd -r -- "$object"',
+            "undefined symbol|relocation error|symbol lookup error",
+            "gtk_builder_lib=$(pkg-config --variable=libdir gtk4)",
+            'cargo_rustflags="-L native=$gtk_builder_lib',
+        ):
+            self.assertIn(required, packager)
+        self.assertIn("verify_xkb_payload", packager)
+        self.assertIn("followlinks=False", packager)
+        self.assertNotIn("cp -a -- /usr/share/X11/xkb", packager)
+        verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
+        self.assertIn('ldd -r -- "$runtime/lib/libxkbcommon.so.0"', verifier)
+        self.assertIn("undefined symbol|relocation error|symbol lookup error", verifier)
 
     def test_runtime_contract_names_desktop_and_appimage_dependencies(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
@@ -133,14 +208,19 @@ class OciBuildContractTests(unittest.TestCase):
             "firefox-esr",
             "foot",
             "fuse3",
+            "gsettings-desktop-schemas",
             "libfuse2t64",
             "libgbm1",
             "libglib2.0-bin",
             "libgtk-3-0t64",
+            "libgtk-4-1",
             "libnss3",
+            "libpulse0",
             "libxkbcommon0",
             "mousepad",
+            "squashfs-tools",
             "thunar",
+            "xkb-data",
             "xwayland",
         ):
             self.assertRegex(
@@ -164,8 +244,21 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertRegex(verifier, r"(?m)^\s+gsettings(?:\s|\\)")
         self.assertIn("dconf-gsettings-backend", verifier)
         self.assertIn("gsettings-desktop-schemas", verifier)
+        self.assertIn("gsettings list-keys org.gnome.desktop.interface", verifier)
         self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
         self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
+        self.assertIn("AS settings-builder", containerfile)
+        self.assertRegex(containerfile, r"(?m)^\s+libglib2\.0-dev \\")
+        self.assertRegex(containerfile, r"(?m)^\s+libpulse-dev \\")
+        self.assertIn("--package wildbuzzard-settings", containerfile)
+        self.assertIn("--package wildbuzzard-shortcut-helper", containerfile)
+        self.assertIn("--package wildbuzzard-clipboard-agent", containerfile)
+        self.assertIn("/usr/libexec/wildbuzzard-shortcut-helper", verifier)
+        self.assertIn("/libexec/wildbuzzard-clipboard-agent", verifier)
+        self.assertIn("unsquashfs", verifier)
+        self.assertIn("cargo clippy", containerfile)
+        self.assertIn("cargo test", containerfile)
+        self.assertIn("libpulse.so.0", verifier)
         for forbidden in (
             "blender",
             "build-essential",
@@ -182,6 +275,51 @@ class OciBuildContractTests(unittest.TestCase):
             "xterm",
         ):
             self.assertIn(forbidden, verifier)
+
+    def test_settings_sound_uses_native_pulse_client_without_shell_helpers(self) -> None:
+        sound = (ROOT / "guest/settings/src/sound.rs").read_text(encoding="utf-8")
+        for required in (
+            "libpulse_binding",
+            "ContextFlagSet::NOAUTOSPAWN",
+            "InterestMaskSet::SINK_INPUT",
+            "InterestMaskSet::SOURCE_OUTPUT",
+            "connect_record",
+            "MICROPHONE_TEST_HARD_LIMIT",
+        ):
+            self.assertIn(required, sound)
+        for forbidden in (
+            "std::process::Command",
+            "wpctl",
+            "pactl",
+            "parec",
+            "paplay",
+        ):
+            self.assertNotIn(forbidden, sound)
+
+    def test_runtime_readiness_is_bound_to_one_broker_session(self) -> None:
+        broker = (ROOT / "host/crates/wildbuzzard-broker/src/main.rs").read_text(
+            encoding="utf-8"
+        )
+        services = (ROOT / "guest/assets/wildbuzzard-desktop-services").read_text(
+            encoding="utf-8"
+        )
+        readiness = (ROOT / "guest/assets/wildbuzzard-runtime-ready").read_text(
+            encoding="utf-8"
+        )
+        unit = (ROOT / "guest/assets/wildbuzzard-runtime-ready.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"WILDBUZZARD_SESSION_TOKEN".into()', broker)
+        self.assertIn("Uuid::new_v4().simple().to_string()", broker)
+        self.assertIn("desktop_ready_for_session(marker, expected_session_token)", broker)
+        self.assertIn("const GUEST_RUNTIME_MODE: u32 = 0o700", broker)
+        self.assertIn("mktemp \"$status_dir/.desktop-ready.XXXXXX\"", services)
+        self.assertIn("chmod 0600 \"$desktop_ready_tmp\"", services)
+        self.assertIn("$WILDBUZZARD_SESSION_TOKEN", services)
+        self.assertIn("EnvironmentFile=/run/wildbuzzard-host/driver.env", unit)
+        self.assertIn("SESSION_TOKEN_RE", readiness)
+        self.assertIn("HOST_RUNTIME_MODE = 0o700", readiness)
+        self.assertIn("read_desktop_ready(DESKTOP_READY, session_token)", readiness)
 
     def test_managed_sway_config_does_not_invoke_unpackaged_swaybg(self) -> None:
         sway_config = (ROOT / "guest/assets/sway-config").read_text(

@@ -10,8 +10,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use thiserror::Error;
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
 const MAX_PLAN_GENERATION_BYTES: usize = 512;
+const MAX_XKB_MODEL_BYTES: usize = 64;
+const MAX_XKB_LAYOUT_BYTES: usize = 256;
+const MAX_XKB_VARIANT_BYTES: usize = 256;
+const MAX_XKB_OPTIONS_BYTES: usize = 512;
+const MAX_XKB_LAYOUT_GROUPS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +29,62 @@ pub struct AppearanceSettings {
 #[serde(deny_unknown_fields)]
 pub struct DisplaySettings {
     pub guest_ui_scale: GuestScalePreset,
+}
+
+/// The keymap compiled by Sway for every keyboard on the private guest seat.
+///
+/// Values are XKB component names, never commands or paths.  Keeping this
+/// contract in the strict Settings schema lets the desktop apply the same
+/// layout at session startup and at runtime without granting the Settings UI
+/// an arbitrary compositor-command surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyboardSettings {
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: String,
+}
+
+impl Default for KeyboardSettings {
+    fn default() -> Self {
+        Self {
+            model: "pc105".into(),
+            layout: "us".into(),
+            variant: String::new(),
+            options: String::new(),
+        }
+    }
+}
+
+impl KeyboardSettings {
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        validate_xkb_component("keyboard.model", &self.model, 1, MAX_XKB_MODEL_BYTES)?;
+        validate_xkb_component("keyboard.layout", &self.layout, 1, MAX_XKB_LAYOUT_BYTES)?;
+        validate_xkb_component("keyboard.variant", &self.variant, 0, MAX_XKB_VARIANT_BYTES)?;
+        validate_xkb_component("keyboard.options", &self.options, 0, MAX_XKB_OPTIONS_BYTES)?;
+
+        let layouts = validate_xkb_groups("keyboard.layout", &self.layout, MAX_XKB_LAYOUT_GROUPS)?;
+        if !self.variant.is_empty() {
+            let variants = self.variant.split(',').count();
+            if variants > MAX_XKB_LAYOUT_GROUPS {
+                return Err(SettingsError::Validation(format!(
+                    "keyboard.variant must contain at most {MAX_XKB_LAYOUT_GROUPS} comma-aligned groups"
+                )));
+            }
+            if variants > layouts {
+                return Err(SettingsError::Validation(
+                    "keyboard.variant defines more groups than keyboard.layout".into(),
+                ));
+            }
+        }
+        if !self.options.is_empty() && self.options.split(',').any(str::is_empty) {
+            return Err(SettingsError::Validation(
+                "keyboard.options contains an empty option segment".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +100,7 @@ pub struct Settings {
     pub generation: u64,
     pub appearance: AppearanceSettings,
     pub display: DisplaySettings,
+    pub keyboard: KeyboardSettings,
     pub updates: UpdatePreferences,
 }
 
@@ -54,6 +116,7 @@ impl Default for Settings {
             display: DisplaySettings {
                 guest_ui_scale: GuestScalePreset::Automatic,
             },
+            keyboard: KeyboardSettings::default(),
             updates: UpdatePreferences {
                 last_notified_plan_generation: None,
             },
@@ -67,6 +130,16 @@ struct SettingsV0 {
     schema_version: u32,
     dark_mode: bool,
     scale_percent: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsV1 {
+    schema_version: u32,
+    generation: u64,
+    appearance: AppearanceSettings,
+    display: DisplaySettings,
+    updates: UpdatePreferences,
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +191,7 @@ impl Settings {
                 ));
             }
         }
+        self.keyboard.validate()?;
         Ok(())
     }
 
@@ -135,6 +209,32 @@ impl Settings {
                         "generation",
                         "appearance",
                         "display",
+                        "keyboard",
+                        "updates",
+                    ],
+                )?;
+                exact_nested_keys(&value, "appearance", &["theme", "background"])?;
+                exact_background_keys(&value)?;
+                exact_nested_keys(&value, "display", &["guest_ui_scale"])?;
+                exact_nested_keys(
+                    &value,
+                    "keyboard",
+                    &["model", "layout", "variant", "options"],
+                )?;
+                exact_nested_keys(&value, "updates", &["last_notified_plan_generation"])?;
+                LoadOutcome {
+                    value: serde_json::from_value(value)?,
+                    migrated_from: None,
+                }
+            }
+            1 => {
+                exact_keys(
+                    object,
+                    &[
+                        "schema_version",
+                        "generation",
+                        "appearance",
+                        "display",
                         "updates",
                     ],
                 )?;
@@ -142,9 +242,23 @@ impl Settings {
                 exact_background_keys(&value)?;
                 exact_nested_keys(&value, "display", &["guest_ui_scale"])?;
                 exact_nested_keys(&value, "updates", &["last_notified_plan_generation"])?;
+                let old: SettingsV1 = serde_json::from_value(value)?;
+                if old.schema_version != 1 {
+                    return Err(SettingsError::UnsupportedOlderSchema {
+                        found: old.schema_version,
+                        current: SETTINGS_SCHEMA_VERSION,
+                    });
+                }
                 LoadOutcome {
-                    value: serde_json::from_value(value)?,
-                    migrated_from: None,
+                    value: Self {
+                        schema_version: SETTINGS_SCHEMA_VERSION,
+                        generation: old.generation,
+                        appearance: old.appearance,
+                        display: old.display,
+                        keyboard: KeyboardSettings::default(),
+                        updates: old.updates,
+                    },
+                    migrated_from: Some(1),
                 }
             }
             0 => {
@@ -214,6 +328,45 @@ impl Settings {
         atomic_write_json(path, self)?;
         Ok(())
     }
+}
+
+fn validate_xkb_component(
+    field: &str,
+    value: &str,
+    minimum_bytes: usize,
+    maximum_bytes: usize,
+) -> Result<(), SettingsError> {
+    if !(minimum_bytes..=maximum_bytes).contains(&value.len()) {
+        return Err(SettingsError::Validation(format!(
+            "{field} must contain {minimum_bytes} to {maximum_bytes} bytes"
+        )));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"_-+,:.".contains(&byte))
+    {
+        return Err(SettingsError::Validation(format!(
+            "{field} contains characters which are not valid in a bounded XKB component name"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_xkb_groups(
+    field: &str,
+    value: &str,
+    maximum_groups: usize,
+) -> Result<usize, SettingsError> {
+    let groups = value.split(',').collect::<Vec<_>>();
+    if groups.is_empty()
+        || groups.len() > maximum_groups
+        || groups.iter().any(|part| part.is_empty())
+    {
+        return Err(SettingsError::Validation(format!(
+            "{field} must contain 1 to {maximum_groups} non-empty comma-separated groups"
+        )));
+    }
+    Ok(groups.len())
 }
 
 fn schema_version(object: &Map<String, Value>) -> Result<u32, SettingsError> {
@@ -298,6 +451,133 @@ mod tests {
         );
         let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted["schema_version"], SETTINGS_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_one_migrates_with_a_safe_us_keyboard_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        fs::write(
+            &path,
+            br##"{"schema_version":1,"generation":7,"appearance":{"theme":"dark","background":{"kind":"custom_solid","color":"#202225"}},"display":{"guest_ui_scale":"125"},"updates":{"last_notified_plan_generation":null}}"##,
+        )
+        .unwrap();
+        let outcome = Settings::load_and_migrate(&path).unwrap();
+        assert_eq!(outcome.migrated_from, Some(1));
+        assert_eq!(outcome.value.generation, 7);
+        assert_eq!(outcome.value.keyboard, KeyboardSettings::default());
+        let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["schema_version"], 2);
+        assert_eq!(persisted["keyboard"]["layout"], "us");
+    }
+
+    #[test]
+    fn keyboard_schema_accepts_real_xkb_names_and_rejects_commands() {
+        let mut settings = Settings {
+            keyboard: KeyboardSettings {
+                model: "pc105".into(),
+                layout: "us,gb".into(),
+                variant: "intl,".into(),
+                options: "compose:ralt,grp:alt_shift_toggle".into(),
+            },
+            ..Settings::default()
+        };
+        settings.validate().unwrap();
+
+        for hostile in ["us;exec_foot", "us $(id)", "../../symbols/us", "us\n"] {
+            settings.keyboard.layout = hostile.into();
+            assert!(matches!(
+                settings.validate(),
+                Err(SettingsError::Validation(_))
+            ));
+        }
+
+        for malformed in [
+            KeyboardSettings {
+                layout: "us,,gb".into(),
+                ..KeyboardSettings::default()
+            },
+            KeyboardSettings {
+                layout: "us,gb,de,fr,es".into(),
+                ..KeyboardSettings::default()
+            },
+            KeyboardSettings {
+                layout: "us".into(),
+                variant: "intl,extd".into(),
+                ..KeyboardSettings::default()
+            },
+            KeyboardSettings {
+                options: "compose:ralt,,grp:alt_shift_toggle".into(),
+                ..KeyboardSettings::default()
+            },
+        ] {
+            assert!(matches!(
+                malformed.validate(),
+                Err(SettingsError::Validation(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn shared_manually_authored_keyboard_contract_matches_settings_loader() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/xkb-settings-contract.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["schema"], 1);
+        for case in fixture["cases"].as_array().unwrap() {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("settings.json");
+            let document = serde_json::json!({
+                "schema_version": 2,
+                "generation": 0,
+                "appearance": {"theme": "dark", "background": {"kind": "dark_plain"}},
+                "display": {"guest_ui_scale": "automatic"},
+                "keyboard": case["keyboard"].clone(),
+                "updates": {"last_notified_plan_generation": null}
+            });
+            fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+            assert_eq!(
+                Settings::load(&path).is_ok(),
+                case["valid"].as_bool().unwrap(),
+                "shared XKB contract case {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn keyboard_component_byte_bounds_are_exact() {
+        let mut keyboard = KeyboardSettings::default();
+        for (field, maximum) in [
+            ("model", MAX_XKB_MODEL_BYTES),
+            ("layout", MAX_XKB_LAYOUT_BYTES),
+            ("variant", MAX_XKB_VARIANT_BYTES),
+            ("options", MAX_XKB_OPTIONS_BYTES),
+        ] {
+            let valid = "a".repeat(maximum);
+            let invalid = "a".repeat(maximum + 1);
+            match field {
+                "model" => keyboard.model = valid,
+                "layout" => keyboard.layout = valid,
+                "variant" => keyboard.variant = valid,
+                "options" => keyboard.options = valid,
+                _ => unreachable!(),
+            }
+            keyboard.validate().unwrap();
+            match field {
+                "model" => keyboard.model = invalid,
+                "layout" => keyboard.layout = invalid,
+                "variant" => keyboard.variant = invalid,
+                "options" => keyboard.options = invalid,
+                _ => unreachable!(),
+            }
+            assert!(matches!(
+                keyboard.validate(),
+                Err(SettingsError::Validation(_))
+            ));
+            keyboard = KeyboardSettings::default();
+        }
     }
 
     #[test]

@@ -1,0 +1,16 @@
+[package]
+name = "wildbuzzard-clipboard-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/openresearchtools/BuzzardOS"
+rust-version = "1.85"
+
+# This package is consumed by both the host and guest workspaces. Keeping it
+# as its own tiny workspace makes one wire implementation authoritative without
+# coupling either release build to the other workspace's feature resolution.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+

@@ -151,7 +151,16 @@ jobs:
           }
           mkdir -p \
             "$RUNNER_TEMP/wildbuzzard-appimage-build" \
-            "$RUNNER_TEMP/wildbuzzard-appimage-output"
+            "$RUNNER_TEMP/wildbuzzard-appimage-output" \
+            "$RUNNER_TEMP/wildbuzzard-guest-runtime"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --target sway-runtime-artifact \
+            --output "type=local,dest=$RUNNER_TEMP/wildbuzzard-guest-runtime" \
+            --file "$GITHUB_WORKSPACE/oci/desktop/Containerfile" \
+            "$GITHUB_WORKSPACE"
           docker run --rm \
             --platform linux/amd64 \
             --device /dev/fuse:/dev/fuse \
@@ -160,8 +169,10 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --volume "$RUNNER_TEMP/wildbuzzard-appimage-build:/build" \
             --volume "$RUNNER_TEMP/wildbuzzard-appimage-output:/output" \
+            --volume "$RUNNER_TEMP/wildbuzzard-guest-runtime:/guest-runtime:ro" \
             --env WILDBUZZARD_BUILD_ROOT=/build \
             --env WILDBUZZARD_OUTPUT_DIR=/output \
+            --env WILDBUZZARD_GUEST_RUNTIME_PAYLOAD=/guest-runtime \
             --env OUTPUT_UID="$(id -u)" \
             --env OUTPUT_GID="$(id -g)" \
             "$APPIMAGE_BUILD_IMAGE" \
@@ -193,6 +204,9 @@ jobs:
           build_scratch="$RUNNER_TEMP/wildbuzzard-appimage-build"
           if [[ -d "$build_scratch" ]]; then
             sudo find "$build_scratch" -mindepth 1 -delete
+          fi
+          if [[ -d "$RUNNER_TEMP/wildbuzzard-guest-runtime" ]]; then
+            sudo find "$RUNNER_TEMP/wildbuzzard-guest-runtime" -mindepth 1 -delete
           fi
           test ! -e "$APPIMAGE_OUTPUT" || test -s "$APPIMAGE_OUTPUT"
 

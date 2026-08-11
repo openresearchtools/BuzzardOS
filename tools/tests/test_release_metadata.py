@@ -129,6 +129,50 @@ class RootfsArchiveTests(unittest.TestCase):
 
 
 class RootfsTreeTests(unittest.TestCase):
+    def test_guest_asset_installer_rejects_a_symlinked_runtime_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            rootfs = temporary_path / "rootfs"
+            outside = temporary_path / "outside"
+            runtime = temporary_path / "runtime"
+            binaries = temporary_path / "binaries"
+            rootfs.mkdir()
+            outside.mkdir()
+            (runtime / "bin").mkdir(parents=True)
+            binaries.mkdir()
+            (rootfs / "opt").symlink_to(outside, target_is_directory=True)
+            for executable in [
+                runtime / "bin/sway",
+                runtime / "bin/swaymsg",
+                binaries / "shell",
+                binaries / "settings",
+                binaries / "shortcut-helper",
+                binaries / "clipboard-agent",
+                binaries / "cua-driver",
+            ]:
+                executable.write_bytes(b"fixture")
+                executable.chmod(0o755)
+
+            result = subprocess.run(
+                [
+                    str(ROOT / "guest/install-rootfs-assets.sh"),
+                    str(rootfs),
+                    str(binaries / "shell"),
+                    str(binaries / "settings"),
+                    str(binaries / "shortcut-helper"),
+                    str(binaries / "clipboard-agent"),
+                    str(binaries / "cua-driver"),
+                    str(runtime),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not a real directory", result.stderr)
+            self.assertEqual(list(outside.iterdir()), [])
+
     def test_guest_asset_installer_matches_release_rootfs_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
@@ -136,7 +180,6 @@ class RootfsTreeTests(unittest.TestCase):
             rootfs.mkdir()
             for relative in [
                 "lib/systemd/systemd",
-                "usr/bin/sway",
                 "var/lib/dpkg/status",
             ]:
                 path = rootfs / relative
@@ -144,8 +187,22 @@ class RootfsTreeTests(unittest.TestCase):
                 path.write_bytes(b"fixture")
 
             shell = temporary_path / "wildbuzzard-shell"
+            settings = temporary_path / "wildbuzzard-settings"
+            shortcut_helper = temporary_path / "wildbuzzard-shortcut-helper"
+            clipboard_agent = temporary_path / "wildbuzzard-clipboard-agent"
             cua_driver = temporary_path / "cua-driver"
-            for executable in [shell, cua_driver]:
+            for executable in [
+                shell,
+                settings,
+                shortcut_helper,
+                clipboard_agent,
+                cua_driver,
+            ]:
+                executable.write_bytes(b"fixture")
+                executable.chmod(0o755)
+            runtime = temporary_path / "runtime"
+            (runtime / "bin").mkdir(parents=True)
+            for executable in [runtime / "bin/sway", runtime / "bin/swaymsg"]:
                 executable.write_bytes(b"fixture")
                 executable.chmod(0o755)
             subprocess.run(
@@ -153,7 +210,11 @@ class RootfsTreeTests(unittest.TestCase):
                     str(ROOT / "guest/install-rootfs-assets.sh"),
                     str(rootfs),
                     str(shell),
+                    str(settings),
+                    str(shortcut_helper),
+                    str(clipboard_agent),
                     str(cua_driver),
+                    str(runtime),
                 ],
                 check=True,
             )
@@ -163,7 +224,9 @@ class RootfsTreeTests(unittest.TestCase):
 
             def canonical_owner(path: Path) -> os.stat_result:
                 metadata = original_lstat(path)
-                if path == canonical_rootfs:
+                if path == canonical_rootfs or path.is_relative_to(
+                    canonical_rootfs / "opt/wildbuzzard/runtime"
+                ):
                     fields = list(metadata)
                     fields[4] = 0
                     fields[5] = 0
@@ -176,9 +239,20 @@ class RootfsTreeTests(unittest.TestCase):
                 record = release_metadata.inspect_rootfs(rootfs)
 
             self.assertGreater(record["counts"]["regular_files"], 0)
-            self.assertTrue((rootfs / "usr/libexec/wildbuzzard-shell").is_file())
-            self.assertTrue((rootfs / "usr/local/bin/cua-driver").is_file())
+            runtime_current = rootfs / "opt/wildbuzzard/runtime/current"
+            self.assertTrue(
+                (runtime_current / "libexec/wildbuzzard-settings").is_file()
+            )
+            self.assertTrue(
+                (runtime_current / "libexec/wildbuzzard-clipboard-agent").is_file()
+            )
+            self.assertTrue(
+                (rootfs / "usr/libexec/wildbuzzard-shortcut-helper").is_file()
+            )
+            self.assertTrue((runtime_current / "libexec/wildbuzzard-shell").is_file())
+            self.assertTrue((runtime_current / "bin/cua-driver").is_file())
             self.assertFalse((rootfs / "usr/bin/wildbuzzard-shell").exists())
+            self.assertFalse((rootfs / "usr/bin/wildbuzzard-settings").exists())
             self.assertFalse((rootfs / "usr/bin/wildbuzzard-cua-driver").exists())
 
 

@@ -22,6 +22,10 @@ export NO_AT_BRIDGE=0
 export MOZ_ENABLE_WAYLAND=1
 export ELECTRON_OZONE_PLATFORM_HINT=wayland
 export CUA_DRIVER_RS_ENABLE_WAYLAND=1
+export CUA_DRIVER_RS_TELEMETRY_ENABLED=false
+export XKB_CONFIG_ROOT=/opt/wildbuzzard/runtime/current/share/X11/xkb
+export LD_LIBRARY_PATH="/opt/wildbuzzard/runtime/current/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PATH=/opt/wildbuzzard/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 install -d -m 0700 \
     "$XDG_RUNTIME_DIR" \
@@ -62,6 +66,15 @@ if [ -f "$bookmarks" ]; then
     fi
 fi
 
+# Thunar resolves one uca.xml through XDG rather than merging the system and
+# user files. Refresh only Wild Buzzard's fixed AppImage actions in the user's
+# file, preserving all user-created custom actions. A malformed or unsafe user
+# file is deliberately left untouched; the actionable error is recorded in
+# the guest session log without preventing the desktop from booting.
+if ! /usr/libexec/wildbuzzard-shortcut-helper install-thunar-actions >/dev/null; then
+    echo "Wild Buzzard could not refresh Thunar AppImage actions; inspect the preceding shortcut-helper diagnostic and ~/.config/Thunar/uca.xml" >&2
+fi
+
 export WAYLAND_DISPLAY=/run/wildbuzzard-host/wayland-0
 unset WAYLAND_SOCKET
 unset DISPLAY
@@ -97,15 +110,12 @@ if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
     exit 1
 fi
 
-# GTK's desktop-interface GSettings have higher precedence than the system
-# settings.ini files. Keep the reference session's persistent user settings
-# aligned with the selected Wild Buzzard widget and icon themes so applications
-# do not silently fall back to Adwaita after dconf has been initialized.
-gsettings set org.gnome.desktop.interface gtk-theme WildBuzzard
-gsettings set org.gnome.desktop.interface icon-theme WildBuzzard
-gsettings set org.gnome.desktop.interface color-scheme prefer-dark
+# The shell loads ~/.config/wildbuzzard/settings.json before publishing
+# readiness, atomically projects the selected mode to toolkit/application
+# configuration, and updates GSettings. Do not force a mode here: doing so
+# would overwrite the user's persisted Light selection on every Stop/Start.
 
-/usr/libexec/wildbuzzard-sway-session &
+/opt/wildbuzzard/runtime/current/libexec/wildbuzzard-sway-session &
 session_pid=$!
 
 cleanup() {

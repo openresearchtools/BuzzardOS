@@ -23,6 +23,23 @@ pub(crate) struct Launch {
     #[arg(long)]
     pub(crate) control: PathBuf,
 
+    /// Guest-visible, narrowly typed display-control socket. It accepts only
+    /// the enumerated scale and transactional keyboard-map requests and is
+    /// separate from host controls.
+    #[arg(long)]
+    pub(crate) guest_scale_control: PathBuf,
+
+    /// Guest-owned fixed clipboard-agent endpoint. The native application is
+    /// only a client of this socket after an explicit header action; the guest
+    /// cannot use it to call into the host or read the host clipboard.
+    #[arg(long)]
+    pub(crate) guest_clipboard_control: PathBuf,
+
+    /// Immutable XKB definitions bundled with the pinned guest compositor
+    /// runtime. Physical host input and Sway compile from these exact bytes.
+    #[arg(long)]
+    pub(crate) xkb_config_root: PathBuf,
+
     /// Validated persistent machine directory used by native lifecycle UI.
     #[arg(long)]
     pub(crate) machine_dir: PathBuf,
@@ -77,6 +94,19 @@ impl Launch {
         self.status_dir = canonical_directory(&self.status_dir, "status directory")?;
         self.output_state_dir =
             canonical_directory(&self.output_state_dir, "output state directory")?;
+        self.xkb_config_root = canonical_directory(&self.xkb_config_root, "XKB config root")?;
+        for required in ["rules/evdev", "symbols", "keycodes", "types", "compat"] {
+            let path = self.xkb_config_root.join(required);
+            let resolved = path
+                .canonicalize()
+                .with_context(|| format!("resolving bundled XKB definition {}", path.display()))?;
+            if !resolved.starts_with(&self.xkb_config_root) {
+                bail!(
+                    "bundled XKB definition {} resolves outside its immutable root",
+                    path.display()
+                );
+            }
+        }
         if let Some(device) = self.sync_drm_device.as_ref() {
             let metadata = fs::symlink_metadata(device)
                 .with_context(|| format!("inspecting sync DRM device {}", device.display()))?;
@@ -98,21 +128,56 @@ impl Launch {
 
         let listen_parent = canonical_parent(&self.listen, "guest display socket")?;
         let control_parent = canonical_parent(&self.control, "host control socket")?;
+        let guest_scale_control_parent = canonical_parent(
+            &self.guest_scale_control,
+            "guest display-scale control socket",
+        )?;
+        let guest_clipboard_control_parent = canonical_parent(
+            &self.guest_clipboard_control,
+            "guest clipboard-agent socket",
+        )?;
         if self.listen.parent() != Some(listen_parent.as_path()) {
             bail!("guest display socket parent must not contain symlink aliases");
         }
         if self.control.parent() != Some(control_parent.as_path()) {
             bail!("host control socket parent must not contain symlink aliases");
         }
-        if self.listen == self.control {
-            bail!("guest display and host control sockets must be distinct");
+        if self.guest_scale_control.parent() != Some(guest_scale_control_parent.as_path()) {
+            bail!("guest display-scale control socket parent must not contain symlink aliases");
+        }
+        if self.guest_clipboard_control.parent() != Some(guest_clipboard_control_parent.as_path()) {
+            bail!("guest clipboard-agent socket parent must not contain symlink aliases");
+        }
+        if self.listen == self.control
+            || self.listen == self.guest_scale_control
+            || self.listen == self.guest_clipboard_control
+            || self.control == self.guest_scale_control
+            || self.control == self.guest_clipboard_control
+            || self.guest_scale_control == self.guest_clipboard_control
+        {
+            bail!(
+                "display, host-control, guest display-scale, and guest clipboard sockets must be distinct"
+            );
         }
         if listen_parent == control_parent {
             bail!("guest display and host control sockets require separate directories");
         }
+        if guest_scale_control_parent != listen_parent {
+            bail!(
+                "guest display-scale control socket must share the private guest display directory"
+            );
+        }
+        if guest_clipboard_control_parent != listen_parent {
+            bail!("guest clipboard-agent socket must share the private guest display directory");
+        }
         if [&self.status_dir, &self.output_state_dir]
             .iter()
-            .any(|directory| **directory == listen_parent || **directory == control_parent)
+            .any(|directory| {
+                **directory == listen_parent
+                    || **directory == control_parent
+                    || **directory == guest_scale_control_parent
+                    || **directory == guest_clipboard_control_parent
+            })
         {
             bail!("display sockets and diagnostic state require separate directories");
         }
@@ -221,6 +286,9 @@ mod tests {
                 host: "/missing".into(),
                 listen: "/missing".into(),
                 control: "/missing".into(),
+                guest_scale_control: "/missing".into(),
+                guest_clipboard_control: "/missing".into(),
+                xkb_config_root: "/missing".into(),
                 machine_dir: "/missing".into(),
                 status_dir: "/missing".into(),
                 output_state_dir: "/missing".into(),

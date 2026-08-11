@@ -75,6 +75,9 @@ struct ActivePointer {
     /// Output extent at session open time — needed for motion_absolute.
     out_w: u32,
     out_h: u32,
+    /// Coordinate epoch in which the press was accepted. Zero denotes a
+    /// non-Wild-Buzzard compositor without generation metadata.
+    geometry_generation: u64,
 }
 
 /// Process-global command channel into the owner thread. Lazily started on
@@ -142,6 +145,7 @@ fn handle_press(
     y: i32,
     button: u8,
 ) -> anyhow::Result<()> {
+    let output_before = super::read_wildbuzzard_output_state()?;
     // Open a fresh session for this press — this binds the seat, the foreign-
     // toplevel manager, activates the target window, and creates a new vptr.
     // Keep the (out_w, out_h) but drop the queue + state at end of scope; the
@@ -158,6 +162,17 @@ fn handle_press(
     sess.vptr.button(0, btn, ButtonState::Pressed);
     sess.vptr.frame();
     sess.queue.roundtrip(&mut sess.state)?;
+
+    let output_after = super::read_wildbuzzard_output_state()?;
+    if let Err(error) = super::require_same_output_generation(output_before, output_after) {
+        // Never leave a compositor grab behind when geometry changes between
+        // the press coordinates and its acknowledgement.
+        sess.vptr.button(0, btn, ButtonState::Released);
+        sess.vptr.frame();
+        let _ = sess.queue.roundtrip(&mut sess.state);
+        sess.vptr.destroy();
+        return Err(error);
+    }
 
     // Take ownership of the vptr handle by extracting it from the session.
     // ZwlrVirtualPointerV1 is a Wayland proxy — cloning it gives another
@@ -178,6 +193,9 @@ fn handle_press(
             held,
             out_w: w,
             out_h: h,
+            geometry_generation: output_before
+                .map(|state| state.geometry_generation)
+                .unwrap_or(0),
         },
     );
     Ok(())
@@ -189,6 +207,7 @@ fn handle_move(
     x: i32,
     y: i32,
 ) -> anyhow::Result<()> {
+    ensure_active_generation(active, cursor_id)?;
     let entry = active.get_mut(cursor_id).ok_or_else(|| {
         anyhow::anyhow!(
             "no held mouse button for cursor '{cursor_id}'; call mouse_button_down first"
@@ -201,7 +220,7 @@ fn handle_move(
         .motion_absolute(0, px, py, entry.out_w, entry.out_h);
     entry.vptr.frame();
     roundtrip_on_persistent(cursor_id)?;
-    Ok(())
+    ensure_active_generation(active, cursor_id)
 }
 
 fn handle_release(
@@ -209,6 +228,8 @@ fn handle_release(
     cursor_id: &str,
     button: u8,
 ) -> anyhow::Result<()> {
+    ensure_active_generation(active, cursor_id)?;
+    let output_before = super::read_wildbuzzard_output_state()?;
     let btn = evdev_pointer_button(button);
     let drop_entry = {
         let entry = active
@@ -227,7 +248,44 @@ fn handle_release(
         }
         forget_conn(cursor_id);
     }
-    Ok(())
+    let output_after = super::read_wildbuzzard_output_state()?;
+    super::require_same_output_generation(output_before, output_after)
+}
+
+/// If a held press belongs to an older coordinate epoch, emit releases for
+/// every held button before rejecting the next operation. This makes a
+/// cross-call drag fail closed without stranding Sway's seat grab.
+fn ensure_active_generation(
+    active: &mut HashMap<String, ActivePointer>,
+    cursor_id: &str,
+) -> anyhow::Result<()> {
+    let Some(expected) = active
+        .get(cursor_id)
+        .map(|pointer| pointer.geometry_generation)
+    else {
+        return Ok(());
+    };
+    let current = super::read_wildbuzzard_output_state()
+        .map(|state| state.map(|state| state.geometry_generation).unwrap_or(0));
+    if current.as_ref().is_ok_and(|current| *current == expected) {
+        return Ok(());
+    }
+
+    if let Some(pointer) = active.remove(cursor_id) {
+        for button in &pointer.held {
+            pointer.vptr.button(0, *button, ButtonState::Released);
+        }
+        pointer.vptr.frame();
+        let _ = roundtrip_on_persistent(cursor_id);
+        pointer.vptr.destroy();
+        forget_conn(cursor_id);
+    }
+    match current {
+        Ok(current) => anyhow::bail!(
+            "stale_output_geometry: held pointer generation {expected} does not match current generation {current}; compositor buttons were released"
+        ),
+        Err(error) => Err(error),
+    }
 }
 
 // Process-static slots for Connection + EventQueue keyed by cursor_id. The

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod clipboard;
 mod drm_syncobj;
 mod frame_paintable;
 mod gateway;
 mod guest_display;
 mod host_app;
+mod keyboard;
 mod launch;
 mod offload_verifier;
 
@@ -25,6 +27,9 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    if let Some(result) = clipboard::maybe_run_image_worker() {
+        return result;
+    }
     reexec_with_display_desktop_identity()?;
     let launch = Launch::parse().validate()?;
     launch.configure_native_backend();

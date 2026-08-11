@@ -13,13 +13,14 @@ install -d -m 0755 /run/wildbuzzard
 # grants CAP_SYS_ADMIN to the AppImage or its children.
 if [ -c /dev/fuse ]; then
     test -x /usr/bin/fusermount3
-    test -x /usr/libexec/wildbuzzard-fusermount
-    test -x /usr/libexec/wildbuzzard-fusermount-exec
+    runtime=/opt/wildbuzzard/runtime/current
+    test -x "$runtime/libexec/wildbuzzard-fusermount"
+    test -x "$runtime/libexec/wildbuzzard-fusermount-exec"
     install -d -o 0 -g 0 -m 0700 /run/wildbuzzard-appimage-helper
     install -o 0 -g 0 -m 0755 \
         /usr/bin/fusermount3 \
         /run/wildbuzzard-appimage-helper/fusermount3.real
-    mount --bind /usr/libexec/wildbuzzard-fusermount /usr/bin/fusermount3
+    mount --bind "$runtime/libexec/wildbuzzard-fusermount" /usr/bin/fusermount3
 fi
 
 if [ ! -s /etc/machine-id ]; then

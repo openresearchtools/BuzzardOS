@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use anyhow::{Context, Result};
-use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsStr;
+use anyhow::Result;
+#[cfg(test)]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use wildbuzzard_desktop_core::{DesktopItemKind, XdgPaths, discover_applications};
 
 pub const PANEL_HEIGHT: i32 = 42;
 pub const APPLICATIONS_BUTTON_WIDTH: i32 = 126;
@@ -19,7 +19,6 @@ pub struct Application {
     pub id: String,
     pub name: String,
     pub generic_name: Option<String>,
-    pub command: Vec<String>,
     pub icon: Option<String>,
     pub categories: Vec<String>,
     pub source: PathBuf,
@@ -57,7 +56,26 @@ pub enum ShellAction {
     ToggleApplications,
     OpenFiles,
     OpenShared,
+    OpenDesktopItem(PathBuf, DesktopItemKind),
     LaunchApplication(String),
+    AddApplicationDesktopShortcut(String),
+    RemoveApplicationDesktopShortcut(String),
+    DesktopOpenSelection,
+    DesktopCut,
+    DesktopCopy,
+    DesktopPaste,
+    DesktopRename,
+    DesktopDelete,
+    DesktopNewFolder,
+    DesktopArrangeIcons,
+    DesktopAddToApplications,
+    DesktopRemoveFromApplications,
+    DesktopEditConfirm,
+    DesktopDeleteConfirm,
+    DesktopCollisionReplace,
+    DesktopCollisionKeepBoth,
+    DesktopCollisionCancel,
+    DismissContext,
     ActivateWindow(u32),
     BringIntoViewWindow(u32),
     MinimizeWindow(u32),
@@ -263,7 +281,44 @@ pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
     .collect()
 }
 
-pub fn desktop_targets() -> Vec<HitTarget> {
+pub fn application_context_targets(
+    application: &Application,
+    shortcut_exists: bool,
+) -> Vec<HitTarget> {
+    const CONTEXT_WIDTH: i32 = 252;
+    [
+        (
+            "Open",
+            ShellAction::LaunchApplication(application.id.clone()),
+        ),
+        if shortcut_exists {
+            (
+                "Remove Desktop Shortcut",
+                ShellAction::RemoveApplicationDesktopShortcut(application.id.clone()),
+            )
+        } else {
+            (
+                "Add Desktop Shortcut",
+                ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
+            )
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (label, action))| HitTarget {
+        rect: Rect {
+            x: 6,
+            y: 6 + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+            width: CONTEXT_WIDTH - 12,
+            height: MENU_ROW_HEIGHT,
+        },
+        label: label.to_owned(),
+        action,
+    })
+    .collect()
+}
+
+pub fn builtin_desktop_targets() -> Vec<HitTarget> {
     [
         (
             Rect {
@@ -296,166 +351,40 @@ pub fn desktop_targets() -> Vec<HitTarget> {
 }
 
 pub fn scan_applications() -> Result<Vec<Application>> {
-    let mut directories = vec![PathBuf::from("/usr/local/share/applications")];
-    directories.push(PathBuf::from("/usr/share/applications"));
-    if let Some(home) = std::env::var_os("HOME") {
-        directories.insert(0, PathBuf::from(home).join(".local/share/applications"));
-    }
-    scan_application_directories(&directories)
+    let paths = XdgPaths::discover()?;
+    Ok(adapt_catalog(discover_applications(&paths)))
 }
 
+#[cfg(test)]
 pub fn scan_application_directories(directories: &[PathBuf]) -> Result<Vec<Application>> {
-    let mut by_id = BTreeMap::new();
-    let mut claimed_ids = HashSet::new();
-    for directory in directories {
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries {
-            let entry = entry.with_context(|| {
-                format!("reading application directory {}", directory.display())
-            })?;
-            let path = entry.path();
-            if path.extension() != Some(OsStr::new("desktop")) {
-                continue;
-            }
-            let id = path
-                .file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default()
-                .to_owned();
-            // FreeDesktop data-directory precedence applies to the desktop-file
-            // ID itself, including hidden, NoDisplay, and otherwise unusable
-            // entries. A lower-priority copy must never make an application
-            // reappear after a higher-priority override suppressed it.
-            if !claimed_ids.insert(id.clone()) {
-                continue;
-            }
-            let contents = match fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(_) => continue,
-            };
-            match parse_desktop_entry(&id, &path, &contents) {
-                DesktopParse::Visible(application) => {
-                    by_id.insert(id, application);
-                }
-                DesktopParse::Hidden | DesktopParse::Ignore => {}
-            }
-        }
-    }
-    let mut applications: Vec<_> = by_id.into_values().collect();
-    applications.sort_by_key(|application| application.name.to_lowercase());
-    Ok(applications)
+    Ok(adapt_catalog(
+        wildbuzzard_desktop_core::desktop_entry::discover_application_directories(
+            directories,
+            &["sway".to_owned()],
+        ),
+    ))
 }
 
-enum DesktopParse {
-    Visible(Application),
-    Hidden,
-    Ignore,
-}
-
-fn parse_desktop_entry(id: &str, source: &Path, contents: &str) -> DesktopParse {
-    let mut in_entry = false;
-    let mut values = BTreeMap::<&str, &str>::new();
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if let Some(section) = line
-            .strip_prefix('[')
-            .and_then(|line| line.strip_suffix(']'))
-        {
-            in_entry = section == "Desktop Entry";
-            continue;
-        }
-        if !in_entry || line.starts_with('#') {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            values.entry(key.trim()).or_insert(value.trim());
-        }
+fn adapt_catalog(catalog: wildbuzzard_desktop_core::ApplicationCatalog) -> Vec<Application> {
+    for diagnostic in catalog.diagnostics {
+        eprintln!(
+            "wildbuzzard-shell: ignored desktop entry {}: {}",
+            diagnostic.path.display(),
+            diagnostic.message
+        );
     }
-    if values.get("Hidden") == Some(&"true") {
-        return DesktopParse::Hidden;
-    }
-    if values.get("NoDisplay") == Some(&"true")
-        || values
-            .get("Type")
-            .is_some_and(|value| *value != "Application")
-    {
-        return DesktopParse::Ignore;
-    }
-    let Some(name) = values.get("Name").filter(|value| !value.is_empty()) else {
-        return DesktopParse::Ignore;
-    };
-    let Some(exec) = values.get("Exec") else {
-        return DesktopParse::Ignore;
-    };
-    let mut command = desktop_exec_arguments(exec);
-    if command.is_empty() {
-        return DesktopParse::Ignore;
-    }
-    if values.get("Terminal") == Some(&"true") {
-        command.insert(0, "-e".to_owned());
-        command.insert(0, "foot".to_owned());
-    }
-    DesktopParse::Visible(Application {
-        id: id.to_owned(),
-        name: (*name).to_owned(),
-        generic_name: values
-            .get("GenericName")
-            .filter(|value| !value.is_empty())
-            .map(|value| (*value).to_owned()),
-        command,
-        icon: values
-            .get("Icon")
-            .filter(|value| !value.is_empty())
-            .map(|value| (*value).to_owned()),
-        categories: values
-            .get("Categories")
-            .map(|value| {
-                value
-                    .split(';')
-                    .filter(|category| !category.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        source: source.to_path_buf(),
-    })
-}
-
-fn desktop_exec_arguments(exec: &str) -> Vec<String> {
-    let mut arguments = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    let mut field_code = false;
-    for character in exec.chars() {
-        if field_code {
-            if character == '%' {
-                current.push('%');
-            }
-            field_code = false;
-        } else if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character.is_whitespace() && !quoted {
-            if !current.is_empty() {
-                arguments.push(std::mem::take(&mut current));
-            }
-        } else if character == '%' {
-            field_code = true;
-        } else {
-            current.push(character);
-        }
-    }
-    if !current.is_empty() {
-        arguments.push(current);
-    }
-    arguments
+    catalog
+        .applications
+        .into_iter()
+        .map(|application| Application {
+            id: application.id.as_str().to_owned(),
+            name: application.name,
+            generic_name: application.generic_name,
+            icon: application.icon,
+            categories: application.categories,
+            source: application.source,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -467,7 +396,6 @@ mod tests {
             id: format!("{name}.desktop"),
             name: name.to_owned(),
             generic_name: None,
-            command: vec![name.to_lowercase()],
             icon: None,
             categories: Vec::new(),
             source: PathBuf::new(),
@@ -483,12 +411,12 @@ mod tests {
         fs::create_dir(&user).unwrap();
         fs::write(
             system.join("browser.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Browser\nExec=browser %U\n",
+            "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Browser\nExec=/usr/bin/true %U\n",
         )
         .unwrap();
         fs::write(
             user.join("browser.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Private Browser\nExec=private-browser\n",
+            "[Desktop Entry]\nVersion=1.0\nType=Application\nName=Private Browser\nExec=/usr/bin/true\n",
         )
         .unwrap();
         let applications = scan_application_directories(&[user, system]).unwrap();
@@ -641,18 +569,10 @@ mod tests {
 
     #[test]
     fn desktop_has_files_and_shared_shortcuts() {
-        let labels: Vec<_> = desktop_targets()
+        let labels: Vec<_> = builtin_desktop_targets()
             .into_iter()
             .map(|target| target.label)
             .collect();
         assert_eq!(labels, ["Files", "Shared"]);
-    }
-
-    #[test]
-    fn desktop_exec_field_codes_are_not_passed_as_fake_arguments() {
-        assert_eq!(
-            desktop_exec_arguments("dolphin %u --title \"My Files\" %%"),
-            ["dolphin", "--title", "My Files", "%"]
-        );
     }
 }

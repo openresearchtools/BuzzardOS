@@ -1,0 +1,22 @@
+[package]
+name = "wildbuzzard-clipboard-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+image.workspace = true
+rustix.workspace = true
+tiff.workspace = true
+wildbuzzard-clipboard-protocol = { path = "../../clipboard-protocol" }
+wl-clipboard-rs.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+crc32fast = "1.5"
+
+[[bin]]
+name = "wildbuzzard-clipboard-agent"
+path = "src/main.rs"

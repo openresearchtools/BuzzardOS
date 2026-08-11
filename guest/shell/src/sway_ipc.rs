@@ -13,6 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
+use wildbuzzard_desktop_core::{SolidColor, ThemePalette};
 
 const SCRATCHPAD_WORKSPACE: &str = "__i3_scratch";
 const RESTORE_MARK_PREFIX: &str = "__wildbuzzard_restore_v1_";
@@ -293,6 +294,52 @@ fn run_global_command(command: &str) -> Result<()> {
     });
     anyhow::ensure!(accepted, "Sway rejected batched command: {replies}");
     Ok(())
+}
+
+fn css(color: SolidColor) -> String {
+    color.to_string().to_ascii_lowercase()
+}
+
+/// Apply compositor-owned decoration colours from the same typed palette as
+/// the shell. Geometry remains entirely in the pinned Sway configuration.
+fn theme_command(palette: &ThemePalette) -> String {
+    let focused = format!(
+        "client.focused {} {} {} {} {}",
+        css(palette.raised),
+        css(palette.raised),
+        css(palette.text),
+        css(palette.focus),
+        css(palette.raised),
+    );
+    let focused_inactive = format!(
+        "client.focused_inactive {} {} {} {} {}",
+        css(palette.menu),
+        css(palette.menu),
+        css(palette.text_secondary),
+        css(palette.border),
+        css(palette.menu),
+    );
+    let unfocused = format!(
+        "client.unfocused {} {} {} {} {}",
+        css(palette.menu),
+        css(palette.menu),
+        css(palette.text_muted),
+        css(palette.border),
+        css(palette.menu),
+    );
+    let urgent = format!(
+        "client.urgent {} {} {} {} {}",
+        css(palette.destructive),
+        css(palette.destructive),
+        css(palette.text),
+        css(palette.destructive_icon),
+        css(palette.destructive),
+    );
+    [focused, focused_inactive, unfocused, urgent].join("; ")
+}
+
+pub fn apply_theme(palette: &ThemePalette) -> Result<()> {
+    run_global_command(&theme_command(palette))
 }
 
 fn remove_restore_mark_commands(state: &WindowState, commands: &mut Vec<String>) {
@@ -724,6 +771,26 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wildbuzzard_desktop_core::ThemeMode;
+
+    #[test]
+    fn decoration_commands_change_only_typed_palette_values() {
+        let dark = theme_command(ThemeMode::Dark.palette());
+        let light = theme_command(ThemeMode::Light.palette());
+        for command in [
+            "client.focused",
+            "client.focused_inactive",
+            "client.unfocused",
+            "client.urgent",
+        ] {
+            assert!(dark.contains(command));
+            assert!(light.contains(command));
+        }
+        assert!(dark.contains("#ff9b73"));
+        assert!(light.contains("#b53b12"));
+        assert!(!dark.contains("#ffffff"));
+        assert!(!light.contains("#ffffff"));
+    }
 
     #[test]
     fn parses_exact_identifiers_and_scratchpad_state() {

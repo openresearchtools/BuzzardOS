@@ -8,6 +8,7 @@ import os
 import runpy
 import stat
 import subprocess
+import socket
 import tempfile
 import time
 import unittest
@@ -63,6 +64,23 @@ class AppImageReadyTests(unittest.TestCase):
                 check=True,
             )
             self.assertEqual(stat.S_IMODE(appimage.stat().st_mode), 0o700)
+
+    def test_scan_quietly_ignores_unix_sockets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            endpoint = Path(temporary) / "service.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(endpoint))
+                result = subprocess.run(
+                    [str(SCRIPT), "--once", "--root", temporary],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+            finally:
+                listener.close()
 
     def test_inotify_descriptor_is_nonblocking(self) -> None:
         namespace = runpy.run_path(str(SCRIPT))

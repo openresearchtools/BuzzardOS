@@ -5,27 +5,37 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use futures_util::future::{Either, select};
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk4 as gtk;
+use uuid::Uuid;
 use wb_core::{
     HostMediaDevice, HostMediaKind, MachineConfig, MachineState, NetworkMode, PortDirection,
     PortForward, PortProtocol, PresentationDiagnostics, ResourceLocator, RuntimeState,
     WindowDiagnostics, discover_host_media,
 };
+use wildbuzzard_clipboard_protocol::{MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Mime};
 
+use crate::clipboard::{self, ClipboardValue};
 use crate::frame_paintable::FramePaintable;
 use crate::gateway::{
     CursorImage, CursorStorage, DmabufFormat, DmabufFrame, GatewayCommand, GatewayCommandSender,
-    GatewayConnection, GatewayEvent, GatewaySockets, HostCommand, OutputMode,
+    GatewayConnection, GatewayEvent, GatewaySockets, GuestScalePreset, GuestScaleReply,
+    GuestScaleRequest, HostCommand, OutputMode,
 };
 use crate::launch::Launch;
 use crate::offload_verifier::{OffloadExpectation, OffloadResetKind, OffloadVerifier, SurfaceRect};
@@ -68,6 +78,18 @@ impl MonitorState {
             Self::Failed => "error",
         }
     }
+}
+
+fn lifecycle_clipboard_epoch(current: u64, previous: MonitorState, next: MonitorState) -> u64 {
+    if previous == next {
+        current
+    } else {
+        current.wrapping_add(1)
+    }
+}
+
+fn clipboard_transfer_is_live(current_epoch: u64, transfer_epoch: u64, available: bool) -> bool {
+    current_epoch == transfer_epoch && available
 }
 
 pub(crate) struct HostApplication {
@@ -135,12 +157,21 @@ struct NativeWindow {
 
     state: Cell<MonitorState>,
     close_requested: Cell<bool>,
+    clipboard_busy: Cell<bool>,
+    clipboard_epoch: Cell<u64>,
+    clipboard_connection: RefCell<Option<(u64, UnixStream)>>,
     viewport_width: Cell<u32>,
     viewport_height: Cell<u32>,
     /// Fractional scale of the native host surface.
-    scale_120: Cell<u32>,
+    host_surface_scale_120: Cell<u32>,
     /// Independently selected guest desktop UI scale.
-    guest_scale_120: Cell<u32>,
+    guest_ui_scale_120: Cell<u32>,
+    /// Automatic follows the current host surface scale; manual presets do
+    /// not change when the native window moves between monitors.
+    guest_scale_preset: Cell<GuestScalePreset>,
+    /// Changes exactly once for every committed physical/logical geometry or
+    /// guest-scale selection transition.
+    geometry_generation: Cell<u64>,
     refresh_mhz: Cell<u32>,
     initial_monitor_sizing: RefCell<InitialMonitorSizing>,
     gateway_configured: Cell<bool>,
@@ -202,6 +233,7 @@ struct PendingPresentation {
 }
 
 struct FrameMetadata {
+    geometry_generation: u64,
     width: u32,
     height: u32,
     fourcc: u32,
@@ -554,7 +586,9 @@ struct InputStats {
     last_key_pressed: Option<bool>,
     last_modifiers: Option<u32>,
     monitor_focused: bool,
-    scale_120: u32,
+    host_surface_scale_120: u32,
+    guest_ui_scale_120: u32,
+    geometry_generation: u64,
     logical_width: u64,
     logical_height: u64,
     physical_width: u64,
@@ -590,7 +624,9 @@ impl NativeWindow {
         launch: Launch,
         connection: GatewayConnection,
     ) -> Result<Rc<Self>> {
-        let initial_guest_scale_120 = launch.guest_scale_120.unwrap_or(120);
+        let initial_guest_scale_preset = GuestScalePreset::from_scale_120(launch.guest_scale_120)
+            .context("validated guest scale has no typed preset")?;
+        let initial_guest_ui_scale_120 = initial_guest_scale_preset.resolve(120);
         let initial_monitor_sizing =
             InitialMonitorSizing::new(launch.initial_width, launch.initial_height);
         let offload_verifier = OffloadVerifier::new(launch.status_dir.join("display-gateway.log"))
@@ -706,10 +742,15 @@ impl NativeWindow {
             offload,
             state: Cell::new(MonitorState::Starting),
             close_requested: Cell::new(false),
+            clipboard_busy: Cell::new(false),
+            clipboard_epoch: Cell::new(1),
+            clipboard_connection: RefCell::new(None),
             viewport_width: Cell::new(1),
             viewport_height: Cell::new(1),
-            scale_120: Cell::new(120),
-            guest_scale_120: Cell::new(initial_guest_scale_120),
+            host_surface_scale_120: Cell::new(120),
+            guest_ui_scale_120: Cell::new(initial_guest_ui_scale_120),
+            guest_scale_preset: Cell::new(initial_guest_scale_preset),
+            geometry_generation: Cell::new(1),
             refresh_mhz: Cell::new(0),
             initial_monitor_sizing: RefCell::new(initial_monitor_sizing),
             gateway_configured: Cell::new(false),
@@ -731,8 +772,10 @@ impl NativeWindow {
             offload_verifier: RefCell::new(offload_verifier),
             offload_verification_dirty: Cell::new(false),
             input: RefCell::new(InputStats {
-                schema: 3,
-                scale_120: initial_guest_scale_120,
+                schema: 4,
+                host_surface_scale_120: 120,
+                guest_ui_scale_120: initial_guest_ui_scale_120,
+                geometry_generation: 1,
                 logical_width: 1,
                 logical_height: 1,
                 physical_width: 1,
@@ -939,7 +982,7 @@ impl NativeWindow {
             .and_then(|surface| {
                 effective_scale_120(self.launch.test_fractional_scale_120, surface.scale()).ok()
             })
-            .unwrap_or_else(|| self.scale_120.get());
+            .unwrap_or_else(|| self.host_surface_scale_120.get());
         scale_denominator(scale_120).unwrap_or(1)
     }
 
@@ -1028,12 +1071,20 @@ impl NativeWindow {
         let this = Rc::clone(self);
         motion.connect_enter(move |_, x, y| {
             let (x, y) = this.to_guest_surface(x, y);
-            this.send_guest_input(GatewayCommand::PointerEnter { x, y });
+            this.send_guest_input(GatewayCommand::PointerEnter {
+                x,
+                y,
+                geometry_generation: this.geometry_generation.get(),
+            });
         });
         let this = Rc::clone(self);
         motion.connect_motion(move |_, x, y| {
             let (x, y) = this.to_guest_surface(x, y);
-            this.send_guest_input(GatewayCommand::PointerMotion { x, y });
+            this.send_guest_input(GatewayCommand::PointerMotion {
+                x,
+                y,
+                geometry_generation: this.geometry_generation.get(),
+            });
         });
         let this = Rc::clone(self);
         motion.connect_leave(move |_| {
@@ -1086,12 +1137,14 @@ impl NativeWindow {
                     this.send_guest_input(GatewayCommand::PointerButton {
                         button,
                         pressed: true,
+                        geometry_generation: this.geometry_generation.get(),
                     });
                 }
             } else if this.pressed_pointer_buttons.borrow_mut().remove(&button) {
                 this.send_guest_input(GatewayCommand::PointerButton {
                     button,
                     pressed: false,
+                    geometry_generation: this.geometry_generation.get(),
                 });
             }
 
@@ -1108,6 +1161,7 @@ impl NativeWindow {
             this.send_guest_input(GatewayCommand::PointerAxis {
                 horizontal,
                 vertical,
+                geometry_generation: this.geometry_generation.get(),
             });
             glib::Propagation::Stop
         });
@@ -1157,6 +1211,7 @@ impl NativeWindow {
             self.send_guest_input(GatewayCommand::PointerButton {
                 button,
                 pressed: false,
+                geometry_generation: self.geometry_generation.get(),
             });
         }
     }
@@ -1185,7 +1240,8 @@ impl NativeWindow {
         atomic_json(
             &self.launch.output_state_dir.join("pointer-click.json"),
             &serde_json::json!({
-                "schema": 1,
+                "schema": 2,
+                "geometry_generation": mode.geometry_generation,
                 "timestamp_ms": unix_time_millis(),
                 "x": logical_x,
                 "y": logical_y,
@@ -1201,13 +1257,15 @@ impl NativeWindow {
             let mut stats = self.input.borrow_mut();
             stats.received_events = stats.received_events.saturating_add(1);
             stats.last_event_monotonic_us = monotonic_us();
-            stats.scale_120 = mode.scale_120;
+            stats.host_surface_scale_120 = mode.host_surface_scale_120;
+            stats.guest_ui_scale_120 = mode.guest_ui_scale_120;
+            stats.geometry_generation = mode.geometry_generation;
             stats.logical_width = u64::from(mode.logical_width);
             stats.logical_height = u64::from(mode.logical_height);
             stats.physical_width = u64::from(mode.physical_width);
             stats.physical_height = u64::from(mode.physical_height);
             match &command {
-                GatewayCommand::PointerEnter { x, y } => {
+                GatewayCommand::PointerEnter { x, y, .. } => {
                     stats.last_event = "pointer-enter".into();
                     stats.last_guest_surface_x = Some(*x);
                     stats.last_guest_surface_y = Some(*y);
@@ -1225,7 +1283,7 @@ impl NativeWindow {
                 GatewayCommand::PointerLeave => {
                     stats.last_event = "pointer-leave".into();
                 }
-                GatewayCommand::PointerMotion { x, y } => {
+                GatewayCommand::PointerMotion { x, y, .. } => {
                     stats.last_event = "pointer-motion".into();
                     stats.last_guest_surface_x = Some(*x);
                     stats.last_guest_surface_y = Some(*y);
@@ -1240,7 +1298,9 @@ impl NativeWindow {
                         stats.logical_height,
                     ));
                 }
-                GatewayCommand::PointerButton { button, pressed } => {
+                GatewayCommand::PointerButton {
+                    button, pressed, ..
+                } => {
                     stats.last_event = "pointer-button".into();
                     stats.last_button = Some(*button);
                     stats.last_button_pressed = Some(*pressed);
@@ -1248,6 +1308,7 @@ impl NativeWindow {
                 GatewayCommand::PointerAxis {
                     horizontal,
                     vertical,
+                    ..
                 } => {
                     stats.last_event = "pointer-axis".into();
                     stats.last_horizontal_scroll = Some(*horizontal);
@@ -1275,6 +1336,33 @@ impl NativeWindow {
                     stats.last_event = "unexpected-non-input-command".into();
                 }
             }
+        }
+        let stale_geometry = match &command {
+            GatewayCommand::PointerEnter {
+                geometry_generation,
+                ..
+            }
+            | GatewayCommand::PointerMotion {
+                geometry_generation,
+                ..
+            }
+            | GatewayCommand::PointerButton {
+                geometry_generation,
+                ..
+            }
+            | GatewayCommand::PointerAxis {
+                geometry_generation,
+                ..
+            } => *geometry_generation != self.geometry_generation.get(),
+            _ => false,
+        };
+        if stale_geometry {
+            let mut stats = self.input.borrow_mut();
+            stats.ignored_events = stats.ignored_events.saturating_add(1);
+            stats.last_event = "stale-geometry-input".into();
+            drop(stats);
+            self.input_dirty.set(true);
+            return;
         }
         if self.state.get() != MonitorState::Running {
             let mut stats = self.input.borrow_mut();
@@ -1327,6 +1415,14 @@ impl NativeWindow {
             let this = Rc::clone(self);
             move || this.open_media()
         });
+        self.add_action("clipboard-to-guest", {
+            let this = Rc::clone(self);
+            move || this.send_host_clipboard_to_guest()
+        });
+        self.add_action("clipboard-to-host", {
+            let this = Rc::clone(self);
+            move || this.copy_guest_clipboard_to_host()
+        });
         self.add_action("diagnostics", {
             let this = Rc::clone(self);
             move || this.open_diagnostics()
@@ -1338,6 +1434,7 @@ impl NativeWindow {
             .set_accels_for_action("app.settings", &["<Primary>comma"]);
         self.application
             .set_accels_for_action("app.restart", &["<Primary><Shift>r"]);
+        self.update_clipboard_action_state();
     }
 
     fn add_action(self: &Rc<Self>, name: &str, callback: impl Fn() + 'static) {
@@ -1395,6 +1492,9 @@ impl NativeWindow {
                     drop(stats);
                     self.presentation_dirty.set(true);
                 }
+                GatewayEvent::GuestScaleRequest { request, reply } => {
+                    let _ = reply.send(self.apply_guest_scale_request(request));
+                }
             }
         }
 
@@ -1432,6 +1532,9 @@ impl NativeWindow {
                 }
             }
         }
+        // The guest agent becomes ready after the machine reaches Running, so
+        // refresh independently of lifecycle-state transitions.
+        self.update_clipboard_action_state();
     }
 
     fn refresh_runtime_state(&self) {
@@ -1474,6 +1577,7 @@ impl NativeWindow {
     fn install_frame(&self, frame: DmabufFrame) -> Result<()> {
         let DmabufFrame {
             id,
+            geometry_generation,
             width,
             height,
             fourcc,
@@ -1483,12 +1587,21 @@ impl NativeWindow {
             explicit_sync,
             acquire_wait_us,
         } = frame;
+        if geometry_generation != self.geometry_generation.get() {
+            self.release_rejected_frame(id)?;
+            let mut stats = self.presentation.borrow_mut();
+            stats.dropped_frames = stats.dropped_frames.saturating_add(1);
+            drop(stats);
+            self.presentation_dirty.set(true);
+            return Ok(());
+        }
         if planes.is_empty() || planes.len() > 4 {
             self.release_rejected_frame(id)?;
             anyhow::bail!("guest dmabuf frame has {} planes", planes.len());
         }
         let plane_count = planes.len() as u32;
         let metadata = FrameMetadata {
+            geometry_generation,
             width,
             height,
             fourcc,
@@ -1888,12 +2001,13 @@ impl NativeWindow {
     ) {
         let mut stats = self.presentation.borrow_mut();
         let same_presented_path = stats.presented
+            && frame.metadata.geometry_generation == self.geometry_generation.get()
             && stats.width == frame.metadata.width
             && stats.height == frame.metadata.height
             && stats.format == frame.metadata.fourcc
             && stats.modifier == format!("0x{:016x}", frame.metadata.modifier)
             && stats.planes == frame.metadata.planes
-            && stats.scale_120 == self.scale_120.get()
+            && stats.scale_120 == self.host_surface_scale_120.get()
             && stats.viewport_width == self.viewport_width.get()
             && stats.viewport_height == self.viewport_height.get();
         stats.transport = "dmabuf".into();
@@ -1902,20 +2016,22 @@ impl NativeWindow {
         stats.format = frame.metadata.fourcc;
         stats.modifier = format!("0x{:016x}", frame.metadata.modifier);
         stats.planes = frame.metadata.planes;
-        stats.scale_120 = self.scale_120.get();
+        stats.scale_120 = self.host_surface_scale_120.get();
         stats.viewport_width = self.viewport_width.get();
         stats.viewport_height = self.viewport_height.get();
         // Re-evaluate against the current protocol state. A frame may have
         // been queued immediately before a host resize or monitor-scale
         // transition; its submission-time value must never resurrect a stale
         // native-resolution or zero-copy claim.
-        let exact_native_mapping = frame_has_exact_native_mapping(
-            frame.metadata.width,
-            frame.metadata.height,
-            self.viewport_width.get(),
-            self.viewport_height.get(),
-            self.scale_120.get(),
-        );
+        let exact_native_mapping = frame.metadata.geometry_generation
+            == self.geometry_generation.get()
+            && frame_has_exact_native_mapping(
+                frame.metadata.width,
+                frame.metadata.height,
+                self.viewport_width.get(),
+                self.viewport_height.get(),
+                self.host_surface_scale_120.get(),
+            );
         stats.native_resolution = exact_native_mapping;
         stats.presentation_feedback = true;
         stats.gtk_subsurface_offload = frame.offloaded;
@@ -1974,7 +2090,22 @@ impl NativeWindow {
     }
 
     fn set_state(&self, state: MonitorState) {
-        self.state.set(state);
+        let previous = self.state.replace(state);
+        if previous != state {
+            // Each clipboard transaction belongs to one live machine
+            // lifecycle. Invalidate it before exposing a replacement state,
+            // so an old response cannot change the host clipboard after
+            // Stop/Restart or interfere with a newer transaction.
+            self.clipboard_epoch.set(lifecycle_clipboard_epoch(
+                self.clipboard_epoch.get(),
+                previous,
+                state,
+            ));
+            if let Some((_, connection)) = self.clipboard_connection.borrow_mut().take() {
+                let _ = connection.shutdown(Shutdown::Both);
+            }
+            self.clipboard_busy.set(false);
+        }
         self.update_state_ui();
         if let Err(error) = self.save_window() {
             eprintln!("wildbuzzard-display: saving native window state: {error:#}");
@@ -2026,6 +2157,7 @@ impl NativeWindow {
         // not put the Starting overlay back over the live monitor.
         self.state_overlay
             .set_visible(!self.frame_paintable.has_frame());
+        self.update_clipboard_action_state();
         self.observe_monitor_continuity("lifecycle-ui");
     }
 
@@ -2231,23 +2363,27 @@ impl NativeWindow {
             .surface()
             .map(|surface| surface.scale())
             .unwrap_or(1.0);
-        let scale_120 = match effective_scale_120(self.launch.test_fractional_scale_120, scale) {
-            Ok(scale_120) => scale_120,
-            Err(error) => {
-                *self.failure.borrow_mut() = Some(error);
-                self.set_state(MonitorState::Failed);
-                return;
-            }
-        };
-        let Some(host_mapping) = PixelMapping::new(width, height, scale_120) else {
+        let host_surface_scale_120 =
+            match effective_scale_120(self.launch.test_fractional_scale_120, scale) {
+                Ok(scale_120) => scale_120,
+                Err(error) => {
+                    *self.failure.borrow_mut() = Some(error);
+                    self.set_state(MonitorState::Failed);
+                    return;
+                }
+            };
+        let Some(host_mapping) = PixelMapping::new(width, height, host_surface_scale_120) else {
             *self.failure.borrow_mut() = Some(format!(
-                "host viewport {width}x{height} at {scale_120}/120 scale exceeds the supported \
+                "host viewport {width}x{height} at {host_surface_scale_120}/120 scale exceeds the supported \
                  Wayland buffer or fixed-point coordinate dimensions"
             ));
             self.set_state(MonitorState::Failed);
             return;
         };
-        let guest_scale_120 = self.launch.guest_scale_120.unwrap_or(scale_120);
+        let guest_ui_scale_120 = self
+            .guest_scale_preset
+            .get()
+            .resolve(host_surface_scale_120);
         let refresh_mhz = self
             .window
             .surface()
@@ -2257,67 +2393,138 @@ impl NativeWindow {
             })
             .map(|monitor| monitor.refresh_rate().max(0) as u32)
             .unwrap_or(0);
-        // Evaluate every replacement before combining the flags. `||` around
-        // the `replace` calls would short-circuit after the first changed
-        // field and publish a torn width/height/scale transition.
-        let width_changed = self.viewport_width.replace(width) != width;
-        let height_changed = self.viewport_height.replace(height) != height;
-        let scale_changed = self.scale_120.replace(scale_120) != scale_120;
-        let guest_scale_changed = self.guest_scale_120.replace(guest_scale_120) != guest_scale_120;
-        let refresh_changed = self.refresh_mhz.replace(refresh_mhz) != refresh_mhz;
-        if width_changed
-            || height_changed
-            || scale_changed
-            || guest_scale_changed
-            || refresh_changed
+        let geometry_changed = width != self.viewport_width.get()
+            || height != self.viewport_height.get()
+            || host_surface_scale_120 != self.host_surface_scale_120.get()
+            || guest_ui_scale_120 != self.guest_ui_scale_120.get();
+        let refresh_changed = refresh_mhz != self.refresh_mhz.get();
+        if !geometry_changed && !refresh_changed {
+            return;
+        }
+
+        if geometry_changed {
+            // The release is queued with the old generation before the new
+            // SetOutputMode command. This closes any compositor move/resize
+            // grab even if the physical extent changes while a button is
+            // held; a later stale press can then be ignored safely.
+            self.release_pressed_pointer_buttons();
+        }
+        self.viewport_width.set(width);
+        self.viewport_height.set(height);
+        self.host_surface_scale_120.set(host_surface_scale_120);
+        self.guest_ui_scale_120.set(guest_ui_scale_120);
+        self.refresh_mhz.set(refresh_mhz);
+        if geometry_changed {
+            self.advance_geometry_generation();
+        }
+        self.update_geometry_diagnostics(host_mapping);
+        if let Err(error) = self.publish_output_mode() {
+            *self.failure.borrow_mut() = Some(format!(
+                "publishing native guest monitor mode {width}x{height}: {error:#}"
+            ));
+            self.set_state(MonitorState::Failed);
+            return;
+        }
+        if let Err(error) = self.save_output_state() {
+            eprintln!("wildbuzzard-display: saving resized guest output: {error:#}");
+        }
+        if let Err(error) = self.save_input() {
+            eprintln!("wildbuzzard-display: saving resized input coordinates: {error:#}");
+        }
+        if let Err(error) = self.save_window() {
+            eprintln!("wildbuzzard-display: saving resized host window: {error:#}");
+        }
+        self.presentation_dirty.set(true);
+    }
+
+    fn advance_geometry_generation(&self) {
+        let current = self.geometry_generation.get();
+        self.geometry_generation
+            .set(current.checked_add(1).unwrap_or(1));
+    }
+
+    fn update_geometry_diagnostics(&self, host_mapping: PixelMapping) {
+        let guest_ui_scale_120 = self.guest_ui_scale_120.get();
         {
-            {
-                let mut stats = self.input.borrow_mut();
-                stats.scale_120 = guest_scale_120;
-                stats.logical_width = u64::from(guest_logical_dimension(
-                    host_mapping.physical_width,
-                    guest_scale_120,
-                ));
-                stats.logical_height = u64::from(guest_logical_dimension(
-                    host_mapping.physical_height,
-                    guest_scale_120,
-                ));
-                stats.physical_width = u64::from(host_mapping.physical_width);
-                stats.physical_height = u64::from(host_mapping.physical_height);
+            let mut stats = self.input.borrow_mut();
+            stats.host_surface_scale_120 = self.host_surface_scale_120.get();
+            stats.guest_ui_scale_120 = guest_ui_scale_120;
+            stats.geometry_generation = self.geometry_generation.get();
+            stats.logical_width = u64::from(guest_logical_dimension(
+                host_mapping.physical_width,
+                guest_ui_scale_120,
+            ));
+            stats.logical_height = u64::from(guest_logical_dimension(
+                host_mapping.physical_height,
+                guest_ui_scale_120,
+            ));
+            stats.physical_width = u64::from(host_mapping.physical_width);
+            stats.physical_height = u64::from(host_mapping.physical_height);
+        }
+        {
+            let mut stats = self.presentation.borrow_mut();
+            stats.scale_120 = self.host_surface_scale_120.get();
+            stats.viewport_width = self.viewport_width.get();
+            stats.viewport_height = self.viewport_height.get();
+            stats.native_resolution = stats.width > 0
+                && frame_has_exact_native_mapping(
+                    stats.width,
+                    stats.height,
+                    self.viewport_width.get(),
+                    self.viewport_height.get(),
+                    self.host_surface_scale_120.get(),
+                );
+            if !stats.native_resolution {
+                stats.zero_copy = false;
             }
-            {
-                let mut stats = self.presentation.borrow_mut();
-                stats.scale_120 = scale_120;
-                stats.viewport_width = width;
-                stats.viewport_height = height;
-                stats.native_resolution = stats.width > 0
-                    && frame_has_exact_native_mapping(
-                        stats.width,
-                        stats.height,
-                        width,
-                        height,
-                        scale_120,
-                    );
-                if !stats.native_resolution {
-                    stats.zero_copy = false;
-                }
-            }
-            if let Err(error) = self.save_input() {
-                eprintln!("wildbuzzard-display: saving resized input coordinates: {error:#}");
-            }
-            self.presentation_dirty.set(true);
-            if let Err(error) = self.save_output_state() {
-                eprintln!("wildbuzzard-display: saving resized guest output: {error:#}");
-            }
-            if let Err(error) = self.save_window() {
-                eprintln!("wildbuzzard-display: saving resized host window: {error:#}");
-            }
-            if let Err(error) = self.publish_output_mode() {
-                *self.failure.borrow_mut() = Some(format!(
-                    "publishing native guest monitor mode {width}x{height}: {error:#}"
-                ));
-                self.set_state(MonitorState::Failed);
-            }
+        }
+    }
+
+    fn apply_guest_scale_request(&self, request: GuestScaleRequest) -> GuestScaleReply {
+        let current = self.output_mode().geometry();
+        if request.current_geometry_generation != current.geometry_generation {
+            return GuestScaleReply::Rejected {
+                code: "stale_geometry",
+                message: format!(
+                    "geometry generation {} is stale; current generation is {}",
+                    request.current_geometry_generation, current.geometry_generation
+                ),
+                current_geometry: current,
+            };
+        }
+        let guest_ui_scale_120 = request.preset.resolve(self.host_surface_scale_120.get());
+        let preset_changed = request.preset != self.guest_scale_preset.get();
+        let scale_changed = guest_ui_scale_120 != self.guest_ui_scale_120.get();
+        if !preset_changed && !scale_changed {
+            return GuestScaleReply::Applied {
+                preset: request.preset,
+                geometry: current,
+            };
+        }
+
+        // End pointer grabs in the old coordinate epoch. Gateway commands
+        // use one FIFO channel, so these releases reach the guest before the
+        // new generation's SetOutputMode command.
+        self.release_pressed_pointer_buttons();
+        self.guest_scale_preset.set(request.preset);
+        self.guest_ui_scale_120.set(guest_ui_scale_120);
+        self.advance_geometry_generation();
+        self.update_geometry_diagnostics(self.host_pixel_mapping());
+        if let Err(error) = self
+            .publish_output_mode()
+            .and_then(|()| self.save_output_state())
+            .and_then(|()| self.save_input())
+        {
+            return GuestScaleReply::Rejected {
+                code: "runtime_failure",
+                message: format!("could not commit guest UI scale: {error:#}"),
+                current_geometry: self.output_mode().geometry(),
+            };
+        }
+        self.presentation_dirty.set(true);
+        GuestScaleReply::Applied {
+            preset: request.preset,
+            geometry: self.output_mode().geometry(),
         }
     }
 
@@ -2339,14 +2546,16 @@ impl NativeWindow {
     }
 
     fn output_mode(&self) -> OutputMode {
-        let guest_scale_120 = self.guest_scale_120.get();
+        let guest_ui_scale_120 = self.guest_ui_scale_120.get();
         let mapping = self.host_pixel_mapping();
         OutputMode {
-            logical_width: guest_logical_dimension(mapping.physical_width, guest_scale_120),
-            logical_height: guest_logical_dimension(mapping.physical_height, guest_scale_120),
+            logical_width: guest_logical_dimension(mapping.physical_width, guest_ui_scale_120),
+            logical_height: guest_logical_dimension(mapping.physical_height, guest_ui_scale_120),
             physical_width: mapping.physical_width,
             physical_height: mapping.physical_height,
-            scale_120: guest_scale_120,
+            host_surface_scale_120: self.host_surface_scale_120.get(),
+            guest_ui_scale_120,
+            geometry_generation: self.geometry_generation.get(),
             refresh_mhz: self.refresh_mhz.get(),
         }
     }
@@ -2355,7 +2564,7 @@ impl NativeWindow {
         PixelMapping::new(
             self.viewport_width.get(),
             self.viewport_height.get(),
-            self.scale_120.get(),
+            self.host_surface_scale_120.get(),
         )
         .expect("validated host viewport must fit Wayland fixed-point coordinates")
     }
@@ -2368,6 +2577,11 @@ impl NativeWindow {
                 self.window.unminimize();
                 self.window.unmaximize();
                 self.window.present();
+            }
+            HostCommand::FocusMonitor => {
+                self.window.unminimize();
+                self.window.present();
+                self.picture.grab_focus();
             }
             HostCommand::ToggleMaximize if self.window.is_maximized() => self.window.unmaximize(),
             HostCommand::ToggleMaximize => self.window.maximize(),
@@ -2432,6 +2646,288 @@ impl NativeWindow {
             "machine": machine,
         });
         atomic_json(&self.launch.status_dir.join("host-request.json"), &value)
+    }
+
+    fn clipboard_ready_path(&self) -> PathBuf {
+        self.launch
+            .guest_clipboard_control
+            .parent()
+            .expect("validated clipboard socket has a parent")
+            .join("clipboard-ready")
+    }
+
+    fn clipboard_available(&self) -> bool {
+        self.state.get() == MonitorState::Running
+            && clipboard::agent_ready(
+                &self.launch.guest_clipboard_control,
+                &self.clipboard_ready_path(),
+            )
+    }
+
+    fn update_clipboard_action_state(&self) {
+        let enabled = self.clipboard_available() && !self.clipboard_busy.get();
+        for name in ["clipboard-to-guest", "clipboard-to-host"] {
+            if let Some(action) = self
+                .application
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(enabled);
+            }
+        }
+    }
+
+    fn begin_clipboard_transfer(
+        &self,
+    ) -> Result<(
+        u64,
+        clipboard::EndpointSnapshot,
+        clipboard::PendingEndpointConnection,
+    )> {
+        if self.state.get() != MonitorState::Running {
+            anyhow::bail!(
+                "the machine must be Running and its private clipboard agent must be ready"
+            );
+        }
+        if self.clipboard_busy.get() {
+            anyhow::bail!("another clipboard transfer is already in progress");
+        }
+        // Capture the exact endpoint/ready inodes in the click callback. The
+        // asynchronous worker may connect only to this identity; it cannot
+        // resolve a replacement listener installed by Stop/Restart.
+        let endpoint = clipboard::EndpointSnapshot::capture(
+            &self.launch.guest_clipboard_control,
+            &self.clipboard_ready_path(),
+        )?;
+        let pending_connection = endpoint.clone().begin_connect()?;
+        self.clipboard_busy.set(true);
+        self.update_clipboard_action_state();
+        Ok((self.clipboard_epoch.get(), endpoint, pending_connection))
+    }
+
+    fn require_live_clipboard_transfer(
+        &self,
+        epoch: u64,
+        endpoint: &clipboard::EndpointSnapshot,
+    ) -> Result<()> {
+        if !clipboard_transfer_is_live(
+            self.clipboard_epoch.get(),
+            epoch,
+            self.state.get() == MonitorState::Running && endpoint.is_current(),
+        ) {
+            anyhow::bail!("clipboard transfer was cancelled by a machine lifecycle change");
+        }
+        Ok(())
+    }
+
+    fn retain_clipboard_cancellation_handle(
+        &self,
+        epoch: u64,
+        endpoint: &clipboard::EndpointSnapshot,
+        connection: &clipboard::ConnectedEndpoint,
+    ) -> Result<()> {
+        self.require_live_clipboard_transfer(epoch, endpoint)?;
+        let cancel = connection.cancel_handle()?;
+        if let Some((_, previous)) = self
+            .clipboard_connection
+            .borrow_mut()
+            .replace((epoch, cancel))
+        {
+            let _ = previous.shutdown(Shutdown::Both);
+        }
+        Ok(())
+    }
+
+    fn release_clipboard_cancellation_handle(&self, epoch: u64) {
+        let should_release = self
+            .clipboard_connection
+            .borrow()
+            .as_ref()
+            .is_some_and(|(connection_epoch, _)| *connection_epoch == epoch);
+        if should_release
+            && let Some((_, connection)) = self.clipboard_connection.borrow_mut().take()
+        {
+            let _ = connection.shutdown(Shutdown::Both);
+        }
+    }
+
+    fn send_host_clipboard_to_guest(self: &Rc<Self>) {
+        let (epoch, endpoint, pending_connection) = match self.begin_clipboard_transfer() {
+            Ok(transfer) => transfer,
+            Err(error) => {
+                self.show_error("Could not send clipboard to guest", &error);
+                return;
+            }
+        };
+        let this = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = async {
+                let connection = gio::spawn_blocking(move || pending_connection.finish())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("clipboard connection worker terminated"))??;
+                this.retain_clipboard_cancellation_handle(epoch, &endpoint, &connection)?;
+                // This is the only host clipboard read in the complete
+                // transport, and this future exists only because the user
+                // activated the native header action above.
+                let value = read_host_clipboard_snapshot().await?;
+                this.require_live_clipboard_transfer(epoch, &endpoint)?;
+                let mime = value.mime();
+                let bytes = value.bytes().len();
+                let nonce = *Uuid::new_v4().as_bytes();
+                gio::spawn_blocking(move || clipboard::put(connection, nonce, value))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("clipboard transport worker terminated"))??;
+                this.require_live_clipboard_transfer(epoch, &endpoint)?;
+                Ok::<_, anyhow::Error>((mime, bytes))
+            }
+            .await;
+            this.finish_clipboard_transfer(epoch, "host-to-guest", result);
+        });
+    }
+
+    fn copy_guest_clipboard_to_host(self: &Rc<Self>) {
+        let (epoch, endpoint, pending_connection) = match self.begin_clipboard_transfer() {
+            Ok(transfer) => transfer,
+            Err(error) => {
+                self.show_error("Could not copy guest clipboard to host", &error);
+                return;
+            }
+        };
+        let this = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let result = async {
+                let connection = gio::spawn_blocking(move || pending_connection.finish())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("clipboard connection worker terminated"))??;
+                this.retain_clipboard_cancellation_handle(epoch, &endpoint, &connection)?;
+                let nonce = *Uuid::new_v4().as_bytes();
+                let value = gio::spawn_blocking(move || clipboard::get(connection, nonce))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("clipboard transport worker terminated"))??;
+                this.require_live_clipboard_transfer(epoch, &endpoint)?;
+                let mut value = value;
+                let mime = value.mime();
+                let bytes = value.bytes().len();
+                if mime == Mime::Png {
+                    let decoded = decode_host_clipboard_image(value.take_bytes()).await?;
+                    value.install_decoded_image(decoded)?;
+                }
+                this.require_live_clipboard_transfer(epoch, &endpoint)?;
+                this.install_host_clipboard(value)?;
+                Ok((mime, bytes))
+            }
+            .await;
+            this.finish_clipboard_transfer(epoch, "guest-to-host", result);
+        });
+    }
+
+    fn install_host_clipboard(&self, mut value: ClipboardValue) -> Result<()> {
+        let display = gdk::Display::default().context("GTK has no active host display")?;
+        let host_clipboard = display.clipboard();
+        match value.mime() {
+            Mime::Text => {
+                let bytes = ZeroizingBytes(value.take_bytes());
+                let text = std::str::from_utf8(&bytes.0)
+                    .context("validated guest clipboard text became invalid")?;
+                // This sets a new host-owned value. It does not give the guest
+                // a reference to the host clipboard object or provider.
+                host_clipboard.set_text(text);
+                Ok(())
+            }
+            Mime::Png => {
+                let mut decoded = value
+                    .take_decoded_image()
+                    .context("validated guest clipboard image lacks decoded pixels")?;
+                let width = i32::try_from(decoded.width)
+                    .context("validated clipboard image width is not representable")?;
+                let height = i32::try_from(decoded.height)
+                    .context("validated clipboard image height is not representable")?;
+                let pixels = glib::Bytes::from_owned(ZeroizingBytes(decoded.take_rgba()));
+                // Untrusted PNG decode and conversion happened in the
+                // bounded transport worker. Constructing a MemoryTexture is
+                // only a constant-time wrapper around already decoded RGBA.
+                let texture = gdk::MemoryTexture::new(
+                    width,
+                    height,
+                    gdk::MemoryFormat::R8g8b8a8,
+                    &pixels,
+                    decoded.stride,
+                );
+                host_clipboard.set_texture(&texture);
+                Ok(())
+            }
+            Mime::None => anyhow::bail!("validated clipboard value has no supported MIME"),
+        }
+    }
+
+    fn finish_clipboard_transfer(
+        &self,
+        epoch: u64,
+        direction: &'static str,
+        result: Result<(Mime, usize)>,
+    ) {
+        self.release_clipboard_cancellation_handle(epoch);
+        if self.clipboard_epoch.get() != epoch {
+            // A newer machine lifecycle may already have its own transfer.
+            // The stale completion must not clear its busy flag, show a
+            // dialog, or overwrite its diagnostics.
+            return;
+        }
+        self.clipboard_busy.set(false);
+        self.update_clipboard_action_state();
+        match result {
+            Ok((mime, bytes)) => {
+                if let Err(error) =
+                    self.save_clipboard_diagnostic(direction, Some(mime), bytes, "success", None)
+                {
+                    eprintln!("wildbuzzard-display: saving clipboard diagnostics: {error:#}");
+                }
+                let destination = if direction == "host-to-guest" {
+                    "The selected host clipboard snapshot is now available inside the guest."
+                } else {
+                    "The selected guest clipboard snapshot is now available on the host."
+                };
+                show_info_dialog(&self.window, "Clipboard transferred", destination);
+            }
+            Err(error) => {
+                if let Err(save_error) = self.save_clipboard_diagnostic(
+                    direction,
+                    None,
+                    0,
+                    "failed",
+                    Some("transfer_failed"),
+                ) {
+                    eprintln!(
+                        "wildbuzzard-display: saving clipboard failure diagnostics: {save_error:#}"
+                    );
+                }
+                self.show_error("Clipboard transfer failed", &error);
+            }
+        }
+    }
+
+    fn save_clipboard_diagnostic(
+        &self,
+        direction: &str,
+        mime: Option<Mime>,
+        bytes: usize,
+        result: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let value = serde_json::json!({
+            "schema": 1,
+            "timestamp_ms": timestamp_ms,
+            "direction": direction,
+            "mime": mime.and_then(Mime::canonical),
+            "bytes": bytes,
+            "result": result,
+            "error": error,
+        });
+        atomic_json(&self.launch.status_dir.join("clipboard.json"), &value)
     }
 
     fn open_settings(&self) {
@@ -2884,13 +3380,13 @@ impl NativeWindow {
             &grid,
             3,
             "Host surface scale",
-            &format!("{:.0}%", self.scale_120.get() as f64 / 1.2),
+            &format!("{:.0}%", self.host_surface_scale_120.get() as f64 / 1.2),
         );
         add_diagnostic(
             &grid,
             4,
             "Guest desktop scale",
-            &format!("{:.0}%", self.guest_scale_120.get() as f64 / 1.2),
+            &format!("{:.0}%", self.guest_ui_scale_120.get() as f64 / 1.2),
         );
         add_diagnostic(&grid, 5, "Host refresh", &refresh);
         add_diagnostic(
@@ -3080,7 +3576,7 @@ impl NativeWindow {
         // the native guest dmabuf in QA artifacts at fractional scale. Render
         // the complete host application at the surface's physical pixel size
         // so a 1600px guest buffer occupies exactly 1600 captured pixels.
-        let scale_120 = self.scale_120.get();
+        let scale_120 = self.host_surface_scale_120.get();
         let mapping = PixelMapping::new(logical_width as u32, logical_height as u32, scale_120)
             .context("host application dimensions exceed Wayland fixed-point coordinates")?;
         let physical_width = mapping.physical_width as i32;
@@ -3156,40 +3652,27 @@ impl NativeWindow {
     }
 
     fn save_output_state(&self) -> Result<()> {
-        let host_scale_120 = self.scale_120.get();
-        let guest_scale_120 = self.guest_scale_120.get();
+        let host_surface_scale_120 = self.host_surface_scale_120.get();
+        let guest_ui_scale_120 = self.guest_ui_scale_120.get();
         let mapping = PixelMapping::new(
             self.viewport_width.get(),
             self.viewport_height.get(),
-            host_scale_120,
+            host_surface_scale_120,
         )
         .context("host viewport exceeds supported Wayland buffer dimensions")?;
         let physical_width = mapping.physical_width;
         let physical_height = mapping.physical_height;
-        let guest_logical_width = guest_logical_dimension(physical_width, guest_scale_120);
-        let guest_logical_height = guest_logical_dimension(physical_height, guest_scale_120);
-        let offload_geometry = self.offload_geometry.borrow().clone();
+        let logical_width = guest_logical_dimension(physical_width, guest_ui_scale_120);
+        let logical_height = guest_logical_dimension(physical_height, guest_ui_scale_120);
         let value = serde_json::json!({
-            "schema": 6,
-            "scale_120": guest_scale_120,
-            "host_scale_120": host_scale_120,
-            "host_scale_denominator": WAYLAND_SCALE_DENOMINATOR,
-            "host_viewport_width": self.viewport_width.get(),
-            "host_viewport_height": self.viewport_height.get(),
-            "host_pixel_mapping_integral": mapping.is_integral(),
-            "host_width_scale_remainder": mapping.width_remainder,
-            "host_height_scale_remainder": mapping.height_remainder,
-            "logical_width": guest_logical_width,
-            "logical_height": guest_logical_height,
-            "guest_logical_width": guest_logical_width,
-            "guest_logical_height": guest_logical_height,
+            "schema": 7,
             "physical_width": physical_width,
             "physical_height": physical_height,
-            "refresh_mhz": self.refresh_mhz.get(),
-            "state": self.state.get().label(),
-            "monitor_transport": "gtk4-graphics-offload-dmabuf",
-            "offload_geometry": offload_geometry,
-            "cua_coordinate_space": "guest-output-native-physical-dmabuf-pixels",
+            "host_surface_scale_120": host_surface_scale_120,
+            "guest_ui_scale_120": guest_ui_scale_120,
+            "logical_width": logical_width,
+            "logical_height": logical_height,
+            "geometry_generation": self.geometry_generation.get(),
         });
         atomic_json(
             &self.launch.output_state_dir.join("output-state.json"),
@@ -3226,7 +3709,237 @@ impl NativeWindow {
     }
 }
 
-const HEADER_MENU_LABELS: [&str; 4] = ["Machine", "Ports", "Devices", "Settings"];
+const HOST_CLIPBOARD_DEADLINE: Duration = Duration::from_secs(5);
+
+struct ZeroizingBytes(Vec<u8>);
+
+impl AsRef<[u8]> for ZeroizingBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for ZeroizingBytes {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+struct KillSubprocessOnDrop {
+    process: gio::Subprocess,
+    armed: bool,
+}
+
+impl KillSubprocessOnDrop {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for KillSubprocessOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.process.force_exit();
+        }
+    }
+}
+
+const HOST_TEXT_MIMES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "UTF8_STRING",
+    "text/plain",
+    "TEXT",
+    "STRING",
+];
+const HOST_IMAGE_MIMES: [&str; 9] = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/bmp",
+    "image/x-bmp",
+    "image/tiff",
+    "image/tif",
+    "image/x-tiff",
+];
+
+async fn read_host_clipboard_snapshot() -> Result<ClipboardValue> {
+    let display = gdk::Display::default().context("GTK has no active host display")?;
+    let host_clipboard = display.clipboard();
+    let formats = host_clipboard.formats();
+    let offered = formats.mime_types();
+    let offers_text = offered
+        .iter()
+        .any(|mime| is_supported_text_offer(mime.as_str()));
+    // GTK clipboard owners are allowed to advertise an in-process GdkTexture
+    // instead of a pre-encoded image MIME. Add every MIME for which GDK has a
+    // registered serializer before deciding whether this ordinary clipboard
+    // value is a supported image. The subsequent read remains asynchronous,
+    // so encoding a native screenshot cannot freeze the host window.
+    let serializable_formats = formats.union_serialize_mime_types();
+    let offers_image = HOST_IMAGE_MIMES
+        .iter()
+        .any(|mime| serializable_formats.contain_mime_type(mime));
+
+    let operation = async move {
+        if offers_text {
+            let text = host_clipboard
+                .read_future(&HOST_TEXT_MIMES, glib::Priority::DEFAULT)
+                .await
+                .context("reading the clicked host plain-text clipboard snapshot");
+            match text {
+                Ok((stream, actual_mime)) => {
+                    let value = if is_supported_text_offer(actual_mime.as_str()) {
+                        read_bounded_stream(stream, MAX_TEXT_BYTES)
+                            .await
+                            .and_then(clipboard::validated_text)
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "host clipboard returned an unrequested text representation"
+                        ))
+                    };
+                    if value.is_ok() || !offers_image {
+                        return value;
+                    }
+                }
+                Err(error) if !offers_image => return Err(error),
+                Err(_) => {}
+            }
+        }
+
+        if !offers_image {
+            anyhow::bail!("the host clipboard has no supported plain text or still image");
+        }
+
+        // Request an ordinary serialized still image. GDK performs registered
+        // GdkTexture/Pixbuf serialization when the source is a native toolkit
+        // screenshot, and selects a directly offered MIME for JPEG/WebP/BMP/
+        // TIFF sources. The source therefore never needs to have originated
+        // as a PNG file.
+        let (stream, actual_mime) = host_clipboard
+            .read_future(&HOST_IMAGE_MIMES, glib::Priority::DEFAULT)
+            .await
+            .context("the host clipboard has no supported plain text or still image")?;
+        if !is_supported_image_offer(actual_mime.as_str()) {
+            anyhow::bail!("host clipboard returned an unrequested image representation");
+        }
+        let source = read_bounded_stream(stream, MAX_IMAGE_BYTES).await?;
+        canonicalize_host_clipboard_image(source).await
+    };
+    let timeout = glib::timeout_future(HOST_CLIPBOARD_DEADLINE);
+    futures_util::pin_mut!(operation, timeout);
+    match select(operation, timeout).await {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => {
+            anyhow::bail!("host clipboard source did not answer within 5 seconds")
+        }
+    }
+}
+
+async fn canonicalize_host_clipboard_image(source: Vec<u8>) -> Result<ClipboardValue> {
+    let output =
+        run_image_subprocess(clipboard::IMAGE_WORKER_PNG_ARG, source, MAX_IMAGE_BYTES).await?;
+    clipboard::png_from_image_worker(output)
+}
+
+async fn decode_host_clipboard_image(source: Vec<u8>) -> Result<clipboard::DecodedImage> {
+    let raw_limit = 32_usize
+        .checked_add(
+            usize::try_from(wildbuzzard_clipboard_protocol::MAX_IMAGE_PIXELS)
+                .context("clipboard pixel limit is not representable")?
+                .checked_mul(4)
+                .context("clipboard raw-image limit overflow")?,
+        )
+        .context("clipboard raw-image limit overflow")?;
+    let output = run_image_subprocess(clipboard::IMAGE_WORKER_RAW_ARG, source, raw_limit).await?;
+    clipboard::decoded_from_image_worker(output)
+}
+
+async fn run_image_subprocess(mode: &str, source: Vec<u8>, output_limit: usize) -> Result<Vec<u8>> {
+    let executable = std::env::current_exe().context("locating clipboard image worker")?;
+    let arguments = [executable.as_os_str(), std::ffi::OsStr::new(mode)];
+    let process = gio::Subprocess::newv(
+        &arguments,
+        gio::SubprocessFlags::STDIN_PIPE
+            | gio::SubprocessFlags::STDOUT_PIPE
+            | gio::SubprocessFlags::STDERR_SILENCE,
+    )
+    .context("starting confined clipboard image worker")?;
+    let mut guard = KillSubprocessOnDrop {
+        process: process.clone(),
+        armed: true,
+    };
+    let input = glib::Bytes::from_owned(ZeroizingBytes(source));
+    let communication = process.communicate_future(Some(&input));
+    let timeout = glib::timeout_future(HOST_CLIPBOARD_DEADLINE);
+    futures_util::pin_mut!(communication, timeout);
+    let output = match select(communication, timeout).await {
+        Either::Left((result, _)) => {
+            let (stdout, _) = result.context("communicating with clipboard image worker")?;
+            if !process.is_successful() {
+                anyhow::bail!("clipboard image worker rejected the still image");
+            }
+            guard.disarm();
+            stdout.context("clipboard image worker returned no output")?
+        }
+        Either::Right(((), _)) => {
+            process.force_exit();
+            // Reap the fixed child after SIGKILL. This future normally
+            // resolves immediately; a second bound prevents any platform
+            // anomaly from stalling the GTK main context.
+            let wait = process.wait_future();
+            let reap_timeout = glib::timeout_future(Duration::from_secs(1));
+            futures_util::pin_mut!(wait, reap_timeout);
+            let _ = select(wait, reap_timeout).await;
+            anyhow::bail!("clipboard image conversion exceeded its 5-second deadline");
+        }
+    };
+    let mut output = output.into_data();
+    if output.len() > output_limit {
+        output.fill(0);
+        anyhow::bail!("clipboard image worker exceeded its bounded output size");
+    }
+    let value = output.to_vec();
+    output.fill(0);
+    Ok(value)
+}
+
+fn is_supported_text_offer(offered: &str) -> bool {
+    offered.eq_ignore_ascii_case("text/plain;charset=utf-8")
+        || offered.eq_ignore_ascii_case("text/plain")
+        || matches!(offered, "UTF8_STRING" | "TEXT" | "STRING")
+}
+
+fn is_supported_image_offer(offered: &str) -> bool {
+    HOST_IMAGE_MIMES
+        .iter()
+        .any(|supported| offered.eq_ignore_ascii_case(supported))
+}
+
+async fn read_bounded_stream(stream: gio::InputStream, limit: usize) -> Result<Vec<u8>> {
+    const CHUNK: usize = 64 * 1024;
+    let mut value = ZeroizingBytes(Vec::new());
+    loop {
+        let allowance = limit.saturating_add(1).saturating_sub(value.0.len());
+        if allowance == 0 {
+            anyhow::bail!("clipboard source exceeds its {limit}-byte limit");
+        }
+        let chunk = stream
+            .read_bytes_future(allowance.min(CHUNK), glib::Priority::DEFAULT)
+            .await
+            .context("reading clipboard source bytes")?;
+        if chunk.is_empty() {
+            break;
+        }
+        value.0.extend_from_slice(&chunk);
+        if value.0.len() > limit {
+            anyhow::bail!("clipboard source exceeds its {limit}-byte limit");
+        }
+    }
+    Ok(std::mem::take(&mut value.0))
+}
+
+const HEADER_MENU_LABELS: [&str; 5] = ["Machine", "Ports", "Devices", "Clipboard", "Settings"];
 const MACHINE_LIFECYCLE_MENU_ITEMS: [(&str, &str); 3] = [
     ("Start", "app.start"),
     ("Stop", "app.stop"),
@@ -3238,6 +3951,10 @@ const MACHINE_WINDOW_MENU_ITEMS: [(&str, &str); 2] = [
 ];
 const PORTS_MENU_ITEMS: [(&str, &str); 1] = [("Configure Live Port Mappings…", "app.ports")];
 const DEVICES_MENU_ITEMS: [(&str, &str); 1] = [("Audio, Microphone and Camera…", "app.media")];
+const CLIPBOARD_MENU_ITEMS: [(&str, &str); 2] = [
+    ("Send Host Clipboard to Guest", "app.clipboard-to-guest"),
+    ("Copy Guest Clipboard to Host", "app.clipboard-to-host"),
+];
 const SETTINGS_MENU_ITEMS: [(&str, &str); 2] = [
     ("Machine Settings…", "app.settings"),
     ("Display Diagnostics…", "app.diagnostics"),
@@ -3259,6 +3976,9 @@ fn build_header_controls() -> gtk::Box {
     let devices = gio::Menu::new();
     append_menu_items(&devices, &DEVICES_MENU_ITEMS);
 
+    let clipboard = gio::Menu::new();
+    append_menu_items(&clipboard, &CLIPBOARD_MENU_ITEMS);
+
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     controls.set_valign(gtk::Align::Center);
     for (label, tooltip, model) in [
@@ -3275,6 +3995,11 @@ fn build_header_controls() -> gtk::Box {
         ),
         (
             HEADER_MENU_LABELS[3],
+            "Explicit one-shot text or image clipboard transfer",
+            clipboard,
+        ),
+        (
+            HEADER_MENU_LABELS[4],
             "Machine settings and display diagnostics",
             settings,
         ),
@@ -3475,6 +4200,18 @@ fn show_error_dialog(parent: &gtk::ApplicationWindow, heading: &str, error: &any
     dialog.show(Some(parent));
 }
 
+fn show_info_dialog(parent: &gtk::ApplicationWindow, heading: &str, detail: &str) {
+    let dialog = gtk::AlertDialog::builder()
+        .modal(true)
+        .message(heading)
+        .detail(detail)
+        .buttons(["Close"])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+    dialog.show(Some(parent));
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PixelMapping {
     physical_width: u32,
@@ -3501,6 +4238,7 @@ impl PixelMapping {
         })
     }
 
+    #[cfg(test)]
     fn is_integral(self) -> bool {
         self.width_remainder == 0 && self.height_remainder == 0
     }
@@ -3807,7 +4545,23 @@ fn contains_subsurface_node(node: &gtk::gsk::RenderNode) -> bool {
 fn atomic_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value).context("serializing display state")?;
-    fs::write(&temporary, bytes).with_context(|| format!("writing {}", temporary.display()))?;
+    let mut output = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)
+        .with_context(|| format!("opening {}", temporary.display()))?;
+    output
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("securing {}", temporary.display()))?;
+    output
+        .write_all(&bytes)
+        .with_context(|| format!("writing {}", temporary.display()))?;
+    output
+        .sync_all()
+        .with_context(|| format!("syncing {}", temporary.display()))?;
+    drop(output);
     fs::rename(&temporary, path).with_context(|| format!("saving {}", path.display()))
 }
 
@@ -3816,10 +4570,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn atomic_json_is_private_even_with_a_permissive_process_umask() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("output-state.json");
+        atomic_json(&path, &serde_json::json!({"schema": 7})).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
     fn header_menus_keep_every_host_action_in_the_requested_order() {
         assert_eq!(
             HEADER_MENU_LABELS,
-            ["Machine", "Ports", "Devices", "Settings"]
+            ["Machine", "Ports", "Devices", "Clipboard", "Settings"]
         );
         assert_eq!(
             MACHINE_LIFECYCLE_MENU_ITEMS,
@@ -3843,6 +4608,13 @@ mod tests {
         assert_eq!(
             DEVICES_MENU_ITEMS,
             [("Audio, Microphone and Camera…", "app.media")]
+        );
+        assert_eq!(
+            CLIPBOARD_MENU_ITEMS,
+            [
+                ("Send Host Clipboard to Guest", "app.clipboard-to-guest"),
+                ("Copy Guest Clipboard to Host", "app.clipboard-to-host"),
+            ]
         );
         assert_eq!(
             SETTINGS_MENU_ITEMS,
@@ -3956,6 +4728,44 @@ mod tests {
                 ),
                 integral
             );
+        }
+    }
+
+    #[test]
+    fn host_and_guest_scale_matrix_keeps_one_native_physical_framebuffer() {
+        let presets = [
+            GuestScalePreset::Automatic,
+            GuestScalePreset::Percent100,
+            GuestScalePreset::Percent125,
+            GuestScalePreset::Percent150,
+            GuestScalePreset::Percent175,
+            GuestScalePreset::Percent200,
+        ];
+        for host_scale_120 in [120_u32, 150, 160, 180, 210, 240] {
+            let mapping = PixelMapping::new(1279, 799, host_scale_120).unwrap();
+            let physical = (mapping.physical_width, mapping.physical_height);
+            for preset in presets {
+                let guest_ui_scale_120 = preset.resolve(host_scale_120);
+                assert_eq!(
+                    (mapping.physical_width, mapping.physical_height),
+                    physical,
+                    "guest preset {preset:?} changed the host-derived framebuffer"
+                );
+                assert_eq!(
+                    guest_logical_dimension(mapping.physical_width, guest_ui_scale_120),
+                    u64::from(mapping.physical_width)
+                        .saturating_mul(120)
+                        .checked_div(u64::from(guest_ui_scale_120))
+                        .unwrap() as u32
+                );
+                assert_eq!(
+                    guest_logical_dimension(mapping.physical_height, guest_ui_scale_120),
+                    u64::from(mapping.physical_height)
+                        .saturating_mul(120)
+                        .checked_div(u64::from(guest_ui_scale_120))
+                        .unwrap() as u32
+                );
+            }
         }
     }
 
@@ -4318,5 +5128,74 @@ mod tests {
         assert_eq!(refresh_interval(0), Duration::from_nanos(16_666_666));
         assert_eq!(refresh_interval(165_000), Duration::from_nanos(6_060_606));
         assert_eq!(refresh_interval(265_000), Duration::from_nanos(3_773_584));
+    }
+
+    #[test]
+    fn clipboard_completion_is_bound_to_one_machine_lifecycle() {
+        let running_epoch = 17;
+        assert!(clipboard_transfer_is_live(
+            running_epoch,
+            running_epoch,
+            true
+        ));
+        assert!(!clipboard_transfer_is_live(
+            running_epoch,
+            running_epoch,
+            false
+        ));
+
+        let stopping_epoch =
+            lifecycle_clipboard_epoch(running_epoch, MonitorState::Running, MonitorState::Stopping);
+        assert_ne!(stopping_epoch, running_epoch);
+        assert!(!clipboard_transfer_is_live(
+            stopping_epoch,
+            running_epoch,
+            true
+        ));
+        assert_eq!(
+            lifecycle_clipboard_epoch(
+                stopping_epoch,
+                MonitorState::Stopping,
+                MonitorState::Stopping,
+            ),
+            stopping_epoch
+        );
+    }
+
+    #[test]
+    fn clipboard_text_aliases_are_exact_and_do_not_shadow_images() {
+        for supported in [
+            "text/plain;charset=utf-8",
+            "TEXT/PLAIN;CHARSET=UTF-8",
+            "text/plain",
+            "UTF8_STRING",
+            "TEXT",
+            "STRING",
+        ] {
+            assert!(is_supported_text_offer(supported), "{supported}");
+        }
+        for unsupported in [
+            "text/plain-evil",
+            "text/plain;charset=utf-8;payload=html",
+            "UTF8_STRING_EXTRA",
+            "text/html",
+            "text/rtf",
+            "text/uri-list",
+            "utf8_string",
+        ] {
+            assert!(!is_supported_text_offer(unsupported), "{unsupported}");
+        }
+        for supported in HOST_IMAGE_MIMES {
+            assert!(is_supported_image_offer(supported), "{supported}");
+        }
+        for unsupported in [
+            "image/svg+xml",
+            "image/png;profile=host",
+            "image/apng",
+            "image/gif",
+            "image/png-evil",
+        ] {
+            assert!(!is_supported_image_offer(unsupported), "{unsupported}");
+        }
     }
 }

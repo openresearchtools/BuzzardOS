@@ -437,12 +437,52 @@ def inspect_rootfs(rootfs: Path) -> dict[str, object]:
         raise MetadataError("rootfs is not a directory")
     if (root_metadata.st_uid, root_metadata.st_gid) != (0, 0):
         raise MetadataError("canonical rootfs root must be owned by numeric 0:0")
+    runtime_root = rootfs / "opt/wildbuzzard/runtime"
+    runtime_metadata = runtime_root.lstat()
+    if (
+        not stat.S_ISDIR(runtime_metadata.st_mode)
+        or stat.S_ISLNK(runtime_metadata.st_mode)
+        or (runtime_metadata.st_uid, runtime_metadata.st_gid) != (0, 0)
+        or stat.S_IMODE(runtime_metadata.st_mode) & 0o022
+    ):
+        raise MetadataError("protected runtime root is not a root-owned real directory")
+    current = runtime_root / "current"
+    current_metadata = current.lstat()
+    if not stat.S_ISLNK(current_metadata.st_mode) or current_metadata.st_uid != 0:
+        raise MetadataError("protected runtime current is not a root-owned symlink")
+    revision = os.readlink(current)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]{0,127}", revision):
+        raise MetadataError("protected runtime current has an unsafe target")
+    revision_dir = runtime_root / revision
+    revision_metadata = revision_dir.lstat()
+    if (
+        not stat.S_ISDIR(revision_metadata.st_mode)
+        or stat.S_ISLNK(revision_metadata.st_mode)
+        or (revision_metadata.st_uid, revision_metadata.st_gid) != (0, 0)
+        or stat.S_IMODE(revision_metadata.st_mode) & 0o022
+    ):
+        raise MetadataError("protected runtime revision is not a root-owned real directory")
+    for path in revision_dir.rglob("*"):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise MetadataError(f"protected runtime contains a symlink: {path}")
+        if (metadata.st_uid, metadata.st_gid) != (0, 0):
+            raise MetadataError(f"protected runtime path is not owned by 0:0: {path}")
+        if stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise MetadataError(f"protected runtime path is group/world writable: {path}")
+        if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
+            raise MetadataError(f"protected runtime contains a special file: {path}")
+
     required = [
         "lib/systemd/systemd",
-        "usr/libexec/wildbuzzard-init",
-        "usr/bin/sway",
-        "usr/libexec/wildbuzzard-shell",
-        "usr/local/bin/cua-driver",
+        "opt/wildbuzzard/runtime/current/bin/sway",
+        "opt/wildbuzzard/runtime/current/bin/swaymsg",
+        "opt/wildbuzzard/runtime/current/bin/cua-driver",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-clipboard-agent",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-init",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-settings",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell",
+        "usr/libexec/wildbuzzard-shortcut-helper",
         "var/lib/dpkg/status",
     ]
     missing = [relative for relative in required if not (rootfs / relative).is_file()]

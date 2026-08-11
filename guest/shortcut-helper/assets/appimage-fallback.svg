@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path fill="#5b5d60" d="M13 4h26l12 12v44H13z"/>
+  <path fill="#d8d8d8" d="M39 4v13h12zM20 28h24v5H20zm0 10h24v5H20zm0 10h16v5H20z"/>
+</svg>

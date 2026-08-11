@@ -2,7 +2,14 @@
 Name=Wild Buzzard Graphite
 Comment=Independently authored graphite desktop navigation icons with a warm orange palette
 Inherits=Adwaita,hicolor
-Directories=scalable/places,scalable/mimetypes,symbolic/places,symbolic/mimetypes
+Directories=scalable/apps,scalable/places,scalable/mimetypes,symbolic/apps,symbolic/places,symbolic/mimetypes
+
+[scalable/apps]
+Size=64
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Applications
 
 [scalable/places]
 Size=64
@@ -24,6 +31,13 @@ MinSize=8
 MaxSize=512
 Type=Scalable
 Context=Places
+
+[symbolic/apps]
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable
+Context=Applications
 
 [symbolic/mimetypes]
 Size=16

@@ -6,8 +6,9 @@
 - Parent specification: `../AGENTS.md`
 
 This document turns the agreed Settings, desktop, AppImage, update, sound,
-display-scale, and branding decisions into one implementation plan. It is not
-a speculative design note. Implementations and tests must satisfy this
+display-scale, branding, and explicit clipboard-transfer decisions into one
+implementation plan. It is not a speculative design note. Implementations and
+tests must satisfy this
 contract. If this file and `AGENTS.md` ever disagree, the stricter requirement
 applies and both files must be corrected in the same change.
 
@@ -20,6 +21,8 @@ The finished experience must provide:
 - a native, accessible Settings window;
 - persistent light and dark themes;
 - guest UI-scale controls that never reduce the physical output resolution;
+- persistent keyboard language/layout, variant, Compose, and layout-switching
+  controls for the private Sway seat;
 - controls for the guest's private PipeWire audio graph;
 - visible Debian package-update status and an explicit Update Now workflow;
 - automatic discovery of applications installed through normal Debian
@@ -28,12 +31,16 @@ The finished experience must provide:
 - relinking through a file chooser when a registered AppImage moves;
 - desktop shortcuts for installed applications and AppImages;
 - normal desktop cut, copy, paste, rename, and confirmed delete operations;
+- two host-authorized, one-shot text/still-image clipboard snapshot actions
+  without a shared or continuously synchronized host/guest clipboard;
 - a distinctive common-buzzard logo and resolution-independent wallpaper; and
 - full AT-SPI and in-guest CUA access to every control and desktop item.
 
 The host launcher and the guest remain separate products at the trust
 boundary. Guest Settings must never gain access to the host desktop, host
-filesystem beyond explicit shares, host D-Bus, or host device controls.
+filesystem beyond explicit shares, host D-Bus, host clipboard service, or host
+device controls. A host-authorized clipboard snapshot gives the guest only the
+copied bytes, never access to the source clipboard.
 
 ## 2. Decisions that are final
 
@@ -170,6 +177,38 @@ atomically returns the resulting physical and logical geometry. This interface
 cannot resize or move the host window, edit machine configuration, select
 devices, access another machine, or issue an arbitrary host command.
 
+Keyboard changes use a second owner-only session interface whose only
+mutating request is conceptually:
+
+```text
+SetGuestKeyboard {
+    model,
+    layout,
+    variant,
+    options
+}
+```
+
+Every field is length-bounded and restricted to the same ASCII XKB
+component-name syntax enforced by desktop-core and the host parser. Layout has
+one to four non-empty comma-separated groups. Variant is globally empty or has
+at most the matching number of comma-aligned slots; an empty aligned slot such
+as `,nodeadkeys` is valid. A non-empty options list has no empty segment.
+The service compiles the complete keymap with the protected pinned
+libxkbcommon and XKB data before coordinating one paired host/Sway
+transaction. The host receives only the same bounded RMLVO fields, a random
+transaction token, and the canonical keymap digest; it never receives a guest
+path or serialized keymap. Prepare queues only parent physical-keyboard
+events, the guest applies and confirms one sealed keymap on the exact
+nested keyboard, and Commit atomically activates the matching native
+modifier/group state before replay. A failed apply restores the prior guest
+map before Abort releases queued input. The interface does not accept a
+command, shell fragment, caller-selected path, environment variable, or host
+keyboard object. Invalid combinations are rejected without changing the
+persisted setting. CUA keeps its own persistent synthetic keyboard on the
+same private Sway seat so semantic agent typing and human layout selection
+coexist.
+
 ### 3.2 Persistent state
 
 User-owned state lives in the persistent guest home:
@@ -221,13 +260,16 @@ Pages are:
 
 1. Appearance
 2. Display
-3. Sound
-4. Updates
-5. Applications & Desktop
-6. About
+3. Keyboard
+4. Sound
+5. Updates
+6. Applications & Desktop
+7. About
 
 There is no Apply button for changes that can be safely committed
-immediately. Changes requiring a session restart say so before confirmation.
+independently. Keyboard model/layout/variant/options are one grouped keymap
+transaction and therefore have one explicit Apply action after local
+validation. Changes requiring a session restart say so before confirmation.
 Every failed change restores the last confirmed state and shows the actual
 error.
 
@@ -353,6 +395,89 @@ protocol support, diagnostics may identify that application limitation. The
 Wild Buzzard final monitor surface itself must still remain native-resolution
 and must never hide whole-output stretching.
 
+### 6.1 Keyboard language, layout, and Compose
+
+Keyboard Settings provides:
+
+- a common language/layout chooser plus an editable XKB layout code for every
+  installed XKB layout, including comma-separated layout groups;
+- the XKB keyboard model, defaulting to `pc105`;
+- optional comma-aligned variants;
+- optional comma-separated XKB options for Compose and layout switching;
+- the confirmed active Sway layout name; and
+- an ordinary GTK editable for testing characters, Backspace, modifiers,
+  Compose, and layout-specific symbols immediately.
+
+The selected keymap is guest state, exactly as on a physical Linux desktop.
+Raw evdev keycodes from the host window are forwarded unchanged and
+interpreted once by the configured nested physical keyboard in stock Sway.
+The pinned wlroots Wayland backend intentionally ignores the parent's keymap
+payload, so Sway remains authoritative for guest symbols and shortcuts; no US
+key-remapping table may be introduced in the host input path. That backend
+does consume the parent keyboard's serialized modifier and layout-group
+state, however. The native gateway must therefore compile the byte-identical
+canonical map and change that state in the same transaction as Sway, or AltGr,
+Compose modifiers, and `grp:*` switching would disagree with guest symbols.
+
+Keymap compilation is distribution-stable, not dependent on whichever
+`xkb-data` happens to be installed on the host or later installed by a guest
+user. The OCI Sway builder resolves one `xkb-data` package from its immutable
+Debian snapshot, normalizes it to regular files, and emits a canonical
+file/hash manifest, exact package version, and copyright. That same payload is
+used at `/opt/wildbuzzard/runtime/current/share/X11/xkb` in the protected guest
+runtime and at `$APPDIR/usr/share/wildbuzzard/xkb` in the host application.
+Both sides also load the byte-identical `libxkbcommon.so.0` copied from that
+same pinned builder, rather than separately serializing `TEXT_V1` with the
+build host's library. Packaging and artifact audits reject symlinks, special
+files, hash drift, version drift, a missing notice, or any host/guest data or
+library byte mismatch. Runtime keymap compilation is given these roots and
+libraries explicitly and must not add default host or mutable guest paths as a
+fallback.
+
+The settings schema stores only the exact bounded XKB contract above. The
+session-private output-sync service compiles each request and keeps a unique
+owner-only `0600` disk snapshot solely as durable journal/restart evidence; it
+does not describe that file mode as immutable and never passes that pathname
+to Sway. Immediately before each Sway apply, output-sync opens the snapshot
+once with `O_NOFOLLOW`, validates the opened regular file and canonical digest,
+copies those exact bytes into an `MFD_ALLOW_SEALING` memfd, applies
+`F_SEAL_WRITE`, `F_SEAL_GROW`, `F_SEAL_SHRINK`, and `F_SEAL_SEAL`, and retains
+the descriptor for the complete active/prior lifetime. Stock Sway receives
+only `/proc/<output-sync-pid>/fd/<fd>`, so replacing or chmodding the user
+pathname cannot change the bytes Sway opens. The service requires exactly one
+input named `wayland-keyboard-wildbuzzard-seat`, applies the sealed map through
+fixed Sway IPC, and confirms Sway's inventory. Before native Prepare it durably
+journals the token, phase, prior/requested RMLVO, canonical digests, and managed
+snapshot paths in the private session runtime. Commit and Abort response loss
+is reconciled through Status rather than guessed. The supervised service uses
+that journal after a crash: it revalidates and reseals the snapshot, restores
+the prior Sway map before aborting a prepared transaction, or starts a new
+complete transaction back to still-authoritative persisted Settings when an
+unacknowledged commit completed. Settings persists only after the full paired
+Commit is confirmed. A failed persistence step requests a new paired
+transaction back to the prior setting and must report truthfully if that
+rollback fails.
+
+The CUA daemon may remain running and a CUA session may remain open while a
+human types. CUA does not grab the seat. Its virtual keyboard is persistent,
+serializes each short synthetic transaction, and handles named keys, chords,
+and Unicode text without a one-shot client. It tracks every down event, drains
+releases in reverse order, and publishes a zero modifier mask on success,
+error, unwind, session end, reconnect, and shutdown. Cancellation also
+unconditionally restores the fixed keymap and completes a bounded sync on that
+same Wayland client. If this barrier cannot be proven, session teardown
+fail-stops; a new-client sync is never accepted as proof. If a roundtrip fails after
+a down event, it first retries cleanup on the same keyboard. If the connection
+is dead, closing it makes pinned wlroots emit releases for its compositor-side
+pressed set on that same device before Sway removes it; only then does CUA
+reconnect and publish a zero modifier state. It never replays a press on a
+replacement keyboard, because that could execute a binding or insert text.
+SDK/runtime shutdown explicitly resets the process-global keyboard owner but
+keeps it reusable by later SDK instances; process exit and abrupt death use the
+same compositor-side destruction path. Human and CUA events
+sent at the exact same moment may interleave like two physical keyboards on
+one seat, but an idle CUA must never block or alter human input.
+
 ## 7. Sound
 
 Sound controls the guest's private PipeWire graph through
@@ -447,6 +572,21 @@ Thunar integration uses its supported custom-action mechanism. The underlying
 helper is file-manager-independent so other file managers may integrate later,
 but Wild Buzzard does not claim to inject menus into every third-party file
 manager.
+
+Thunar's pattern/range filter is only a fast context-menu prefilter:
+`*.AppImage;*.appimage`, one selected regular-file candidate. The fixed helper
+still opens the single `%f` argument without following a final symlink and is
+the authority that accepts only a genuine x86-64 Type-2 AppImage. The UCA
+command contains no user-controlled shell text, `sh -c`, command substitution,
+or multi-file field code.
+
+Because Thunar resolves one `Thunar/uca.xml` through XDG instead of merging
+the system and user files, guest login performs an idempotent user-owned merge.
+It replaces only actions carrying Wild Buzzard's fixed unique IDs and preserves
+every other user action and byte. The resulting file is bounded, parsed before
+modification, written atomically with mode `0600`, and never follows a symlink.
+A malformed, oversized, or unsafe existing file is preserved unchanged and
+produces an actionable guest-session diagnostic without blocking desktop boot.
 
 Settings > Applications & Desktop lists all AppImage registrations and offers
 Launch, Relink, Add/Remove Desktop Shortcut, Remove from Applications, and
@@ -629,8 +769,26 @@ Rename uses an inline editor or native dialog with the current basename
 selected appropriately. It rejects empty names, `.`, `..`, path separators,
 NUL, and collisions unless the user explicitly resolves the conflict.
 Renaming a registered AppImage through Wild Buzzard updates its registration
-atomically; an external rename is handled by the normal missing-target relink
-flow.
+as one crash-recoverable transaction; an external rename is handled by the
+normal missing-target relink flow.
+
+The Wild Buzzard rename path is one shortcut-helper transaction, not a shell
+file rename followed by a best-effort registration rollback. It holds a
+private inter-process lock shared by registration reads and mutations,
+durably writes one bounded strict journal, verifies the source by
+device/inode/size through the already-open XDG Desktop descriptor,
+uses a same-directory no-replace rename, fsyncs the Desktop directory, changes
+only the stable registration's target path, and then removes and fsyncs the
+journal. Launchers, icon projections, registration ID, and the AppImage bytes
+remain unchanged. Every RegistrationStore startup recovers an interrupted
+transaction forward from the observed inode location and registration target;
+both/neither locations, a replaced inode, a symlink, a removed registration,
+or an unrelated target path is ambiguity and blocks mutation without deleting
+either file. The Desktop rename itself is necessarily one-filesystem and
+atomic. XDG Desktop and XDG data/state may be different filesystems, so no
+false cross-filesystem atomic-commit claim is made: ordered fsync plus the
+durable journal provides deterministic power-loss recovery to one committed
+state.
 
 ### 12.4 Delete modal
 
@@ -650,6 +808,78 @@ Deletion uses descriptor-relative operations rooted at the resolved XDG
 Desktop directory, rejects traversal and mount-boundary surprises, and does
 not follow symlinks. Failures leave the model synchronized with the actual
 filesystem and display a concrete error.
+
+### 12.5 Host-authorized clipboard snapshots
+
+The native host header contains a direct `Clipboard` menu alongside
+`Machine`, `Ports`, `Devices`, and `Settings`. It exposes exactly:
+
+- `Send Host Clipboard to Guest`; and
+- `Copy Guest Clipboard to Host`.
+
+This is not clipboard sharing in the Wayland data-device sense. The guest never
+binds or proxies the host data-device manager, never receives a host clipboard
+handle, and cannot subscribe to or trigger a host clipboard read. The two
+ordinary clipboards remain independent before and after every transaction.
+
+For host-to-guest, activation of the native host action is the authorization
+event. Only then does the GTK host application lazily read one supported value
+from its clipboard. It copies that value into bounded process RAM, validates
+and canonicalizes it, sends only the resulting bytes in one typed transaction,
+and best-effort clears the transport buffer. The in-guest agent stores the
+value and becomes the owner of a normal private Sway clipboard selection so it
+can continue serving guest paste requests after the transport closes. It has
+no continuing reference or route to the host source.
+
+For guest-to-host, the native action creates a cryptographically unpredictable
+single-use nonce and a short deadline. The host sends one snapshot request to
+the fixed in-guest agent and accepts at most one matching response. It ignores
+unsolicited, replayed, wrong-direction, wrong-nonce, concurrent, and late
+messages. A guest response never causes a host clipboard read; after host-side
+validation succeeds, the host itself replaces its clipboard with the response
+bytes.
+
+The version-1 allowlist is deliberately small:
+
+- valid UTF-8 text without embedded NUL characters, canonical MIME
+  `text/plain;charset=utf-8`, maximum 8 MiB;
+  and
+- an ordinary still image offered through the native clipboard as PNG, JPEG,
+  WebP, BMP, TIFF, or an equivalent toolkit texture that serializes to one of
+  those formats. It is decoded under limits and canonicalized entirely in RAM
+  to `image/png` for transport. The canonical encoded size is at most 64 MiB,
+  width or height at most 8192 pixels, and decoded area at most 64 megapixels.
+
+`text/plain` is accepted as an input alias. PNG is only the private canonical
+representation; a native screenshot or copied image does not need to originate
+as PNG. HTML, RTF, SVG, animated images, URI/file lists, serialized arbitrary
+objects, executable formats, paths, and all unclassified MIME types are
+rejected. Text and image sources are read only after the host click. Source
+image structure, decoded geometry, and canonical PNG are checked before a
+guest-provided image is installed into the host clipboard. All reads, writes,
+decodes, conversions, and ownership handoffs have bounded memory and
+deadlines.
+
+The control plane is a fixed, versioned, length-delimited protocol. Messages
+contain only version, direction, request nonce, canonical MIME, byte length,
+and payload. Descriptors are `CLOEXEC`; message length is checked before
+allocation; transfers are serialized per machine. There are no arbitrary
+commands, paths, mounts, environment edits, network listeners, temporary
+files, or generic RPC calls. The endpoint is a guest-owned Unix listener at a
+fixed per-machine runtime path; there is no host listener for the guest to
+call. The host never services a guest-initiated host-read request, and it reads
+a guest response only while its own matching action is pending. A replaced or
+compromised guest agent can receive a host snapshot only after the explicit
+host-to-guest click, or offer hostile bytes only after the explicit
+guest-to-host click; it gains no independent host clipboard capability.
+
+Clipboard content and content hashes are never persisted, added to crash
+reports, or logged. Diagnostics may record only time, machine, direction,
+canonical MIME, bounded byte count, result, and a content-free error category.
+Buffers are best-effort zeroed and dropped on success, failure, timeout,
+machine stop, or agent disconnect. Each machine has an independent endpoint,
+nonce space, and pending transaction. Actions are disabled unless the machine
+is Running and its guest clipboard agent has completed readiness.
 
 ## 13. Guest package updates
 
@@ -818,16 +1048,25 @@ before treating the public brand as legally cleared.
 
 ```text
 Dark icon background     #181818
-Dark main mark           #FF7139
-Dark secondary mark      #FFD0BF
-Dark unboxed mark        #E6E6E6 + #FF7139
+Dark main mark           #82766D
+Dark secondary mark      #F3ECE4
+Dark detail              #24272A
+Dark Cinnamon accent     #D9683A
+Dark unboxed main        #93867C
 Light icon background    #F4F1EC
-Light main mark          #24272A
-Light accent             #BD4218
+Light main mark          #71665F
+Light secondary mark     #FFFDFC
+Light detail             #24272A
+Light Cinnamon accent    #C9572D
 Symbolic                 currentColor
 Dark wallpaper           #202225
 Light wallpaper          #F4F1EC
 ```
+
+The neutral brown-grey main mass is intentionally subordinate to the
+graphite, off-white, and Cinnamon-orange system. Cinnamon is a restrained
+cere/feather accent rather than a full orange bird silhouette. Dark and light
+variants change palette only; their audited geometry is identical.
 
 The four built-in wallpaper presets are deterministic: Dark Plain is solid
 `#202225`, Dark + Logo uses that same solid with the dark-theme mark, Light
@@ -873,10 +1112,15 @@ Every new function is usable by a human and by the installed in-guest agent.
 - Launcher paths are looked up by opaque IDs; no shell interpolation is used.
 - Desktop file operations are descriptor-relative, reject traversal, and do
   not follow symlinks for destructive actions.
-- Clipboard operations remain on the private guest Wayland session.
+- Desktop file Cut/Copy/Paste and all in-guest CUA clipboard operations remain
+  on the private guest Wayland session. The separate host-header clipboard
+  actions transfer only one validated byte snapshot under Section 12.5; they
+  expose no host clipboard object or guest-triggerable host read.
 - Sound controls cannot grant host media permissions.
-- No host socket, host D-Bus, host home, host clipboard, SSH server, VNC/RDP,
-  or guest control port is introduced.
+- No host D-Bus, host home, host clipboard service/data-device, SSH server,
+  VNC/RDP, or guest control port is introduced. The fixed clipboard endpoint
+  is not a host clipboard socket and supports no operation beyond its typed,
+  host-authorized snapshot protocol.
 - Registered files in `/shared` remain host-visible user files; registration
   grants no access beyond the existing explicit `/shared` mount.
 
@@ -888,6 +1132,8 @@ The reference OCI adds only the runtime dependencies needed by these features:
 - `pipewire-pulse` client support used by Settings;
 - the structured Debian package API used by the updater;
 - bounded AppImage metadata inspection support;
+- the fixed guest clipboard agent and its private-session Wayland client
+  closure;
 - the Wild Buzzard settings, helper, updater, themes, and logo assets; and
 - their complete license and provenance records.
 
@@ -944,8 +1190,8 @@ end-to-end testing, and final evidence.
 ### Phase 3: native Settings
 
 - Build the adaptive GTK4 Settings application.
-- Implement Appearance, Display, Sound, Applications & Desktop, Updates, and
-  About pages.
+- Implement Appearance, Display, Keyboard, Sound, Applications & Desktop,
+  Updates, and About pages.
 - Add the FreeDesktop launcher, icon, single-instance activation, and complete
   AT-SPI labels.
 
@@ -963,6 +1209,9 @@ end-to-end testing, and final evidence.
   output-sync, runtime, shell, input, and CUA.
 - Implement private PipeWire sound controls and host-permission status.
 - Verify exact physical screenshots and coordinate alignment at every scale.
+- Implement the two native host-header clipboard actions, typed per-machine
+  transport, fixed Sway clipboard agent, content validation, cancellation,
+  readiness, and isolation diagnostics specified in Section 12.5.
 
 ### Phase 6: safe updates
 
@@ -1021,6 +1270,39 @@ test evidence and must not silently weaken this contract to make tests pass.
   unchanged dmabuf fast-path truth, sharp text, and aligned CUA clicks.
 - Reject stale geometry immediately after each scale generation.
 
+### 19.3.1 Keyboard and CUA coexistence
+
+- Apply and persist at least `us`, `gb`, `de`, and `us`/`intl` with a Compose
+  option; stop/start and verify the same active Sway layout returns.
+- Reject malformed, oversized, command-shaped, missing, or unsupported XKB
+  component combinations without replacing the last confirmed setting.
+- In Settings, Mousepad, Foot, Firefox, a GTK application, a Qt application,
+  an Electron application, and an Xwayland application, test ordinary text,
+  shifted characters, layout-specific symbols, Backspace, Delete, arrows,
+  Enter, Tab, shortcuts, Caps Lock, Compose, and configured layout switching.
+- Keep CUA running. Execute Ctrl+L, text, Enter, an interrupted modifier
+  action, and a cancelled session; after each case require a neutral CUA
+  modifier ledger and immediately type and Backspace through the human host
+  input route without restarting Sway or the application.
+- In the hardware journey, issue host-origin Backspace/text/Enter immediately
+  after CUA `type_text` and before the next CUA key while the same CUA session
+  remains open. The input source must traverse the host compositor, native GTK
+  monitor, display gateway, and nested parent keyboard. GNOME acceptance uses
+  a bounded Mutter RemoteDesktop session that never enables clipboard and is
+  stopped on every exit. Other compositors require a declared harness hook or
+  an explicit interactive human step; guest `wtype` is not valid evidence.
+- Hold the Settings input-test field open while alternating CUA and human
+  actions. An idle CUA must never suppress a human key. Exact simultaneous
+  actions may interleave but must return to a neutral seat afterward.
+- Kill output-sync after journal creation, after host Prepare, after Sway
+  apply, after Commit is sent, and after a Commit response is lost. Require
+  bounded supervised restart, strict Status reconciliation, prior-Sway-before-
+  Abort ordering, no permanently queued physical keys, and persisted Settings
+  as the final active layout.
+- Exercise AltGr/level-three symbols and `grp:*` group switching through the
+  physical host-window input path, proving the native and Sway canonical
+  keymap digests and modifier/group state stay paired.
+
 ### 19.4 Sound
 
 - Enumerate real guest sinks, sources, and streams.
@@ -1042,6 +1324,36 @@ test evidence and must not silently weaken this contract to make tests pass.
   immediately; re-enable it and verify recovery without restarting PID 1.
 - Stop/Start the machine and verify the rule persists while the guest address
   is resolved again rather than relying on a stale hardcoded value.
+
+### 19.4.2 Explicit clipboard transfer
+
+- With no host clipboard action pending, repeatedly mutate host and guest
+  clipboards and prove neither side observes, subscribes to, or changes the
+  other. From a compromised-guest test process, prove no protocol operation can
+  request the current host clipboard.
+- Put multilingual text containing newlines, an em dash, accented Latin, CJK,
+  and emoji on the host clipboard; activate `Send Host Clipboard to Guest`;
+  paste/read it through a real guest GTK editable and CUA; require exact bytes.
+  Change the host clipboard afterward and prove the guest selection remains
+  the authorized snapshot.
+- Repeat host-to-guest with a native screenshot clipboard object and separate
+  PNG, JPEG, WebP, BMP, and TIFF sources; verify the canonical image's decoded
+  dimensions/content in a real guest application. Reject unsupported MIME,
+  invalid UTF-8, oversized text, oversized PNG, decompression-bomb geometry,
+  malformed PNG, timeout, and source cancellation without changing the guest
+  clipboard.
+- Put supported text and native screenshot/JPEG/WebP/BMP/TIFF/PNG still-image
+  values on the private guest clipboard and activate
+  `Copy Guest Clipboard to Host`; require exactly one matching snapshot to
+  replace the host clipboard. Prove unsolicited, replayed, wrong-nonce,
+  wrong-direction, late, oversized, malformed, and concurrent guest responses
+  do not modify the host clipboard.
+- Prove the two actions are disabled outside Running/agent-ready, cancel safely
+  during Stop/Restart/disconnect, preserve no content or hash in logs/state,
+  and use bounded RAM with no temporary files.
+- Run two machines simultaneously. Transfer different values in both
+  directions and prove their channels, nonces, ownership, and diagnostics do
+  not cross. Confirm host-header clicks never reach the guest input stream.
 
 ### 19.5 Debian applications and updates
 

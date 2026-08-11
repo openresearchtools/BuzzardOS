@@ -155,10 +155,14 @@ fn with_target_foreground<T>(
     }
 }
 
-fn close_tab(pid: u32, window_id: u64) -> anyhow::Result<()> {
+fn close_tab(
+    admission: &crate::wayland::KeyboardAdmission,
+    pid: u32,
+    window_id: u64,
+) -> anyhow::Result<()> {
     with_target_foreground(pid, window_id, || {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            crate::wayland::hotkey(window_id, &["ctrl".to_owned(), "w".to_owned()])
+            crate::wayland::hotkey(admission, window_id, &["ctrl".to_owned(), "w".to_owned()])
         } else {
             crate::input::send_key_xtest("w", &["ctrl"])
         }
@@ -166,6 +170,7 @@ fn close_tab(pid: u32, window_id: u64) -> anyhow::Result<()> {
 }
 
 fn trusted_keyboard_setup_navigation(
+    admission: &crate::wayland::KeyboardAdmission,
     pid: u32,
     window_id: u64,
     descriptor: &BrowserSetupDescriptor,
@@ -177,10 +182,10 @@ fn trusted_keyboard_setup_navigation(
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     with_target_foreground(pid, window_id, || {
         if wayland {
-            crate::wayland::hotkey_focused(&["ctrl".to_owned(), "t".to_owned()])?;
+            crate::wayland::hotkey_focused(admission, &["ctrl".to_owned(), "t".to_owned()])?;
             std::thread::sleep(Duration::from_millis(100));
-            crate::wayland::hotkey_focused(&["ctrl".to_owned(), "l".to_owned()])?;
-            crate::wayland::type_text_then_key_focused(base, "enter")
+            crate::wayland::hotkey_focused(admission, &["ctrl".to_owned(), "l".to_owned()])?;
+            crate::wayland::type_text_then_key_focused(admission, base, "enter")
         } else {
             crate::input::send_key_xtest("t", &["ctrl"])?;
             std::thread::sleep(Duration::from_millis(100));
@@ -218,6 +223,7 @@ fn trusted_keyboard_setup_navigation(
 }
 
 pub struct SetupUiHandle {
+    keyboard_admission: crate::wayland::KeyboardAdmission,
     pid: u32,
     window_id: u64,
     descriptor: &'static BrowserSetupDescriptor,
@@ -286,7 +292,7 @@ impl SetupUiHandle {
             );
             return Err(self.abort(error));
         }
-        if let Err(error) = close_tab(self.pid, self.window_id) {
+        if let Err(error) = close_tab(&self.keyboard_admission, self.pid, self.window_id) {
             let error = refusal(
                 BrowserRefusalCode::BrowserWrongTargetRefused,
                 format!("could not close the exact temporary setup tab: {error}"),
@@ -304,7 +310,7 @@ impl SetupUiHandle {
         let tree = crate::atspi::walk_tree(self.pid, self.window_id, None);
         Some(
             setup_page_proven(&tree.nodes, self.descriptor, self.trusted_setup_navigation)
-                && close_tab(self.pid, self.window_id).is_ok(),
+                && close_tab(&self.keyboard_admission, self.pid, self.window_id).is_ok(),
         )
     }
 }
@@ -357,6 +363,7 @@ pub fn abort_pending(pid: u32, window_id: u64, error: BrowserRefusal) -> Browser
 }
 
 pub fn enable(
+    keyboard_admission: crate::wayland::KeyboardAdmission,
     pid: u32,
     window_id: u64,
     descriptor: &'static BrowserSetupDescriptor,
@@ -365,6 +372,7 @@ pub fn enable(
     let initial_checkbox = exact_setup_checkbox(&initial.nodes, descriptor, false)?;
     let mut handle = if initial_checkbox.is_some() {
         SetupUiHandle {
+            keyboard_admission: keyboard_admission.clone(),
             pid,
             window_id,
             descriptor,
@@ -379,6 +387,7 @@ pub fn enable(
         }
     } else {
         let handle = SetupUiHandle {
+            keyboard_admission: keyboard_admission.clone(),
             pid,
             window_id,
             descriptor,
@@ -391,7 +400,9 @@ pub fn enable(
             foregrounded_window: true,
             injected_global_input: true,
         };
-        if let Err(error) = trusted_keyboard_setup_navigation(pid, window_id, descriptor) {
+        if let Err(error) =
+            trusted_keyboard_setup_navigation(&keyboard_admission, pid, window_id, descriptor)
+        {
             return Err(handle.abort(refusal(
                 BrowserRefusalCode::BrowserWrongTargetRefused,
                 format!(

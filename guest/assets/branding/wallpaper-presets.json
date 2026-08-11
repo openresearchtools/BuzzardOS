@@ -1,0 +1,40 @@
+{
+  "candidate_id": "wb-common-buzzard-three-quarter-b2",
+  "candidate_status": "clearance-pending",
+  "custom_solid": {
+    "format": "#RRGGBB",
+    "recommended": [
+      "#202225",
+      "#F4F1EC"
+    ]
+  },
+  "geometry_revision": "2026-08-10.b2",
+  "mark_short_side_fraction": 0.2,
+  "presets": [
+    {
+      "background": "#202225",
+      "id": "dark-plain",
+      "label": "Dark Plain",
+      "mark_palette": null
+    },
+    {
+      "background": "#202225",
+      "id": "dark-logo",
+      "label": "Dark + Logo",
+      "mark_palette": "unboxed_dark"
+    },
+    {
+      "background": "#F4F1EC",
+      "id": "light-plain",
+      "label": "Light Plain",
+      "mark_palette": null
+    },
+    {
+      "background": "#F4F1EC",
+      "id": "light-logo",
+      "label": "Light + Logo",
+      "mark_palette": "unboxed_light"
+    }
+  ],
+  "schema": 1
+}

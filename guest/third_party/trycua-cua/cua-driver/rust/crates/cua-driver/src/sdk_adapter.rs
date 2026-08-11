@@ -289,10 +289,21 @@ impl SdkAdapter {
     }
 
     pub async fn shutdown(&self) -> Result<(), String> {
-        self.driver
+        let driver_result = self
+            .driver
             .shutdown()
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        #[cfg(target_os = "linux")]
+        let keyboard_result =
+            tokio::task::spawn_blocking(platform_linux::wayland::shutdown_keyboard)
+                .await
+                .map_err(|error| format!("join CUA keyboard shutdown: {error}"))?
+                .map_err(|error| format!("neutralize CUA keyboard: {error}"));
+        driver_result?;
+        #[cfg(target_os = "linux")]
+        keyboard_result?;
+        Ok(())
     }
 }
 

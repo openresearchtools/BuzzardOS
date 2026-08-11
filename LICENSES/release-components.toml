@@ -86,6 +86,32 @@ bundle_notice = ["oci:/usr/share/doc/wildbuzzard-sway/LICENSE.sway", "oci:/usr/s
 status = "recorded"
 
 [[component]]
+id = "xkeyboard-config-data"
+surface = ["appimage", "oci"]
+name = "xkeyboard-config compiled rules and symbols"
+version = "resolved exactly from the pinned Debian sid snapshot and recorded in xkb-data.version"
+source = "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config"
+package = "xkb-data"
+license = "Expat AND HPND-sell-variant"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
+bundle_notice = ["appimage:/usr/share/doc/xkb-data/copyright", "oci:/usr/share/doc/xkb-data/copyright"]
+artifact_evidence = ["appimage:/usr/share/wildbuzzard/xkb-data.manifest.sha256", "appimage:/usr/share/wildbuzzard/xkb-data.version", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/xkb-data.manifest.sha256", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/xkb-data.version"]
+status = "pinned-normalized-host-and-guest-byte-identical-data-with-package-notice"
+
+[[component]]
+id = "libxkbcommon-keymap-runtime"
+surface = ["appimage", "oci"]
+name = "libxkbcommon keymap compiler runtime"
+version = "resolved exactly from the pinned Debian sid snapshot and recorded in libxkbcommon0.version"
+source = "https://github.com/xkbcommon/libxkbcommon"
+package = "libxkbcommon0"
+license = "MIT"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
+bundle_notice = ["appimage:/usr/share/doc/libxkbcommon0/copyright", "oci:/usr/share/doc/libxkbcommon0/copyright"]
+artifact_evidence = ["appimage:/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256", "appimage:/usr/share/wildbuzzard/libxkbcommon0.version", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/libxkbcommon0.manifest.sha256", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/libxkbcommon0.version"]
+status = "pinned-host-and-guest-byte-identical-library-with-package-notice"
+
+[[component]]
 id = "wlroots"
 surface = ["oci"]
 name = "wlroots"
@@ -225,15 +251,15 @@ status = "artifact-gated-exact-build-id-package-version-and-copyright-closure"
 id = "oci-debian-package-closure"
 surface = ["oci"]
 name = "Debian sid base and apt dependency closure"
-version = "local minimal image built 2026-08-09"
+version = "local minimal image built 2026-08-11"
 source = "docker.io/library/debian:sid plus Debian sid repositories"
 license = "per-package Debian copyright"
-image_reference = "docker.io/library/wildbuzzard-desktop:local"
-image_manifest_digest = "sha256:3e89071f5226861492a84e2a8890b5d0d10d7225bf95b640a6c8cc81512b8dfa"
-image_config_digest = "sha256:ecdddb9ddda32c5fe44b9a7ad108b2b6528e2909943b52f55b24a31ae15876cf"
-archive_sha256 = "6cfed19f7ff1dd34dad0b47ae6738562f9f7a9b75205a31ad43b90d15c7dc0ee"
-package_count = 617
-package_inventory_sha256 = "5091b7e7db8e9df2a9222bad0d33f9746480443b27838e3465b07e55204c8673"
+image_reference = "localhost/wildbuzzard-desktop:verification-20260811"
+image_manifest_digest = "sha256:103a9e57c9204e937a1a61ab03f5c242da7cb098ba9d0d3204068d597f8facf9"
+image_config_digest = "sha256:2763b22300740f6ce16d333f654f3738c42b272a375b847f648f1b11d7b1b479"
+archive_sha256 = "0c91ec6694f306b2d1161a2123f31823b36c520c3c2aa62ae515c20e38f10fcb"
+package_count = 627
+package_inventory_sha256 = "f8d2b5c278d5cfc035adbcfa521b53337c9bf6042c374ab67a47f6a7ea93fb82"
 evidence = ["LICENSES/generated/oci-packages.tsv"]
 status = "current-built-image-package-inventory-recorded-and-audited"
 

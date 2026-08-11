@@ -12,6 +12,7 @@ install_package=${WILDBUZZARD_ACCEPT_INSTALL_PACKAGE:-0}
 full_matrix=${WILDBUZZARD_ACCEPT_FULL_MATRIX:-0}
 integration_acceptance=${WILDBUZZARD_ACCEPT_INTEGRATIONS:-1}
 accept_image=${WILDBUZZARD_ACCEPT_IMAGE:-}
+host_input_hook=${WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK:-}
 relocation_active=0
 relocation_original=
 relocation_target=
@@ -53,6 +54,11 @@ for command_name in awk jq nsenter python3 readlink; do
         exit 1
     }
 done
+if [[ -n "$host_input_hook" ]] &&
+    { [[ "$host_input_hook" != /* ]] || [[ ! -x "$host_input_hook" ]]; }; then
+    echo "WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK must be an absolute executable path" >&2
+    exit 1
+fi
 [[ -x "$appimage" ]] || {
     echo "AppImage is missing or not executable: $appimage" >&2
     exit 1
@@ -316,14 +322,14 @@ wait_sway_output_matches_runtime() {
         output_state=$(guest cat \
             /run/wildbuzzard-display-state/output-state.json)
         expected=$(jq -c '{
-            scale_120,
-            logical_width: .guest_logical_width,
-            logical_height: .guest_logical_height,
+            guest_ui_scale_120,
+            logical_width,
+            logical_height,
             physical_width,
             physical_height
         }' <<<"$output_state")
         if [[ -n "$required_scale_120" ]] &&
-            [[ $(jq -r '.scale_120' <<<"$expected") != "$required_scale_120" ]]; then
+            [[ $(jq -r '.guest_ui_scale_120' <<<"$expected") != "$required_scale_120" ]]; then
             sleep 0.1
             continue
         fi
@@ -333,7 +339,7 @@ wait_sway_output_matches_runtime() {
                 .enabled == true and
                 # wlr-output-management represents scale as wl_fixed (24.8),
                 # so recurring fractions such as 4/3 are rounded to 1/256.
-                (((.scale * 120) - $expected.scale_120) | fabs) < 0.2 and
+                (((.scale * 120) - $expected.guest_ui_scale_120) | fabs) < 0.2 and
                 any(.modes[];
                     .current == true and
                     .width == $expected.physical_width and
@@ -601,6 +607,33 @@ assert_cua_confirmed() {
     }
 }
 
+host_keyboard_input() {
+    local replacement=$1
+    wb window "$machine" focus-monitor
+    if [[ -n "$host_input_hook" ]]; then
+        "$host_input_hook" "$machine" "$extract_lease_broker_pid" "$replacement"
+        return
+    fi
+    case ",${XDG_CURRENT_DESKTOP:-},${XDG_SESSION_DESKTOP:-}," in
+        *GNOME* | *gnome* | *ubuntu*)
+            python3 "$project_dir/tests/acceptance/gnome-host-keyboard-input.py" \
+                --broker-pid "$extract_lease_broker_pid" \
+                --title "$machine" \
+                --replacement "$replacement"
+            ;;
+        *)
+            if [[ -t 0 ]]; then
+                echo "Manual host-input acceptance required." >&2
+                echo "In the focused Wild Buzzard monitor: press Backspace, type '$replacement', then press Enter." >&2
+                read -r -p "Press Enter here only after completing that host keyboard sequence: "
+            else
+                echo "No deterministic host-compositor keyboard injector is available. Set WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK to an absolute executable that injects Backspace, the replacement argument, and Enter through the focused native monitor; guest input tools are not accepted as proof." >&2
+                exit 1
+            fi
+            ;;
+    esac
+}
+
 wait_for_window() {
     local needle=$1
     local deadline=$((SECONDS + 30))
@@ -683,15 +716,15 @@ titlebar_drag_for_pid() {
         --argjson output "$output_state" '
             def physical_x($logical):
                 (($logical * $output.physical_width /
-                    $output.guest_logical_width) | round);
+                    $output.logical_width) | round);
             def physical_y($logical):
                 (($logical * $output.physical_height /
-                    $output.guest_logical_height) | round);
+                    $output.logical_height) | round);
 
             ($state.decoration) as $decoration |
             ($state.border_width) as $border |
-            if ($output.guest_logical_width <= 0 or
-                $output.guest_logical_height <= 0 or
+            if ($output.logical_width <= 0 or
+                $output.logical_height <= 0 or
                 $output.physical_width <= 0 or
                 $output.physical_height <= 0) then
                 error("guest output has no usable logical/physical mapping")
@@ -1017,11 +1050,13 @@ compositor_start_time=$(guest awk '{print $22}' "/proc/$compositor_pid/stat")
 reload_output_state=$(guest cat \
     /run/wildbuzzard-display-state/output-state.json)
 reload_output_before=$(jq -ce '{
-    scale_120,
-    guest_logical_width,
-    guest_logical_height,
+    host_surface_scale_120,
+    guest_ui_scale_120,
+    logical_width,
+    logical_height,
     physical_width,
-    physical_height
+    physical_height,
+    geometry_generation
 }' <<<"$reload_output_state")
 reload_frame_counters=$(jq -ce '{
     submitted_frames: .display.presentation.submitted_frames,
@@ -1041,11 +1076,13 @@ wait_sway_output_matches_runtime
 reload_output_state=$(guest cat \
     /run/wildbuzzard-display-state/output-state.json)
 reload_output_after=$(jq -ce '{
-    scale_120,
-    guest_logical_width,
-    guest_logical_height,
+    host_surface_scale_120,
+    guest_ui_scale_120,
+    logical_width,
+    logical_height,
     physical_width,
-    physical_height
+    physical_height,
+    geometry_generation
 }' <<<"$reload_output_state")
 [[ "$reload_output_after" == "$reload_output_before" ]]
 wait_native_window_frame_after "$reload_frame_counters"
@@ -1272,23 +1309,124 @@ assert_cua_ok scroll \
 assert_cua_ok drag \
     "{\"scope\":\"desktop\",\"pid\":$thunar_pid,\"window_id\":$thunar_window,\"from_x\":900,\"from_y\":500,\"to_x\":920,\"to_y\":500,\"duration_ms\":100,\"delivery_mode\":\"foreground\"}"
 
-# Verifiable typing, hotkey, and key delivery in a terminal wholly inside the
-# guest. Ctrl+U clears the first text before the expected marker is submitted.
-guest sh -c 'printf "%s\n" "#!/bin/bash" "IFS= read -e -r value" \
-    "printf \"%s\" \"\$value\" > /home/wildbuzzard/.wildbuzzard-cua-input" \
+# Verifiable CUA/human-keyboard coexistence in a terminal wholly inside the
+# guest. With the CUA session still open, host-origin input travels through the
+# host compositor, the focused native GTK monitor, wildbuzzard-display, and the
+# gateway's nested parent keyboard. It is issued immediately after type_text,
+# before another CUA key operation. The observed Readline values prove this is
+# not guest-local synthetic peer input. Ending the CUA session is a separately
+# checked synchronous neutral boundary. On GNOME, acceptance uses Mutter's
+# bounded RemoteDesktop keyboard API without enabling its clipboard; another
+# compositor requires an explicit harness hook or an interactive human step.
+guest sh -c 'printf "%s\n" "#!/bin/bash" "IFS= read -e -r cua_value" \
+    "printf \"%s\" \"\$cua_value\" > /home/wildbuzzard/.wildbuzzard-cua-input" \
+    "IFS= read -e -r -i ab coexist_value" \
+    "printf \"%s\" \"\$coexist_value\" > /home/wildbuzzard/.wildbuzzard-peer-while-cua-input" \
+    "IFS= read -e -r -i xy teardown_value" \
+    "printf \"%s\" \"\$teardown_value\" > /home/wildbuzzard/.wildbuzzard-peer-after-cua-input" \
+    "IFS= read -r -n 1 active_first" \
+    "printf \"%s\" \"\$active_first\" > /home/wildbuzzard/.wildbuzzard-active-cua-progress" \
+    "IFS= read -r active_rest" \
+    "printf \"%s%s\" \"\$active_first\" \"\$active_rest\" > /home/wildbuzzard/.wildbuzzard-active-cua-input" \
+    "active_late=; IFS= read -r -n 1 -t 1 active_late || true" \
+    "printf \"%s\" \"\$active_late\" > /home/wildbuzzard/.wildbuzzard-active-cua-late" \
     "sleep 10" > /tmp/wildbuzzard-input-test; chmod 700 /tmp/wildbuzzard-input-test'
+guest rm -f \
+    /home/wildbuzzard/.wildbuzzard-cua-input \
+    /home/wildbuzzard/.wildbuzzard-peer-while-cua-input \
+    /home/wildbuzzard/.wildbuzzard-peer-after-cua-input \
+    /home/wildbuzzard/.wildbuzzard-active-cua-progress \
+    /home/wildbuzzard/.wildbuzzard-active-cua-input \
+    /home/wildbuzzard/.wildbuzzard-active-cua-late
 guest_spawn foot --app-id wildbuzzard-acceptance /tmp/wildbuzzard-input-test
 wait_for_window wildbuzzard-acceptance >/dev/null
-assert_cua_ok type_text \
-    '{"scope":"desktop","text":"wrong","delivery_mode":"foreground"}'
+cua_keyboard_session="wildbuzzard-keyboard-$marker"
+assert_cua_ok start_session \
+    "{\"session\":\"$cua_keyboard_session\",\"capture_scope\":\"desktop\"}"
 assert_cua_ok hotkey \
-    '{"scope":"desktop","keys":["ctrl","u"],"delivery_mode":"foreground"}'
+    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"keys\":[\"ctrl\",\"l\"],\"delivery_mode\":\"foreground\"}"
 assert_cua_ok type_text \
-    "{\"scope\":\"desktop\",\"text\":\"$marker\",\"delivery_mode\":\"foreground\"}"
+    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"text\":\"$marker\",\"delivery_mode\":\"foreground\"}"
+host_keyboard_input z
+expected_cua_host_value="${marker%?}z"
+deadline=$((SECONDS + 5))
+while ((SECONDS < deadline)) &&
+    ! guest test -e /home/wildbuzzard/.wildbuzzard-cua-input; do
+    sleep 0.1
+done
+[[ $(guest cat /home/wildbuzzard/.wildbuzzard-cua-input) == "$expected_cua_host_value" ]]
 assert_cua_ok press_key \
-    '{"scope":"desktop","key":"enter","delivery_mode":"foreground"}'
-sleep 1
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-cua-input) == "$marker" ]]
+    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"key\":\"backspace\",\"delivery_mode\":\"foreground\"}"
+assert_cua_ok type_text \
+    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"text\":\"z\",\"delivery_mode\":\"foreground\"}"
+assert_cua_ok press_key \
+    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"key\":\"enter\",\"delivery_mode\":\"foreground\"}"
+deadline=$((SECONDS + 5))
+while ((SECONDS < deadline)) &&
+    ! guest test -e /home/wildbuzzard/.wildbuzzard-peer-while-cua-input; do
+    sleep 0.1
+done
+[[ $(guest cat /home/wildbuzzard/.wildbuzzard-peer-while-cua-input) == az ]]
+assert_cua_ok end_session \
+    "{\"session\":\"$cua_keyboard_session\"}"
+host_keyboard_input q
+deadline=$((SECONDS + 5))
+while ((SECONDS < deadline)) &&
+    ! guest test -e /home/wildbuzzard/.wildbuzzard-peer-after-cua-input; do
+    sleep 0.1
+done
+[[ $(guest cat /home/wildbuzzard/.wildbuzzard-peer-after-cua-input) == xq ]]
+
+# End a session while its persistent CUA keyboard is actively typing. The
+# first observed character is deterministic evidence that delivery started,
+# not a timing sleep. EndSession must cancel the call, release/zero the same
+# virtual keyboard, restore its fixed keymap, and complete a same-client sync
+# before the real host-parent keyboard may edit and submit the line. A timed
+# fourth read proves no stale CUA character arrives after the host Enter.
+active_cua_session="wildbuzzard-keyboard-active-$marker"
+assert_cua_ok start_session \
+    "{\"session\":\"$active_cua_session\",\"capture_scope\":\"desktop\"}"
+active_cua_text=$(printf 'k%.0s' {1..2000})
+active_cua_result="$portable_dir/shared/.wildbuzzard-active-cua-result.json"
+rm -f -- "$active_cua_result"
+guest cua-driver type_text "$(jq -cn \
+    --arg session "$active_cua_session" \
+    --arg text "$active_cua_text" \
+    '{session:$session,scope:"desktop",text:$text,delivery_mode:"foreground"}')" \
+    >"$active_cua_result" 2>&1 &
+active_cua_pid=$!
+deadline=$((SECONDS + 10))
+while ((SECONDS < deadline)) &&
+    ! guest test -s /home/wildbuzzard/.wildbuzzard-active-cua-progress; do
+    kill -0 "$active_cua_pid" 2>/dev/null || {
+        echo "active CUA type_text stopped before delivering its first character" >&2
+        exit 1
+    }
+    sleep 0.05
+done
+guest test -s /home/wildbuzzard/.wildbuzzard-active-cua-progress
+assert_cua_ok end_session "{\"session\":\"$active_cua_session\"}"
+host_keyboard_input z
+deadline=$((SECONDS + 5))
+while ((SECONDS < deadline)) && kill -0 "$active_cua_pid" 2>/dev/null; do
+    sleep 0.05
+done
+if kill -0 "$active_cua_pid" 2>/dev/null; then
+    echo "cancelled CUA type_text did not return promptly" >&2
+    exit 1
+fi
+wait "$active_cua_pid" || true
+jq -e 'has("code") and ((tostring | ascii_downcase) | contains("cancel"))' \
+    "$active_cua_result" >/dev/null
+deadline=$((SECONDS + 5))
+while ((SECONDS < deadline)) &&
+    ! guest test -e /home/wildbuzzard/.wildbuzzard-active-cua-late; do
+    sleep 0.1
+done
+active_cua_value=$(guest cat /home/wildbuzzard/.wildbuzzard-active-cua-input)
+[[ $active_cua_value =~ ^k*z$ ]]
+guest test ! -s /home/wildbuzzard/.wildbuzzard-active-cua-late
+rm -f -- "$active_cua_result"
 guest pkill -x foot >/dev/null 2>&1 || true
 
 # Classic state changes remain compositor-owned even though stock Sway has no
@@ -1306,8 +1444,8 @@ assert_cua_confirmed maximize_window \
 thunar_maximized=$(sway_window_state_for_pid "$thunar_pid")
 thunar_output_state=$(guest cat \
     /run/wildbuzzard-display-state/output-state.json)
-guest_logical_width=$(jq -er '.guest_logical_width' <<<"$thunar_output_state")
-guest_logical_height=$(jq -er '.guest_logical_height' <<<"$thunar_output_state")
+guest_logical_width=$(jq -er '.logical_width' <<<"$thunar_output_state")
+guest_logical_height=$(jq -er '.logical_height' <<<"$thunar_output_state")
 jq -e -n \
     --argjson state "$thunar_maximized" \
     --argjson width "$guest_logical_width" \
@@ -1373,7 +1511,7 @@ PY
 task_output_state=$(guest cat \
     /run/wildbuzzard-display-state/output-state.json)
 task_output_dimensions=$(jq -er \
-    '[.guest_logical_width, .guest_logical_height,
+    '[.logical_width, .logical_height,
       .physical_width, .physical_height] | @tsv' \
     <<<"$task_output_state")
 read -r logical_width logical_height physical_width physical_height \
@@ -1636,7 +1774,7 @@ XEV
     canvas_output_state=$(guest cat \
         /run/wildbuzzard-display-state/output-state.json)
     canvas_output_dimensions=$(jq -er \
-        '[.guest_logical_width, .guest_logical_height,
+        '[.logical_width, .logical_height,
           .physical_width, .physical_height] | @tsv' \
         <<<"$canvas_output_state")
     read -r guest_logical_width guest_logical_height physical_width physical_height \

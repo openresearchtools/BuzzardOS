@@ -1,10 +1,10 @@
 schema = 1
-audited_at = "2026-08-09"
+audited_at = "2026-08-10"
 
 [[asset]]
 id = "wildbuzzard-project-assets"
 paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/WildBuzzard.desktop"]
-exclude = ["guest/assets/themes/WildBuzzard/**", "guest/assets/icons/WildBuzzard/**"]
+exclude = ["guest/assets/branding/**", "guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**", "guest/assets/icons/WildBuzzard/**"]
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE"]
 status = "covered-by-repository-license"
@@ -17,25 +17,42 @@ evidence = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml:metad
 status = "declared-inline"
 
 [[asset]]
-id = "wildbuzzard-application-icon"
-paths = ["host/packaging/wildbuzzard.svg"]
+id = "wildbuzzard-branding-candidate-assets"
+paths = [
+  "host/packaging/wildbuzzard.svg",
+  "guest/assets/branding/**",
+  "guest/assets/icons/WildBuzzard/scalable/apps/**",
+  "guest/assets/icons/WildBuzzard/symbolic/apps/**",
+]
 license = "AGPL-3.0-or-later"
-evidence = ["NOTICE", "LICENSE"]
-provenance = "Independently authored geometric SVG for this project; no third-party path data or artwork was copied."
-status = "project-authored-and-licensed"
+evidence = [
+  "LICENSE",
+  "NOTICE",
+  "guest/branding/buzzard-mark.json",
+  "docs/branding/PROVENANCE.md",
+  "docs/branding/CLEARANCE_REPORT.md",
+]
+provenance = "Project-authored generated SVG and preset outputs derived from the canonical guest/branding/buzzard-mark.json geometry. Authorship and reference boundaries are recorded in docs/branding/PROVENANCE.md. Trademark and visual-similarity review remains incomplete as recorded in docs/branding/CLEARANCE_REPORT.md."
+status = "requires-trademark-clearance-before-publication"
 
 [[asset]]
 id = "wildbuzzard-graphite-gtk-theme"
-paths = ["guest/assets/themes/WildBuzzard/**"]
+paths = ["guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**"]
 license = "AGPL-3.0-or-later"
-runtime_import = "resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css"
-evidence = ["NOTICE", "LICENSE", "guest/assets/themes/WildBuzzard/gtk-3.0/gtk.css"]
-notes = "Independently authored project CSS. The palette was selected by visual observation of common dark creative-tool interfaces; no third-party stylesheet or artwork was copied. GTK 3 imports the guest's separately packaged Adwaita resource rather than copying it."
+runtime_import = "resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained.css"
+evidence = ["NOTICE", "LICENSE", "guest/assets/themes/WildBuzzard-Dark/gtk-3.0/gtk.css", "guest/assets/themes/WildBuzzard-Light/gtk-3.0/gtk.css", "guest/assets/themes/WildBuzzard-Shared/gtk-3.0/geometry.css"]
+notes = "Independently authored project CSS shared by conservative dark and light palette variants. The palette was selected by visual observation of common creative-tool interfaces; no third-party stylesheet or artwork was copied. GTK 3 imports the guest's separately packaged Adwaita resource rather than copying it."
 status = "project-authored-and-licensed"
 
 [[asset]]
 id = "wildbuzzard-folder-icon-theme"
-paths = ["guest/assets/icons/WildBuzzard/**"]
+paths = [
+  "guest/assets/icons/WildBuzzard/index.theme",
+  "guest/assets/icons/WildBuzzard/scalable/mimetypes/**",
+  "guest/assets/icons/WildBuzzard/scalable/places/**",
+  "guest/assets/icons/WildBuzzard/symbolic/mimetypes/**",
+  "guest/assets/icons/WildBuzzard/symbolic/places/**",
+]
 license = "AGPL-3.0-or-later"
 evidence = ["NOTICE", "LICENSE", "guest/assets/icons/WildBuzzard/index.theme"]
 notes = "Independently authored simple folder SVG geometry and symbolic paths. A warm orange palette was requested by the product design; no Mint-Y SVG path data or artwork was copied."

@@ -92,10 +92,12 @@ calloop = { version = "0.14", optional = true }
 # re-exports this same major version; pinning explicitly prevents
 # duplicate-crate hazards.
 enumflags2 = { version = "0.7", optional = true }
-# Keymap fallback path for libei keyboard input when the EIS server does
-# NOT advertise `ei_text` (libei < 1.6, i.e. older GNOME / KDE Plasma 6.0).
-# Mirrors the reis `type-text.rs` example's keycode reverse-mapping.
-xkbcommon = { version = "0.9", optional = true }
+# Keymap construction for the persistent wlroots virtual keyboard. The stock
+# Sway path uses the same Unicode-to-keysym mapping as pinned wtype without
+# spawning and destroying a virtual-keyboard client per call. Keyboard input
+# fails closed if that required Sway protocol is absent; portal fallback is
+# retained only for pointer input.
+xkbcommon = "0.9"
 # Bounded MPSC command/reply channel for the persistent virtual-pointer
 # owner thread. EventQueue<State> is !Send, so the persistent device must
 # live on its own thread; crossbeam gives us a Send sender and synchronous
@@ -120,7 +122,6 @@ portal-input = [
     "dep:reis",
     "dep:calloop",
     "dep:enumflags2",
-    "dep:xkbcommon",
 ]
 # PipeWire-backed per-window ScreenCast capture keeps its newer system-header
 # requirement and remains enabled by Nix/modern desktop builds.
@@ -140,7 +141,7 @@ tracing-subscriber = { workspace = true }
 
 # Cargo example that exercises the libei input path directly. Lives under
 # the `portal-input` feature gate so a stock `cargo build --examples`
-# doesn't try to compile against the (now-optional) reis/xkbcommon deps.
+# doesn't try to compile against the optional reis dependency.
 [[example]]
 name = "libei_input"
 required-features = ["portal-input"]

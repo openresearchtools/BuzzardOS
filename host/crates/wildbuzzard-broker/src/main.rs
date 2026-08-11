@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -21,14 +21,47 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use wb_core::{
-    AppImageRuntimeLease, DisplayDiagnostics, IdMap, MachineConfig, MachineState, NetworkMode,
-    PresentationDiagnostics, ResourceLocator, RuntimeState, WaylandCapabilities, WindowDiagnostics,
-    host_control_socket,
+    AppImageRuntimeLease, DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, DisplayDiagnostics, IdMap,
+    MachineConfig, MachineState, NetworkMode, PresentationDiagnostics, ResourceLocator,
+    RuntimeState, WaylandCapabilities, WindowDiagnostics, host_control_socket,
 };
 
 use integrations::{IntegrationRuntime, SlirpRuntime};
+use uuid::Uuid;
 
 const GUEST_POWEROFF_MARKER: &str = "guest-poweroff-requested";
+const GUEST_RUNTIME_MODE: u32 = 0o700;
+const DESKTOP_READY_MODE: u32 = 0o600;
+const SESSION_TOKEN_BYTES: usize = 32;
+const MAX_DESKTOP_READY_BYTES: u64 = 256;
+
+#[derive(Debug)]
+struct DesktopReadinessDeadline {
+    seconds: u64,
+}
+
+impl std::fmt::Display for DesktopReadinessDeadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "desktop compositor did not become ready within {} seconds",
+            self.seconds
+        )
+    }
+}
+
+impl std::error::Error for DesktopReadinessDeadline {}
+
+fn machine_session_failure_detail(error: &anyhow::Error) -> String {
+    if let Some(deadline) = error.downcast_ref::<DesktopReadinessDeadline>() {
+        format!(
+            "{DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX}{}: {error:#}",
+            deadline.seconds
+        )
+    } else {
+        format!("{error:#}")
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "wildbuzzard-broker", version)]
@@ -162,6 +195,14 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
                 &mut display,
                 &mut state,
             );
+            // The display application intentionally survives a machine
+            // lifecycle, but the clipboard endpoint does not. Revoke the old
+            // socket and readiness evidence immediately after PID 1 and all
+            // of its descendants are gone, including failed-start paths. A
+            // later start must publish a fresh socket; it can never inherit a
+            // pathname from the previous desktop session.
+            let clipboard_cleanup = clear_clipboard_session_runtime(&runtime);
+            let result = combine_session_and_clipboard_cleanup(result, clipboard_cleanup);
 
             let latest = RuntimeState::load(&machine_dir)?;
             match result {
@@ -191,7 +232,7 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
                 Err(error) => {
                     let mut failed = RuntimeState::new(MachineState::Failed);
                     failed.container_pid = None;
-                    failed.detail = Some(format!("{error:#}"));
+                    failed.detail = Some(machine_session_failure_detail(&error));
                     failed.save(&machine_dir)?;
                     eprintln!("Wild Buzzard machine session failed: {error:#}");
                     start_requested = false;
@@ -335,7 +376,9 @@ fn launch_container(
         config,
         host_wayland.dmabuf_main_device,
     )?;
+    let session_token = Uuid::new_v4().simple().to_string();
     let mut service_environment = vec![
+        ("WILDBUZZARD_SESSION_TOKEN".into(), session_token.clone()),
         ("WILDBUZZARD_MACHINE_ID".into(), config.id.to_string()),
         ("WILDBUZZARD_MACHINE_NAME".into(), config.name.clone()),
         (
@@ -511,7 +554,7 @@ fn launch_container(
 
     command
         .arg("--")
-        .arg("/usr/libexec/wildbuzzard-init")
+        .arg("/opt/wildbuzzard/runtime/current/libexec/wildbuzzard-init")
         .stdin(Stdio::null());
 
     let mut container = TerminateOnDrop {
@@ -552,6 +595,7 @@ fn launch_container(
     match wait_for_desktop(
         &mut container.child,
         &guest_runtime.join("desktop-ready"),
+        &session_token,
         &host_status.join("window.json"),
         &host_status.join("presentation.json"),
         host_status,
@@ -1155,6 +1199,7 @@ fn collect_cgroup_pids(cgroup: &Path, pids: &mut Vec<u32>) -> Result<()> {
 fn wait_for_desktop(
     container: &mut Child,
     marker: &Path,
+    expected_session_token: &str,
     window_marker: &Path,
     presentation_marker: &Path,
     host_status: &Path,
@@ -1166,7 +1211,7 @@ fn wait_for_desktop(
     let deadline = Instant::now() + timeout;
     let mut requested_restart = None;
     loop {
-        if marker.is_file()
+        if desktop_ready_for_session(marker, expected_session_token)?
             && read_window_diagnostics(window_marker).is_some_and(|window| window.toplevels == 1)
         {
             let presentation_ready = if presentation_marker.exists() {
@@ -1224,13 +1269,74 @@ fn wait_for_desktop(
         }
         if Instant::now() >= deadline {
             terminate(container);
-            bail!(
-                "desktop compositor did not become ready within {} seconds",
-                timeout.as_secs()
-            );
+            return Err(DesktopReadinessDeadline {
+                seconds: timeout.as_secs(),
+            }
+            .into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn desktop_ready_for_session(path: &Path, expected_session_token: &str) -> Result<bool> {
+    if expected_session_token.len() != SESSION_TOKEN_BYTES
+        || !expected_session_token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("broker generated an invalid desktop session token");
+    }
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("opening desktop readiness marker {}", path.display()));
+        }
+    };
+    let before = file
+        .metadata()
+        .with_context(|| format!("inspecting desktop readiness marker {}", path.display()))?;
+    if !before.is_file()
+        || before.nlink() != 1
+        || before.uid() != Uid::effective().as_raw()
+        || before.gid() != nix::unistd::Gid::effective().as_raw()
+        || before.permissions().mode() & 0o777 != DESKTOP_READY_MODE
+        || before.len() > MAX_DESKTOP_READY_BYTES
+    {
+        bail!(
+            "desktop readiness marker {} has unsafe ownership, type, links, size, or mode",
+            path.display()
+        );
+    }
+    let mut contents = Vec::with_capacity(before.len() as usize);
+    Read::by_ref(&mut file)
+        .take(MAX_DESKTOP_READY_BYTES + 1)
+        .read_to_end(&mut contents)
+        .with_context(|| format!("reading desktop readiness marker {}", path.display()))?;
+    let after = file
+        .metadata()
+        .with_context(|| format!("rechecking desktop readiness marker {}", path.display()))?;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+    {
+        bail!(
+            "desktop readiness marker {} changed while being read",
+            path.display()
+        );
+    }
+    let mut expected = expected_session_token.as_bytes().to_vec();
+    expected.push(b'\n');
+    Ok(contents == expected)
 }
 
 fn lock_machine(machine_dir: &Path) -> Result<File> {
@@ -1344,7 +1450,13 @@ impl LifecycleRuntime {
         fs::create_dir(&guest).context("creating guest runtime directory")?;
         fs::create_dir(&host_status).context("creating host display status directory")?;
         fs::create_dir(&display_state).context("creating display state directory")?;
-        fs::set_permissions(&guest, fs::Permissions::from_mode(0o777))
+        // The source is owned by the host desktop UID/GID, which the IdMap
+        // keeps as guest UID/GID 1000. Namespace root retains DAC override for
+        // this mapped inode, so Bubblewrap and systemd can traverse 0700,
+        // while unrelated guest service UIDs cannot enumerate or open known
+        // runtime files. Sway, output-sync, and the clipboard agent all run as
+        // the mapped interactive owner.
+        fs::set_permissions(&guest, fs::Permissions::from_mode(GUEST_RUNTIME_MODE))
             .context("setting guest runtime permissions")?;
         fs::set_permissions(&host_status, fs::Permissions::from_mode(0o700))
             .context("setting host display status permissions")?;
@@ -1399,6 +1511,7 @@ fn clear_session_runtime(runtime: &LifecycleRuntime) -> Result<()> {
                 .with_context(|| format!("inspecting session relay path {}", reverse.display()));
         }
     }
+    clear_clipboard_session_runtime(runtime)?;
     for relative in [
         "desktop-ready",
         "guest-poweroff-requested",
@@ -1455,6 +1568,36 @@ fn clear_session_runtime(runtime: &LifecycleRuntime) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn clear_clipboard_session_runtime(runtime: &LifecycleRuntime) -> Result<()> {
+    for relative in ["clipboard-ready", "clipboard-agent.sock"] {
+        let path = runtime.guest.join(relative);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("revoking session clipboard path {}", path.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn combine_session_and_clipboard_cleanup(
+    session: Result<SessionResult>,
+    cleanup: Result<()>,
+) -> Result<SessionResult> {
+    match (session, cleanup) {
+        (Ok(session), Ok(())) => Ok(session),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(cleanup.context("revoking the ended clipboard session")),
+        (Err(error), Err(cleanup)) => Err(error.context(format!(
+            "clipboard endpoint revocation also failed after the session error: {cleanup:#}"
+        ))),
+    }
 }
 
 fn take_host_request(status_dir: &Path, machine: &str) -> Result<Option<String>> {
@@ -1533,7 +1676,10 @@ fn start_display_gateway(
     let control_socket = host_control_socket(paths.machine_dir)?;
     prepare_host_control_directory(&control_socket)?;
     let helper = resources.helper_or_path("wildbuzzard-display")?;
+    let xkb_config_root = resources.asset_directory("xkb")?;
     let private_socket = paths.guest_runtime.join("wayland-0");
+    let guest_scale_control = paths.guest_runtime.join("display-scale-host.sock");
+    let guest_clipboard_control = paths.guest_runtime.join("clipboard-agent.sock");
     let log_path = paths.host_status.join("display-gateway.log");
     let log = OpenOptions::new()
         .create(true)
@@ -1553,6 +1699,12 @@ fn start_display_gateway(
         .arg(&private_socket)
         .arg("--control")
         .arg(&control_socket)
+        .arg("--guest-scale-control")
+        .arg(&guest_scale_control)
+        .arg("--guest-clipboard-control")
+        .arg(&guest_clipboard_control)
+        .arg("--xkb-config-root")
+        .arg(&xkb_config_root)
         .arg("--machine-dir")
         .arg(paths.machine_dir)
         .arg("--status-dir")
@@ -1587,21 +1739,27 @@ fn start_display_gateway(
     loop {
         let display_metadata = fs::symlink_metadata(&private_socket);
         let control_metadata = fs::symlink_metadata(&control_socket);
-        match (display_metadata, control_metadata) {
-            (Ok(display), Ok(control))
+        let scale_metadata = fs::symlink_metadata(&guest_scale_control);
+        match (display_metadata, control_metadata, scale_metadata) {
+            (Ok(display), Ok(control), Ok(scale))
                 if !display.file_type().is_symlink()
                     && display.file_type().is_socket()
                     && !control.file_type().is_symlink()
-                    && control.file_type().is_socket() =>
+                    && control.file_type().is_socket()
+                    && !scale.file_type().is_symlink()
+                    && scale.file_type().is_socket() =>
             {
                 return Ok(TerminateOnDrop { child });
             }
-            (Ok(_), Ok(_)) => {
+            (Ok(_), Ok(_), Ok(_)) => {
                 terminate(&mut child);
-                bail!("display gateway created an invalid display or control socket");
+                bail!(
+                    "display gateway created an invalid display, host-control, or guest-scale socket"
+                );
             }
-            (Err(error), _) | (_, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-            (Err(error), _) | (_, Err(error)) => {
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error))
+                if error.kind() == std::io::ErrorKind::NotFound => {}
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
                 terminate(&mut child);
                 return Err(error).context("inspecting display gateway sockets");
             }
@@ -3026,6 +3184,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn readiness_deadline_has_a_stable_state_code_and_retains_diagnostics() {
+        let error = anyhow::Error::new(DesktopReadinessDeadline { seconds: 90 })
+            .context("nested compositor log: fixture");
+
+        let detail = machine_session_failure_detail(&error);
+
+        assert!(detail.starts_with("desktop-readiness-deadline:90: "));
+        assert!(detail.contains("nested compositor log: fixture"));
+        assert_eq!(
+            machine_session_failure_detail(&anyhow::anyhow!("ordinary startup failure")),
+            "ordinary startup failure"
+        );
+    }
+
+    #[test]
+    fn desktop_readiness_is_bound_to_the_current_session_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("desktop-ready");
+        let current = "0123456789abcdef0123456789abcdef";
+        fs::write(&marker, format!("{current}\n")).unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(DESKTOP_READY_MODE)).unwrap();
+
+        assert!(desktop_ready_for_session(&marker, current).unwrap());
+        assert!(!desktop_ready_for_session(&marker, &"f".repeat(SESSION_TOKEN_BYTES)).unwrap());
+
+        let target = directory.path().join("outside-ready");
+        fs::rename(&marker, &target).unwrap();
+        symlink(&target, &marker).unwrap();
+        assert!(desktop_ready_for_session(&marker, current).is_err());
+    }
+
+    #[test]
+    fn guest_runtime_is_private_to_the_keep_id_desktop_owner() {
+        let runtime = LifecycleRuntime::create().unwrap();
+        let metadata = fs::symlink_metadata(&runtime.guest).unwrap();
+
+        assert!(metadata.is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        assert_eq!(metadata.uid(), Uid::effective().as_raw());
+        assert_eq!(metadata.gid(), nix::unistd::Gid::effective().as_raw());
+        assert_eq!(metadata.permissions().mode() & 0o777, GUEST_RUNTIME_MODE);
+
+        // IdMap's keep-id segment maps this host owner to guest UID/GID 1000.
+        // Consequently the interactive Sway session owns all three private
+        // endpoints, while 0700 denies unrelated guest service identities.
+        for name in [
+            "wayland-0",
+            "display-scale-host.sock",
+            "clipboard-agent.sock",
+        ] {
+            let path = runtime.guest.join(name);
+            let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let connection = std::os::unix::net::UnixStream::connect(&path).unwrap();
+            let (_accepted, _) = listener.accept().unwrap();
+            drop(connection);
+        }
+    }
+
+    #[test]
     fn bubblewrap_pid_reporting_is_one_shot_not_a_lifecycle_status_stream() {
         let mut command = Command::new("bwrap");
 
@@ -3229,6 +3447,69 @@ mod tests {
         clear_session_runtime(&runtime).unwrap();
         assert!(marker.is_file());
         assert!(fs::symlink_metadata(&reverse).is_err());
+    }
+
+    #[test]
+    fn session_restart_clears_clipboard_endpoint_without_following_symlinks() {
+        let runtime = LifecycleRuntime::create().unwrap();
+        let socket = runtime.guest.join("clipboard-agent.sock");
+        let ready = runtime.guest.join("clipboard-ready");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fs::write(&ready, b"ready\n").unwrap();
+        drop(listener);
+
+        clear_session_runtime(&runtime).unwrap();
+        assert!(fs::symlink_metadata(&socket).is_err());
+        assert!(fs::symlink_metadata(&ready).is_err());
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_socket = outside.path().join("must-survive-socket-target");
+        let outside_ready = outside.path().join("must-survive-ready-target");
+        fs::write(&outside_socket, b"outside socket target").unwrap();
+        fs::write(&outside_ready, b"outside ready target").unwrap();
+        symlink(&outside_socket, &socket).unwrap();
+        symlink(&outside_ready, &ready).unwrap();
+
+        clear_session_runtime(&runtime).unwrap();
+        assert_eq!(fs::read(&outside_socket).unwrap(), b"outside socket target");
+        assert_eq!(fs::read(&outside_ready).unwrap(), b"outside ready target");
+        assert!(fs::symlink_metadata(&socket).is_err());
+        assert!(fs::symlink_metadata(&ready).is_err());
+    }
+
+    #[test]
+    fn clipboard_revocation_preserves_persistent_display_endpoints() {
+        let runtime = LifecycleRuntime::create().unwrap();
+        let wayland = runtime.guest.join("wayland-0");
+        let scale = runtime.guest.join("display-scale-host.sock");
+        let clipboard = runtime.guest.join("clipboard-agent.sock");
+        let ready = runtime.guest.join("clipboard-ready");
+        let wayland_listener = std::os::unix::net::UnixListener::bind(&wayland).unwrap();
+        let scale_listener = std::os::unix::net::UnixListener::bind(&scale).unwrap();
+        let clipboard_listener = std::os::unix::net::UnixListener::bind(&clipboard).unwrap();
+        fs::write(&ready, b"ready\n").unwrap();
+
+        clear_clipboard_session_runtime(&runtime).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&wayland)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        assert!(
+            fs::symlink_metadata(&scale)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        assert!(fs::symlink_metadata(&clipboard).is_err());
+        assert!(fs::symlink_metadata(&ready).is_err());
+        let wayland_client = std::os::unix::net::UnixStream::connect(&wayland).unwrap();
+        let scale_client = std::os::unix::net::UnixStream::connect(&scale).unwrap();
+        let (_wayland_server, _) = wayland_listener.accept().unwrap();
+        let (_scale_server, _) = scale_listener.accept().unwrap();
+        drop((wayland_client, scale_client, clipboard_listener));
     }
 
     #[test]

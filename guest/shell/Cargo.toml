@@ -11,14 +11,19 @@ accesskit.workspace = true
 accesskit_unix.workspace = true
 anyhow.workspace = true
 fontdue.workspace = true
+gio.workspace = true
 image.workspace = true
 libc.workspace = true
 resvg.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 smithay-client-toolkit.workspace = true
 wayland-client.workspace = true
 wayland-protocols.workspace = true
 wayland-protocols-wlr.workspace = true
+wl-clipboard-rs.workspace = true
+wildbuzzard-desktop-core = { path = "../desktop-core" }
+wildbuzzard-shortcut-helper = { path = "../shortcut-helper", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

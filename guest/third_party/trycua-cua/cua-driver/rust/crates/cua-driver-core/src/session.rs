@@ -337,6 +337,7 @@ static ENDED_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 /// labels. Once set, every later dispatch owned by the same runtime
 /// generation fails closed until that runtime is destroyed.
 static SUSPENDED_RUNTIME_SCOPES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static SESSION_GENERATIONS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 fn hooks() -> &'static Mutex<HashMap<u64, SessionEndHook>> {
     SESSION_END_HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -344,6 +345,61 @@ fn hooks() -> &'static Mutex<HashMap<u64, SessionEndHook>> {
 
 fn ended_sessions() -> &'static Mutex<HashSet<String>> {
     ENDED_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn session_generations() -> &'static Mutex<HashMap<String, u64>> {
+    SESSION_GENERATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Unforgeable process-local lease captured at the canonical registry boundary
+/// before consent or platform awaits. Public labels never choose generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionLease {
+    session_id: String,
+    generation: u64,
+}
+
+impl SessionLease {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+pub fn capture_session_lease(session_id: &str) -> Option<SessionLease> {
+    if !is_trackable(session_id) {
+        return None;
+    }
+    let ended = ended_sessions().lock().unwrap();
+    if ended.contains(session_id) {
+        return None;
+    }
+    let generation = *session_generations()
+        .lock()
+        .unwrap()
+        .entry(session_id.to_owned())
+        .or_insert(1);
+    drop(ended);
+    Some(SessionLease {
+        session_id: session_id.to_owned(),
+        generation,
+    })
+}
+
+pub fn session_lease_is_current(lease: &SessionLease) -> bool {
+    let ended = ended_sessions().lock().unwrap();
+    if ended.contains(&lease.session_id) {
+        return false;
+    }
+    let current = *session_generations()
+        .lock()
+        .unwrap()
+        .get(&lease.session_id)
+        .unwrap_or(&1);
+    current == lease.generation
 }
 
 fn suspended_runtime_scopes() -> &'static Mutex<HashSet<String>> {
@@ -443,6 +499,9 @@ pub fn fire_session_end(session_id: &str) -> bool {
         if !ended.insert(session_id.to_owned()) {
             return false; // already ended — idempotent no-op.
         }
+        let mut generations = session_generations().lock().unwrap();
+        let generation = generations.entry(session_id.to_owned()).or_insert(1);
+        *generation = generation.wrapping_add(1).max(1);
     }
     crate::capture_scope::clear_session(session_id);
     let registered = hooks()
@@ -489,9 +548,12 @@ pub fn revoke_sessions_with_prefix(prefix: &str) -> usize {
 /// by reusing the same public session label on another transport.
 pub fn forget_ended_sessions_with_prefix(prefix: &str) -> usize {
     let mut ended = ended_sessions().lock().unwrap();
+    let mut generations = session_generations().lock().unwrap();
     let before = ended.len();
     ended.retain(|session| !session.starts_with(prefix));
     let forgotten = before - ended.len();
+    generations.retain(|session, _| !session.starts_with(prefix));
+    drop(generations);
     drop(ended);
     crate::capture_scope::clear_sessions_with_prefix(prefix);
     forgotten
@@ -754,6 +816,31 @@ mod tests {
             1,
             "hook must run exactly once for a given session id"
         );
+    }
+
+    #[test]
+    fn end_restart_never_revives_an_old_session_lease() {
+        let sid = "__cua_runtime_session-lease-test:end-restart";
+        let old = capture_session_lease(sid).expect("initial lease");
+        assert!(session_lease_is_current(&old));
+        assert!(fire_session_end(sid));
+        assert!(!session_lease_is_current(&old));
+        assert!(revive_session(sid));
+        let fresh = capture_session_lease(sid).expect("fresh lease");
+        assert_ne!(old.generation(), fresh.generation());
+        assert!(!session_lease_is_current(&old));
+        assert!(session_lease_is_current(&fresh));
+        forget_ended_sessions_with_prefix(sid);
+    }
+
+    #[test]
+    fn runtime_generation_cleanup_removes_session_lease_entries() {
+        let prefix = "__cua_runtime_session-lease-cleanup:";
+        let sid = format!("{prefix}one");
+        let _ = capture_session_lease(&sid).expect("lease");
+        assert!(session_generations().lock().unwrap().contains_key(&sid));
+        forget_ended_sessions_with_prefix(prefix);
+        assert!(!session_generations().lock().unwrap().contains_key(&sid));
     }
 
     #[test]

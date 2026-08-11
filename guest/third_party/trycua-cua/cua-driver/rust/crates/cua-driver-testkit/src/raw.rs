@@ -113,7 +113,6 @@ impl RawDriver {
         let mut command = Command::new(&bin);
         command
             .args(args)
-            .env("CUA_DRIVER_RS_TELEMETRY_ENABLED", "false")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());

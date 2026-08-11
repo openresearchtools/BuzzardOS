@@ -56,7 +56,7 @@ def make_executable(path: Path) -> bool:
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
-        if error.errno not in (errno.ENOENT, errno.ELOOP, errno.EACCES):
+        if error.errno not in (errno.ENOENT, errno.ELOOP, errno.EACCES, errno.ENXIO):
             print(f"wildbuzzard-appimage-ready: cannot inspect {path}: {error}", file=sys.stderr)
         return False
     try:

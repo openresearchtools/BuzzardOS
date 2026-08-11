@@ -8,10 +8,13 @@ if [ "${WILDBUZZARD_SERVICES_LOCKED:-0}" != 1 ]; then
 fi
 
 status_dir=${WILDBUZZARD_STATUS_DIR:-/run/wildbuzzard-host}
+: "${WILDBUZZARD_SESSION_TOKEN:?missing Wild Buzzard session token}"
 rm -f \
     "$status_dir/desktop-ready" \
     "$status_dir/shell-ready" \
     "$status_dir/cua-ready" \
+    "$status_dir/clipboard-ready" \
+    "$status_dir/clipboard-agent.sock" \
     "$status_dir/cua-health.json.tmp" \
     "$status_dir/cua-desktop-state.json.tmp" \
     "$status_dir/cua-ready.png" \
@@ -23,10 +26,12 @@ rm -f \
 dbus-update-activation-environment \
     DBUS_SESSION_BUS_ADDRESS \
     CUA_DRIVER_RS_ENABLE_WAYLAND \
+    CUA_DRIVER_RS_TELEMETRY_ENABLED \
     DISPLAY \
     ELECTRON_OZONE_PLATFORM_HINT \
     GTK_MODULES \
     HOME \
+    LD_LIBRARY_PATH \
     MOZ_ENABLE_WAYLAND \
     NO_AT_BRIDGE \
     QT_ACCESSIBILITY \
@@ -35,6 +40,7 @@ dbus-update-activation-environment \
     SWAYSOCK \
     USER \
     WAYLAND_DISPLAY \
+    XKB_CONFIG_ROOT \
     XDG_CONFIG_DIRS \
     XDG_CURRENT_DESKTOP \
     XDG_RUNTIME_DIR \
@@ -63,11 +69,57 @@ start_optional_service() {
     fi
 }
 
+start_output_sync_supervisor() {
+    (
+        output_sync_child=
+        stop_output_sync() {
+            if [ -n "$output_sync_child" ]; then
+                kill "$output_sync_child" 2>/dev/null || true
+                wait "$output_sync_child" 2>/dev/null || true
+            fi
+            exit 0
+        }
+        trap stop_output_sync INT TERM HUP
+        failures=0
+        while :; do
+            started=$(date +%s)
+            "$runtime/libexec/wildbuzzard-output-sync" \
+                >>"$status_dir/output-sync.log" 2>&1 &
+            output_sync_child=$!
+            set +e
+            wait "$output_sync_child"
+            status=$?
+            set -e
+            output_sync_child=
+            stopped=$(date +%s)
+            if [ $((stopped - started)) -ge 10 ]; then
+                failures=1
+            elif [ "$failures" -lt 5 ]; then
+                failures=$((failures + 1))
+            else
+                failures=5
+            fi
+            printf '%s\n' \
+                "wildbuzzard-desktop-services: output-sync exited with status $status; consecutive failure level $failures of 5" \
+                >>"$status_dir/output-sync.log"
+            case "$failures" in
+                1) sleep 0.2 ;;
+                2) sleep 0.5 ;;
+                *) sleep 2 ;;
+            esac
+        done
+    ) &
+    last_service_pid=$!
+    service_pids="$service_pids $last_service_pid"
+}
+
 cleanup() {
     rm -f \
         "$status_dir/desktop-ready" \
         "$status_dir/shell-ready" \
         "$status_dir/cua-ready" \
+        "$status_dir/clipboard-ready" \
+        "$status_dir/clipboard-agent.sock" \
         "$status_dir/cua-health.json.tmp" \
         "$status_dir/cua-desktop-state.json.tmp" \
         "$status_dir/cua-ready.png" \
@@ -93,19 +145,24 @@ if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
 fi
 start_optional_service pipewire-pulse pipewire-pulse
 start_optional_service wireplumber wireplumber
-start_service appimage-ready /usr/libexec/wildbuzzard-appimage-ready
+runtime=/opt/wildbuzzard/runtime/current
+
+start_service appimage-ready "$runtime/libexec/wildbuzzard-appimage-ready"
 appimage_ready_pid=$last_service_pid
-start_service integration /usr/libexec/wildbuzzard-integration-agent
+start_service clipboard-agent "$runtime/libexec/wildbuzzard-clipboard-agent"
+clipboard_pid=$last_service_pid
+start_service integration "$runtime/libexec/wildbuzzard-integration-agent"
 start_optional_service /usr/libexec/xdg-desktop-portal-wlr xdg-desktop-portal-wlr
 start_optional_service /usr/libexec/xdg-desktop-portal xdg-desktop-portal
 
 start_service mako mako
-start_service shell /usr/libexec/wildbuzzard-shell
+start_service shell "$runtime/libexec/wildbuzzard-shell"
 shell_pid=$last_service_pid
-start_service output-sync /usr/libexec/wildbuzzard-output-sync
+start_output_sync_supervisor
+output_sync_pid=$last_service_pid
 
-if command -v cua-driver >/dev/null 2>&1; then
-    start_service cua-driver cua-driver serve \
+if [ -x "$runtime/bin/cua-driver" ]; then
+    start_service cua-driver "$runtime/bin/cua-driver" serve \
         --dangerously-bypass-approvals \
         --no-overlay
     cua_pid=$last_service_pid
@@ -134,24 +191,44 @@ while [ "$attempt" -lt 450 ]; do
         echo "native AppImage authorization service exited before readiness" >&2
         exit 1
     fi
-    if [ -f "$status_dir/shell-ready" ] && [ -S "$cua_socket" ]; then
-        if timeout 5 cua-driver health_report '{}' \
+    if ! kill -0 "$clipboard_pid" 2>/dev/null; then
+        echo "guest clipboard agent exited before becoming ready" >&2
+        exit 1
+    fi
+    if ! kill -0 "$output_sync_pid" 2>/dev/null; then
+        echo "guest output/keyboard Settings service exited before readiness" >&2
+        exit 1
+    fi
+    if [ -f "$status_dir/shell-ready" ] && \
+        [ -f "$status_dir/clipboard-ready" ] && \
+        [ -S "$status_dir/clipboard-agent.sock" ] && \
+        [ -S "$XDG_RUNTIME_DIR/wildbuzzard-display-scale.sock" ] && \
+        [ -S "$XDG_RUNTIME_DIR/wildbuzzard-keyboard-settings.sock" ] && \
+        [ -f "$XDG_RUNTIME_DIR/wildbuzzard-output-sync-ready.json" ] && \
+        [ -S "$cua_socket" ]; then
+        if timeout 5 "$runtime/bin/cua-driver" health_report '{}' \
             >"$status_dir/cua-health.json.tmp" 2>>"$status_dir/cua-driver.log" &&
             grep -Eq '"overall"[[:space:]]*:[[:space:]]*"ok"' \
                 "$status_dir/cua-health.json.tmp" &&
-            timeout 10 cua-driver get_desktop_state \
+            timeout 10 "$runtime/bin/cua-driver" get_desktop_state \
                 "{\"screenshot_out_file\":\"$status_dir/cua-ready.png.tmp\"}" \
                 >"$status_dir/cua-desktop-state.json.tmp" \
                 2>>"$status_dir/cua-driver.log" &&
             python3 - "$status_dir/cua-desktop-state.json.tmp" \
-                "$status_dir/cua-ready.png.tmp" <<'PY'
+                "$status_dir/cua-ready.png.tmp" \
+                2>>"$status_dir/cua-driver.log" <<'PY'
 import json
 import struct
 import sys
 
 state_path, png_path = sys.argv[1:]
-with open(state_path, "r", encoding="utf-8") as stream:
-    state = json.load(stream)
+try:
+    with open(state_path, "r", encoding="utf-8") as stream:
+        state = json.load(stream)
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"CUA readiness state is not valid JSON: {error}") from None
+if not isinstance(state, dict):
+    raise SystemExit("CUA readiness state is not a JSON object")
 with open(png_path, "rb") as stream:
     header = stream.read(24)
 if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
@@ -176,7 +253,10 @@ PY
             mv "$status_dir/cua-ready.png.tmp" "$status_dir/cua-ready.png"
             rm -f "$status_dir/cua-desktop-state.json.tmp"
             touch "$status_dir/cua-ready"
-            touch "$status_dir/desktop-ready"
+            desktop_ready_tmp=$(mktemp "$status_dir/.desktop-ready.XXXXXX")
+            chmod 0600 "$desktop_ready_tmp"
+            printf '%s\n' "$WILDBUZZARD_SESSION_TOKEN" >"$desktop_ready_tmp"
+            mv -f "$desktop_ready_tmp" "$status_dir/desktop-ready"
             break
         fi
     fi
@@ -184,7 +264,7 @@ PY
     sleep 0.1
 done
 if [ ! -f "$status_dir/desktop-ready" ]; then
-    echo "desktop shell and Cua Driver did not become ready" >&2
+    echo "desktop shell, clipboard agent, and Cua Driver did not become ready" >&2
     exit 1
 fi
 

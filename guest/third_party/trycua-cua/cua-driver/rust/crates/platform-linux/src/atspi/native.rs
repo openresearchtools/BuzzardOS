@@ -194,7 +194,7 @@ fn rect_fits_window(
 /// the raw rectangle not to fit and the converted rectangle to fit avoids
 /// scaling WebKit/GTK bridges that already report logical coordinates.
 async fn web_extents_are_physical(visited: &[Visited<'_>], pid: u32, coord: CoordType) -> bool {
-    if crate::wayland::wildbuzzard_output_scale_120().unwrap_or(120) == 120 {
+    if crate::wayland::wildbuzzard_guest_ui_scale_120().unwrap_or(120) == 120 {
         return false;
     }
     let Some(window) = crate::wayland::compositor_ipc::window_for_pid(pid) else {

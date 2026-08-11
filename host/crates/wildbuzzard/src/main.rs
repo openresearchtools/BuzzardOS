@@ -11,13 +11,14 @@ use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wb_core::{
-    AppImageRuntimeLease, IdMap, MachineConfig, MachineState, NetworkMode, ResourceLocator,
-    RuntimeState, WaylandCapabilities, WbPaths, host_control_socket,
+    AppImageRuntimeLease, DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, IdMap, MachineConfig,
+    MachineState, NetworkMode, ResourceLocator, RuntimeState, WaylandCapabilities, WbPaths,
+    host_control_socket,
 };
 
 const ROOTFS_SEED_ARCHIVE: &str = "WildBuzzard-rootfs-linux-x86_64.tar.zst";
@@ -29,16 +30,37 @@ const MAX_GUEST_ID: u64 = 65_535;
 const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
 const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
+const GUEST_RUNTIME_ROOT: &str = "opt/wildbuzzard/runtime";
+const BUNDLED_GUEST_RUNTIME: &str = "wildbuzzard-guest-runtime";
+const MAX_GUEST_RUNTIME_MANIFEST_BYTES: u64 = 1024 * 1024;
+const REQUIRED_GUEST_RUNTIME_FILES: &[&str] = &[
+    "bin/sway",
+    "bin/swaymsg",
+    "bin/cua-driver",
+    "libexec/wildbuzzard-shell",
+    "libexec/wildbuzzard-settings",
+    "libexec/wildbuzzard-shortcut-helper",
+    "libexec/wildbuzzard-clipboard-agent",
+    "libexec/wildbuzzard-updater",
+    "libexec/updater_core.py",
+    "libexec/wildbuzzard-init",
+    "libexec/wildbuzzard-session",
+    "libexec/wildbuzzard-sway-session",
+    "libexec/wildbuzzard-output-sync",
+    "libexec/wildbuzzard-desktop-stopped",
+    "libexec/wildbuzzard-desktop-services",
+    "libexec/wildbuzzard-integration-agent",
+    "libexec/wildbuzzard-appimage-ready",
+    "libexec/wildbuzzard-fusermount",
+    "libexec/wildbuzzard-fusermount-exec",
+    "libexec/wildbuzzard-runtime-ready",
+    "libexec/wildbuzzard-sudo-exec",
+];
 const LEGACY_REFERENCE_CUA_SHA256: &str =
     "1f7abdd51e6239d3069caec92d73fca4a71c037321518c73036700012b30f029";
 const LEGACY_TILED_SWAY_CONFIG_SHA256: &str =
     "eb974c1c489d4ca7f37043be1eca969d38042007eecb1d22e5d418dd7bcf23d3";
 const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
-    (
-        "usr/libexec/wildbuzzard-init",
-        include_bytes!("../../../../guest/assets/wildbuzzard-init"),
-        0o755,
-    ),
     (
         "usr/lib/systemd/system-generators/wildbuzzard-generator",
         include_bytes!("../../../../guest/assets/wildbuzzard-generator"),
@@ -48,51 +70,6 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         "usr/lib/systemd/system/wildbuzzard-desktop.service",
         include_bytes!("../../../../guest/assets/wildbuzzard-desktop.service"),
         0o644,
-    ),
-    (
-        "usr/libexec/wildbuzzard-session",
-        include_bytes!("../../../../guest/assets/wildbuzzard-session"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-sway-session",
-        include_bytes!("../../../../guest/assets/wildbuzzard-sway-session"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-output-sync",
-        include_bytes!("../../../../guest/assets/wildbuzzard-output-sync"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-desktop-stopped",
-        include_bytes!("../../../../guest/assets/wildbuzzard-desktop-stopped"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-desktop-services",
-        include_bytes!("../../../../guest/assets/wildbuzzard-desktop-services"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-integration-agent",
-        include_bytes!("../../../../guest/assets/wildbuzzard-integration-agent"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-appimage-ready",
-        include_bytes!("../../../../guest/assets/wildbuzzard-appimage-ready"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-fusermount",
-        include_bytes!("../../../../guest/assets/wildbuzzard-fusermount"),
-        0o755,
-    ),
-    (
-        "usr/libexec/wildbuzzard-fusermount-exec",
-        include_bytes!("../../../../guest/assets/wildbuzzard-fusermount-exec"),
-        0o755,
     ),
     (
         "etc/wildbuzzard/sway-config",
@@ -115,8 +92,33 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         0o755,
     ),
     (
-        "usr/libexec/wildbuzzard-sudo-exec",
-        include_bytes!("../../../../guest/assets/wildbuzzard-sudo-exec"),
+        "usr/lib/systemd/system/wildbuzzard-runtime-ready.service",
+        include_bytes!("../../../../guest/assets/wildbuzzard-runtime-ready.service"),
+        0o644,
+    ),
+    (
+        "usr/lib/systemd/system/wildbuzzard-updater.service",
+        include_bytes!("../../../../guest/assets/wildbuzzard-updater.service"),
+        0o644,
+    ),
+    (
+        "usr/lib/systemd/system/wildbuzzard-updater-check.service",
+        include_bytes!("../../../../guest/assets/wildbuzzard-updater-check.service"),
+        0o644,
+    ),
+    (
+        "usr/lib/systemd/system/wildbuzzard-updater.timer",
+        include_bytes!("../../../../guest/assets/wildbuzzard-updater.timer"),
+        0o644,
+    ),
+    (
+        "usr/share/dbus-1/system.d/org.openresearchtools.WildBuzzard.Updater1.conf",
+        include_bytes!("../../../../guest/assets/org.openresearchtools.WildBuzzard.Updater1.conf"),
+        0o644,
+    ),
+    (
+        "usr/libexec/wildbuzzard-shortcut-helper",
+        include_bytes!("../../../../guest/assets/wildbuzzard-shortcut-helper-compat"),
         0o755,
     ),
     (
@@ -140,23 +142,80 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         0o644,
     ),
     (
-        "usr/share/themes/WildBuzzard/index.theme",
-        include_bytes!("../../../../guest/assets/themes/WildBuzzard/index.theme"),
+        "usr/share/themes/WildBuzzard-Dark/index.theme",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Dark/index.theme"),
         0o644,
     ),
     (
-        "usr/share/themes/WildBuzzard/gtk-3.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/WildBuzzard/gtk-3.0/gtk.css"),
+        "usr/share/themes/WildBuzzard-Dark/gtk-3.0/gtk.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Dark/gtk-3.0/gtk.css"),
         0o644,
     ),
     (
-        "usr/share/themes/WildBuzzard/gtk-4.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/WildBuzzard/gtk-4.0/gtk.css"),
+        "usr/share/themes/WildBuzzard-Dark/gtk-3.0/palette.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Dark/gtk-3.0/palette.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Dark/gtk-4.0/gtk.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Dark/gtk-4.0/gtk.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Dark/gtk-4.0/palette.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Dark/gtk-4.0/palette.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Light/index.theme",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Light/index.theme"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Light/gtk-3.0/gtk.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Light/gtk-3.0/gtk.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Light/gtk-3.0/palette.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Light/gtk-3.0/palette.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Light/gtk-4.0/gtk.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Light/gtk-4.0/gtk.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Light/gtk-4.0/palette.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Light/gtk-4.0/palette.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Shared/gtk-3.0/geometry.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Shared/gtk-3.0/geometry.css"),
+        0o644,
+    ),
+    (
+        "usr/share/themes/WildBuzzard-Shared/gtk-4.0/geometry.css",
+        include_bytes!("../../../../guest/assets/themes/WildBuzzard-Shared/gtk-4.0/geometry.css"),
         0o644,
     ),
     (
         "usr/share/icons/WildBuzzard/index.theme",
         include_bytes!("../../../../guest/assets/icons/WildBuzzard/index.theme"),
+        0o644,
+    ),
+    (
+        "usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard.svg",
+        include_bytes!("../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard.svg"),
+        0o644,
+    ),
+    (
+        "usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard-settings.svg",
+        include_bytes!(
+            "../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard-settings.svg"
+        ),
         0o644,
     ),
     (
@@ -214,8 +273,47 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         0o644,
     ),
     (
-        "usr/share/color-schemes/WildBuzzard.colors",
+        "usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg",
+        include_bytes!(
+            "../../../../guest/assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg"
+        ),
+        0o644,
+    ),
+    (
+        "usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg",
+        include_bytes!(
+            "../../../../guest/assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg"
+        ),
+        0o644,
+    ),
+    (
+        "usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg",
+        include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
+        0o644,
+    ),
+    (
+        "usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg",
+        include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-light.svg"),
+        0o644,
+    ),
+    (
+        "usr/share/wildbuzzard/branding/wildbuzzard-icon-light.svg",
+        include_bytes!("../../../../guest/assets/branding/wildbuzzard-icon-light.svg"),
+        0o644,
+    ),
+    (
+        "usr/share/wildbuzzard/branding/wallpaper-presets.json",
+        include_bytes!("../../../../guest/assets/branding/wallpaper-presets.json"),
+        0o644,
+    ),
+    (
+        "usr/share/color-schemes/WildBuzzard-Dark.colors",
         include_bytes!("../../../../guest/assets/WildBuzzard.colors"),
+        0o644,
+    ),
+    (
+        "usr/share/color-schemes/WildBuzzard-Light.colors",
+        include_bytes!("../../../../guest/assets/WildBuzzard-Light.colors"),
         0o644,
     ),
     (
@@ -239,6 +337,11 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         0o644,
     ),
     (
+        "etc/wildbuzzard/xdg/Thunar/uca.xml",
+        include_bytes!("../../../../guest/assets/thunar-uca.xml"),
+        0o644,
+    ),
+    (
         "usr/local/share/applications/foot-server.desktop",
         include_bytes!("../../../../guest/assets/applications/foot-server.desktop"),
         0o644,
@@ -256,6 +359,13 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
     (
         "usr/local/share/applications/thunar-settings.desktop",
         include_bytes!("../../../../guest/assets/applications/thunar-settings.desktop"),
+        0o644,
+    ),
+    (
+        "usr/share/applications/org.openresearchtools.WildBuzzard.Settings1.desktop",
+        include_bytes!(
+            "../../../../guest/assets/applications/org.openresearchtools.WildBuzzard.Settings1.desktop"
+        ),
         0o644,
     ),
     (
@@ -285,6 +395,84 @@ struct GuestAssetRecord {
 struct GuestAssetManifest {
     schema: u32,
     assets: BTreeMap<String, GuestAssetRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GuestRuntimeFileRecord {
+    sha256: String,
+    mode: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GuestRuntimeManifest {
+    schema_version: u32,
+    revision: String,
+    files: BTreeMap<String, GuestRuntimeFileRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GuestRuntimeReadiness {
+    schema_version: u32,
+    revision: String,
+    manifest_sha256: String,
+    ready: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GuestRuntimeActivationFailure {
+    schema_version: u32,
+    failed_revision: String,
+    fallback_revision: String,
+    reason: String,
+    observed_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestRuntimeActivation {
+    revision: String,
+    previous: String,
+}
+
+#[derive(Debug)]
+struct DesktopReadinessDeadline {
+    seconds: u64,
+    diagnostic: Option<String>,
+}
+
+impl std::fmt::Display for DesktopReadinessDeadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "machine did not report desktop readiness within {} seconds",
+            self.seconds
+        )?;
+        if let Some(diagnostic) = &self.diagnostic {
+            write!(formatter, ": {diagnostic}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DesktopReadinessDeadline {}
+
+fn state_desktop_readiness_deadline(state: &RuntimeState) -> Option<DesktopReadinessDeadline> {
+    let detail = state
+        .detail
+        .as_deref()?
+        .strip_prefix(DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX)?;
+    let (seconds, diagnostic) = detail.split_once(':')?;
+    let seconds = seconds.parse::<u64>().ok()?;
+    if !(1..=600).contains(&seconds) {
+        return None;
+    }
+    Some(DesktopReadinessDeadline {
+        seconds,
+        diagnostic: Some(diagnostic.trim().to_owned()).filter(|value| !value.is_empty()),
+    })
 }
 
 #[derive(Debug, Parser)]
@@ -381,6 +569,15 @@ enum Commands {
         #[arg(long)]
         rootfs: PathBuf,
     },
+    #[command(name = "__rollback-guest-runtime", hide = true)]
+    RollbackGuestRuntime {
+        #[arg(long)]
+        rootfs: PathBuf,
+        #[arg(long)]
+        expected_current: String,
+        #[arg(long)]
+        expected_previous: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -395,6 +592,7 @@ enum WindowAction {
     Minimize,
     Maximize,
     Restore,
+    FocusMonitor,
     ToggleMaximize,
     Close,
 }
@@ -405,6 +603,7 @@ impl WindowAction {
             Self::Minimize => "minimize",
             Self::Maximize => "maximize",
             Self::Restore => "restore",
+            Self::FocusMonitor => "focus-monitor",
             Self::ToggleMaximize => "toggle-maximize",
             Self::Close => "close",
         }
@@ -484,6 +683,24 @@ fn run() -> Result<()> {
         }
         std::process::exit(3);
     }
+    if let Some(Commands::RollbackGuestRuntime {
+        rootfs,
+        expected_current,
+        expected_previous,
+    }) = &cli.command
+    {
+        let rootfs = rootfs
+            .canonicalize()
+            .with_context(|| format!("resolving guest rootfs {}", rootfs.display()))?;
+        rollback_guest_runtime(
+            &rootfs,
+            expected_current,
+            expected_previous,
+            "desktop readiness deadline expired",
+            0,
+        )?;
+        return Ok(());
+    }
     let paths = WbPaths::discover(cli.storage_dir.as_deref())?;
     paths.ensure()?;
 
@@ -515,6 +732,9 @@ fn run() -> Result<()> {
             unreachable!("handled before portable path discovery")
         }
         Some(Commands::VerifyGuestAssets { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::RollbackGuestRuntime { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         None => open_portable_desktop(&paths, appimage_lease.as_ref()),
@@ -1391,9 +1611,13 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
         .with_context(|| format!("resolving extracted rootfs {}", rootfs.display()))?;
     for required in [
         "lib/systemd/systemd",
-        "usr/bin/sway",
-        "usr/libexec/wildbuzzard-shell",
-        "usr/local/bin/cua-driver",
+        "opt/wildbuzzard/runtime/current/bin/sway",
+        "opt/wildbuzzard/runtime/current/bin/swaymsg",
+        "opt/wildbuzzard/runtime/current/bin/cua-driver",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-clipboard-agent",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-settings",
+        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell",
+        "usr/libexec/wildbuzzard-shortcut-helper",
         "var/lib/dpkg/status",
     ] {
         let path = rootfs.join(required);
@@ -1829,25 +2053,12 @@ fn clear_directory(path: &Path) -> Result<()> {
 fn install_guest_assets(rootfs: &Path) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     remove_empty_nvidia_mount_placeholders(rootfs)?;
+    install_bundled_guest_runtime_for_new_rootfs(rootfs)?;
     for (relative, contents, mode) in GUEST_ASSETS {
         install_guest_asset(rootfs, Path::new(relative), contents, *mode)?;
     }
     remove_kde_wallet_activation(rootfs)?;
-    let shell = bundled_guest_shell_contents()?;
-    let cua_driver = bundled_guest_cua_driver_contents()?;
-    install_guest_asset(
-        rootfs,
-        Path::new("usr/libexec/wildbuzzard-shell"),
-        &shell,
-        0o755,
-    )?;
-    install_guest_asset(
-        rootfs,
-        Path::new("usr/local/bin/cua-driver"),
-        &cua_driver,
-        0o755,
-    )?;
-    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest(&shell, &cua_driver)?)?;
+    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest())?;
     install_guest_asset(
         rootfs,
         Path::new("usr/lib/wildbuzzard/guest-assets.version"),
@@ -1881,9 +2092,847 @@ fn validate_guest_rootfs(rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
+fn guest_runtime_revision() -> Result<String> {
+    let revision = GUEST_ASSETS_REVISION.trim();
+    if !valid_runtime_revision(revision) {
+        bail!("invalid protected guest runtime revision {revision:?}");
+    }
+    Ok(revision.to_owned())
+}
+
+fn valid_runtime_revision(revision: &str) -> bool {
+    let mut characters = revision.chars();
+    !revision.is_empty()
+        && revision.len() <= 128
+        && characters
+            .next()
+            .is_some_and(|character| character.is_ascii_alphanumeric())
+        && characters.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '~' | '-')
+        })
+}
+
+fn bundled_guest_runtime_dir(revision: &str) -> Result<PathBuf> {
+    let launcher = std::env::current_exe().context("locating bundled guest runtime")?;
+    Ok(launcher
+        .parent()
+        .context("launcher path has no parent")?
+        .join(BUNDLED_GUEST_RUNTIME)
+        .join(revision))
+}
+
+fn protected_runtime_metadata(
+    path: &Path,
+    expected_uid: Option<u32>,
+    kind: &str,
+) -> Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {kind} {}", path.display()))?;
+    if let Some(expected_uid) = expected_uid {
+        let expected_gid = if expected_uid == 0 {
+            0
+        } else {
+            unsafe { libc::getegid() }
+        };
+        if metadata.uid() != expected_uid || metadata.gid() != expected_gid {
+            bail!(
+                "{kind} {} is owned by {}:{}, expected {expected_uid}:{expected_gid}",
+                path.display(),
+                metadata.uid(),
+                metadata.gid()
+            );
+        }
+    }
+    if !metadata.file_type().is_symlink() && metadata.permissions().mode() & 0o022 != 0 {
+        bail!("{kind} {} is group/world writable", path.display());
+    }
+    Ok(metadata)
+}
+
+fn valid_runtime_relative_path(relative: &str) -> bool {
+    !relative.is_empty()
+        && !relative.starts_with('/')
+        && relative.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b'+' | b'/' | b'@' | b'~' | b'-')
+        })
+        && Path::new(relative)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn read_guest_runtime_manifest(
+    revision_dir: &Path,
+    expected_uid: Option<u32>,
+    expected_revision: &str,
+) -> Result<(GuestRuntimeManifest, Vec<u8>)> {
+    let manifest_path = revision_dir.join("runtime.manifest.json");
+    let metadata = protected_runtime_metadata(&manifest_path, expected_uid, "runtime manifest")?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "protected runtime manifest {} is not a regular file",
+            manifest_path.display()
+        );
+    }
+    if metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
+        bail!("protected runtime manifest exceeds its size limit");
+    }
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("reading runtime manifest {}", manifest_path.display()))?;
+    let manifest: GuestRuntimeManifest =
+        serde_json::from_slice(&bytes).context("parsing protected runtime manifest")?;
+    if manifest.schema_version != 1 {
+        bail!("unsupported protected runtime manifest schema");
+    }
+    if manifest.revision != expected_revision {
+        bail!("protected runtime manifest revision does not match its directory");
+    }
+    if manifest.files.is_empty() || manifest.files.len() > 4096 {
+        bail!("protected runtime manifest has an invalid file inventory");
+    }
+    for required in REQUIRED_GUEST_RUNTIME_FILES {
+        if !manifest.files.contains_key(*required) {
+            bail!("protected runtime is missing required file {required}");
+        }
+    }
+    for (relative, record) in &manifest.files {
+        if !valid_runtime_relative_path(relative)
+            || record.mode > 0o777
+            || record.mode & 0o022 != 0
+            || record.sha256.len() != 64
+            || !record
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("protected runtime manifest contains an unsafe record");
+        }
+    }
+    Ok((manifest, bytes))
+}
+
+fn sha256_regular_file(path: &Path) -> Result<String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("opening protected runtime file {}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading protected runtime file {}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn validate_guest_runtime_tree(
+    revision_dir: &Path,
+    manifest: &GuestRuntimeManifest,
+    expected_uid: Option<u32>,
+    allow_readiness: bool,
+) -> Result<()> {
+    let revision_metadata =
+        protected_runtime_metadata(revision_dir, expected_uid, "runtime revision")?;
+    if revision_metadata.file_type().is_symlink() || !revision_metadata.is_dir() {
+        bail!("protected runtime revision must be a real directory");
+    }
+    let canonical_revision = revision_dir
+        .canonicalize()
+        .with_context(|| format!("resolving runtime revision {}", revision_dir.display()))?;
+    let mut seen = BTreeMap::new();
+    let mut directories = vec![(revision_dir.to_path_buf(), PathBuf::new())];
+    while let Some((directory, relative_directory)) = directories.pop() {
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("reading runtime directory {}", directory.display()))?
+        {
+            let entry = entry.context("reading protected runtime entry")?;
+            let file_name = entry.file_name();
+            let relative = relative_directory.join(&file_name);
+            let path = entry.path();
+            let relative_text = relative
+                .to_str()
+                .context("protected runtime path is not UTF-8")?
+                .to_owned();
+            let metadata =
+                protected_runtime_metadata(&path, expected_uid, "runtime path component")?;
+            if metadata.file_type().is_symlink() {
+                bail!("protected runtime contains a symbolic link: {relative_text}");
+            }
+            if metadata.is_dir() {
+                directories.push((path, relative));
+                continue;
+            }
+            if !metadata.is_file() {
+                bail!("protected runtime contains a special file: {relative_text}");
+            }
+            if relative_text == "runtime.manifest.json"
+                || (allow_readiness && relative_text == "readiness.json")
+            {
+                continue;
+            }
+            let record = manifest.files.get(&relative_text).with_context(|| {
+                format!("protected runtime contains unmanifested file {relative_text}")
+            })?;
+            if metadata.permissions().mode() & 0o777 != record.mode {
+                bail!("protected runtime mode differs for {relative_text}");
+            }
+            if sha256_regular_file(&path)? != record.sha256 {
+                bail!("protected runtime digest differs for {relative_text}");
+            }
+            let resolved = path
+                .canonicalize()
+                .with_context(|| format!("resolving runtime file {}", path.display()))?;
+            if !resolved.starts_with(&canonical_revision) {
+                bail!("protected runtime file escaped its revision: {relative_text}");
+            }
+            seen.insert(relative_text, ());
+        }
+    }
+    if seen.len() != manifest.files.len()
+        || manifest
+            .files
+            .keys()
+            .any(|relative| !seen.contains_key(relative))
+    {
+        bail!("protected runtime manifest names missing files");
+    }
+    Ok(())
+}
+
+fn read_revision_link(
+    runtime_root: &Path,
+    name: &str,
+    expected_uid: u32,
+) -> Result<Option<String>> {
+    let path = runtime_root.join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting runtime link {}", path.display()));
+        }
+    };
+    let expected_gid = if expected_uid == 0 {
+        0
+    } else {
+        unsafe { libc::getegid() }
+    };
+    if !metadata.file_type().is_symlink()
+        || metadata.uid() != expected_uid
+        || metadata.gid() != expected_gid
+    {
+        bail!("protected runtime {name} is not an owner-controlled symbolic link");
+    }
+    let target = fs::read_link(&path)
+        .with_context(|| format!("reading protected runtime link {}", path.display()))?;
+    let target = target
+        .to_str()
+        .context("protected runtime link target is not UTF-8")?;
+    if !valid_runtime_revision(target) {
+        bail!("protected runtime {name} has an unsafe target");
+    }
+    let revision = runtime_root.join(target);
+    let revision_metadata =
+        protected_runtime_metadata(&revision, Some(expected_uid), "runtime revision")?;
+    if revision_metadata.file_type().is_symlink() || !revision_metadata.is_dir() {
+        bail!("protected runtime {name} target is not a real revision directory");
+    }
+    Ok(Some(target.to_owned()))
+}
+
+fn create_runtime_stage(runtime_root: &Path, revision: &str) -> Result<PathBuf> {
+    for counter in 0..128_u32 {
+        let stage = runtime_root.join(format!(
+            ".{revision}.staging.{}.{}",
+            std::process::id(),
+            counter
+        ));
+        match fs::create_dir(&stage) {
+            Ok(()) => {
+                fs::set_permissions(&stage, fs::Permissions::from_mode(0o755))
+                    .with_context(|| format!("protecting runtime stage {}", stage.display()))?;
+                return Ok(stage);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating runtime stage {}", stage.display()));
+            }
+        }
+    }
+    bail!("could not allocate a protected runtime staging directory")
+}
+
+fn clean_stale_runtime_intermediates(
+    runtime_root: &Path,
+    revision: &str,
+    expected_uid: u32,
+) -> Result<()> {
+    let staging_prefix = format!(".{revision}.staging.");
+    let incomplete_prefix = format!(".{revision}.incomplete.");
+    for entry in fs::read_dir(runtime_root)
+        .with_context(|| format!("reading protected runtime root {}", runtime_root.display()))?
+    {
+        let entry = entry.context("reading protected runtime intermediate")?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&staging_prefix) && !name.starts_with(&incomplete_prefix) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = protected_runtime_metadata(
+            &path,
+            Some(expected_uid),
+            "runtime migration intermediate",
+        )?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!(
+                "runtime migration intermediate {} is not a real directory",
+                path.display()
+            );
+        }
+        safely_remove_runtime_directory(&path)?;
+    }
+    Ok(())
+}
+
+fn copy_guest_runtime_revision(
+    source: &Path,
+    stage: &Path,
+    manifest: &GuestRuntimeManifest,
+    manifest_bytes: &[u8],
+) -> Result<()> {
+    for (relative, record) in &manifest.files {
+        let source_file = source.join(relative);
+        let destination = prepare_guest_asset_destination(stage, Path::new(relative))?;
+        let mut input = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&source_file)
+            .with_context(|| format!("opening bundled runtime file {}", source_file.display()))?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(record.mode)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&destination)
+            .with_context(|| format!("creating runtime file {}", destination.display()))?;
+        std::io::copy(&mut input, &mut output)
+            .with_context(|| format!("copying protected runtime file {relative}"))?;
+        output
+            .set_permissions(fs::Permissions::from_mode(record.mode))
+            .with_context(|| format!("setting runtime mode for {relative}"))?;
+        output
+            .sync_all()
+            .with_context(|| format!("syncing runtime file {relative}"))?;
+    }
+    install_guest_asset(
+        stage,
+        Path::new("runtime.manifest.json"),
+        manifest_bytes,
+        0o644,
+    )
+}
+
+fn rename_noreplace(source: &Path, destination: &Path) -> Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())
+        .context("runtime source path contains an embedded NUL")?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .context("runtime destination path contains an embedded NUL")?;
+    // Linux is the only supported host. RENAME_NOREPLACE prevents a raced or
+    // hostile path from being replaced during the revision commit.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "atomically moving {} to {}",
+                source.to_string_lossy(),
+                destination.to_string_lossy()
+            )
+        })
+    }
+}
+
+fn vacant_runtime_path(runtime_root: &Path, stem: &str) -> Result<PathBuf> {
+    for counter in 0..128_u32 {
+        let candidate = runtime_root.join(format!(".{stem}.{}.{}", std::process::id(), counter));
+        match fs::symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspecting runtime path {}", candidate.display()));
+            }
+            Ok(_) => continue,
+        }
+    }
+    bail!("could not allocate an atomic protected runtime path")
+}
+
+fn atomic_revision_link(
+    runtime_root: &Path,
+    name: &str,
+    revision: &str,
+    expected_uid: u32,
+) -> Result<()> {
+    let expected_gid = if expected_uid == 0 {
+        0
+    } else {
+        unsafe { libc::getegid() }
+    };
+    if let Ok(metadata) = fs::symlink_metadata(runtime_root.join(name))
+        && (!metadata.file_type().is_symlink()
+            || metadata.uid() != expected_uid
+            || metadata.gid() != expected_gid)
+    {
+        bail!("protected runtime {name} cannot be replaced safely");
+    }
+    for counter in 0..128_u32 {
+        let temporary =
+            runtime_root.join(format!(".{name}.link.{}.{}", std::process::id(), counter));
+        match symlink(revision, &temporary) {
+            Ok(()) => {
+                fs::rename(&temporary, runtime_root.join(name)).with_context(|| {
+                    format!("activating protected runtime {name} revision {revision}")
+                })?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating protected runtime {name} revision link"));
+            }
+        }
+    }
+    bail!("could not allocate a protected runtime activation link")
+}
+
+fn safely_remove_runtime_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspecting {}", path.display())),
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
+        }
+        Ok(_) => bail!(
+            "refusing to remove non-directory runtime path {}",
+            path.display()
+        ),
+    }
+}
+
+fn install_protected_guest_runtime(
+    rootfs: &Path,
+    source: &Path,
+    revision: &str,
+    expected_uid: u32,
+) -> Result<()> {
+    let (manifest, manifest_bytes) = read_guest_runtime_manifest(source, None, revision)?;
+    if manifest.revision != revision {
+        bail!("bundled runtime revision differs from ASSET_REVISION");
+    }
+    validate_guest_runtime_tree(source, &manifest, None, false)?;
+
+    let current_path =
+        prepare_guest_asset_destination(rootfs, &Path::new(GUEST_RUNTIME_ROOT).join("current"))?;
+    let runtime_root = current_path
+        .parent()
+        .context("protected runtime current path has no parent")?;
+    for protected in [
+        rootfs.join("opt"),
+        rootfs.join("opt/wildbuzzard"),
+        runtime_root.to_path_buf(),
+    ] {
+        let metadata =
+            protected_runtime_metadata(&protected, Some(expected_uid), "runtime directory")?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!(
+                "protected runtime path {} is not a real directory",
+                protected.display()
+            );
+        }
+        fs::set_permissions(&protected, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("protecting runtime directory {}", protected.display()))?;
+    }
+    let current = read_revision_link(runtime_root, "current", expected_uid)?;
+    if fs::symlink_metadata(runtime_root.join("previous")).is_ok() {
+        let _ = read_revision_link(runtime_root, "previous", expected_uid)?;
+    }
+
+    clean_stale_runtime_intermediates(runtime_root, revision, expected_uid)?;
+    let stage = create_runtime_stage(runtime_root, revision)?;
+    let install_result = (|| -> Result<()> {
+        copy_guest_runtime_revision(source, &stage, &manifest, &manifest_bytes)?;
+        validate_guest_runtime_tree(&stage, &manifest, Some(expected_uid), false)?;
+        let destination = runtime_root.join(revision);
+        match fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                rename_noreplace(&stage, &destination)?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "inspecting installed runtime revision {}",
+                        destination.display()
+                    )
+                });
+            }
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                let existing =
+                    read_guest_runtime_manifest(&destination, Some(expected_uid), revision)
+                        .and_then(|(existing, _)| {
+                            if existing != manifest {
+                                bail!("installed protected runtime manifest differs")
+                            }
+                            validate_guest_runtime_tree(
+                                &destination,
+                                &existing,
+                                Some(expected_uid),
+                                true,
+                            )
+                        });
+                if let Err(existing_error) = existing {
+                    if current.as_deref() == Some(revision) {
+                        return Err(existing_error).context(
+                            "active protected runtime is incomplete; bump ASSET_REVISION",
+                        );
+                    }
+                    let incomplete =
+                        vacant_runtime_path(runtime_root, &format!("{revision}.incomplete"))?;
+                    rename_noreplace(&destination, &incomplete)?;
+                    if let Err(error) = rename_noreplace(&stage, &destination) {
+                        let _ = rename_noreplace(&incomplete, &destination);
+                        return Err(error);
+                    }
+                    safely_remove_runtime_directory(&incomplete)?;
+                } else {
+                    safely_remove_runtime_directory(&stage)?;
+                }
+            }
+            Ok(_) => bail!("installed protected runtime revision is not a real directory"),
+        }
+
+        if current.as_deref() != Some(revision) {
+            if let Some(previous) = current.as_deref() {
+                atomic_revision_link(runtime_root, "previous", previous, expected_uid)?;
+            }
+            atomic_revision_link(runtime_root, "current", revision, expected_uid)?;
+        }
+        File::open(runtime_root)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| {
+                format!("syncing protected runtime root {}", runtime_root.display())
+            })?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = safely_remove_runtime_directory(&stage);
+    }
+    install_result
+}
+
+fn install_bundled_guest_runtime(rootfs: &Path) -> Result<()> {
+    let revision = guest_runtime_revision()?;
+    let source = bundled_guest_runtime_dir(&revision)?;
+    install_protected_guest_runtime(rootfs, &source, &revision, 0)
+}
+
+fn install_protected_guest_runtime_for_new_rootfs(
+    rootfs: &Path,
+    source: &Path,
+    revision: &str,
+    expected_uid: u32,
+) -> Result<()> {
+    let (bundled, _) = read_guest_runtime_manifest(source, None, revision)?;
+    validate_guest_runtime_tree(source, &bundled, None, false)?;
+
+    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+    let current = read_revision_link(&runtime_root, "current", expected_uid)?;
+    let destination = runtime_root.join(revision);
+    let replace_staged_revision = current.as_deref() == Some(revision)
+        && read_guest_runtime_manifest(&destination, Some(expected_uid), revision)
+            .and_then(|(installed, _)| {
+                if installed != bundled {
+                    bail!("staged protected runtime manifest differs")
+                }
+                validate_guest_runtime_tree(&destination, &installed, Some(expected_uid), true)
+            })
+            .is_err();
+
+    if !replace_staged_revision {
+        return install_protected_guest_runtime(rootfs, source, revision, expected_uid);
+    }
+
+    // This path is used only while creating a new, uncommitted machine rootfs.
+    // The OCI and AppImage builders may produce byte-distinct executables from
+    // the same source/toolchain contract. Preserve the strict no-replacement
+    // rule for an existing machine, but reconcile the disposable staging tree
+    // to the exact runtime carried by the AppImage before it becomes visible.
+    let original_revision = (0..128_u32)
+        .map(|counter| format!("seed~{}~{counter}", std::process::id()))
+        .find(|candidate| fs::symlink_metadata(runtime_root.join(candidate)).is_err())
+        .context("allocating a staged OCI runtime revision name")?;
+    let original = runtime_root.join(&original_revision);
+    rename_noreplace(&destination, &original)
+        .context("preserving the staged OCI runtime before seed reconciliation")?;
+    atomic_revision_link(&runtime_root, "current", &original_revision, expected_uid)?;
+    match install_protected_guest_runtime(rootfs, source, revision, expected_uid) {
+        Ok(()) => {
+            if fs::read_link(runtime_root.join("previous")).ok().as_deref()
+                == Some(Path::new(&original_revision))
+            {
+                fs::remove_file(runtime_root.join("previous"))
+                    .context("removing transient seed runtime history")?;
+            }
+            safely_remove_runtime_directory(&original)?;
+            File::open(&runtime_root)
+                .and_then(|directory| directory.sync_all())
+                .context("syncing reconciled new-machine runtime")?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = safely_remove_runtime_directory(&destination);
+            let restore = rename_noreplace(&original, &destination);
+            let current_restore =
+                atomic_revision_link(&runtime_root, "current", revision, expected_uid);
+            if fs::read_link(runtime_root.join("previous")).ok().as_deref()
+                == Some(Path::new(&original_revision))
+            {
+                let _ = fs::remove_file(runtime_root.join("previous"));
+            }
+            match restore {
+                Ok(()) if current_restore.is_ok() => Err(error).context(
+                    "installing the AppImage runtime into the new-machine staging rootfs",
+                ),
+                Ok(()) => Err(error).context(format!(
+                    "installing the AppImage runtime into the new-machine staging rootfs; restoring its active revision link also failed: {:#}",
+                    current_restore.unwrap_err()
+                )),
+                Err(restore_error) => Err(error).context(format!(
+                    "installing the AppImage runtime into the new-machine staging rootfs; restoring the OCI runtime also failed: {restore_error:#}"
+                )),
+            }
+        }
+    }
+}
+
+fn install_bundled_guest_runtime_for_new_rootfs(rootfs: &Path) -> Result<()> {
+    let revision = guest_runtime_revision()?;
+    let source = bundled_guest_runtime_dir(&revision)?;
+    install_protected_guest_runtime_for_new_rootfs(rootfs, &source, &revision, 0)
+}
+
+fn canonical_runtime_manifest_digest(manifest_bytes: &[u8]) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(manifest_bytes).context("parsing runtime manifest for readiness")?;
+    let canonical = serde_json::to_vec(&value).context("canonicalizing runtime manifest")?;
+    Ok(format!("{:x}", Sha256::digest(&canonical)))
+}
+
+fn validate_runtime_readiness(
+    revision_dir: &Path,
+    revision: &str,
+    manifest_bytes: &[u8],
+    expected_uid: u32,
+) -> Result<()> {
+    let path = revision_dir.join("readiness.json");
+    let metadata = protected_runtime_metadata(&path, Some(expected_uid), "runtime readiness")?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES
+    {
+        bail!("protected runtime readiness is not a bounded regular file");
+    }
+    let bytes =
+        fs::read(&path).with_context(|| format!("reading runtime readiness {}", path.display()))?;
+    let readiness: GuestRuntimeReadiness =
+        serde_json::from_slice(&bytes).context("parsing protected runtime readiness")?;
+    if readiness.schema_version != 1
+        || readiness.revision != revision
+        || !readiness.ready
+        || readiness.manifest_sha256 != canonical_runtime_manifest_digest(manifest_bytes)?
+    {
+        bail!("protected runtime readiness does not bind the complete revision");
+    }
+    Ok(())
+}
+
+fn runtime_failure_marker_relative(revision: &str) -> PathBuf {
+    Path::new(GUEST_RUNTIME_ROOT).join(format!("activation-failure.{revision}.json"))
+}
+
+fn read_runtime_activation_failure(
+    rootfs: &Path,
+    failed_revision: &str,
+    expected_uid: u32,
+) -> Result<Option<GuestRuntimeActivationFailure>> {
+    let path = rootfs.join(runtime_failure_marker_relative(failed_revision));
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspecting runtime failure evidence {}", path.display())
+            });
+        }
+    };
+    let expected_gid = if expected_uid == 0 {
+        0
+    } else {
+        unsafe { libc::getegid() }
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != expected_uid
+        || metadata.gid() != expected_gid
+        || metadata.permissions().mode() & 0o022 != 0
+        || metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES
+    {
+        bail!("protected runtime failure evidence is unsafe");
+    }
+    let evidence: GuestRuntimeActivationFailure = serde_json::from_slice(
+        &fs::read(&path)
+            .with_context(|| format!("reading runtime failure evidence {}", path.display()))?,
+    )
+    .context("parsing protected runtime failure evidence")?;
+    if evidence.schema_version != 1
+        || evidence.failed_revision != failed_revision
+        || !valid_runtime_revision(&evidence.fallback_revision)
+        || evidence.fallback_revision == failed_revision
+        || evidence.reason != "desktop readiness deadline expired"
+        || evidence.observed_at_unix_seconds == 0
+    {
+        bail!("protected runtime failure evidence is invalid");
+    }
+    Ok(Some(evidence))
+}
+
+fn rollback_guest_runtime(
+    rootfs: &Path,
+    expected_current: &str,
+    expected_previous: &str,
+    reason: &str,
+    expected_uid: u32,
+) -> Result<()> {
+    if !valid_runtime_revision(expected_current)
+        || !valid_runtime_revision(expected_previous)
+        || expected_current == expected_previous
+        || reason != "desktop readiness deadline expired"
+    {
+        bail!("invalid protected runtime rollback request");
+    }
+    validate_guest_rootfs(rootfs)?;
+    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+    let root_metadata =
+        protected_runtime_metadata(&runtime_root, Some(expected_uid), "runtime root")?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        bail!("protected runtime root is not a real directory");
+    }
+    if read_revision_link(&runtime_root, "current", expected_uid)?.as_deref()
+        != Some(expected_current)
+    {
+        bail!("protected runtime current changed before guarded rollback");
+    }
+    if read_revision_link(&runtime_root, "previous", expected_uid)?.as_deref()
+        != Some(expected_previous)
+    {
+        bail!("protected runtime previous changed before guarded rollback");
+    }
+
+    let failed_dir = runtime_root.join(expected_current);
+    let (failed_manifest, _) =
+        read_guest_runtime_manifest(&failed_dir, Some(expected_uid), expected_current)?;
+    validate_guest_runtime_tree(&failed_dir, &failed_manifest, Some(expected_uid), true)?;
+
+    let previous_dir = runtime_root.join(expected_previous);
+    let (previous_manifest, previous_manifest_bytes) =
+        read_guest_runtime_manifest(&previous_dir, Some(expected_uid), expected_previous)?;
+    validate_guest_runtime_tree(&previous_dir, &previous_manifest, Some(expected_uid), true)?;
+    validate_runtime_readiness(
+        &previous_dir,
+        expected_previous,
+        &previous_manifest_bytes,
+        expected_uid,
+    )?;
+
+    let evidence = GuestRuntimeActivationFailure {
+        schema_version: 1,
+        failed_revision: expected_current.to_owned(),
+        fallback_revision: expected_previous.to_owned(),
+        reason: reason.to_owned(),
+        observed_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock precedes the Unix epoch")?
+            .as_secs(),
+    };
+    let mut evidence_bytes =
+        serde_json::to_vec_pretty(&evidence).context("serializing runtime failure evidence")?;
+    evidence_bytes.push(b'\n');
+    install_guest_asset(
+        rootfs,
+        &runtime_failure_marker_relative(expected_current),
+        &evidence_bytes,
+        0o644,
+    )?;
+    atomic_revision_link(&runtime_root, "current", expected_previous, expected_uid)?;
+    File::open(&runtime_root)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| {
+            format!(
+                "syncing protected runtime rollback {}",
+                runtime_root.display()
+            )
+        })
+}
+
+fn validated_failed_runtime_fallback(
+    rootfs: &Path,
+    failed_revision: &str,
+    current_revision: &str,
+    expected_uid: u32,
+) -> Result<bool> {
+    let Some(evidence) = read_runtime_activation_failure(rootfs, failed_revision, expected_uid)?
+    else {
+        return Ok(false);
+    };
+    if evidence.fallback_revision != current_revision {
+        return Ok(false);
+    }
+    let fallback_dir = rootfs.join(GUEST_RUNTIME_ROOT).join(current_revision);
+    let (manifest, manifest_bytes) =
+        read_guest_runtime_manifest(&fallback_dir, Some(expected_uid), current_revision)?;
+    validate_guest_runtime_tree(&fallback_dir, &manifest, Some(expected_uid), true)?;
+    validate_runtime_readiness(
+        &fallback_dir,
+        current_revision,
+        &manifest_bytes,
+        expected_uid,
+    )?;
+    Ok(true)
+}
+
 fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     remove_empty_nvidia_mount_placeholders(rootfs)?;
+    install_bundled_guest_runtime(rootfs)?;
     let previous = read_guest_asset_manifest(rootfs);
     let legacy_tiled_sway_config = GuestAssetRecord {
         sha256: LEGACY_TILED_SWAY_CONFIG_SHA256.into(),
@@ -1909,6 +2958,23 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
         "etc/xdg/wayfire.ini",
         "etc/chromium.d/wildbuzzard",
         "etc/chromium/master_preferences",
+        "usr/share/themes/WildBuzzard/index.theme",
+        "usr/share/themes/WildBuzzard/gtk-3.0/gtk.css",
+        "usr/share/themes/WildBuzzard/gtk-4.0/gtk.css",
+        "usr/share/color-schemes/WildBuzzard.colors",
+        "usr/libexec/wildbuzzard-init",
+        "usr/libexec/wildbuzzard-session",
+        "usr/libexec/wildbuzzard-sway-session",
+        "usr/libexec/wildbuzzard-output-sync",
+        "usr/libexec/wildbuzzard-desktop-stopped",
+        "usr/libexec/wildbuzzard-desktop-services",
+        "usr/libexec/wildbuzzard-integration-agent",
+        "usr/libexec/wildbuzzard-appimage-ready",
+        "usr/libexec/wildbuzzard-fusermount",
+        "usr/libexec/wildbuzzard-fusermount-exec",
+        "usr/libexec/wildbuzzard-sudo-exec",
+        "usr/libexec/wildbuzzard-shell",
+        "usr/libexec/wildbuzzard-settings",
     ] {
         remove_retired_guest_asset(
             rootfs,
@@ -1918,34 +2984,19 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
                 .and_then(|manifest| manifest.assets.get(relative)),
         )?;
     }
-    let shell = bundled_guest_shell_contents()?;
-    let cua_driver = bundled_guest_cua_driver_contents()?;
-    migrate_guest_asset(
-        rootfs,
-        Path::new("usr/libexec/wildbuzzard-shell"),
-        &shell,
-        0o755,
-        previous
-            .as_ref()
-            .and_then(|manifest| manifest.assets.get("usr/libexec/wildbuzzard-shell")),
-        None,
-    )?;
     let legacy_cua_record = GuestAssetRecord {
         sha256: LEGACY_REFERENCE_CUA_SHA256.into(),
         mode: 0o755,
     };
-    migrate_guest_asset(
+    remove_retired_guest_asset(
         rootfs,
         Path::new("usr/local/bin/cua-driver"),
-        &cua_driver,
-        0o755,
         previous
             .as_ref()
             .and_then(|manifest| manifest.assets.get("usr/local/bin/cua-driver"))
             .or(Some(&legacy_cua_record)),
-        Some(&legacy_cua_record),
     )?;
-    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest(&shell, &cua_driver)?)?;
+    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest())?;
     // The revision is the commit marker and is deliberately written last. If
     // a migration fails, the next start retries without mistaking a partial
     // update for a completed one.
@@ -1957,27 +3008,6 @@ fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
     )
 }
 
-fn bundled_guest_shell_contents() -> Result<Vec<u8>> {
-    bundled_guest_executable_contents("wildbuzzard-shell")
-}
-
-fn bundled_guest_cua_driver_contents() -> Result<Vec<u8>> {
-    bundled_guest_executable_contents("wildbuzzard-cua-driver")
-}
-
-fn bundled_guest_executable_contents(name: &str) -> Result<Vec<u8>> {
-    let sibling = bundled_guest_executable(name)?;
-    let metadata = fs::symlink_metadata(&sibling)
-        .with_context(|| format!("finding bundled guest executable {}", sibling.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!(
-            "bundled guest executable {} must be a regular file",
-            sibling.display()
-        );
-    }
-    fs::read(&sibling).with_context(|| format!("reading guest executable {}", sibling.display()))
-}
-
 fn guest_asset_record(contents: &[u8], mode: u32) -> GuestAssetRecord {
     GuestAssetRecord {
         sha256: format!("{:x}", Sha256::digest(contents)),
@@ -1985,20 +3015,12 @@ fn guest_asset_record(contents: &[u8], mode: u32) -> GuestAssetRecord {
     }
 }
 
-fn current_guest_asset_manifest(shell: &[u8], cua_driver: &[u8]) -> Result<GuestAssetManifest> {
+fn current_guest_asset_manifest() -> GuestAssetManifest {
     let mut assets = BTreeMap::new();
     for (relative, contents, mode) in GUEST_ASSETS {
         assets.insert((*relative).to_owned(), guest_asset_record(contents, *mode));
     }
-    assets.insert(
-        "usr/libexec/wildbuzzard-shell".to_owned(),
-        guest_asset_record(shell, 0o755),
-    );
-    assets.insert(
-        "usr/local/bin/cua-driver".to_owned(),
-        guest_asset_record(cua_driver, 0o755),
-    );
-    Ok(GuestAssetManifest { schema: 1, assets })
+    GuestAssetManifest { schema: 1, assets }
 }
 
 fn read_guest_asset_manifest(rootfs: &Path) -> Option<GuestAssetManifest> {
@@ -2195,14 +3217,6 @@ fn remove_guest_file(rootfs: &Path, relative: &Path) -> Result<()> {
     }
 }
 
-fn bundled_guest_executable(name: &str) -> Result<PathBuf> {
-    let launcher = std::env::current_exe().context("locating bundled guest executable")?;
-    Ok(launcher
-        .parent()
-        .context("launcher path has no parent")?
-        .join(name))
-}
-
 fn prepare_guest_asset_destination(rootfs: &Path, relative: &Path) -> Result<PathBuf> {
     if relative.is_absolute()
         || relative
@@ -2285,7 +3299,11 @@ fn start(
             return Ok(());
         }
         if supervisor_is_live(&state, &machine_dir) {
-            refresh_guest_assets(&machine_dir.join("rootfs"))?;
+            let rootfs = machine_dir.join("rootfs");
+            let activation = refresh_guest_assets(&rootfs)?;
+            for diagnostic in guest_settings_runtime_diagnostics(&rootfs)? {
+                eprintln!("wildbuzzard: {diagnostic}");
+            }
             let supervisor_pid = state.launcher_pid;
             let reused = send_host_control(&machine_dir, "start")
                 .and_then(|()| wait_for_supervised_start(&machine_dir, Duration::from_secs(95)));
@@ -2295,6 +3313,17 @@ fn start(
                     return Ok(());
                 }
                 Err(error) => {
+                    let readiness_deadline =
+                        error.downcast_ref::<DesktopReadinessDeadline>().is_some();
+                    let error = recover_new_runtime_after_readiness_deadline(
+                        &machine_dir,
+                        &rootfs,
+                        activation.as_ref(),
+                        error,
+                    );
+                    if readiness_deadline && activation.is_some() {
+                        return Err(error);
+                    }
                     if let Some(pid) = supervisor_pid {
                         let _ = wait_for_process_exit(pid, Duration::from_secs(5));
                     }
@@ -2312,7 +3341,11 @@ fn start(
         }
     }
 
-    refresh_guest_assets(&machine_dir.join("rootfs"))?;
+    let rootfs = machine_dir.join("rootfs");
+    let activation = refresh_guest_assets(&rootfs)?;
+    for diagnostic in guest_settings_runtime_diagnostics(&rootfs)? {
+        eprintln!("wildbuzzard: {diagnostic}");
+    }
 
     let current = std::env::current_exe().context("locating launcher")?;
     let broker = current
@@ -2345,14 +3378,21 @@ fn start(
     let mut child = command
         .spawn()
         .with_context(|| format!("starting {}", broker.display()))?;
-    if detach {
-        let broker_pid = child.id();
-        wait_for_detached_start(
+    let broker_pid = child.id();
+    if let Err(error) = wait_for_detached_start(
+        &machine_dir,
+        &mut child,
+        broker_pid,
+        Duration::from_secs(95),
+    ) {
+        return Err(recover_new_runtime_after_readiness_deadline(
             &machine_dir,
-            &mut child,
-            broker_pid,
-            Duration::from_secs(95),
-        )?;
+            &rootfs,
+            activation.as_ref(),
+            error,
+        ));
+    }
+    if detach {
         println!("Started '{name}' (broker pid {})", child.id());
         Ok(())
     } else {
@@ -2365,9 +3405,34 @@ fn start(
     }
 }
 
-fn refresh_guest_assets(rootfs: &Path) -> Result<()> {
+fn observed_runtime_link(rootfs: &Path, name: &str) -> Result<Option<String>> {
+    let path = rootfs.join(GUEST_RUNTIME_ROOT).join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting runtime link {}", path.display()));
+        }
+    };
+    if !metadata.file_type().is_symlink() {
+        bail!("protected runtime {name} is not a symbolic link");
+    }
+    let target = fs::read_link(&path)
+        .with_context(|| format!("reading protected runtime link {}", path.display()))?;
+    let target = target
+        .to_str()
+        .context("protected runtime link target is not UTF-8")?;
+    if !valid_runtime_revision(target) {
+        bail!("protected runtime {name} has an unsafe target");
+    }
+    Ok(Some(target.to_owned()))
+}
+
+fn refresh_guest_assets(rootfs: &Path) -> Result<Option<GuestRuntimeActivation>> {
+    let before = observed_runtime_link(rootfs, "current")?;
     if guest_assets_are_current_rootless(rootfs)? {
-        return Ok(());
+        return Ok(None);
     }
 
     let status = run_guest_asset_helper(rootfs, "__install-guest-assets")?;
@@ -2377,7 +3442,71 @@ fn refresh_guest_assets(rootfs: &Path) -> Result<()> {
     if !guest_assets_are_current_rootless(rootfs)? {
         bail!("rootless guest asset migration did not commit its revision");
     }
-    Ok(())
+    let revision = guest_runtime_revision()?;
+    let after = observed_runtime_link(rootfs, "current")?;
+    if after.as_deref() != Some(revision.as_str()) {
+        bail!("rootless guest asset migration activated an unexpected runtime revision");
+    }
+    let activation = before
+        .filter(|previous| previous != &revision)
+        .map(|previous| GuestRuntimeActivation { revision, previous });
+    if let Some(activation) = &activation
+        && observed_runtime_link(rootfs, "previous")?.as_deref()
+            != Some(activation.previous.as_str())
+    {
+        bail!("rootless guest asset migration did not retain its previous revision");
+    }
+    Ok(activation)
+}
+
+fn guest_settings_runtime_diagnostics(rootfs: &Path) -> Result<Vec<String>> {
+    validate_guest_rootfs(rootfs)?;
+    let canonical_rootfs = rootfs
+        .canonicalize()
+        .with_context(|| format!("resolving guest rootfs {}", rootfs.display()))?;
+    let mut diagnostics = Vec::new();
+    for (relative, recovery) in [
+        (
+            "usr/lib/x86_64-linux-gnu/libgtk-4.so.1",
+            "sudo apt install libgtk-4-1",
+        ),
+        (
+            "usr/bin/gsettings",
+            "sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend",
+        ),
+        (
+            "usr/share/glib-2.0/schemas/org.gnome.desktop.interface.gschema.xml",
+            "sudo apt install gsettings-desktop-schemas dconf-gsettings-backend",
+        ),
+        (
+            "usr/share/glib-2.0/schemas/gschemas.compiled",
+            "sudo apt install --reinstall gsettings-desktop-schemas",
+        ),
+        ("usr/bin/unsquashfs", "sudo apt install squashfs-tools"),
+    ] {
+        let path = rootfs.join(relative);
+        let resolved = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                diagnostics.push(format!(
+                    "persistent guest compatibility warning: /{relative} is missing. The desktop remains bootable with degraded Settings/theme/AppImage integration; inside the guest run: {recovery}"
+                ));
+                continue;
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "persistent guest compatibility warning: /{relative} could not be inspected ({error}). The desktop remains bootable, but Settings/theme/AppImage integration may be degraded; inside the guest run: {recovery}"
+                ));
+                continue;
+            }
+        };
+        if !resolved.starts_with(&canonical_rootfs) || !resolved.is_file() {
+            bail!(
+                "persistent guest Settings runtime /{relative} escapes the rootfs or is not a regular file"
+            );
+        }
+    }
+    Ok(diagnostics)
 }
 
 fn guest_assets_are_current_rootless(rootfs: &Path) -> Result<bool> {
@@ -2415,6 +3544,76 @@ fn run_guest_asset_helper(
     })
 }
 
+fn run_guest_runtime_rollback_helper(
+    rootfs: &Path,
+    activation: &GuestRuntimeActivation,
+) -> Result<()> {
+    let id_map = IdMap::discover()?;
+    let resources = ResourceLocator::discover()?;
+    let unshare = resources.helper_or_path("unshare")?;
+    let launcher = std::env::current_exe().context("locating guest runtime rollback helper")?;
+    let mut command = Command::new(&unshare);
+    command.env_clear();
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.unshare_args())
+        .arg(&launcher)
+        .arg("__rollback-guest-runtime")
+        .arg("--rootfs")
+        .arg(rootfs)
+        .arg("--expected-current")
+        .arg(&activation.revision)
+        .arg("--expected-previous")
+        .arg(&activation.previous)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| {
+            format!(
+                "starting rootless guest runtime rollback through {}",
+                unshare.display()
+            )
+        })?;
+    if !status.success() {
+        bail!("guarded guest runtime rollback exited with {status}");
+    }
+    Ok(())
+}
+
+fn recover_new_runtime_after_readiness_deadline(
+    machine_dir: &Path,
+    rootfs: &Path,
+    activation: Option<&GuestRuntimeActivation>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let Some(activation) = activation else {
+        return error;
+    };
+    if error.downcast_ref::<DesktopReadinessDeadline>().is_none() {
+        return error;
+    }
+    let recovery = (|| -> Result<()> {
+        if RuntimeState::load(machine_dir)?.is_some_and(|state| {
+            supervisor_is_live(&state, machine_dir) || state.container_pid.is_some()
+        }) {
+            send_host_control(machine_dir, "stop")
+                .context("stopping the failed newly activated runtime")?;
+            wait_for_machine_stopped(machine_dir, Duration::from_secs(30))
+                .context("waiting for the failed newly activated runtime to stop")?;
+        }
+        run_guest_runtime_rollback_helper(rootfs, activation)
+    })();
+    match recovery {
+        Ok(()) => error.context(format!(
+            "new protected runtime {} missed desktop readiness; restored complete revision {} and retained failure evidence under /opt/wildbuzzard/runtime (start the machine again to use the fallback)",
+            activation.revision, activation.previous
+        )),
+        Err(recovery_error) => error.context(format!(
+            "new protected runtime {} missed desktop readiness, and its guarded fallback to {} failed: {recovery_error:#}",
+            activation.revision, activation.previous
+        )),
+    }
+}
+
 fn guest_assets_are_current(rootfs: &Path) -> Result<bool> {
     let installed = fs::read_to_string(rootfs.join("usr/lib/wildbuzzard/guest-assets.version"))
         .unwrap_or_default();
@@ -2425,10 +3624,34 @@ fn guest_assets_are_current(rootfs: &Path) -> Result<bool> {
     let Some(installed_manifest) = read_guest_asset_manifest(rootfs) else {
         return Ok(false);
     };
-    let shell = bundled_guest_shell_contents()?;
-    let cua_driver = bundled_guest_cua_driver_contents()?;
-    let bundled_manifest = current_guest_asset_manifest(&shell, &cua_driver)?;
-    Ok(installed_manifest == bundled_manifest)
+    if installed_manifest != current_guest_asset_manifest() {
+        return Ok(false);
+    }
+
+    let revision = guest_runtime_revision()?;
+    let source = bundled_guest_runtime_dir(&revision)?;
+    let (bundled_manifest, _) = read_guest_runtime_manifest(&source, None, &revision)?;
+    validate_guest_runtime_tree(&source, &bundled_manifest, None, false)?;
+    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+    let Some(current_revision) = read_revision_link(&runtime_root, "current", 0)? else {
+        return Ok(false);
+    };
+    if current_revision != revision {
+        return validated_failed_runtime_fallback(rootfs, &revision, &current_revision, 0);
+    }
+    let installed_revision = runtime_root.join(&revision);
+    let (installed_runtime_manifest, _) =
+        read_guest_runtime_manifest(&installed_revision, Some(0), &revision)?;
+    if installed_runtime_manifest != bundled_manifest {
+        return Ok(false);
+    }
+    validate_guest_runtime_tree(
+        &installed_revision,
+        &installed_runtime_manifest,
+        Some(0),
+        true,
+    )?;
+    Ok(true)
 }
 
 fn wait_for_detached_start(
@@ -2447,6 +3670,9 @@ fn wait_for_detached_start(
                     return Ok(());
                 }
                 MachineState::Failed => {
+                    if let Some(deadline) = state_desktop_readiness_deadline(&state) {
+                        return Err(deadline.into());
+                    }
                     bail!(
                         "machine failed to start: {}",
                         state.detail.as_deref().unwrap_or("no diagnostic")
@@ -2459,6 +3685,9 @@ fn wait_for_detached_start(
             if let Some(state) = RuntimeState::load(machine_dir)?
                 && state.state == MachineState::Failed
             {
+                if let Some(deadline) = state_desktop_readiness_deadline(&state) {
+                    return Err(deadline.into());
+                }
                 bail!(
                     "machine failed to start: {}",
                     state.detail.as_deref().unwrap_or("no diagnostic")
@@ -2467,10 +3696,11 @@ fn wait_for_detached_start(
             bail!("machine broker exited with {status} before desktop readiness");
         }
         if Instant::now() >= deadline {
-            bail!(
-                "machine did not report desktop readiness within {} seconds",
-                timeout.as_secs()
-            );
+            return Err(DesktopReadinessDeadline {
+                seconds: timeout.as_secs(),
+                diagnostic: None,
+            }
+            .into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -2574,10 +3804,15 @@ fn wait_for_supervised_start(machine_dir: &Path, timeout: Duration) -> Result<()
         if let Some(state) = RuntimeState::load(machine_dir)? {
             match state.state {
                 MachineState::Running if runtime_is_live(&state, machine_dir) => return Ok(()),
-                MachineState::Failed => bail!(
-                    "machine failed to start: {}",
-                    state.detail.as_deref().unwrap_or("no diagnostic")
-                ),
+                MachineState::Failed => {
+                    if let Some(deadline) = state_desktop_readiness_deadline(&state) {
+                        return Err(deadline.into());
+                    }
+                    bail!(
+                        "machine failed to start: {}",
+                        state.detail.as_deref().unwrap_or("no diagnostic")
+                    )
+                }
                 _ => {}
             }
             if !supervisor_is_live(&state, machine_dir) {
@@ -2585,10 +3820,11 @@ fn wait_for_supervised_start(machine_dir: &Path, timeout: Duration) -> Result<()
             }
         }
         if Instant::now() >= deadline {
-            bail!(
-                "machine did not report desktop readiness within {} seconds",
-                timeout.as_secs()
-            );
+            return Err(DesktopReadinessDeadline {
+                seconds: timeout.as_secs(),
+                diagnostic: None,
+            }
+            .into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -3158,19 +4394,498 @@ mod layer_tests {
         digest: String,
     }
 
+    fn runtime_fixture(directory: &Path) -> PathBuf {
+        runtime_fixture_for(directory, &guest_runtime_revision().unwrap())
+    }
+
+    fn runtime_fixture_for(directory: &Path, revision: &str) -> PathBuf {
+        let runtime = directory.join("bundled-runtime").join(revision);
+        fs::create_dir_all(&runtime).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut files = BTreeMap::new();
+        for relative in REQUIRED_GUEST_RUNTIME_FILES
+            .iter()
+            .copied()
+            .chain(["lib/libwlroots-0.20.so"])
+        {
+            let path = runtime.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let contents = format!("fixture:{relative}\n");
+            fs::write(&path, contents.as_bytes()).unwrap();
+            let mode = if relative.ends_with(".py") || relative.starts_with("lib/") {
+                0o644
+            } else {
+                0o755
+            };
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            files.insert(
+                relative.to_owned(),
+                GuestRuntimeFileRecord {
+                    sha256: format!("{:x}", Sha256::digest(contents.as_bytes())),
+                    mode,
+                },
+            );
+        }
+        for entry in walk_runtime_directories(&runtime) {
+            fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let manifest = GuestRuntimeManifest {
+            schema_version: 1,
+            revision: revision.to_owned(),
+            files,
+        };
+        fs::write(
+            runtime.join("runtime.manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(
+            runtime.join("runtime.manifest.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        runtime
+    }
+
+    fn add_runtime_readiness(runtime: &Path, revision: &str) {
+        let manifest_bytes = fs::read(runtime.join("runtime.manifest.json")).unwrap();
+        let readiness = GuestRuntimeReadiness {
+            schema_version: 1,
+            revision: revision.to_owned(),
+            manifest_sha256: canonical_runtime_manifest_digest(&manifest_bytes).unwrap(),
+            ready: true,
+        };
+        fs::write(
+            runtime.join("readiness.json"),
+            serde_json::to_vec(&readiness).unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(
+            runtime.join("readiness.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+
+    fn walk_runtime_directories(root: &Path) -> Vec<PathBuf> {
+        let mut directories = vec![root.to_path_buf()];
+        let mut result = Vec::new();
+        while let Some(directory) = directories.pop() {
+            result.push(directory.clone());
+            for entry in fs::read_dir(&directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    directories.push(entry.path());
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn protected_runtime_activation_is_atomic_and_retains_the_previous_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let revision = guest_runtime_revision().unwrap();
+        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+        fs::create_dir_all(runtime_root.join("old-revision")).unwrap();
+        for directory in [
+            rootfs.join("opt"),
+            rootfs.join("opt/wildbuzzard"),
+            runtime_root.clone(),
+            runtime_root.join("old-revision"),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        symlink("old-revision", runtime_root.join("current")).unwrap();
+        let uid = unsafe { libc::geteuid() };
+
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+
+        assert_eq!(
+            fs::read_link(runtime_root.join("current")).unwrap(),
+            Path::new(&revision)
+        );
+        assert_eq!(
+            fs::read_link(runtime_root.join("previous")).unwrap(),
+            Path::new("old-revision")
+        );
+        assert!(runtime_root.join("old-revision").is_dir());
+        assert!(runtime_root.join(&revision).join("bin/sway").is_file());
+        assert!(
+            fs::read_dir(&runtime_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| {
+                    let name = entry.file_name();
+                    name == "current"
+                        || name == "previous"
+                        || name == revision.as_str()
+                        || name == "old-revision"
+                })
+        );
+    }
+
+    #[test]
+    fn protected_runtime_retry_preserves_a_readiness_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let revision = guest_runtime_revision().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+        let readiness = rootfs
+            .join(GUEST_RUNTIME_ROOT)
+            .join(&revision)
+            .join("readiness.json");
+        fs::write(&readiness, b"readiness evidence\n").unwrap();
+        fs::set_permissions(&readiness, fs::Permissions::from_mode(0o644)).unwrap();
+
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+
+        assert_eq!(fs::read(&readiness).unwrap(), b"readiness evidence\n");
+    }
+
+    #[test]
+    fn protected_runtime_rejects_source_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        fs::remove_file(source.join("bin/sway")).unwrap();
+        symlink(&outside, source.join("bin/sway")).unwrap();
+
+        let error = install_protected_guest_runtime(
+            &rootfs,
+            &source,
+            &guest_runtime_revision().unwrap(),
+            unsafe { libc::geteuid() },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("symbolic link"));
+        assert!(!rootfs.join(GUEST_RUNTIME_ROOT).exists());
+    }
+
+    #[test]
+    fn protected_runtime_rejects_a_symlinked_intermediate_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&rootfs).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, rootfs.join("opt")).unwrap();
+        let source = runtime_fixture(temp.path());
+
+        let error = install_protected_guest_runtime(
+            &rootfs,
+            &source,
+            &guest_runtime_revision().unwrap(),
+            unsafe { libc::geteuid() },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("not a real directory"));
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn protected_runtime_never_follows_hostile_staging_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&rootfs).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+        fs::create_dir_all(&runtime_root).unwrap();
+        for directory in [
+            rootfs.join("opt"),
+            rootfs.join("opt/wildbuzzard"),
+            runtime_root.clone(),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let revision = guest_runtime_revision().unwrap();
+        for counter in 0..128_u32 {
+            symlink(
+                &outside,
+                runtime_root.join(format!(
+                    ".{revision}.staging.{}.{}",
+                    std::process::id(),
+                    counter
+                )),
+            )
+            .unwrap();
+        }
+        let source = runtime_fixture(temp.path());
+
+        let error = install_protected_guest_runtime(&rootfs, &source, &revision, unsafe {
+            libc::geteuid()
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("runtime migration intermediate"));
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn protected_runtime_discards_a_safe_interrupted_stage_and_retries() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let revision = guest_runtime_revision().unwrap();
+        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+        fs::create_dir_all(&runtime_root).unwrap();
+        for directory in [
+            rootfs.join("opt"),
+            rootfs.join("opt/wildbuzzard"),
+            runtime_root.clone(),
+        ] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let interrupted = runtime_root.join(format!(".{revision}.staging.interrupted"));
+        fs::create_dir(&interrupted).unwrap();
+        fs::set_permissions(&interrupted, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(interrupted.join("partial"), b"partial").unwrap();
+        fs::set_permissions(
+            interrupted.join("partial"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        install_protected_guest_runtime(&rootfs, &source, &revision, unsafe { libc::geteuid() })
+            .unwrap();
+
+        assert!(!interrupted.exists());
+        assert!(runtime_root.join(revision).join("bin/sway").is_file());
+    }
+
+    #[test]
+    fn protected_runtime_replaces_only_an_inactive_incomplete_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let revision = guest_runtime_revision().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+        fs::remove_file(runtime_root.join("current")).unwrap();
+        fs::write(
+            runtime_root.join(&revision).join("bin/sway"),
+            b"interrupted",
+        )
+        .unwrap();
+
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+
+        assert_eq!(
+            fs::read(runtime_root.join(&revision).join("bin/sway")).unwrap(),
+            b"fixture:bin/sway\n"
+        );
+        assert_eq!(
+            fs::read_link(runtime_root.join("current")).unwrap(),
+            Path::new(&revision)
+        );
+    }
+
+    #[test]
+    fn protected_runtime_never_replaces_a_corrupt_active_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let source = runtime_fixture(temp.path());
+        let revision = guest_runtime_revision().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
+        let sway = rootfs
+            .join(GUEST_RUNTIME_ROOT)
+            .join(&revision)
+            .join("bin/sway");
+        fs::write(&sway, b"corrupt active payload").unwrap();
+
+        let error = install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("active protected runtime is incomplete")
+        );
+        assert_eq!(fs::read(&sway).unwrap(), b"corrupt active payload");
+    }
+
+    #[test]
+    fn new_machine_reconciles_a_same_revision_oci_runtime_before_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let revision = guest_runtime_revision().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let oci_source = runtime_fixture(&temp.path().join("oci"));
+        install_protected_guest_runtime(&rootfs, &oci_source, &revision, uid).unwrap();
+
+        let appimage_source = runtime_fixture(&temp.path().join("appimage"));
+        let sway = appimage_source.join("bin/sway");
+        fs::write(&sway, b"AppImage-built Sway runtime fixture\n").unwrap();
+        let manifest_path = appimage_source.join("runtime.manifest.json");
+        let mut manifest: GuestRuntimeManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.files.get_mut("bin/sway").unwrap().sha256 = format!(
+            "{:x}",
+            Sha256::digest(b"AppImage-built Sway runtime fixture\n")
+        );
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        install_protected_guest_runtime_for_new_rootfs(&rootfs, &appimage_source, &revision, uid)
+            .unwrap();
+
+        let installed = rootfs
+            .join(GUEST_RUNTIME_ROOT)
+            .join(&revision)
+            .join("bin/sway");
+        assert_eq!(
+            fs::read(installed).unwrap(),
+            b"AppImage-built Sway runtime fixture\n"
+        );
+        assert_eq!(
+            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
+            Path::new(&revision)
+        );
+        assert!(
+            fs::read_dir(rootfs.join(GUEST_RUNTIME_ROOT))
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("seed-original"))
+        );
+    }
+
+    #[test]
+    fn guarded_runtime_rollback_restores_only_the_ready_previous_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let previous_revision = "previous-ready";
+        let previous_source = runtime_fixture_for(&temp.path().join("previous"), previous_revision);
+        install_protected_guest_runtime(&rootfs, &previous_source, previous_revision, uid).unwrap();
+        let previous_runtime = rootfs.join(GUEST_RUNTIME_ROOT).join(previous_revision);
+        add_runtime_readiness(&previous_runtime, previous_revision);
+
+        let current_revision = guest_runtime_revision().unwrap();
+        let current_source = runtime_fixture(&temp.path().join("current"));
+        install_protected_guest_runtime(&rootfs, &current_source, &current_revision, uid).unwrap();
+
+        rollback_guest_runtime(
+            &rootfs,
+            &current_revision,
+            previous_revision,
+            "desktop readiness deadline expired",
+            uid,
+        )
+        .unwrap();
+
+        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
+        assert_eq!(
+            fs::read_link(runtime_root.join("current")).unwrap(),
+            Path::new(previous_revision)
+        );
+        assert!(runtime_root.join(&current_revision).is_dir());
+        assert!(runtime_root.join(previous_revision).is_dir());
+        let evidence = read_runtime_activation_failure(&rootfs, &current_revision, uid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.fallback_revision, previous_revision);
+        assert!(
+            validated_failed_runtime_fallback(&rootfs, &current_revision, previous_revision, uid,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn guarded_runtime_rollback_rejects_stale_current_or_unready_previous() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let previous_revision = "previous-unready";
+        let previous_source = runtime_fixture_for(&temp.path().join("previous"), previous_revision);
+        install_protected_guest_runtime(&rootfs, &previous_source, previous_revision, uid).unwrap();
+        let current_revision = guest_runtime_revision().unwrap();
+        let current_source = runtime_fixture(&temp.path().join("current"));
+        install_protected_guest_runtime(&rootfs, &current_source, &current_revision, uid).unwrap();
+
+        let error = rollback_guest_runtime(
+            &rootfs,
+            &current_revision,
+            previous_revision,
+            "desktop readiness deadline expired",
+            uid,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("runtime readiness"));
+        assert_eq!(
+            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
+            Path::new(&current_revision)
+        );
+
+        add_runtime_readiness(
+            &rootfs.join(GUEST_RUNTIME_ROOT).join(previous_revision),
+            previous_revision,
+        );
+        let stale = rollback_guest_runtime(
+            &rootfs,
+            "not-the-current-revision",
+            previous_revision,
+            "desktop readiness deadline expired",
+            uid,
+        )
+        .unwrap_err();
+        assert!(stale.to_string().contains("current changed"));
+        assert_eq!(
+            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
+            Path::new(&current_revision)
+        );
+    }
+
+    #[test]
+    fn only_the_broker_readiness_deadline_code_enables_guarded_recovery() {
+        let mut state = RuntimeState::new(MachineState::Failed);
+        state.detail = Some("desktop-readiness-deadline:90: nested compositor log: fixture".into());
+        let deadline = state_desktop_readiness_deadline(&state).unwrap();
+        assert_eq!(deadline.seconds, 90);
+        assert_eq!(
+            deadline.diagnostic.as_deref(),
+            Some("nested compositor log: fixture")
+        );
+
+        state.detail = Some("desktop compositor did not become ready within 90 seconds".into());
+        assert!(state_desktop_readiness_deadline(&state).is_none());
+        state.detail = Some("desktop-readiness-deadline:9999: forged".into());
+        assert!(state_desktop_readiness_deadline(&state).is_none());
+    }
+
     #[test]
     fn compiled_guest_assets_match_the_oci_install_manifest() {
         let manifest = include_str!("../../../../guest/asset-manifest.tsv");
         let declared: BTreeMap<&str, u32> = manifest
             .lines()
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| {
+            .filter_map(|line| {
                 let mut fields = line.split('\t');
                 let mode = u32::from_str_radix(fields.next().unwrap(), 8).unwrap();
                 let _source = fields.next().unwrap();
                 let destination = fields.next().unwrap();
                 assert!(fields.next().is_none());
-                (destination, mode)
+                (!destination.starts_with("@runtime/")).then_some((destination, mode))
             })
             .collect();
         let compiled: BTreeMap<&str, u32> = GUEST_ASSETS
@@ -3185,13 +4900,28 @@ mod layer_tests {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
         let binaries = temp.path().join("binaries");
+        let runtime = temp.path().join("runtime");
         fs::create_dir(&rootfs).unwrap();
         fs::create_dir(&binaries).unwrap();
+        fs::create_dir_all(runtime.join("bin")).unwrap();
         let shell = binaries.join("wildbuzzard-shell");
+        let settings = binaries.join("wildbuzzard-settings");
+        let shortcut_helper = binaries.join("wildbuzzard-shortcut-helper");
+        let clipboard_agent = binaries.join("wildbuzzard-clipboard-agent");
         let cua_driver = binaries.join("cua-driver");
-        for executable in [&shell, &cua_driver] {
+        for executable in [
+            &shell,
+            &settings,
+            &shortcut_helper,
+            &clipboard_agent,
+            &cua_driver,
+        ] {
             fs::write(executable, b"#!/bin/sh\nexit 0\n").unwrap();
             fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for executable in [runtime.join("bin/sway"), runtime.join("bin/swaymsg")] {
+            fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3202,17 +4932,46 @@ mod layer_tests {
             .arg(repository.join("guest/install-rootfs-assets.sh"))
             .arg(&rootfs)
             .arg(&shell)
+            .arg(&settings)
+            .arg(&shortcut_helper)
+            .arg(&clipboard_agent)
             .arg(&cua_driver)
+            .arg(&runtime)
             .status()
             .unwrap();
         assert!(status.success());
-        for required in ["lib/systemd/systemd", "usr/bin/sway", "var/lib/dpkg/status"] {
+        for required in ["lib/systemd/systemd", "var/lib/dpkg/status"] {
             let destination = rootfs.join(required);
             fs::create_dir_all(destination.parent().unwrap()).unwrap();
             fs::write(destination, b"fixture\n").unwrap();
         }
 
         validate_extracted_rootfs(&rootfs).unwrap();
+    }
+
+    #[test]
+    fn old_guest_settings_runtime_is_boot_safe_and_diagnostic_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let user_state = rootfs.join("home/wildbuzzard/important.txt");
+        fs::create_dir_all(user_state.parent().unwrap()).unwrap();
+        fs::write(&user_state, b"preserve me").unwrap();
+
+        let diagnostics = guest_settings_runtime_diagnostics(&rootfs).unwrap();
+
+        assert!(!diagnostics.is_empty());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|message| message.contains("bootable"))
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|message| message.contains("sudo apt install"))
+        );
+        assert_eq!(fs::read(&user_state).unwrap(), b"preserve me");
     }
 
     fn header(entry_type: EntryType, mode: u32, size: u64) -> Header {
@@ -3262,15 +5021,36 @@ mod layer_tests {
         fs::create_dir(&rootfs).unwrap();
         let tar_path = temp.path().join("rootfs.tar");
         let mut builder = Builder::new(File::create(&tar_path).unwrap());
+        let revision = guest_runtime_revision().unwrap();
         for required in [
-            "lib/systemd/systemd",
-            "usr/bin/sway",
-            "usr/libexec/wildbuzzard-shell",
-            "usr/local/bin/cua-driver",
-            "var/lib/dpkg/status",
+            "bin/sway",
+            "bin/swaymsg",
+            "bin/cua-driver",
+            "libexec/wildbuzzard-clipboard-agent",
+            "libexec/wildbuzzard-settings",
+            "libexec/wildbuzzard-shell",
         ] {
-            append_file(&mut builder, required, b"fixture", 0o755);
+            append_file(
+                &mut builder,
+                &format!("opt/wildbuzzard/runtime/{revision}/{required}"),
+                b"fixture",
+                0o755,
+            );
         }
+        append_file(&mut builder, "lib/systemd/systemd", b"fixture", 0o755);
+        append_file(
+            &mut builder,
+            "usr/libexec/wildbuzzard-shortcut-helper",
+            b"fixture",
+            0o755,
+        );
+        append_file(&mut builder, "var/lib/dpkg/status", b"fixture", 0o644);
+        append_link(
+            &mut builder,
+            EntryType::Symlink,
+            "opt/wildbuzzard/runtime/current",
+            Path::new(&revision),
+        );
         build(&mut builder);
         builder.finish().unwrap();
         drop(builder);
@@ -3636,7 +5416,8 @@ mod layer_tests {
         assert!(sway_config.contains("client.focused #30343a #30343a #f2f2f2 #ff7139"));
         assert!(sway_config.contains(
             "bindsym button3 focus, exec --no-startup-id \
-             /usr/libexec/wildbuzzard-shell --request-focused-window-menu"
+             /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell \
+             --request-focused-window-menu"
         ));
         assert!(sway_config.contains("workspace 1"));
         assert!(sway_config.contains("wildbuzzard-desktop-services"));
@@ -3646,24 +5427,15 @@ mod layer_tests {
             fs::read_to_string(rootfs.join("usr/lib/wildbuzzard/guest-assets.version")).unwrap(),
             GUEST_ASSETS_REVISION
         );
+        let desktop_services =
+            include_str!("../../../../guest/assets/wildbuzzard-desktop-services");
+        assert!(desktop_services.contains("wildbuzzard-output-sync"));
+        assert!(desktop_services.contains("$runtime/libexec/wildbuzzard-shell"));
+        let integration_agent =
+            include_str!("../../../../guest/assets/wildbuzzard-integration-agent");
+        assert!(integration_agent.contains("media.class=Video/Source,media.role=Camera"));
         assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-desktop-services"))
-                .unwrap()
-                .contains("wildbuzzard-output-sync")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-desktop-services"))
-                .unwrap()
-                .contains("/usr/libexec/wildbuzzard-shell")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-integration-agent"))
-                .unwrap()
-                .contains("media.class=Video/Source,media.role=Camera")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-integration-agent"))
-                .unwrap()
+            integration_agent
                 .contains("pipewiresink\", \"mode=provide\",\n                \"async=false")
         );
         assert!(
@@ -3671,11 +5443,8 @@ mod layer_tests {
                 .join("usr/local/bin/wildbuzzard-window-control")
                 .exists()
         );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-session"))
-                .unwrap()
-                .contains("XDG_CURRENT_DESKTOP=sway")
-        );
+        let session = include_str!("../../../../guest/assets/wildbuzzard-session");
+        assert!(session.contains("XDG_CURRENT_DESKTOP=sway"));
         assert!(
             fs::read_to_string(rootfs.join("usr/lib/systemd/system/wildbuzzard-desktop.service"))
                 .unwrap()
@@ -3691,14 +5460,23 @@ mod layer_tests {
         assert!(
             fs::read_to_string(rootfs.join("etc/gtk-3.0/settings.ini"))
                 .unwrap()
-                .contains("gtk-theme-name=WildBuzzard")
+                .contains("gtk-theme-name=WildBuzzard-Dark")
         );
-        let gtk3_theme =
-            fs::read_to_string(rootfs.join("usr/share/themes/WildBuzzard/gtk-3.0/gtk.css"))
+        let dark_gtk3 =
+            fs::read_to_string(rootfs.join("usr/share/themes/WildBuzzard-Dark/gtk-3.0/gtk.css"))
                 .unwrap();
-        assert!(gtk3_theme.contains("@define-color wb_selection #ff7139"));
-        assert!(gtk3_theme.contains(".sidebar .view:selected"));
-        assert!(gtk3_theme.contains("background-color: @wb_selection"));
+        let light_gtk3 =
+            fs::read_to_string(rootfs.join("usr/share/themes/WildBuzzard-Light/gtk-3.0/gtk.css"))
+                .unwrap();
+        assert_eq!(dark_gtk3, light_gtk3);
+        assert!(dark_gtk3.contains("WildBuzzard-Shared/gtk-3.0/geometry.css"));
+        let gtk3_geometry = fs::read_to_string(
+            rootfs.join("usr/share/themes/WildBuzzard-Shared/gtk-3.0/geometry.css"),
+        )
+        .unwrap();
+        assert!(gtk3_geometry.contains(".sidebar .view:selected"));
+        assert!(gtk3_geometry.contains("color: @wb_selected_text"));
+        assert!(!gtk3_geometry.contains("color: #ffffff"));
         assert!(
             fs::read_to_string(rootfs.join("usr/share/icons/WildBuzzard/index.theme"))
                 .unwrap()
@@ -3707,30 +5485,15 @@ mod layer_tests {
         assert!(
             fs::read_to_string(rootfs.join("etc/wildbuzzard/xdg/kdeglobals"))
                 .unwrap()
-                .contains("ColorScheme=WildBuzzard")
+                .contains("ColorScheme=WildBuzzard-Dark")
         );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-session"))
-                .unwrap()
-                .contains("file:///shared Shared")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("usr/libexec/wildbuzzard-session"))
-                .unwrap()
-                .contains("gsettings set org.gnome.desktop.interface icon-theme WildBuzzard")
-        );
+        assert!(session.contains("file:///shared Shared"));
+        assert!(!session.contains("gsettings set org.gnome.desktop.interface color-scheme"));
+        assert!(!session.contains("gsettings set org.gnome.desktop.interface gtk-theme"));
         assert!(
             !rootfs
                 .join("usr/share/dbus-1/services/org.kde.kwalletd6.service")
                 .exists()
-        );
-        assert_eq!(
-            fs::metadata(rootfs.join("usr/libexec/wildbuzzard-init"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
         );
         assert_eq!(
             fs::metadata(rootfs.join("etc/sudoers.d/90-wildbuzzard"))
@@ -3740,6 +5503,89 @@ mod layer_tests {
                 & 0o777,
             0o440
         );
+    }
+
+    #[test]
+    fn fresh_install_includes_branding_assets_and_discoverable_application_icons() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+
+        install_guest_assets_without_shell(&rootfs).unwrap();
+
+        let branding_assets: &[(&str, &[u8])] = &[
+            (
+                "usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg",
+                include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
+            ),
+            (
+                "usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg",
+                include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-light.svg"),
+            ),
+            (
+                "usr/share/wildbuzzard/branding/wildbuzzard-icon-light.svg",
+                include_bytes!("../../../../guest/assets/branding/wildbuzzard-icon-light.svg"),
+            ),
+            (
+                "usr/share/wildbuzzard/branding/wallpaper-presets.json",
+                include_bytes!("../../../../guest/assets/branding/wallpaper-presets.json"),
+            ),
+            (
+                "usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard.svg",
+                include_bytes!(
+                    "../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard.svg"
+                ),
+            ),
+            (
+                "usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard-settings.svg",
+                include_bytes!(
+                    "../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard-settings.svg"
+                ),
+            ),
+            (
+                "usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg",
+                include_bytes!(
+                    "../../../../guest/assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg"
+                ),
+            ),
+            (
+                "usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg",
+                include_bytes!(
+                    "../../../../guest/assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg"
+                ),
+            ),
+        ];
+        for (relative, expected) in branding_assets {
+            let destination = rootfs.join(relative);
+            assert_eq!(fs::read(&destination).unwrap(), *expected, "{relative}");
+            assert_eq!(
+                fs::metadata(&destination).unwrap().permissions().mode() & 0o7777,
+                0o644,
+                "{relative}"
+            );
+        }
+
+        let icon_theme =
+            fs::read_to_string(rootfs.join("usr/share/icons/WildBuzzard/index.theme")).unwrap();
+        let directories = icon_theme
+            .lines()
+            .find_map(|line| line.strip_prefix("Directories="))
+            .unwrap()
+            .split(',')
+            .collect::<std::collections::BTreeSet<_>>();
+        for directory in ["scalable/apps", "symbolic/apps"] {
+            assert!(directories.contains(directory), "missing {directory}");
+            let section = format!("[{directory}]");
+            let body = icon_theme
+                .split(&section)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing {section}"))
+                .split("\n[")
+                .next()
+                .unwrap();
+            assert!(body.lines().any(|line| line == "Type=Scalable"));
+            assert!(body.lines().any(|line| line == "Context=Applications"));
+        }
     }
 
     #[test]
@@ -3818,6 +5664,47 @@ mod layer_tests {
             fs::metadata(destination).unwrap().permissions().mode() & 0o7777,
             0o644
         );
+    }
+
+    #[test]
+    fn branding_migration_updates_managed_content_and_preserves_guest_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let managed = Path::new("usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg");
+        let modified = Path::new("usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard.svg");
+        let old_distributed = b"<svg><!-- old distributed branding --></svg>\n";
+        let guest_modified = b"<svg><!-- guest replacement branding --></svg>\n";
+        let previous = guest_asset_record(old_distributed, 0o644);
+        install_guest_asset(&rootfs, managed, old_distributed, 0o644).unwrap();
+        install_guest_asset(&rootfs, modified, guest_modified, 0o644).unwrap();
+
+        migrate_guest_asset(
+            &rootfs,
+            managed,
+            include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
+            0o644,
+            Some(&previous),
+            None,
+        )
+        .unwrap();
+        migrate_guest_asset(
+            &rootfs,
+            modified,
+            include_bytes!(
+                "../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard.svg"
+            ),
+            0o644,
+            Some(&previous),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(rootfs.join(managed)).unwrap(),
+            include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg")
+        );
+        assert_eq!(fs::read(rootfs.join(modified)).unwrap(), guest_modified);
     }
 
     #[test]

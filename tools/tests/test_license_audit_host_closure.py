@@ -48,6 +48,12 @@ class AppDirHostClosureTests(unittest.TestCase):
         excluded = self.appdir / "usr/bin/wildbuzzard"
         excluded.parent.mkdir(parents=True)
         excluded.write_bytes(b"\x7fELFexcluded-project-binary")
+        guest_runtime = (
+            self.appdir
+            / "usr/bin/wildbuzzard-guest-runtime/0.1.0+assets.57/bin/cua-driver"
+        )
+        guest_runtime.parent.mkdir(parents=True)
+        guest_runtime.write_bytes(b"\x7fELFguest-runtime-with-separate-provenance")
         with (
             mock.patch.object(
                 license_audit,

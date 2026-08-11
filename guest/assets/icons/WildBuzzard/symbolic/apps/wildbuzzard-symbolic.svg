@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Open Research Tools contributors -->
+<!-- Generated from guest/branding/buzzard-mark.json; do not edit by hand. Trademark and visual-similarity clearance is pending. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Wild Buzzard symbolic mark</title>
+  <path id="portrait-symbolic" fill="currentColor" fill-rule="evenodd" d="M25 228C32 188 53 158 84 145C91 142 98 140 105 137C98 130 92 122 87 114C91 107 95 101 99 95C95 84 96 72 102 61C110 46 126 39 143 40C161 41 176 50 184 65C192 80 192 98 185 113C180 124 172 133 163 140C198 149 222 182 231 228C210 222 192 220 175 225C158 230 143 232 128 229C111 232 94 229 77 225C59 220 42 222 25 228Z"/>
+</svg>

@@ -10,16 +10,40 @@ intentionally not vendored.
 
 Local changes are kept as ordinary reviewable source changes in this tree:
 
+- product telemetry is removed rather than disabled: the PostHog endpoint and
+  key, payload/sender workers, installation identity and preference state,
+  telemetry CLI, lifecycle/tool hooks, and telemetry-only tests are absent;
+  automatic version checks, the CUA self-updater/check tool, and remote CUA
+  skill-pack download commands are removed so the pinned in-guest driver has
+  no vendor phone-home path;
 - requested keyboard modifiers remain depressed for the complete native
   Wayland pointer-drag transaction, so gestures such as Blender
   Shift+middle-drag pan instead of silently degrading to an unmodified orbit;
-- single-key input uses the same compositor-native physical virtual keyboard
-  as working hotkeys before falling back to `wtype`, so Enter, Tab, Escape,
-  arrows, and other keys reliably reach the focused surface in nested Sway;
-- `wtype` text injection uses a bounded per-character delay instead of emitting
-  the whole string in one burst; Chromium address fields and other busy
-  renderers therefore receive every character in order rather than silently
-  dropping punctuation or adjacent letters;
+- single-key input uses the same daemon-owned compositor-native virtual
+  keyboard as working hotkeys and fails closed when the required stock-Sway
+  protocol is absent; there is no uncancellable keyboard libei fallback, so
+  Enter, Tab, Escape, arrows, and other keys reliably reach the focused
+  surface in nested Sway without a one-shot `wtype` device;
+- compositor-native keyboard input is owned by one persistent worker instead
+  of repeatedly creating, activating, and destroying a Sway input device for
+  every shortcut and named key. Every success, error, unwind, modifier-drag
+  completion, and CUA session end releases all tracked keys in reverse order
+  and publishes an all-zero modifier state; session end waits for that reset's
+  bounded worker acknowledgement. A failed roundtrip first retries cleanup on
+  that same device. When the connection is dead, pinned wlroots releases its
+  compositor-side pressed-key set on that same virtual keyboard during device
+  destruction before CUA reconnects; recovery never replays presses through a
+  replacement device. Cancellation restores the fixed keymap, releases every
+  key, zeros modifiers, and completes a bounded sync on that same Wayland
+  client; an unprovable barrier fail-stops session teardown. SDK shutdown
+  resets the process-global owner but keeps it reusable by later SDK instances;
+  process exit performs final device destruction. A Ctrl+L/text/Enter sequence therefore
+  cannot leave Ctrl held or leave parent input behind a torn-down active
+  virtual device, and duplicate modifiers are collapsed before injection;
+- Unicode text uses a dynamically generated wtype-compatible one-keysym-per-key
+  map on that persistent owner, with a bounded per-character delay. Chromium
+  address fields and other busy renderers receive every character in order
+  without creating and destroying a Sway input device for each call;
 - AT-SPI `EditableText.InsertText` uses the ATK ABI's UTF-8 byte length while
   retaining Unicode-character offsets for the Text interface. Native
   insertions and whole-value replacements are read back exactly before success
@@ -131,6 +155,19 @@ Local changes are kept as ordinary reviewable source changes in this tree:
   unchanged while logical browser chrome is transformed once; semantic
   rectangles, hit-testing, screenshots, and element-coordinate input therefore
   remain aligned at fractional scale.
+- Wild Buzzard output metadata now consumes the exact split host-surface and
+  guest-UI scale schema and carries `geometry_generation` through screen-size,
+  desktop-screenshot, window-list, and pointer-click evidence. Full-output
+  capture and window enumeration compare the complete state before and after
+  each operation, rejecting even a same-sized scale-generation race. Absolute
+  pointer actions use the same guard; persistent held-button input records its
+  press generation and releases every compositor button before rejecting a
+  stale cross-call drag. The host-published state is read only as a bounded,
+  no-follow, session-owned regular file with an exact field set. Inside a
+  Wild Buzzard machine, `get_screen_size` and generation-sensitive operations
+  fail closed if that canonical state is missing or invalid instead of
+  fabricating generation-zero fallback geometry; standalone upstream use
+  retains its ordinary compositor/X11 fallback.
 - wlroots virtual pointers are bound to Wild Buzzard's concrete guest output
   with protocol version 2. This prevents absolute input from being accepted
   against an ambiguous nested output layout while leaving the real Sway seat
@@ -150,3 +187,9 @@ Local changes are kept as ordinary reviewable source changes in this tree:
 
 This fork is not endorsed by Cua AI, Inc. The upstream MIT license and
 copyright notice are preserved in `LICENSE.md`.
+
+Wild Buzzard privacy default:
+
+- upstream CUA product telemetry is disabled by default in the fork;
+- the managed guest service also pins `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`,
+  so starting the reference desktop never contacts CUA's telemetry endpoint.

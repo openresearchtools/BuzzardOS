@@ -36,6 +36,8 @@ tokio::task_local! {
     /// Opaque generation for runtime-owned mutable resources. Nested
     /// dispatches inherit this key, while public arguments can never select it.
     static DISPATCH_RUNTIME_SCOPE: String;
+    /// Runtime-private session generation captured before consent/other awaits.
+    static DISPATCH_SESSION_LEASES: Vec<crate::session::SessionLease>;
 }
 
 /// Return the immutable authorization context bound to the current dispatch.
@@ -54,6 +56,13 @@ pub fn current_dispatch_runtime_scope() -> Option<String> {
         .try_with(Clone::clone)
         .ok()
         .or_else(|| CONSTRUCTION_RUNTIME_SCOPE.with(|scope| scope.borrow().clone()))
+}
+
+#[doc(hidden)]
+pub fn current_dispatch_session_leases() -> Vec<crate::session::SessionLease> {
+    DISPATCH_SESSION_LEASES
+        .try_with(Clone::clone)
+        .unwrap_or_default()
 }
 
 #[doc(hidden)]
@@ -378,7 +387,6 @@ pub fn default_capabilities_for(tool_name: &str) -> Vec<String> {
         "browser_pointer" => &["browser.input.pointer"],
 
         // ── driver self-service ──────────────────────────────────────
-        "check_for_update" => &["driver.update_check"],
         "probe" => &["driver.probe"],
 
         // ── unsupported_platform stub & anything else ────────────────
@@ -991,6 +999,36 @@ impl ToolRegistry {
             }
             crate::session::touch_session(session);
         }
+        let mut runtime_session_leases = Vec::new();
+        if !matches!(resolved_name, "start_session" | "end_session") {
+            for session in [
+                args.get("session").and_then(Value::as_str),
+                args.get("_session_id").and_then(Value::as_str),
+                args.get("_transport_session_id").and_then(Value::as_str),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|session| !session.is_empty() && *session != "default")
+            {
+                if runtime_session_leases
+                    .iter()
+                    .any(|lease: &crate::session::SessionLease| lease.session_id() == session)
+                {
+                    continue;
+                }
+                match crate::session::capture_session_lease(session) {
+                    Some(lease) => runtime_session_leases.push(lease),
+                    None => {
+                        let mut result = protected_refusal(
+                            "session_ended",
+                            "this session or its transport ended before input admission completed",
+                        );
+                        restore_public_runtime_result(&mut result, &runtime_prefix);
+                        return result;
+                    }
+                }
+            }
+        }
 
         // Reject modality violations before reserving a recording turn. A
         // rejected action has no before/after evidence and must not leave a
@@ -1326,7 +1364,9 @@ impl ToolRegistry {
             })
             .flatten();
 
-        let mut result = tool.invoke(args.clone()).await;
+        let mut result = DISPATCH_SESSION_LEASES
+            .scope(runtime_session_leases, tool.invoke(args.clone()))
+            .await;
         // The platform worker has exited, so another text operation for this
         // pid may now start even while result projection and evidence capture
         // finish for the completed call.
@@ -4162,7 +4202,6 @@ mod capability_tests {
         "install_ffmpeg",
         // misc
         "page",
-        "check_for_update",
         "probe",
         // browser-tool v1
         "get_browser_state",

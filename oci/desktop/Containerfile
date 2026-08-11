@@ -11,21 +11,73 @@ COPY oci/desktop/apt/99wildbuzzard-snapshot \
 
 RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        libglib2.0-dev \
         libxkbcommon-dev \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /source
+COPY clipboard-protocol ./clipboard-protocol
 COPY guest/Cargo.toml guest/Cargo.lock ./guest/
+COPY guest/clipboard-agent ./guest/clipboard-agent
+COPY guest/desktop-core ./guest/desktop-core
+COPY guest/settings ./guest/settings
 COPY guest/shell ./guest/shell
+COPY guest/shortcut-helper ./guest/shortcut-helper
 RUN cargo build \
         --locked \
         --release \
         --manifest-path guest/Cargo.toml \
-        --package wildbuzzard-shell && \
+        --package wildbuzzard-shell \
+        --package wildbuzzard-clipboard-agent && \
     install -D -m 0644 \
         "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" \
         /rust-notices/COPYRIGHT-library.html
+
+FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS settings-builder
+
+COPY oci/desktop/apt/debian-trixie-snapshot.sources \
+    /etc/apt/sources.list.d/debian.sources
+COPY oci/desktop/apt/99wildbuzzard-snapshot \
+    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
+
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        libgtk-4-dev \
+        libpulse-dev \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN rustup component add clippy
+
+WORKDIR /source
+COPY clipboard-protocol ./clipboard-protocol
+COPY guest/Cargo.toml guest/Cargo.lock ./guest/
+COPY guest/clipboard-agent ./guest/clipboard-agent
+COPY guest/desktop-core ./guest/desktop-core
+COPY guest/settings ./guest/settings
+COPY guest/shell ./guest/shell
+COPY guest/shortcut-helper ./guest/shortcut-helper
+RUN cargo clippy \
+        --locked \
+        --release \
+        --manifest-path guest/Cargo.toml \
+        --package wildbuzzard-settings \
+        --package wildbuzzard-shortcut-helper \
+        --all-targets \
+        -- -D warnings && \
+    cargo test \
+        --locked \
+        --release \
+        --manifest-path guest/Cargo.toml \
+        --package wildbuzzard-settings \
+        --package wildbuzzard-shortcut-helper && \
+    cargo build \
+        --locked \
+        --release \
+        --manifest-path guest/Cargo.toml \
+        --package wildbuzzard-settings \
+        --package wildbuzzard-shortcut-helper
 
 FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS cua-builder
 
@@ -96,11 +148,13 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         libxcb-errors-dev \
         libxcb-icccm4-dev \
         libxcb1-dev \
+        libxkbcommon0 \
         libxkbcommon-dev \
         meson \
         ninja-build \
         pkg-config \
         wayland-protocols \
+        xkb-data \
         xwayland && \
     rm -rf /var/lib/apt/lists/*
 
@@ -124,10 +178,11 @@ RUN git init wlroots && \
     test "$(git -C sway rev-parse HEAD)" = "$SWAY_COMMIT" && \
     /usr/local/libexec/verify-stock-sway-contract /source/sway
 
-RUN meson setup wlroots/build wlroots \
+RUN runtime_prefix=/opt/wildbuzzard/runtime/payload && \
+    meson setup wlroots/build wlroots \
         --buildtype=release \
-        --prefix=/usr \
-        --libdir=lib/x86_64-linux-gnu \
+        --prefix="$runtime_prefix" \
+        --libdir=lib \
         -Dexamples=false \
         -Dxwayland=enabled \
         -Drenderers=gles2,vulkan \
@@ -136,11 +191,13 @@ RUN meson setup wlroots/build wlroots \
     ninja -C wlroots/build && \
     DESTDIR=/sway-root ninja -C wlroots/build install && \
     ninja -C wlroots/build install && \
-    ldconfig && \
+    PKG_CONFIG_PATH="$runtime_prefix/lib/pkgconfig" \
+    LD_LIBRARY_PATH="$runtime_prefix/lib" \
     meson setup sway/build sway \
         --buildtype=release \
-        --prefix=/usr \
-        --libdir=lib/x86_64-linux-gnu \
+        --prefix="$runtime_prefix" \
+        --libdir=lib \
+        -Dc_link_args='-Wl,-rpath,$ORIGIN/../lib' \
         -Ddefault-wallpaper=false \
         -Dzsh-completions=false \
         -Dbash-completions=false \
@@ -152,24 +209,110 @@ RUN meson setup wlroots/build wlroots \
         -Dman-pages=disabled && \
     ninja -C sway/build && \
     DESTDIR=/sway-root ninja -C sway/build install && \
-    install -d /sway-root/usr/share/doc/wildbuzzard-sway && \
+    install -d /sway-licenses && \
     install -m 0644 sway/LICENSE \
-        /sway-root/usr/share/doc/wildbuzzard-sway/LICENSE.sway && \
+        /sway-licenses/LICENSE.sway && \
     install -m 0644 wlroots/LICENSE \
-        /sway-root/usr/share/doc/wildbuzzard-sway/LICENSE.wlroots && \
+        /sway-licenses/LICENSE.wlroots && \
     rm -rf \
-        /sway-root/usr/include \
-        /sway-root/usr/lib/x86_64-linux-gnu/pkgconfig && \
-    find /sway-root -type f \( -name '*.a' -o -name '*.la' \) -delete
+        "/sway-root$runtime_prefix/include" \
+        "/sway-root$runtime_prefix/lib/pkgconfig" \
+        "/sway-root$runtime_prefix/share" && \
+    find "/sway-root$runtime_prefix" -type f \
+        \( -name '*.a' -o -name '*.la' \) -delete && \
+    find "/sway-root$runtime_prefix" -type l -print | while IFS= read -r link; do \
+        resolved=$(readlink -f -- "$link") && \
+        test -f "$resolved" && \
+        replacement="$link.wildbuzzard-real" && \
+        cp -pL -- "$link" "$replacement" && \
+        mv -f -- "$replacement" "$link"; \
+    done && \
+    ! find "/sway-root$runtime_prefix" -type l -print -quit | grep -q . && \
+    readelf -d "/sway-root$runtime_prefix/bin/sway" | \
+        grep -Fq '$ORIGIN/../lib' && \
+    readelf -d "/sway-root$runtime_prefix/bin/swaymsg" | \
+        grep -Fq '$ORIGIN/../lib' && \
+    install -d /runtime-payload && \
+    cp -a "/sway-root$runtime_prefix/." /runtime-payload/ && \
+    xkb_library=$(readlink -f /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0) && \
+    test -f "$xkb_library" && \
+    test ! -L "$xkb_library" && \
+    readelf -d "$xkb_library" | grep -Fq 'Library soname: [libxkbcommon.so.0]' && \
+    install -D -m 0755 "$xkb_library" \
+        /runtime-payload/lib/libxkbcommon.so.0 && \
+    xkb_entry=/usr/share/X11/xkb && \
+    xkb_source=$(readlink -f -- "$xkb_entry") && \
+    case "$xkb_source" in \
+        /usr/share/X11/xkb|/usr/share/xkeyboard-config-[0-9]*) ;; \
+        *) echo "xkb-data package root resolves outside its expected location: $xkb_source" >&2; exit 1 ;; \
+    esac && \
+    xkb_destination=/runtime-payload/share/X11/xkb && \
+    test -d "$xkb_source" && \
+    test ! -L "$xkb_source" && \
+    find "$xkb_source" -type l -print | while IFS= read -r link; do \
+        resolved=$(readlink -f -- "$link") && \
+        case "$resolved" in \
+            "$xkb_source"/*) ;; \
+            *) echo "xkb-data symlink escapes its package tree: $link" >&2; exit 1 ;; \
+        esac && \
+        test -f "$resolved"; \
+    done && \
+    install -d "$(dirname -- "$xkb_destination")" && \
+    cp -aL "$xkb_source" "$xkb_destination" && \
+    ! find "$xkb_destination" -type l -print -quit | grep -q . && \
+    ! find "$xkb_destination" -mindepth 1 ! -type d ! -type f -print -quit | grep -q . && \
+    install -d \
+        /runtime-payload/share/doc/libxkbcommon0 \
+        /runtime-payload/share/doc/xkb-data \
+        /runtime-payload/share/wildbuzzard && \
+    install -m 0644 /usr/share/doc/libxkbcommon0/copyright \
+        /runtime-payload/share/doc/libxkbcommon0/copyright && \
+    install -m 0644 /usr/share/doc/xkb-data/copyright \
+        /runtime-payload/share/doc/xkb-data/copyright && \
+    xkb_library_version=$(dpkg-query -W -f='${Version}' libxkbcommon0) && \
+    xkb_version=$(dpkg-query -W -f='${Version}' xkb-data) && \
+    case "$xkb_library_version" in \
+        ''|*[!A-Za-z0-9.+:~_-]*) echo "invalid libxkbcommon0 version: $xkb_library_version" >&2; exit 1 ;; \
+    esac && \
+    case "$xkb_version" in \
+        ''|*[!A-Za-z0-9.+:~_-]*) echo "invalid xkb-data version: $xkb_version" >&2; exit 1 ;; \
+    esac && \
+    printf '%s\n' "$xkb_library_version" \
+        >/runtime-payload/share/wildbuzzard/libxkbcommon0.version && \
+    sha256sum /runtime-payload/lib/libxkbcommon.so.0 | \
+        sed 's#  /runtime-payload/#  #' \
+        >/runtime-payload/share/wildbuzzard/libxkbcommon0.manifest.sha256 && \
+    printf '%s\n' "$xkb_version" \
+        >/runtime-payload/share/wildbuzzard/xkb-data.version && \
+    ( \
+        cd "$xkb_destination" && \
+        LC_ALL=C find . -type f -printf '%P\n' | LC_ALL=C sort | \
+            while IFS= read -r relative; do \
+                case "$relative" in \
+                    ''|/*|*..*|*[!A-Za-z0-9._+/@~-]*) \
+                        echo "unsafe xkb-data path: $relative" >&2; exit 1 ;; \
+                esac && \
+                digest=$(sha256sum -- "$relative" | cut -d' ' -f1) && \
+                printf '%s  %s\n' "$digest" "$relative"; \
+            done \
+    ) >/runtime-payload/share/wildbuzzard/xkb-data.manifest.sha256 && \
+    test -s /runtime-payload/share/wildbuzzard/xkb-data.manifest.sha256 && \
+    test -s /runtime-payload/share/wildbuzzard/libxkbcommon0.manifest.sha256 && \
+    (cd /runtime-payload && \
+        sha256sum --check share/wildbuzzard/libxkbcommon0.manifest.sha256)
 
 COPY oci/desktop/SWAY_UPSTREAM.toml \
-    /sway-root/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
+    /sway-licenses/UPSTREAM.toml
+
+FROM scratch AS sway-runtime-artifact
+COPY --from=sway-builder /runtime-payload/ /
 
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b AS guest-assets-builder
 
 WORKDIR /source/guest
 COPY guest/ASSET_REVISION guest/asset-manifest.tsv guest/install-rootfs-assets.sh ./
 COPY guest/assets ./assets
+COPY guest/updater ./updater
 COPY guest/third_party/trycua-cua/LICENSE.md \
     guest/third_party/trycua-cua/UPSTREAM.toml \
     guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md \
@@ -177,14 +320,28 @@ COPY guest/third_party/trycua-cua/LICENSE.md \
 COPY --from=shell-builder \
     /source/guest/target/release/wildbuzzard-shell \
     /source/wildbuzzard-shell
+COPY --from=shell-builder \
+    /source/guest/target/release/wildbuzzard-clipboard-agent \
+    /source/wildbuzzard-clipboard-agent
+COPY --from=settings-builder \
+    /source/guest/target/release/wildbuzzard-settings \
+    /source/wildbuzzard-settings
+COPY --from=settings-builder \
+    /source/guest/target/release/wildbuzzard-shortcut-helper \
+    /source/wildbuzzard-shortcut-helper
 COPY --from=cua-builder \
     /source/cua-driver/rust/target/release/cua-driver \
     /source/cua-driver
+COPY --from=sway-builder /runtime-payload /source/runtime-payload
 RUN install -d /guest-root && \
     ./install-rootfs-assets.sh \
         /guest-root \
         /source/wildbuzzard-shell \
-        /source/cua-driver
+        /source/wildbuzzard-settings \
+        /source/wildbuzzard-shortcut-helper \
+        /source/wildbuzzard-clipboard-agent \
+        /source/cua-driver \
+        /source/runtime-payload
 
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
 
@@ -213,6 +370,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         dbus \
         dbus-user-session \
         dbus-x11 \
+        dconf-gsettings-backend \
         ffmpeg \
         firefox-esr \
         fonts-dejavu-core \
@@ -221,6 +379,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         fonts-noto-cjk \
         foot \
         fuse3 \
+        gsettings-desktop-schemas \
         gstreamer1.0-pipewire \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-bad \
@@ -242,10 +401,12 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         libglib2.0-0t64 \
         libglib2.0-bin \
         libgtk-3-0t64 \
+        libgtk-4-1 \
         libnotify-bin \
         libnspr4 \
         libnss3 \
         libpango-1.0-0 \
+        libpulse0 \
         libx11-6 \
         libxcb1 \
         libxcomposite1 \
@@ -265,11 +426,14 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         pkexec \
         polkitd \
         python3 \
+        python3-apt \
+        python3-gi \
         python3-pyatspi \
         qt6-wayland \
         qt6-gtk-platformtheme \
         qt6-svg-plugins \
         slurp \
+        squashfs-tools \
         sudo \
         libwlroots-0.20 \
         wlr-randr \
@@ -283,6 +447,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         xdg-desktop-portal-gtk \
         xdg-desktop-portal-wlr \
         xdg-utils \
+        xkb-data \
         xwayland && \
     rm -f \
         /usr/share/applications/org.kde.ksecretd.desktop \
@@ -343,8 +508,8 @@ RUN curl --fail --location --retry 3 \
         /tmp/cuda-cudart.deb \
         /tmp/libcublas.deb
 
-COPY --from=sway-builder /sway-root/ /
 COPY --from=guest-assets-builder /guest-root/ /
+COPY --from=sway-builder /sway-licenses/ /usr/share/doc/wildbuzzard-sway/
 
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md \
     /usr/share/doc/wildbuzzard/

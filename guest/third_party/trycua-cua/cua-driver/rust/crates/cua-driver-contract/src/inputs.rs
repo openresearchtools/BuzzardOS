@@ -115,6 +115,15 @@ fn escalation_detail_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "maxLength": 200 })
 }
 
+/// Maximum number of Unicode scalar values accepted by one keyboard typing
+/// request. Implementations must enforce this at runtime as well as advertise
+/// it in JSON Schema; schema validation is not a security boundary.
+pub const MAX_TYPE_TEXT_CHARS: usize = 65_536;
+
+fn type_text_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": "string", "maxLength": MAX_TYPE_TEXT_CHARS })
+}
+
 fn capture_scope_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({
         "type": "string",
@@ -587,6 +596,7 @@ impl ToolInput for ScrollInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, uniffi::Record)]
 #[serde(deny_unknown_fields)]
 pub struct TypeTextInput {
+    #[schemars(schema_with = "type_text_schema")]
     pub text: String,
     pub scope: DesktopScope,
     /// Optional session id.
@@ -720,5 +730,14 @@ mod tests {
         }))
         .expect_err("portable input must reject runtime-only fields");
         assert!(error.to_string().contains("unknown field `pid`"));
+    }
+
+    #[test]
+    fn generated_type_text_schema_is_bounded() {
+        let schema = TypeTextInput::input_schema();
+        assert_eq!(
+            schema["properties"]["text"]["maxLength"],
+            MAX_TYPE_TEXT_CHARS
+        );
     }
 }

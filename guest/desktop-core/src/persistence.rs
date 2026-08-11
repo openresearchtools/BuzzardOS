@@ -13,6 +13,14 @@ use uuid::Uuid;
 
 pub const MAX_MANAGED_JSON_BYTES: usize = 1024 * 1024;
 
+/// Return the process effective UID without depending on a procfs mount.
+pub fn effective_user_id() -> u32 {
+    // SAFETY: `geteuid` has no arguments, cannot dereference memory, and has
+    // no failure mode. Keeping this wrapper in the low-level persistence crate
+    // lets UI crates retain `unsafe_code = "forbid"`.
+    unsafe { libc::geteuid() }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadOutcome<T> {
     pub value: T,

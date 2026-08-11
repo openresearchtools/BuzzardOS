@@ -11,12 +11,13 @@ use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
 
-pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
+pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_DISPLAY_EXTENT: u32 = 65_535;
 const MIN_SCALE_120: u32 = 30;
 const MAX_SCALE_120: u32 = 960;
 const MAX_UPDATE_PACKAGES: usize = 16_384;
 const MAX_REPOSITORY_ERRORS: usize = 1_024;
+const MAX_RESTART_REASONS: usize = 256;
 const MAX_TEXT_BYTES: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -40,6 +41,10 @@ pub struct SolidColor {
 impl SolidColor {
     pub const fn new(red: u8, green: u8, blue: u8) -> Self {
         Self { red, green, blue }
+    }
+
+    pub const fn rgba(self) -> [u8; 4] {
+        [self.red, self.green, self.blue, 0xff]
     }
 }
 
@@ -248,6 +253,8 @@ pub enum UpdateStateError {
     UnexpectedFields { expected: String },
     #[error("update-state JSON does not match schema: {0}")]
     Schema(#[from] serde_json::Error),
+    #[error("update-state document exceeds the {maximum}-byte limit")]
+    TooLarge { maximum: usize },
     #[error(transparent)]
     Validation(#[from] StateValidationError),
 }
@@ -400,6 +407,42 @@ pub enum UpdateStatus {
     RestartRecommended,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAction {
+    Upgrade,
+    Install,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateProgressPhase {
+    Refreshing,
+    Resolving,
+    Downloading,
+    Installing,
+    Repairing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateProgressUnit {
+    Bytes,
+    Packages,
+    Steps,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProgress {
+    pub phase: UpdateProgressPhase,
+    pub completed: u64,
+    pub total: u64,
+    pub unit: UpdateProgressUnit,
+    pub detail: Option<String>,
+    pub cancellable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdatePackage {
@@ -408,30 +451,47 @@ pub struct UpdatePackage {
     pub candidate_version: String,
     pub download_size: u64,
     pub security_origin: Option<String>,
+    pub action: UpdateAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateState {
     pub schema_version: u32,
+    pub state_generation: u64,
     pub status: UpdateStatus,
     pub checked_at_unix_seconds: Option<u64>,
     pub repository_errors: Vec<String>,
     pub packages: Vec<UpdatePackage>,
     pub download_size: u64,
     pub plan_generation: Option<String>,
+    pub progress: Option<UpdateProgress>,
+    pub failure: Option<String>,
+    pub repair_available: bool,
+    pub restart_reasons: Vec<String>,
+    pub last_log_id: Option<String>,
+    pub runtime_revision: Option<String>,
+    pub runtime_ready: bool,
 }
 
 impl Default for UpdateState {
     fn default() -> Self {
         Self {
             schema_version: UPDATE_STATE_SCHEMA_VERSION,
+            state_generation: 1,
             status: UpdateStatus::NeverChecked,
             checked_at_unix_seconds: None,
             repository_errors: Vec::new(),
             packages: Vec::new(),
             download_size: 0,
             plan_generation: None,
+            progress: None,
+            failure: None,
+            repair_available: false,
+            restart_reasons: Vec::new(),
+            last_log_id: None,
+            runtime_revision: None,
+            runtime_ready: false,
         }
     }
 }
@@ -444,22 +504,47 @@ impl UpdateState {
                 current: UPDATE_STATE_SCHEMA_VERSION,
             });
         }
+        if self.state_generation == 0 {
+            return Err(StateValidationError::UpdateInvariant(
+                "state_generation must be positive",
+            ));
+        }
         if self.packages.len() > MAX_UPDATE_PACKAGES {
             return Err(StateValidationError::TooManyPackages);
         }
         if self.repository_errors.len() > MAX_REPOSITORY_ERRORS {
             return Err(StateValidationError::TooManyRepositoryErrors);
         }
+        if self.restart_reasons.len() > MAX_RESTART_REASONS {
+            return Err(StateValidationError::UpdateInvariant(
+                "restart_reasons exceeds the bounded entry limit",
+            ));
+        }
         for error in &self.repository_errors {
             validate_text("repository_errors", error, true)?;
         }
+        for reason in &self.restart_reasons {
+            validate_text("restart_reasons", reason, true)?;
+        }
         let mut package_names = HashSet::new();
         let mut calculated_download_size = 0u64;
+        let mut previous_name: Option<&str> = None;
         for package in &self.packages {
             validate_text("package.name", &package.name, true)?;
+            if !is_debian_package_name(&package.name) {
+                return Err(StateValidationError::UpdateInvariant(
+                    "package.name is not a canonical Debian package identifier",
+                ));
+            }
             if !package_names.insert(package.name.as_str()) {
                 return Err(StateValidationError::DuplicatePackage(package.name.clone()));
             }
+            if previous_name.is_some_and(|previous| previous > package.name.as_str()) {
+                return Err(StateValidationError::UpdateInvariant(
+                    "packages must be sorted by package name",
+                ));
+            }
+            previous_name = Some(&package.name);
             validate_text(
                 "package.installed_version",
                 &package.installed_version,
@@ -489,6 +574,64 @@ impl UpdateState {
         }
         if let Some(generation) = &self.plan_generation {
             validate_text("plan_generation", generation, true)?;
+            if !is_lower_hex(generation, 64) {
+                return Err(StateValidationError::UpdateInvariant(
+                    "plan_generation must be 64 lowercase hexadecimal characters",
+                ));
+            }
+        }
+        if let Some(progress) = &self.progress {
+            if progress.completed > progress.total {
+                return Err(StateValidationError::UpdateInvariant(
+                    "progress completed exceeds total",
+                ));
+            }
+            if let Some(detail) = &progress.detail {
+                validate_text("progress.detail", detail, true)?;
+            }
+            if progress.cancellable && progress.phase != UpdateProgressPhase::Downloading {
+                return Err(StateValidationError::UpdateInvariant(
+                    "only download progress may be cancellable",
+                ));
+            }
+            let expected_unit = match progress.phase {
+                UpdateProgressPhase::Refreshing | UpdateProgressPhase::Downloading => {
+                    UpdateProgressUnit::Bytes
+                }
+                UpdateProgressPhase::Resolving => UpdateProgressUnit::Steps,
+                UpdateProgressPhase::Installing | UpdateProgressPhase::Repairing => {
+                    UpdateProgressUnit::Packages
+                }
+            };
+            if progress.unit != expected_unit {
+                return Err(StateValidationError::UpdateInvariant(
+                    "update progress unit does not match its phase",
+                ));
+            }
+        }
+        if let Some(failure) = &self.failure {
+            validate_text("failure", failure, true)?;
+        }
+        if let Some(log) = &self.last_log_id {
+            validate_text("last_log_id", log, true)?;
+            if !is_log_id(log) {
+                return Err(StateValidationError::UpdateInvariant(
+                    "last_log_id is not a safe updater log identifier",
+                ));
+            }
+        }
+        if let Some(revision) = &self.runtime_revision {
+            validate_text("runtime_revision", revision, true)?;
+            if !is_runtime_revision(revision) {
+                return Err(StateValidationError::UpdateInvariant(
+                    "runtime_revision is not a safe single path component",
+                ));
+            }
+        }
+        if self.runtime_ready != self.runtime_revision.is_some() {
+            return Err(StateValidationError::UpdateInvariant(
+                "runtime_ready requires exactly one validated runtime revision",
+            ));
         }
         let has_checked = self.checked_at_unix_seconds.is_some();
         let has_plan = self.plan_generation.is_some();
@@ -500,6 +643,9 @@ impl UpdateState {
                     || has_packages
                     || !self.repository_errors.is_empty()
                     || self.download_size != 0
+                    || self.progress.is_some()
+                    || self.repair_available
+                    || !self.restart_reasons.is_empty()
                 {
                     return Err(StateValidationError::UpdateInvariant(
                         "never_checked must not carry check results",
@@ -512,6 +658,13 @@ impl UpdateState {
                     || has_packages
                     || !self.repository_errors.is_empty()
                     || self.download_size != 0
+                    || !matches!(
+                        self.progress.as_ref().map(|progress| progress.phase),
+                        Some(UpdateProgressPhase::Refreshing | UpdateProgressPhase::Resolving)
+                    )
+                    || self.failure.is_some()
+                    || self.repair_available
+                    || !self.restart_reasons.is_empty()
                 {
                     return Err(StateValidationError::UpdateInvariant(
                         "checking must not carry a completed check result",
@@ -524,25 +677,76 @@ impl UpdateState {
                     || has_packages
                     || !self.repository_errors.is_empty()
                     || self.download_size != 0
+                    || self.progress.is_some()
+                    || self.failure.is_some()
+                    || self.repair_available
+                    || !self.restart_reasons.is_empty()
                 {
                     return Err(StateValidationError::UpdateInvariant(
                         "up_to_date requires a check time and no plan, packages, errors, or download",
                     ));
                 }
             }
-            UpdateStatus::Available
-            | UpdateStatus::Installing
-            | UpdateStatus::RestartRecommended => {
+            UpdateStatus::Available => {
                 if !has_checked || !has_plan || !has_packages {
                     return Err(StateValidationError::UpdateInvariant(
                         "actionable update states require a check time, packages, and plan generation",
                     ));
                 }
+                if self.progress.is_some()
+                    || self.failure.is_some()
+                    || self.repair_available
+                    || !self.repository_errors.is_empty()
+                    || !self.restart_reasons.is_empty()
+                {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "available state carries operation-only fields",
+                    ));
+                }
+            }
+            UpdateStatus::Installing => {
+                if !has_checked || !has_plan || !has_packages {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "installing requires a check time, packages, and plan generation",
+                    ));
+                }
+                if !matches!(
+                    self.progress.as_ref().map(|progress| progress.phase),
+                    Some(
+                        UpdateProgressPhase::Downloading
+                            | UpdateProgressPhase::Installing
+                            | UpdateProgressPhase::Repairing
+                    )
+                ) || self.failure.is_some()
+                    || self.repair_available
+                    || !self.repository_errors.is_empty()
+                    || !self.restart_reasons.is_empty()
+                {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "installing state carries incoherent operation fields",
+                    ));
+                }
+            }
+            UpdateStatus::RestartRecommended => {
+                if !has_checked || !has_plan || !has_packages || self.restart_reasons.is_empty() {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "restart_recommended requires the attempted plan and restart evidence",
+                    ));
+                }
+                if self.progress.is_some()
+                    || self.failure.is_some()
+                    || self.repair_available
+                    || !self.repository_errors.is_empty()
+                {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "restart_recommended carries operation-only fields",
+                    ));
+                }
             }
             UpdateStatus::Failed => {
-                if self.repository_errors.is_empty() && !has_plan {
+                if self.repository_errors.is_empty() && self.failure.is_none() {
                     return Err(StateValidationError::UpdateInvariant(
-                        "failed requires repository errors or an attempted plan",
+                        "failed requires repository errors or a concrete failure",
                     ));
                 }
                 if (has_plan || has_packages) && !has_checked {
@@ -555,6 +759,16 @@ impl UpdateState {
                         "failed package details require an attempted plan",
                     ));
                 }
+                if self.progress.is_some() || !self.restart_reasons.is_empty() {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "failed state must not retain active progress or restart evidence",
+                    ));
+                }
+                if self.repair_available && !has_plan {
+                    return Err(StateValidationError::UpdateInvariant(
+                        "repair requires an updater-generated attempted plan",
+                    ));
+                }
             }
         }
         Ok(())
@@ -562,7 +776,16 @@ impl UpdateState {
 
     pub fn load(path: &Path) -> Result<Self, UpdateStateError> {
         let bytes = read_bounded(path, MAX_MANAGED_JSON_BYTES)?;
-        let value: Value = serde_json::from_slice(&bytes)?;
+        Self::from_json_bytes(&bytes)
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, UpdateStateError> {
+        if bytes.len() > MAX_MANAGED_JSON_BYTES {
+            return Err(UpdateStateError::TooLarge {
+                maximum: MAX_MANAGED_JSON_BYTES,
+            });
+        }
+        let value: Value = serde_json::from_slice(bytes)?;
         let object = value.as_object().ok_or(UpdateStateError::NotObject)?;
         let version = update_schema_version(object)?;
         if version > UPDATE_STATE_SCHEMA_VERSION {
@@ -581,12 +804,20 @@ impl UpdateState {
             object,
             &[
                 "schema_version",
+                "state_generation",
                 "status",
                 "checked_at_unix_seconds",
                 "repository_errors",
                 "packages",
                 "download_size",
                 "plan_generation",
+                "progress",
+                "failure",
+                "repair_available",
+                "restart_reasons",
+                "last_log_id",
+                "runtime_revision",
+                "runtime_ready",
             ],
         )?;
         let packages = value
@@ -610,10 +841,14 @@ impl UpdateState {
                     "candidate_version",
                     "download_size",
                     "security_origin",
+                    "action",
                 ],
             )?;
         }
-        let state: Self = serde_json::from_value(value)?;
+        // Deserialize from the original bytes as well as inspecting Value.
+        // serde's struct decoder rejects duplicate fields, while Value alone
+        // would silently retain the final duplicate key.
+        let state: Self = serde_json::from_slice(bytes)?;
         state.validate()?;
         Ok(state)
     }
@@ -666,6 +901,50 @@ fn validate_text(
         return Err(StateValidationError::ControlCharacter { field });
     }
     Ok(())
+}
+
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_debian_package_name(value: &str) -> bool {
+    value.len() <= 256
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b':' | b'~' | b'-')
+        })
+}
+
+fn is_runtime_revision(value: &str) -> bool {
+    value.len() <= 128
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'~' | b'-')
+        })
+}
+
+fn is_log_id(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("attempt-") else {
+        return false;
+    };
+    let Some((generation, suffix)) = rest.split_once('-') else {
+        return false;
+    };
+    !generation.is_empty()
+        && !generation.starts_with('0')
+        && generation.bytes().all(|byte| byte.is_ascii_digit())
+        && suffix
+            .strip_suffix(".log")
+            .is_some_and(|digest| is_lower_hex(digest, 16))
 }
 
 #[cfg(test)]
@@ -796,6 +1075,7 @@ mod tests {
                 candidate_version: "2".into(),
                 download_size: 10,
                 security_origin: None,
+                action: UpdateAction::Upgrade,
             }],
             download_size: 10,
             ..UpdateState::default()
@@ -819,6 +1099,7 @@ mod tests {
                     candidate_version: "2".into(),
                     download_size: 20,
                     security_origin: Some("Debian-Security".into()),
+                    action: UpdateAction::Upgrade,
                 },
                 UpdatePackage {
                     name: "beta".into(),
@@ -826,10 +1107,12 @@ mod tests {
                     candidate_version: "4".into(),
                     download_size: 30,
                     security_origin: None,
+                    action: UpdateAction::Upgrade,
                 },
             ],
             download_size: 50,
-            plan_generation: Some("opaque-plan-1".into()),
+            plan_generation: Some("a".repeat(64)),
+            ..UpdateState::default()
         }
     }
 
@@ -914,6 +1197,45 @@ mod tests {
         assert!(matches!(
             wrong_total.validate(),
             Err(StateValidationError::UpdateInvariant(_))
+        ));
+
+        let wrong_progress_unit = UpdateState {
+            status: UpdateStatus::Checking,
+            progress: Some(UpdateProgress {
+                phase: UpdateProgressPhase::Refreshing,
+                completed: 1,
+                total: 2,
+                unit: UpdateProgressUnit::Packages,
+                detail: None,
+                cancellable: false,
+            }),
+            ..UpdateState::default()
+        };
+        assert!(matches!(
+            wrong_progress_unit.validate(),
+            Err(StateValidationError::UpdateInvariant(
+                "update progress unit does not match its phase"
+            ))
+        ));
+    }
+
+    #[test]
+    fn update_wire_rejects_duplicate_fields_and_oversized_dbus_payloads() {
+        let state = available_update_state();
+        let mut json = serde_json::to_string(&state).unwrap();
+        json = json.replacen(
+            "{\"schema_version\":2,",
+            "{\"schema_version\":2,\"schema_version\":2,",
+            1,
+        );
+        assert!(matches!(
+            UpdateState::from_json_bytes(json.as_bytes()),
+            Err(UpdateStateError::Schema(_))
+        ));
+        let oversized = vec![b' '; MAX_MANAGED_JSON_BYTES + 1];
+        assert!(matches!(
+            UpdateState::from_json_bytes(&oversized),
+            Err(UpdateStateError::TooLarge { .. })
         ));
     }
 

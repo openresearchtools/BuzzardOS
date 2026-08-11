@@ -19,7 +19,7 @@ communication_fd=${_FUSE_COMMFD:--1}
     --service-type=exec \
     --uid=0 \
     --gid=0 \
-    /usr/libexec/wildbuzzard-fusermount-exec \
+    /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-fusermount-exec \
     "$caller" \
     "$communication_fd" \
     -- \

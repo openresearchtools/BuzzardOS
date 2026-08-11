@@ -3,6 +3,15 @@
 This directory is everything Wild Buzzard installs into the persistent guest:
 
 - `shell/` is the Rust classic desktop shell;
+- `desktop-core/` owns the versioned Settings/AppImage schemas, XDG
+  discovery, desktop files, typed themes, and atomic persistence shared by
+  guest applications;
+- `settings/` is the unprivileged native GTK4 Settings application;
+- `shortcut-helper/` validates and links AppImages in place and provides the
+  descriptor-bound desktop-operation backend;
+- `clipboard-agent/` owns the private guest side of explicit one-shot
+  clipboard snapshots;
+- `updater/` is the fixed-operation package-update service;
 - `assets/` contains systemd, Sway, D-Bus, theme, integration, and native
   AppImage support files;
 - `third_party/trycua-cua/` is the attributed, pinned CUA fork;

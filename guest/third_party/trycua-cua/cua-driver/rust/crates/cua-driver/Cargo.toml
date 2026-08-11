@@ -24,23 +24,6 @@ pip-preview = { path = "../pip-preview" }
 async-trait = "0.1"
 base64 = { workspace = true }
 uuid = { workspace = true }
-# Telemetry HTTP client. `ureq` over `reqwest` for the small dep footprint:
-# PostHog ingest is a single fire-and-forget POST with a 3s timeout. Uses
-# rustls (default) so the Linux build does not require system OpenSSL.
-ureq = { version = "3", features = ["json"] }
-# Strict semver comparison for the startup update-available banner so that
-# pre-release tags (`-dev`, `-rc.1`) sort below their corresponding release
-# and we never recommend a pre-release as an "update".
-semver = "1"
-# Tarball extraction for `cua-driver skills install`. The verb fetches a
-# versioned `cua-driver-rs-v<v>-skills.tar.gz` release asset from GitHub
-# and unpacks it under `<HomeDir>/skills/cua-driver-rs/`. `tar` is the
-# canonical streaming TAR reader; `flate2` provides gzip decoding (pulled
-# in transitively by ureq already, but declared explicitly here so the
-# dependency is easy to find).
-tar = { version = "0.4", default-features = false }
-flate2 = "1"
-
 # Used by process/session helpers on Linux.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -65,8 +48,7 @@ cua-driver-contract = { path = "../cua-driver-contract" }
 tokio = { workspace = true, features = ["full"] }
 image = { workspace = true }
 base64 = { workspace = true }
-# Isolated HOME / cache directories for `version_check` unit tests so they
-# never touch the developer's real `~/.cua-driver-rs/version_check.json`.
 tempfile = "3"
+semver = "1"
 futures-util = "0.3"
 tokio-tungstenite = "0.24"

@@ -1,6 +1,6 @@
 [General]
-ColorScheme=WildBuzzard
-Name=Wild Buzzard Graphite
+ColorScheme=WildBuzzard-Dark
+Name=WildBuzzard-Dark
 shadeSortColumn=true
 
 [KDE]
@@ -28,14 +28,14 @@ BackgroundAlternate=224,84,34
 BackgroundNormal=255,113,57
 DecorationFocus=255,113,57
 DecorationHover=255,113,57
-ForegroundActive=255,255,255
-ForegroundInactive=230,230,230
-ForegroundLink=255,255,255
-ForegroundNegative=255,255,255
-ForegroundNeutral=255,255,255
-ForegroundNormal=255,255,255
-ForegroundPositive=255,255,255
-ForegroundVisited=255,255,255
+ForegroundActive=24,24,24
+ForegroundInactive=24,24,24
+ForegroundLink=24,24,24
+ForegroundNegative=24,24,24
+ForegroundNeutral=24,24,24
+ForegroundNormal=24,24,24
+ForegroundPositive=24,24,24
+ForegroundVisited=24,24,24
 
 [Colors:Tooltip]
 BackgroundAlternate=34,34,34

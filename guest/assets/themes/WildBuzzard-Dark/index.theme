@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=X-GNOME-Metatheme
+Name=Wild Buzzard Dark
+Comment=Wild Buzzard graphite and cinnamon dark theme
+Encoding=UTF-8
+
+[X-GNOME-Metatheme]
+GtkTheme=WildBuzzard-Dark
+IconTheme=WildBuzzard
+CursorTheme=Adwaita
+ButtonLayout=menu:minimize,maximize,close

@@ -20,6 +20,7 @@ pub mod portal_screenshot;
 pub mod shell_helper;
 pub mod sway_ipc;
 mod virtual_keyboard;
+pub(crate) use virtual_keyboard::Admission as KeyboardAdmission;
 // RemoteDesktop/libei input is portable and ships in release binaries.
 // PipeWire ScreenCast capture remains separately gated for modern/Nix builds.
 #[cfg(feature = "portal-input")]
@@ -30,8 +31,29 @@ pub mod portal_screencast;
 /// Whether the GNOME/KDE RemoteDesktop + libei input backend is compiled in.
 pub const PORTAL_INPUT_ENABLED: bool = cfg!(feature = "portal-input");
 
+/// Gracefully neutralize the daemon-owned compositor keyboard before the CUA
+/// runtime exits. No Wayland connection is created when keyboard input was
+/// never used.
+pub fn shutdown_keyboard() -> anyhow::Result<()> {
+    virtual_keyboard::shutdown()
+}
+
+/// Install the session-revocation hook before any platform Tool can be
+/// admitted. This is intentionally separate from starting the Wayland owner.
+pub fn initialize_keyboard_cancellation() {
+    virtual_keyboard::initialize();
+}
+
+pub fn keyboard_admission(
+    trusted_leases: Vec<cua_driver_core::session::SessionLease>,
+) -> anyhow::Result<KeyboardAdmission> {
+    virtual_keyboard::admit(trusted_leases)
+}
+
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
 use std::io::Read as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
@@ -74,31 +96,183 @@ pub const ENABLE_WAYLAND_ENV: &str = "CUA_DRIVER_RS_ENABLE_WAYLAND";
 const WILDBUZZARD_OUTPUT_STATE: &str = "/run/wildbuzzard-display-state/output-state.json";
 const WILDBUZZARD_POINTER_CLICK_STATE: &str = "wildbuzzard-cua-pointer-click.json";
 
-#[derive(Clone, Copy, Debug, serde::Deserialize)]
+fn wildbuzzard_output_state_required() -> bool {
+    std::env::var_os("WILDBUZZARD_MACHINE_ID").is_some()
+        || std::path::Path::new("/run/wildbuzzard-host").is_dir()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 struct WildBuzzardOutputState {
-    scale_120: u32,
-    logical_width: u32,
-    logical_height: u32,
-    #[serde(default)]
-    guest_logical_width: u32,
-    #[serde(default)]
-    guest_logical_height: u32,
+    schema: u32,
     physical_width: u32,
     physical_height: u32,
+    host_surface_scale_120: u32,
+    guest_ui_scale_120: u32,
+    logical_width: u32,
+    logical_height: u32,
+    geometry_generation: u64,
+}
+
+impl WildBuzzardOutputState {
+    fn validate(self) -> anyhow::Result<Self> {
+        if self.schema != 7 {
+            anyhow::bail!(
+                "unsupported Wild Buzzard output-state schema {}; expected 7",
+                self.schema
+            );
+        }
+        if self.physical_width == 0
+            || self.physical_height == 0
+            || self.logical_width == 0
+            || self.logical_height == 0
+            || self.physical_width > 65_535
+            || self.physical_height > 65_535
+            || self.logical_width > 65_535
+            || self.logical_height > 65_535
+            || !(120..=960).contains(&self.host_surface_scale_120)
+            || !(120..=960).contains(&self.guest_ui_scale_120)
+            || self.geometry_generation == 0
+        {
+            anyhow::bail!("Wild Buzzard output-state contains out-of-range geometry");
+        }
+        let expected_width = u64::from(self.physical_width)
+            .saturating_mul(120)
+            .checked_div(u64::from(self.guest_ui_scale_120))
+            .unwrap_or(1)
+            .max(1) as u32;
+        let expected_height = u64::from(self.physical_height)
+            .saturating_mul(120)
+            .checked_div(u64::from(self.guest_ui_scale_120))
+            .unwrap_or(1)
+            .max(1) as u32;
+        if (self.logical_width, self.logical_height) != (expected_width, expected_height) {
+            anyhow::bail!(
+                "Wild Buzzard output-state logical mode {}x{} is incoherent with native {}x{} physical pixels at guest UI scale {}/120; expected {}x{}",
+                self.logical_width,
+                self.logical_height,
+                self.physical_width,
+                self.physical_height,
+                self.guest_ui_scale_120,
+                expected_width,
+                expected_height
+            );
+        }
+        Ok(self)
+    }
+
+    fn metadata(self) -> CanonicalOutputMetadata {
+        CanonicalOutputMetadata {
+            physical_width: self.physical_width,
+            physical_height: self.physical_height,
+            host_surface_scale_120: self.host_surface_scale_120,
+            guest_ui_scale_120: self.guest_ui_scale_120,
+            logical_width: self.logical_width,
+            logical_height: self.logical_height,
+            geometry_generation: self.geometry_generation,
+        }
+    }
+
+    fn guest_logical_dimensions(self) -> (u32, u32) {
+        (self.logical_width, self.logical_height)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct CanonicalOutputMetadata {
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub host_surface_scale_120: u32,
+    pub guest_ui_scale_120: u32,
+    pub logical_width: u32,
+    pub logical_height: u32,
+    /// Zero only outside Wild Buzzard, where no generation contract exists.
+    pub geometry_generation: u64,
+}
+
+fn read_wildbuzzard_output_state() -> anyhow::Result<Option<WildBuzzardOutputState>> {
+    const LIMIT: u64 = 1024 * 1024;
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(WILDBUZZARD_OUTPUT_STATE)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if wildbuzzard_output_state_required() {
+                anyhow::bail!(
+                    "Wild Buzzard output-state is missing; canonical screenshot and input geometry are unavailable"
+                );
+            }
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "reading Wild Buzzard output-state failed: {error}"
+            ));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| anyhow::anyhow!("inspecting Wild Buzzard output-state failed: {error}"))?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o022 != 0
+    {
+        anyhow::bail!(
+            "Wild Buzzard output-state must be a session-owned regular file with no group/world write permission"
+        );
+    }
+    if metadata.len() > LIMIT {
+        anyhow::bail!("Wild Buzzard output-state exceeds the 1 MiB limit");
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("reading Wild Buzzard output-state failed: {error}"))?;
+    if bytes.len() as u64 > LIMIT {
+        anyhow::bail!("Wild Buzzard output-state exceeds the 1 MiB limit");
+    }
+    let state: WildBuzzardOutputState = serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("parsing Wild Buzzard output-state failed: {error}"))?;
+    state.validate().map(Some)
 }
 
 fn wildbuzzard_output_state() -> Option<WildBuzzardOutputState> {
-    let bytes = std::fs::read(WILDBUZZARD_OUTPUT_STATE).ok()?;
-    let state: WildBuzzardOutputState = serde_json::from_slice(&bytes).ok()?;
-    if !(120..=960).contains(&state.scale_120)
-        || state.logical_width == 0
-        || state.logical_height == 0
-        || state.physical_width == 0
-        || state.physical_height == 0
-    {
-        return None;
+    read_wildbuzzard_output_state().ok().flatten()
+}
+
+fn require_same_output_generation(
+    before: Option<WildBuzzardOutputState>,
+    after: Option<WildBuzzardOutputState>,
+) -> anyhow::Result<()> {
+    match (before, after) {
+        (None, None) => Ok(()),
+        (Some(before), Some(after)) if before == after => Ok(()),
+        (Some(before), Some(after)) => anyhow::bail!(
+            "stale_output_geometry: output changed from generation {} to {} during the operation; discard its screenshot or window geometry",
+            before.geometry_generation,
+            after.geometry_generation
+        ),
+        (Some(before), None) => anyhow::bail!(
+            "stale_output_geometry: Wild Buzzard output generation {} disappeared during the operation",
+            before.geometry_generation
+        ),
+        (None, Some(after)) => anyhow::bail!(
+            "stale_output_geometry: Wild Buzzard output generation {} appeared during the operation",
+            after.geometry_generation
+        ),
     }
-    Some(state)
+}
+
+fn with_stable_output_generation<T>(
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let before = read_wildbuzzard_output_state()?;
+    let result = operation();
+    let after = read_wildbuzzard_output_state()?;
+    require_same_output_generation(before, after)?;
+    result
 }
 
 fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
@@ -121,7 +295,8 @@ fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
         std::process::id()
     ));
     let value = serde_json::json!({
-        "schema": 1,
+        "schema": 2,
+        "geometry_generation": state.geometry_generation,
         "timestamp_ms": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -143,9 +318,9 @@ fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
     }
 }
 
-/// Active Wild Buzzard output scale in 1/120 units.
-pub(crate) fn wildbuzzard_output_scale_120() -> Option<u32> {
-    wildbuzzard_output_state().map(|state| state.scale_120)
+/// Active Wild Buzzard guest UI scale in 1/120 units.
+pub(crate) fn wildbuzzard_guest_ui_scale_120() -> Option<u32> {
+    wildbuzzard_output_state().map(|state| state.guest_ui_scale_120)
 }
 
 fn scale_signed_ratio(value: i64, numerator: u32, denominator: u32) -> i64 {
@@ -221,31 +396,6 @@ pub(crate) fn physical_rect_to_canonical(
     (x, y, width, height)
 }
 
-impl WildBuzzardOutputState {
-    fn guest_logical_dimensions(self) -> (u32, u32) {
-        let scale_256 = (u64::from(self.scale_120) * 256 + 60) / 120;
-        let derived = |physical: u32| {
-            u64::from(physical)
-                .saturating_mul(256)
-                .checked_div(scale_256.max(1))
-                .unwrap_or(1)
-                .clamp(1, u64::from(u32::MAX)) as u32
-        };
-        (
-            if self.guest_logical_width > 0 {
-                self.guest_logical_width
-            } else {
-                derived(self.physical_width)
-            },
-            if self.guest_logical_height > 0 {
-                self.guest_logical_height
-            } else {
-                derived(self.physical_height)
-            },
-        )
-    }
-}
-
 /// Return Wild Buzzard's canonical guest-output physical extent when this
 /// process is running in a machine, otherwise retain the compositor extent.
 ///
@@ -260,26 +410,33 @@ pub fn canonical_output_dimensions(fallback_width: u32, fallback_height: u32) ->
 pub fn canonical_output_metadata(
     fallback_width: u32,
     fallback_height: u32,
-) -> (u32, u32, u32, u32, u32) {
+) -> CanonicalOutputMetadata {
     match wildbuzzard_output_state() {
-        Some(state) => {
-            let logical = state.guest_logical_dimensions();
-            (
-                state.physical_width,
-                state.physical_height,
-                logical.0,
-                logical.1,
-                state.scale_120,
-            )
-        }
-        None => (
-            fallback_width.max(1),
-            fallback_height.max(1),
-            fallback_width.max(1),
-            fallback_height.max(1),
-            120,
-        ),
+        Some(state) => state.metadata(),
+        None => CanonicalOutputMetadata {
+            physical_width: fallback_width.max(1),
+            physical_height: fallback_height.max(1),
+            host_surface_scale_120: 120,
+            guest_ui_scale_120: 120,
+            logical_width: fallback_width.max(1),
+            logical_height: fallback_height.max(1),
+            geometry_generation: 0,
+        },
     }
+}
+
+/// Return canonical metadata while preserving upstream CUA behavior outside
+/// Wild Buzzard. Inside a machine, `read_wildbuzzard_output_state` rejects a
+/// missing, malformed, untrusted, or incoherent state instead of silently
+/// fabricating generation-zero geometry.
+pub fn canonical_output_metadata_checked(
+    fallback_width: u32,
+    fallback_height: u32,
+) -> anyhow::Result<CanonicalOutputMetadata> {
+    Ok(match read_wildbuzzard_output_state()? {
+        Some(state) => state.metadata(),
+        None => canonical_output_metadata(fallback_width, fallback_height),
+    })
 }
 
 fn normalize_capture_for_state(
@@ -306,8 +463,13 @@ fn normalize_capture_for_state(
     );
 }
 
-fn normalize_wildbuzzard_capture(png: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    match wildbuzzard_output_state() {
+fn normalize_capture_for_generation(
+    png: Vec<u8>,
+    before: Option<WildBuzzardOutputState>,
+    after: Option<WildBuzzardOutputState>,
+) -> anyhow::Result<Vec<u8>> {
+    require_same_output_generation(before, after)?;
+    match before {
         Some(state) => normalize_capture_for_state(png, state),
         None => Ok(png),
     }
@@ -316,7 +478,17 @@ fn normalize_wildbuzzard_capture(png: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 /// Convert compositor/AT-SPI logical geometry into Wild Buzzard's canonical
 /// guest-output physical-pixel coordinate space.
 pub fn logical_rect_to_canonical(x: i32, y: i32, width: u32, height: u32) -> (i32, i32, u32, u32) {
-    let Some(state) = wildbuzzard_output_state() else {
+    logical_rect_to_canonical_for_state(wildbuzzard_output_state(), x, y, width, height)
+}
+
+fn logical_rect_to_canonical_for_state(
+    state: Option<WildBuzzardOutputState>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> (i32, i32, u32, u32) {
+    let Some(state) = state else {
         return (x, y, width, height);
     };
     let logical = state.guest_logical_dimensions();
@@ -333,17 +505,23 @@ pub fn logical_rect_to_canonical(x: i32, y: i32, width: u32, height: u32) -> (i3
     )
 }
 
-fn canonical_rect_to_logical(x: i32, y: i32, width: u32, height: u32) -> (i32, i32, u32, u32) {
-    physical_rect_to_logical(x, y, width, height)
-}
-
 pub(crate) fn physical_rect_to_logical(
     x: i32,
     y: i32,
     width: u32,
     height: u32,
 ) -> (i32, i32, u32, u32) {
-    let Some(state) = wildbuzzard_output_state() else {
+    physical_rect_to_logical_for_state(wildbuzzard_output_state(), x, y, width, height)
+}
+
+fn physical_rect_to_logical_for_state(
+    state: Option<WildBuzzardOutputState>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> (i32, i32, u32, u32) {
+    let Some(state) = state else {
         return (x, y, width, height);
     };
     let logical = state.guest_logical_dimensions();
@@ -1179,15 +1357,14 @@ fn activate_stable_foreign_toplevel(window_id: u64) -> anyhow::Result<()> {
 /// screencopy manager or `wl_shm` is unavailable so users on lighter wlroots
 /// builds stay supported.
 pub fn screenshot_bytes() -> anyhow::Result<Vec<u8>> {
-    let bytes = match capture_via_screencopy() {
-        Ok(bytes) => bytes,
+    match capture_via_screencopy() {
+        Ok(bytes) => Ok(bytes),
         Err(e) => {
             tracing::warn!("native screencopy failed, falling back to grim: {e}");
             request_wildbuzzard_repaint();
-            capture_via_grim()?
+            capture_via_grim()
         }
-    };
-    normalize_wildbuzzard_capture(bytes)
+    }
 }
 
 /// Wake Wild Buzzard's otherwise idle nested output so an in-guest
@@ -1490,8 +1667,12 @@ pub(crate) unsafe fn borrowed_fd(fd: i32) -> std::os::fd::OwnedFd {
 /// output-level path used by `get_window_state`'s vision payload.
 pub fn screenshot_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
-        let bytes = screenshot_display_dispatch()?;
-        if let Some((x, y, width, height)) = window_geometry(xid) {
+        let before = read_wildbuzzard_output_state()?;
+        let bytes = screenshot_display_dispatch_unchecked()?;
+        let bytes = normalize_capture_for_generation(bytes, before, before)?;
+        let result = if let Some((x, y, width, height)) = window_geometry_logical(xid) {
+            let (x, y, width, height) =
+                logical_rect_to_canonical_for_state(before, x, y, width, height);
             crop_png_to_rect(
                 &bytes,
                 x,
@@ -1499,10 +1680,13 @@ pub fn screenshot_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
                 width,
                 height,
                 &format!("Wayland window {xid}"),
-            )
+            )?
         } else {
-            Ok(bytes)
-        }
+            bytes
+        };
+        let after = read_wildbuzzard_output_state()?;
+        require_same_output_generation(before, after)?;
+        Ok(result)
     } else {
         crate::capture::screenshot_window_bytes(xid)
     }
@@ -1547,6 +1731,29 @@ fn crop_png_to_rect(
 ///    first use per session.
 /// 5. X11: existing root-window path.
 pub fn screenshot_display_dispatch() -> anyhow::Result<Vec<u8>> {
+    screenshot_display_dispatch_with_metadata().map(|(bytes, _)| bytes)
+}
+
+/// Capture one complete output and return metadata from the exact same
+/// geometry generation. The post-capture state check rejects even a
+/// same-sized UI-scale transition.
+pub fn screenshot_display_dispatch_with_metadata(
+) -> anyhow::Result<(Vec<u8>, CanonicalOutputMetadata)> {
+    let before = read_wildbuzzard_output_state()?;
+    let bytes = screenshot_display_dispatch_unchecked()?;
+    let after = read_wildbuzzard_output_state()?;
+    let bytes = normalize_capture_for_generation(bytes, before, after)?;
+    let metadata = match before {
+        Some(state) => state.metadata(),
+        None => {
+            let image = image::load_from_memory(&bytes)?;
+            canonical_output_metadata(image.width(), image.height())
+        }
+    };
+    Ok((bytes, metadata))
+}
+
+fn screenshot_display_dispatch_unchecked() -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
         // Tier 1: the opt-in GNOME compositor helper. It avoids probing
         // wlroots-only protocols and captures the Shell stage without consent.
@@ -1609,15 +1816,23 @@ fn checked_shell_helper_capture(
 /// crop with.
 pub fn screenshot_window_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
-        if let Some((x, y, width, height)) = window_geometry(xid) {
-            return crop_png_to_rect(
-                &screenshot_display_dispatch()?,
+        let before = read_wildbuzzard_output_state()?;
+        if let Some((x, y, width, height)) = window_geometry_logical(xid) {
+            let bytes = screenshot_display_dispatch_unchecked()?;
+            let bytes = normalize_capture_for_generation(bytes, before, before)?;
+            let (x, y, width, height) =
+                logical_rect_to_canonical_for_state(before, x, y, width, height);
+            let result = crop_png_to_rect(
+                &bytes,
                 x,
                 y,
                 width,
                 height,
                 &format!("Wayland window {xid}"),
-            );
+            )?;
+            let after = read_wildbuzzard_output_state()?;
+            require_same_output_generation(before, after)?;
+            return Ok(result);
         }
         anyhow::bail!(
             "per-window screenshot is not yet supported on native Wayland — \
@@ -2065,29 +2280,33 @@ fn event_time_ms() -> u32 {
 /// real coords. A short delay between iterations gives the compositor time
 /// to discriminate single vs. double clicks.
 pub fn click(window_id: u64, x: i32, y: i32, count: u32, button: u8) -> anyhow::Result<()> {
-    with_libei_fallback(
-        || click_vptr(Some(window_id), x, y, count, button),
-        || {
-            libei_wait_pointer_ready()?;
-            activate_window_for_input(window_id)?;
-            libei_click(x, y, count, button)
-        },
-    )
+    with_stable_output_generation(|| {
+        with_libei_fallback(
+            || click_vptr(Some(window_id), x, y, count, button),
+            || {
+                libei_wait_pointer_ready()?;
+                activate_window_for_input(window_id)?;
+                libei_click(x, y, count, button)
+            },
+        )
+    })
 }
 
 /// Click a desktop-absolute point without selecting or activating a toplevel.
 /// This is the Wayland peer of an XTest root-window click and is used only by
 /// the explicit desktop capture scope.
 pub fn click_desktop(x: i32, y: i32, count: u32, button: u8) -> anyhow::Result<()> {
-    if is_inject_mode() {
-        record_wildbuzzard_pointer_click(x, y, button);
-        let btn = evdev_button(button as u32);
-        return inject_send(&[format!("d {x} {y} {} {btn}", count.max(1))]);
-    }
-    with_libei_fallback(
-        || click_vptr(None, x, y, count, button),
-        || libei_click(x, y, count, button),
-    )
+    with_stable_output_generation(|| {
+        if is_inject_mode() {
+            record_wildbuzzard_pointer_click(x, y, button);
+            let btn = evdev_button(button as u32);
+            return inject_send(&[format!("d {x} {y} {} {btn}", count.max(1))]);
+        }
+        with_libei_fallback(
+            || click_vptr(None, x, y, count, button),
+            || libei_click(x, y, count, button),
+        )
+    })
 }
 
 /// wlroots virtual-pointer implementation of [`click`]. Falls back to libei via
@@ -2241,13 +2460,20 @@ pub fn set_window_frame(
     width: u32,
     height: u32,
 ) -> anyhow::Result<(Option<WindowInfo>, bool, bool)> {
+    let output_before = read_wildbuzzard_output_state()?;
     if std::env::var_os("SWAYSOCK").is_none() {
         anyhow::bail!("Sway IPC is unavailable for setting another toplevel's frame");
     }
     let target = sway_ipc::resolve_public_window(window_id, Some(pid))?;
     let compositor_id = target.id;
-    let before = logical_rect_to_canonical(target.x, target.y, target.width, target.height);
-    let logical = canonical_rect_to_logical(x, y, width, height);
+    let before = logical_rect_to_canonical_for_state(
+        output_before,
+        target.x,
+        target.y,
+        target.width,
+        target.height,
+    );
+    let logical = physical_rect_to_logical_for_state(output_before, x, y, width, height);
     sway_ipc::set_window_frame_checked(compositor_id, logical.0, logical.1, logical.2, logical.3)?;
 
     let requested = (x, y, width, height);
@@ -2255,7 +2481,13 @@ pub fn set_window_frame(
     // confirms the exact compositor-logical frame. Convert that one
     // authoritative readback into canonical physical coordinates once.
     let observed = sway_ipc::window_for_id(compositor_id).map(|window| {
-        let frame = logical_rect_to_canonical(window.x, window.y, window.width, window.height);
+        let frame = logical_rect_to_canonical_for_state(
+            output_before,
+            window.x,
+            window.y,
+            window.width,
+            window.height,
+        );
         WindowInfo {
             xid: window_id,
             pid: Some(window.pid),
@@ -2275,6 +2507,8 @@ pub fn set_window_frame(
     let changed = observed
         .as_ref()
         .is_some_and(|window| (window.x, window.y, window.width, window.height) != before);
+    let output_after = read_wildbuzzard_output_state()?;
+    require_same_output_generation(output_before, output_after)?;
     Ok((observed, confirmed, changed))
 }
 
@@ -2288,33 +2522,37 @@ pub fn scroll_at(
     amount: u32,
 ) -> anyhow::Result<()> {
     let direction = direction.to_string();
-    with_libei_fallback(
-        || scroll_vptr(Some(window_id), point, &direction, amount),
-        || {
-            libei_wait_scroll_ready()?;
-            activate_window_for_input(window_id)?;
-            if let Some((x, y)) = point {
-                libei_move_absolute(x, y)?;
-            }
-            libei_scroll(&direction, amount)
-        },
-    )
+    with_stable_output_generation(|| {
+        with_libei_fallback(
+            || scroll_vptr(Some(window_id), point, &direction, amount),
+            || {
+                libei_wait_scroll_ready()?;
+                activate_window_for_input(window_id)?;
+                if let Some((x, y)) = point {
+                    libei_move_absolute(x, y)?;
+                }
+                libei_scroll(&direction, amount)
+            },
+        )
+    })
 }
 
 /// Scroll at a desktop-absolute point without activating a named toplevel.
 pub fn scroll_desktop(x: i32, y: i32, direction: &str, amount: u32) -> anyhow::Result<()> {
-    if is_inject_mode() {
-        return inject_scroll_desktop(x, y, direction, amount);
-    }
     let direction = direction.to_string();
-    with_libei_fallback(
-        || scroll_vptr(None, Some((x, y)), &direction, amount),
-        || {
-            libei_wait_scroll_ready()?;
-            libei_move_absolute(x, y)?;
-            libei_scroll(&direction, amount)
-        },
-    )
+    with_stable_output_generation(|| {
+        if is_inject_mode() {
+            return inject_scroll_desktop(x, y, &direction, amount);
+        }
+        with_libei_fallback(
+            || scroll_vptr(None, Some((x, y)), &direction, amount),
+            || {
+                libei_wait_scroll_ready()?;
+                libei_move_absolute(x, y)?;
+                libei_scroll(&direction, amount)
+            },
+        )
+    })
 }
 
 /// wlroots virtual-pointer implementation of [`scroll`].
@@ -2394,10 +2632,12 @@ pub fn last_synth_cursor_pos() -> Option<(i32, i32)> {
 /// the compositor commits the warp before returning. Records the position in
 /// the synthetic-cursor registry so `last_synth_cursor_pos` can report it.
 pub fn move_cursor_absolute(window_id: Option<u64>, x: i32, y: i32) -> anyhow::Result<()> {
-    with_libei_fallback(
-        || move_cursor_absolute_vptr(window_id, x, y),
-        || libei_move_absolute(x, y),
-    )
+    with_stable_output_generation(|| {
+        with_libei_fallback(
+            || move_cursor_absolute_vptr(window_id, x, y),
+            || libei_move_absolute(x, y),
+        )
+    })
 }
 
 /// wlroots virtual-pointer implementation of [`move_cursor_absolute`].
@@ -2421,6 +2661,7 @@ fn move_cursor_absolute_vptr(window_id: Option<u64>, x: i32, y: i32) -> anyhow::
 /// output-relative; window-local coords need the nested cua-compositor
 /// injection socket (`CUA_INJECT_SOCKET`).
 pub fn drag(
+    keyboard_admission: &KeyboardAdmission,
     window_id: u64,
     from_x: i32,
     from_y: i32,
@@ -2431,31 +2672,26 @@ pub fn drag(
     button: u8,
     modifiers: &[String],
 ) -> anyhow::Result<()> {
-    virtual_keyboard::with_modifiers_held(modifiers, || {
-        with_libei_fallback(
-            || {
-                drag_vptr(
-                    Some(window_id),
-                    from_x,
-                    from_y,
-                    to_x,
-                    to_y,
-                    steps,
-                    duration_ms,
-                    button,
-                )
-            },
-            || {
-                libei_wait_pointer_ready()?;
-                activate_window_for_input(window_id)?;
-                libei_drag(from_x, from_y, to_x, to_y, steps, duration_ms, button)
-            },
-        )
+    with_stable_output_generation(|| {
+        virtual_keyboard::with_modifiers_held(keyboard_admission, modifiers, || {
+            drag_vptr(
+                keyboard_admission,
+                Some(window_id),
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                steps,
+                duration_ms,
+                button,
+            )
+        })
     })
 }
 
 /// Drag through desktop-absolute points without activating a named toplevel.
 pub fn drag_desktop(
+    keyboard_admission: &KeyboardAdmission,
     from_x: i32,
     from_y: i32,
     to_x: i32,
@@ -2465,20 +2701,27 @@ pub fn drag_desktop(
     button: u8,
     modifiers: &[String],
 ) -> anyhow::Result<()> {
-    virtual_keyboard::with_modifiers_held(modifiers, || {
-        with_libei_fallback(
-            || drag_vptr(None, from_x, from_y, to_x, to_y, steps, duration_ms, button),
-            || {
-                libei_wait_pointer_ready()?;
-                libei_drag(from_x, from_y, to_x, to_y, steps, duration_ms, button)
-            },
-        )
+    with_stable_output_generation(|| {
+        virtual_keyboard::with_modifiers_held(keyboard_admission, modifiers, || {
+            drag_vptr(
+                keyboard_admission,
+                None,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                steps,
+                duration_ms,
+                button,
+            )
+        })
     })
 }
 
 /// wlroots virtual-pointer implementation of [`drag`].
 #[allow(clippy::too_many_arguments)]
 fn drag_vptr(
+    keyboard_admission: &KeyboardAdmission,
     window_id: Option<u64>,
     from_x: i32,
     from_y: i32,
@@ -2505,275 +2748,132 @@ fn drag_vptr(
         None => persistent_vptr::press_desktop(&cursor_id, from_x, from_y, button)?,
     }
 
-    // Give Sway one event-loop turn to install its titlebar/border grab before
-    // the first motion.  The persistent pointer remains held during the wait.
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    let n = steps.max(1);
-    let step_delay = std::time::Duration::from_millis(duration_ms / u64::from(n));
-    for s in 1..=n {
-        let t = s as f64 / n as f64;
-        let ix = (from_x as f64 + (to_x - from_x) as f64 * t).round() as i32;
-        let iy = (from_y as f64 + (to_y - from_y) as f64 * t).round() as i32;
-        if let Err(error) = persistent_vptr::move_to(&cursor_id, ix, iy) {
-            let _ = persistent_vptr::release(&cursor_id, button);
-            return Err(error);
+    let gesture = (|| {
+        // Give Sway one event-loop turn to install its titlebar/border grab
+        // before the first motion. The pointer remains held during the wait,
+        // so cancellation must still pass through the unconditional release
+        // below.
+        virtual_keyboard::sleep_cancellable(
+            keyboard_admission,
+            std::time::Duration::from_millis(30),
+        )?;
+        let n = steps.max(1);
+        let step_delay = std::time::Duration::from_millis(duration_ms / u64::from(n));
+        for s in 1..=n {
+            virtual_keyboard::ensure_current(keyboard_admission)?;
+            let t = s as f64 / n as f64;
+            let ix = (from_x as f64 + (to_x - from_x) as f64 * t).round() as i32;
+            let iy = (from_y as f64 + (to_y - from_y) as f64 * t).round() as i32;
+            persistent_vptr::move_to(&cursor_id, ix, iy)?;
+            if !step_delay.is_zero() {
+                virtual_keyboard::sleep_cancellable(keyboard_admission, step_delay)?;
+            }
         }
-        if !step_delay.is_zero() {
-            std::thread::sleep(step_delay);
-        }
-    }
-    persistent_vptr::move_to(&cursor_id, to_x, to_y)?;
-    persistent_vptr::release(&cursor_id, button)?;
+        virtual_keyboard::ensure_current(keyboard_admission)?;
+        persistent_vptr::move_to(&cursor_id, to_x, to_y)
+    })();
+    let release = persistent_vptr::release(&cursor_id, button);
+    gesture?;
+    release?;
     // Sync the synthetic-cursor registry with the drag endpoint so a
     // subsequent `get_cursor_position` reports where we left the pointer.
     record_synth_cursor(to_x, to_y);
     Ok(())
 }
 
-/// Type Unicode text into the focused Wayland surface via `wtype` (the
-/// virtual-keyboard tool — `zwp_virtual_keyboard_v1` under the hood; it builds
-/// the xkb keymap and resolves shift levels for us). This mirrors the X11
-/// backend's XSendEvent typing and the capture slice's shell-out to `grim`.
+/// Type Unicode text into the focused Wayland surface through the daemon-owned
+/// persistent `zwp_virtual_keyboard_v1`. Its generated one-keysym-per-key map
+/// preserves pinned wtype's Unicode behavior without destroying the active
+/// keyboard after each call. This mirrors the X11 backend's event typing.
 /// foreign-toplevel exposes no pid and Wayland delivers keys to the *focused*
 /// surface, so this is window_id-free; pair it with `click`/`activate` to put
 /// the intended window in focus first.
-const WTYPE_TEXT_DELAY_MS: &str = "8";
+const VIRTUAL_KEYBOARD_TEXT_DELAY_MS: u64 = 8;
 
-pub fn type_text(window_id: u64, text: &str) -> anyhow::Result<()> {
+pub fn type_text(admission: &KeyboardAdmission, window_id: u64, text: &str) -> anyhow::Result<()> {
     if text.is_empty() {
         return Ok(());
     }
     activate_window_for_input(window_id)?;
-    // Lead with a no-op Shift_L tap: on a freshly-focused window under a headless
-    // seat (notably sway), the compositor needs the first virtual-keyboard event
-    // to wire up keyboard routing, and that first key is dropped. Sacrificing a
-    // modifier tap (no character) absorbs the drop so the real text lands intact;
-    // it's harmless where routing is already live.
-    let result = std::process::Command::new("wtype")
-        .args(["-k", "Shift_L", "-d", WTYPE_TEXT_DELAY_MS, "--"])
-        .arg(text)
-        .output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        // `wtype` relies on `zwp_virtual_keyboard_v1`, which KWin/Plasma and
-        // Mutter/GNOME don't implement (and the binary may be missing wtype
-        // entirely). On a portal-input build, route typing through libei's
-        // `ei_text` interface instead. See #1982.
-        other => with_wtype_libei_fallback(
-            || {
-                libei_wait_keyboard_ready()?;
-                activate_window_for_input(window_id)?;
-                libei_type_text(text)
-            },
-            other.map(|o| String::from_utf8_lossy(&o.stderr).into_owned()),
-        ),
-    }
+    virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
 /// Type into a surface whose exact Sway container is already held focused by
 /// the caller. This avoids re-resolving a title that can change mid-sequence
 /// (for example after opening a Chromium tab).
-pub fn type_text_focused(text: &str) -> anyhow::Result<()> {
+pub fn type_text_focused(admission: &KeyboardAdmission, text: &str) -> anyhow::Result<()> {
     if text.is_empty() {
         return Ok(());
     }
-    let result = std::process::Command::new("wtype")
-        .args(["-k", "Shift_L", "-d", WTYPE_TEXT_DELAY_MS, "--"])
-        .arg(text)
-        .output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => with_wtype_libei_fallback(
-            || {
-                libei_wait_keyboard_ready()?;
-                libei_type_text(text)
-            },
-            other.map(|out| String::from_utf8_lossy(&out.stderr).into_owned()),
-        ),
-    }
+    virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
 /// Type text and press one key while an outer exact-container focus guard is
 /// active. Keeping both operations in one virtual-keyboard lifetime avoids a
 /// headless wlroots seat dropping the first event from a second `wtype`
 /// process after the text has landed.
-pub fn type_text_then_key_focused(text: &str, key: &str) -> anyhow::Result<()> {
+pub fn type_text_then_key_focused(
+    admission: &KeyboardAdmission,
+    text: &str,
+    key: &str,
+) -> anyhow::Result<()> {
     let keysym = key_to_keysym(key);
-    let result = std::process::Command::new("wtype")
-        .args(["-k", "Shift_L", "-d", WTYPE_TEXT_DELAY_MS, "-s", "30"])
-        .arg(text)
-        .args(["-s", "50", "-k", &keysym])
-        .output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => with_wtype_libei_fallback(
-            || {
-                libei_wait_keyboard_ready()?;
-                libei_type_text(text)?;
-                libei_press_key(key)
-            },
-            other.map(|out| String::from_utf8_lossy(&out.stderr).into_owned()),
-        ),
-    }
+    virtual_keyboard::type_text_then_key(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS, &keysym)
 }
 
-/// Press a single named key into the focused Wayland surface via `wtype -k`.
-pub fn press_key(window_id: u64, key: &str) -> anyhow::Result<()> {
-    activate_window_for_input(window_id)?;
-    if let Ok(()) = virtual_keyboard::press_key(key) {
+pub fn type_text_with_delay(
+    admission: &KeyboardAdmission,
+    window_id: u64,
+    text: &str,
+    delay_ms: u64,
+) -> anyhow::Result<()> {
+    if text.is_empty() {
         return Ok(());
     }
-    let keysym = key_to_keysym(key);
-    // Keep the sacrificial modifier and requested key in one virtual-keyboard
-    // lifetime. Starting a second wtype process creates a fresh protocol object,
-    // causing headless seats to drop the requested key as their first event.
-    let result = std::process::Command::new("wtype")
-        .args(["-k", "Shift_L", "-k", &keysym])
-        .output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => with_wtype_libei_fallback(
-            || {
-                libei_wait_keyboard_ready()?;
-                activate_window_for_input(window_id)?;
-                libei_press_key(key)
-            },
-            other.map(|o| String::from_utf8_lossy(&o.stderr).into_owned()),
-        ),
-    }
+    activate_window_for_input(window_id)?;
+    virtual_keyboard::type_text(admission, text, delay_ms)
+}
+
+/// Press a single named key into the focused Wayland surface through the
+/// daemon-owned persistent virtual keyboard.
+pub fn press_key(admission: &KeyboardAdmission, window_id: u64, key: &str) -> anyhow::Result<()> {
+    activate_window_for_input(window_id)?;
+    virtual_keyboard::press_key(admission, key)
 }
 
 /// Press one key while an outer exact-container focus guard is active.
-pub fn press_key_focused(key: &str) -> anyhow::Result<()> {
+pub fn press_key_focused(admission: &KeyboardAdmission, key: &str) -> anyhow::Result<()> {
     if is_inject_mode() {
         let (pid, window_id) = inject_focused_target()?;
         return inject_press_key(pid, window_id, key);
     }
-    if let Ok(()) = virtual_keyboard::press_key(key) {
-        return Ok(());
-    }
-    let keysym = key_to_keysym(key);
-    let result = std::process::Command::new("wtype")
-        .args(["-k", "Shift_L", "-k", &keysym])
-        .output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => with_wtype_libei_fallback(
-            || {
-                libei_wait_keyboard_ready()?;
-                libei_press_key(key)
-            },
-            other.map(|out| String::from_utf8_lossy(&out.stderr).into_owned()),
-        ),
-    }
+    virtual_keyboard::press_key(admission, key)
 }
 
-/// Press a key combination (modifiers + final key) via `wtype`. Each modifier
-/// is pressed before the key, then released after, exactly like
-/// `wtype -M ctrl -M shift -k key -m shift -m ctrl`. Unknown values pass
-/// straight to wtype's `-k` so single-character keys and X keysym names work
-/// as-is. This is the Wayland equivalent of the X11 `send_key` modifier mask.
-pub fn hotkey(window_id: u64, keys: &[String]) -> anyhow::Result<()> {
+/// Press a key combination through the persistent virtual keyboard. Each
+/// modifier is pressed before the key and released in reverse order. This is
+/// the Wayland equivalent of the X11 `send_key` modifier mask.
+pub fn hotkey(
+    admission: &KeyboardAdmission,
+    window_id: u64,
+    keys: &[String],
+) -> anyhow::Result<()> {
     activate_window_for_input(window_id)?;
     let (mods, final_key) = partition_modifiers(keys)?;
-    if let Ok(()) = virtual_keyboard::hotkey(&mods, &final_key) {
-        return Ok(());
-    }
-    let keysym = key_to_keysym(&final_key);
-    let args = wtype_hotkey_args(&mods, &keysym);
-    let result = std::process::Command::new("wtype").args(&args).output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => {
-            let stderr = other.map(|o| String::from_utf8_lossy(&o.stderr).into_owned());
-            #[cfg(feature = "portal-input")]
-            {
-                return with_wtype_libei_fallback(
-                    || {
-                        libei::wait_keyboard_ready()?;
-                        activate_window_for_input(window_id)?;
-                        libei_hotkey(&mods, &final_key)
-                    },
-                    stderr,
-                );
-            }
-            #[cfg(not(feature = "portal-input"))]
-            {
-                anyhow::bail!(
-                    "wtype {} failed: {}",
-                    args.join(" "),
-                    stderr.unwrap_or_else(|_| "wtype unavailable".into())
-                );
-            }
-        }
-    }
+    virtual_keyboard::hotkey(admission, &mods, &final_key)
 }
 
 /// Send a chord while an outer exact-container focus guard is active.
-pub fn hotkey_focused(keys: &[String]) -> anyhow::Result<()> {
+pub fn hotkey_focused(admission: &KeyboardAdmission, keys: &[String]) -> anyhow::Result<()> {
     if is_inject_mode() {
         let (pid, window_id) = inject_focused_target()?;
         return inject_hotkey(pid, window_id, keys);
     }
     let (mods, final_key) = partition_modifiers(keys)?;
-    if let Ok(()) = virtual_keyboard::hotkey(&mods, &final_key) {
-        return Ok(());
-    }
-    let keysym = key_to_keysym(&final_key);
-    let args = wtype_hotkey_args(&mods, &keysym);
-    let result = std::process::Command::new("wtype").args(&args).output();
-    match result {
-        Ok(out) if out.status.success() => Ok(()),
-        other => {
-            let stderr = other.map(|out| String::from_utf8_lossy(&out.stderr).into_owned());
-            #[cfg(feature = "portal-input")]
-            {
-                return with_wtype_libei_fallback(
-                    || {
-                        libei::wait_keyboard_ready()?;
-                        libei_hotkey(&mods, &final_key)
-                    },
-                    stderr,
-                );
-            }
-            #[cfg(not(feature = "portal-input"))]
-            {
-                anyhow::bail!(
-                    "wtype {} failed: {}",
-                    args.join(" "),
-                    stderr.unwrap_or_else(|_| "wtype unavailable".into())
-                );
-            }
-        }
-    }
+    virtual_keyboard::hotkey(admission, &mods, &final_key)
 }
 
-fn wtype_hotkey_args(mods: &[String], keysym: &str) -> Vec<String> {
-    // Keep the same harmless first-event primer used by `press_key`. A fresh
-    // virtual-keyboard object on headless seats can drop its first event. Give
-    // wlroots one event cycle after the primer and modifier transitions;
-    // otherwise Chromium can miss a coalesced shortcut even though wtype exits
-    // successfully.
-    let mut args: Vec<String> = vec!["-k".into(), "Shift_L".into(), "-s".into(), "30".into()];
-    for m in mods {
-        args.push("-M".into());
-        args.push(m.clone());
-    }
-    args.push("-s".into());
-    args.push("20".into());
-    args.push("-k".into());
-    args.push(keysym.to_owned());
-    args.push("-s".into());
-    args.push("20".into());
-    // Release modifiers in reverse press order.
-    for m in mods.iter().rev() {
-        args.push("-m".into());
-        args.push(m.clone());
-    }
-    args
-}
-
-/// Split a `keys` array into wtype-compatible modifier names and a single
+/// Split a `keys` array into virtual-keyboard modifier names and a single
 /// final key. Recognised modifier inputs: ctrl/control, alt, shift,
 /// super/meta/cmd/command/win/windows. The final key must be the one
 /// non-modifier in the list.
@@ -2796,8 +2896,8 @@ fn partition_modifiers(keys: &[String]) -> anyhow::Result<(Vec<String>, String)>
     Ok((mods, final_key))
 }
 
-/// Map cua key names to X keysym names that `wtype -k` understands. Unknown
-/// values pass through (single characters and valid keysym names work as-is).
+/// Map CUA key names to XKB keysym names. Unknown values pass through (single
+/// characters and valid keysym names work as-is).
 fn key_to_keysym(key: &str) -> String {
     match key.to_lowercase().as_str() {
         "enter" | "return" => "Return",
@@ -2827,54 +2927,14 @@ fn key_to_keysym(key: &str) -> String {
 // codes. They are the recovery path for compositors with no
 // `zwlr_virtual_pointer_v1` (KWin/Plasma, Mutter/GNOME) — see #1982.
 //
-// In a build WITHOUT the `portal-input` feature the `libei` module does not
-// exist, so each adapter compiles to an error stub. The dispatch seams above
-// only ever CALL these inside `#[cfg(feature = "portal-input")]` branches, so
-// the stubs are dead in that build; they exist purely so the closures passed
-// to `with_libei_fallback` / `with_wtype_libei_fallback` type-check.
-
-/// libei recovery wrapper for the `wtype`-based typing/key functions: when the
-/// virtual-keyboard shell-out failed (`wtype_err`), try the libei `run` on a
-/// portal-input build, otherwise surface the original wtype failure.
-fn with_wtype_libei_fallback(
-    #[allow(unused_variables)] run: impl FnOnce() -> anyhow::Result<()>,
-    wtype_err: Result<String, std::io::Error>,
-) -> anyhow::Result<()> {
-    #[cfg(feature = "portal-input")]
-    {
-        match wtype_err {
-            Ok(stderr) => {
-                tracing::info!("wtype failed ({stderr}); falling back to libei/portal typing")
-            }
-            Err(e) => {
-                tracing::info!("wtype unavailable ({e}); falling back to libei/portal typing")
-            }
-        }
-        run()
-    }
-    #[cfg(not(feature = "portal-input"))]
-    {
-        let _ = run;
-        match wtype_err {
-            Ok(stderr) => anyhow::bail!("wtype failed: {stderr}"),
-            Err(e) => anyhow::bail!("wtype unavailable: {e}"),
-        }
-    }
-}
-
-// Stubs for the no-feature build: the dispatch seams never call these (the
-// libei branch in `with_libei_fallback` / `with_wtype_libei_fallback` is
-// `#[cfg]`-d out), but the closures still need them to exist to type-check.
+// In a build WITHOUT the `portal-input` feature the pointer/scroll libei
+// module does not exist, so these pointer-only adapters compile to stubs.
 #[cfg(not(feature = "portal-input"))]
 fn libei_wait_pointer_ready() -> anyhow::Result<()> {
     unreachable!("libei fallback compiled out (no portal-input feature)")
 }
 #[cfg(not(feature = "portal-input"))]
 fn libei_wait_scroll_ready() -> anyhow::Result<()> {
-    unreachable!("libei fallback compiled out (no portal-input feature)")
-}
-#[cfg(not(feature = "portal-input"))]
-fn libei_wait_keyboard_ready() -> anyhow::Result<()> {
     unreachable!("libei fallback compiled out (no portal-input feature)")
 }
 #[cfg(not(feature = "portal-input"))]
@@ -2887,27 +2947,6 @@ fn libei_scroll(_direction: &str, _amount: u32) -> anyhow::Result<()> {
 }
 #[cfg(not(feature = "portal-input"))]
 fn libei_move_absolute(_x: i32, _y: i32) -> anyhow::Result<()> {
-    unreachable!("libei fallback compiled out (no portal-input feature)")
-}
-#[cfg(not(feature = "portal-input"))]
-#[allow(clippy::too_many_arguments)]
-fn libei_drag(
-    _from_x: i32,
-    _from_y: i32,
-    _to_x: i32,
-    _to_y: i32,
-    _steps: u32,
-    _duration_ms: u64,
-    _button: u8,
-) -> anyhow::Result<()> {
-    unreachable!("libei fallback compiled out (no portal-input feature)")
-}
-#[cfg(not(feature = "portal-input"))]
-fn libei_type_text(_text: &str) -> anyhow::Result<()> {
-    unreachable!("libei fallback compiled out (no portal-input feature)")
-}
-#[cfg(not(feature = "portal-input"))]
-fn libei_press_key(_key: &str) -> anyhow::Result<()> {
     unreachable!("libei fallback compiled out (no portal-input feature)")
 }
 #[cfg(feature = "portal-input")]
@@ -2927,11 +2966,6 @@ fn libei_wait_pointer_ready() -> anyhow::Result<()> {
 #[cfg(feature = "portal-input")]
 fn libei_wait_scroll_ready() -> anyhow::Result<()> {
     libei::wait_scroll_ready()
-}
-
-#[cfg(feature = "portal-input")]
-fn libei_wait_keyboard_ready() -> anyhow::Result<()> {
-    libei::wait_keyboard_ready()
 }
 
 #[cfg(feature = "portal-input")]
@@ -2981,82 +3015,6 @@ fn libei_move_absolute(x: i32, y: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "portal-input")]
-fn libei_drag(
-    from_x: i32,
-    from_y: i32,
-    to_x: i32,
-    to_y: i32,
-    steps: u32,
-    duration_ms: u64,
-    button: u8,
-) -> anyhow::Result<()> {
-    // ei_button exposes separate Press/Released states, so the libei worker can
-    // hold the button across the interpolated motion — a genuine
-    // press→move→release drag. Clamp both endpoints to the output — but NOT via
-    // `normalize_click_xy`, whose (0,0)→centre convention (for coordinate-free
-    // clicks) is wrong here: a drag endpoint is always explicit and (0,0) is a
-    // valid top-left corner target.
-    let btn = cua_button_to_libei(button);
-    let (w, h) = output_dimensions()?;
-    let cx = |x: i32| x.clamp(0, (w as i32).saturating_sub(1));
-    let cy = |y: i32| y.clamp(0, (h as i32).saturating_sub(1));
-    libei::drag(
-        cx(from_x) as f64,
-        cy(from_y) as f64,
-        cx(to_x) as f64,
-        cy(to_y) as f64,
-        steps,
-        duration_ms,
-        btn,
-    )?;
-    record_synth_cursor(cx(to_x), cy(to_y));
-    Ok(())
-}
-
-#[cfg(feature = "portal-input")]
-fn libei_type_text(text: &str) -> anyhow::Result<()> {
-    if text.is_empty() {
-        return Ok(());
-    }
-    libei::type_text(text)
-}
-
-#[cfg(feature = "portal-input")]
-fn libei_press_key(key: &str) -> anyhow::Result<()> {
-    let keycode = key_to_evdev(key)
-        .ok_or_else(|| anyhow::anyhow!("no evdev keycode mapping for key '{key}' (libei path)"))?;
-    libei::press_key(keycode)
-}
-
-#[cfg(feature = "portal-input")]
-fn libei_hotkey(mods: &[String], key: &str) -> anyhow::Result<()> {
-    use libei::KeyTransition::{Press, Release};
-
-    let mut modifier_codes = Vec::with_capacity(mods.len());
-    for modifier in mods {
-        modifier_codes.push(match modifier.as_str() {
-            "ctrl" => 29,
-            "shift" => 42,
-            "alt" => 56,
-            "logo" => 125,
-            other => anyhow::bail!("no evdev keycode mapping for modifier '{other}'"),
-        });
-    }
-    let keycode = key_to_evdev(key)
-        .ok_or_else(|| anyhow::anyhow!("no evdev keycode mapping for key '{key}' (libei path)"))?;
-    let mut transitions = Vec::with_capacity(modifier_codes.len() * 2 + 2);
-    transitions.extend(modifier_codes.iter().copied().map(Press));
-    transitions.push(Press(keycode));
-    transitions.push(Release(keycode));
-    transitions.extend(modifier_codes.iter().rev().copied().map(Release));
-    libei::key_sequence(&transitions)
-}
-
-/// Map cua key names to Linux evdev keycodes for the libei `press_key` path
-/// (libei emulates raw evdev, not X keysyms). Mirrors [`key_to_keysym`] but
-/// emits `linux/input-event-codes.h` values. Returns `None` for keys with no
-/// known mapping so the caller can fail loudly.
 fn key_to_evdev(key: &str) -> Option<u32> {
     let code = match key.to_lowercase().as_str() {
         "enter" | "return" => 28,        // KEY_ENTER
@@ -3716,6 +3674,7 @@ pub fn inject_parallel_drags(drags: &[InjectDrag]) -> anyhow::Result<()> {
 
 /// Focus-free single drag using the same per-surface path as parallel drags.
 pub fn inject_drag(
+    keyboard_admission: &KeyboardAdmission,
     target_pid: u32,
     window_id: u64,
     from: (f64, f64),
@@ -3725,7 +3684,7 @@ pub fn inject_drag(
     modifiers: &[String],
 ) -> anyhow::Result<()> {
     let app_id = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    virtual_keyboard::with_modifiers_held(modifiers, || {
+    virtual_keyboard::with_modifiers_held(keyboard_admission, modifiers, || {
         inject_parallel_drags(&[InjectDrag {
             app_id,
             idx: 0,
@@ -3861,12 +3820,35 @@ fn list_windows_dispatch_logical(filter_pid: Option<u32>) -> Vec<WindowInfo> {
 /// Enumerate windows in the same guest-output physical-pixel coordinate space
 /// as desktop and window screenshots.
 pub fn list_windows_dispatch(filter_pid: Option<u32>) -> Vec<WindowInfo> {
+    match list_windows_dispatch_checked(filter_pid) {
+        Ok((windows, _)) => windows,
+        Err(error) => {
+            tracing::warn!("window enumeration rejected: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Generation-checked window enumeration. User-facing tools use this form so
+/// a resize or UI-scale transition cannot return rectangles transformed with
+/// a different output state than the one attached to the response.
+pub fn list_windows_dispatch_checked(
+    filter_pid: Option<u32>,
+) -> anyhow::Result<(Vec<WindowInfo>, Option<CanonicalOutputMetadata>)> {
+    let before = read_wildbuzzard_output_state()?;
     let mut windows = list_windows_dispatch_logical(filter_pid);
     for window in &mut windows {
-        (window.x, window.y, window.width, window.height) =
-            logical_rect_to_canonical(window.x, window.y, window.width, window.height);
+        (window.x, window.y, window.width, window.height) = logical_rect_to_canonical_for_state(
+            before,
+            window.x,
+            window.y,
+            window.width,
+            window.height,
+        );
     }
-    windows
+    let after = read_wildbuzzard_output_state()?;
+    require_same_output_generation(before, after)?;
+    Ok((windows, before.map(WildBuzzardOutputState::metadata)))
 }
 
 fn merge_atspi_windows(
@@ -4170,6 +4152,27 @@ const _BTN_LEFT_ALIAS: u32 = BTN_LEFT;
 mod tests {
     use super::*;
 
+    fn output_state(
+        physical_width: u32,
+        physical_height: u32,
+        host_surface_scale_120: u32,
+        guest_ui_scale_120: u32,
+        geometry_generation: u64,
+    ) -> WildBuzzardOutputState {
+        WildBuzzardOutputState {
+            schema: 7,
+            physical_width,
+            physical_height,
+            host_surface_scale_120,
+            guest_ui_scale_120,
+            logical_width: (u64::from(physical_width) * 120 / u64::from(guest_ui_scale_120)).max(1)
+                as u32,
+            logical_height: (u64::from(physical_height) * 120 / u64::from(guest_ui_scale_120))
+                .max(1) as u32,
+            geometry_generation,
+        }
+    }
+
     #[test]
     fn physical_and_logical_rect_transforms_share_exact_output_edges() {
         assert_eq!(
@@ -4184,6 +4187,54 @@ mod tests {
             scaled_rect(-4, -4, 4, 4, 160, 160, 120, 120, true),
             (-6, -6, 6, 6)
         );
+    }
+
+    #[test]
+    fn output_geometry_matrix_separates_host_and_guest_scale() {
+        let guest_presets = [None, Some(120), Some(150), Some(180), Some(210), Some(240)];
+        for host_scale in [120_u32, 150, 160, 180, 210, 240] {
+            for preset in guest_presets {
+                let guest_scale = preset.unwrap_or(host_scale);
+                let state = output_state(1919, 1079, host_scale, guest_scale, 41);
+                let validated = state.validate().expect("matrix geometry must validate");
+                assert_eq!(
+                    (validated.physical_width, validated.physical_height),
+                    (1919, 1079)
+                );
+                assert_eq!(validated.host_surface_scale_120, host_scale);
+                assert_eq!(validated.guest_ui_scale_120, guest_scale);
+                assert_eq!(validated.logical_width, 1919 * 120 / guest_scale);
+                assert_eq!(validated.logical_height, 1079 * 120 / guest_scale);
+            }
+        }
+    }
+
+    #[test]
+    fn output_state_schema_rejects_legacy_aliases_and_unknown_fields() {
+        let legacy = serde_json::json!({
+            "schema": 7,
+            "physical_width": 1600,
+            "physical_height": 1000,
+            "host_surface_scale_120": 150,
+            "scale_120": 150,
+            "logical_width": 1280,
+            "logical_height": 800,
+            "geometry_generation": 1,
+        });
+        assert!(serde_json::from_value::<WildBuzzardOutputState>(legacy).is_err());
+
+        let mut exact = serde_json::to_value(output_state(1600, 1000, 150, 150, 1)).unwrap();
+        exact["host_viewport_width"] = serde_json::json!(1280);
+        assert!(serde_json::from_value::<WildBuzzardOutputState>(exact).is_err());
+    }
+
+    #[test]
+    fn same_sized_new_generation_is_stale() {
+        let before = output_state(1600, 1000, 150, 150, 7);
+        let after = output_state(1600, 1000, 150, 150, 8);
+        let error = require_same_output_generation(Some(before), Some(after)).unwrap_err();
+        assert!(error.to_string().contains("stale_output_geometry"));
+        assert!(error.to_string().contains("generation 7 to 8"));
     }
 
     #[test]
@@ -4489,15 +4540,7 @@ mod tests {
         source
             .write_to(&mut encoded, image::ImageFormat::Png)
             .expect("encode fixture PNG");
-        let state = WildBuzzardOutputState {
-            scale_120: 180,
-            logical_width: 10,
-            logical_height: 6,
-            guest_logical_width: 10,
-            guest_logical_height: 6,
-            physical_width: 15,
-            physical_height: 9,
-        };
+        let state = output_state(15, 9, 160, 180, 7);
         let original = encoded.into_inner();
         let captured = normalize_capture_for_state(original.clone(), state)
             .expect("accept native physical screenshot");
@@ -4513,20 +4556,26 @@ mod tests {
         source
             .write_to(&mut encoded, image::ImageFormat::Png)
             .expect("encode fixture PNG");
-        let error = normalize_capture_for_state(
-            encoded.into_inner(),
-            WildBuzzardOutputState {
-                scale_120: 180,
-                logical_width: 10,
-                logical_height: 6,
-                guest_logical_width: 10,
-                guest_logical_height: 6,
-                physical_width: 15,
-                physical_height: 9,
-            },
-        )
-        .unwrap_err();
+        let error =
+            normalize_capture_for_state(encoded.into_inner(), output_state(15, 9, 160, 180, 7))
+                .unwrap_err();
         assert!(error.to_string().contains("stale_output_geometry"));
+    }
+
+    #[test]
+    fn capture_rejects_generation_change_even_when_pixels_keep_the_same_extent() {
+        let source = image::DynamicImage::ImageRgba8(image::RgbaImage::new(15, 9));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture PNG");
+        let before = output_state(15, 9, 160, 180, 91);
+        let after = output_state(15, 9, 160, 180, 92);
+        let error =
+            normalize_capture_for_generation(encoded.into_inner(), Some(before), Some(after))
+                .unwrap_err();
+        assert!(error.to_string().contains("stale_output_geometry"));
+        assert!(error.to_string().contains("generation 91 to 92"));
     }
 
     #[test]
@@ -4603,18 +4652,6 @@ mod tests {
         );
         assert!(validate_injectable_hotkey(&["7".to_owned()]).is_err());
         assert!(validate_injectable_hotkey(&["hyper".to_owned(), "k".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn wtype_hotkey_keeps_primer_chord_and_releases_in_order() {
-        let args = wtype_hotkey_args(&["ctrl".into(), "shift".into()], "7");
-        assert_eq!(
-            args,
-            [
-                "-k", "Shift_L", "-s", "30", "-M", "ctrl", "-M", "shift", "-s", "20", "-k", "7",
-                "-s", "20", "-m", "shift", "-m", "ctrl",
-            ]
-        );
     }
 
     #[test]

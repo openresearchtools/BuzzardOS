@@ -20,3 +20,8 @@ pub use media::{HostMediaBackend, HostMediaDevice, HostMediaKind, discover_host_
 pub use paths::{WbPaths, host_control_socket};
 pub use resources::ResourceLocator;
 pub use wayland::WaylandCapabilities;
+
+/// Stable machine-state prefix used only when the broker's bounded desktop
+/// readiness deadline expires. Launchers may key guarded runtime rollback on
+/// this code without mistaking an arbitrary startup failure for a timeout.
+pub const DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX: &str = "desktop-readiness-deadline:";

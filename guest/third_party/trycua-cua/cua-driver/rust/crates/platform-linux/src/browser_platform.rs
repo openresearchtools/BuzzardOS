@@ -747,6 +747,18 @@ impl BrowserPlatform for LinuxBrowserPlatform {
         &self,
         request: ExistingProfileSetupRequest,
     ) -> Result<ExistingProfileSetupOutcome, BrowserRefusal> {
+        // Capture the registry-owned lease before any browser inspection
+        // await. A stale call cannot acquire the generation of a restarted
+        // session immediately before keyboard delivery.
+        let keyboard_admission = crate::wayland::keyboard_admission(
+            cua_driver_core::tool::current_dispatch_session_leases(),
+        )
+        .map_err(|error| {
+            refusal(
+                BrowserRefusalCode::BrowserRouteUnavailable,
+                format!("browser keyboard admission was cancelled: {error}"),
+            )
+        })?;
         let descriptor = existing_profile_setup_descriptor(request.browser).ok_or_else(|| {
             refusal(
                 BrowserRefusalCode::BrowserRouteUnavailable,
@@ -783,7 +795,7 @@ impl BrowserPlatform for LinuxBrowserPlatform {
                     )
                 })??;
         let handle = tokio::task::spawn_blocking(move || {
-            crate::browser_setup_ui::enable(pid_u32, window_id, descriptor)
+            crate::browser_setup_ui::enable(keyboard_admission, pid_u32, window_id, descriptor)
         })
         .await
         .map_err(|error| {

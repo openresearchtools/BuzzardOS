@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+# Stable compatibility ABI for already-generated launchers and older Settings
+# revisions.  The implementation is protected inside the active runtime.
+exec /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shortcut-helper "$@"
