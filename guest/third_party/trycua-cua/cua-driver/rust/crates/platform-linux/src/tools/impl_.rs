@@ -8954,10 +8954,6 @@ impl Tool for BringToFrontTool {
 
 // ── registry ─────────────────────────────────────────────────────────────────
 
-pub fn build_registry(compat: bool) -> ToolRegistry {
-    build_registry_with_provider(compat, None)
-}
-
 pub fn build_registry_with_provider(
     compat: bool,
     provider: Option<std::sync::Arc<dyn cua_driver_core::consent::ProtectedConsentProvider>>,

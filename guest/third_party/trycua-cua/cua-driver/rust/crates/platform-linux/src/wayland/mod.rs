@@ -1703,21 +1703,44 @@ fn crop_png_to_rect(
     let image = image::load_from_memory(output_png)?;
     let image_width = image.width();
     let image_height = image.height();
-    let x = rect_x.max(0) as u32;
-    let y = rect_y.max(0) as u32;
-    if x >= image_width || y >= image_height {
-        anyhow::bail!(
-            "{label} origin ({x},{y}) is outside captured output {image_width}x{image_height}"
-        );
-    }
-    let width = rect_width.min(image_width - x);
-    let height = rect_height.min(image_height - y);
-    if width == 0 || height == 0 {
+    if rect_width == 0 || rect_height == 0 {
         anyhow::bail!("{label} has empty capture geometry");
     }
-    let cropped = image.crop_imm(x, y, width, height);
+    if rect_width > 8192
+        || rect_height > 8192
+        || u64::from(rect_width) * u64::from(rect_height) > 64 * 1024 * 1024
+    {
+        anyhow::bail!(
+            "{label} capture geometry {rect_width}x{rect_height} exceeds the safety limit"
+        );
+    }
+
+    let left = i64::from(rect_x);
+    let top = i64::from(rect_y);
+    let right = left + i64::from(rect_width);
+    let bottom = top + i64::from(rect_height);
+    let source_left = left.max(0).min(i64::from(image_width));
+    let source_top = top.max(0).min(i64::from(image_height));
+    let source_right = right.max(0).min(i64::from(image_width));
+    let source_bottom = bottom.max(0).min(i64::from(image_height));
+    if source_left >= source_right || source_top >= source_bottom {
+        anyhow::bail!("{label} does not intersect captured output {image_width}x{image_height}");
+    }
+
+    let source_width = u32::try_from(source_right - source_left)?;
+    let source_height = u32::try_from(source_bottom - source_top)?;
+    let source = image
+        .crop_imm(
+            u32::try_from(source_left)?,
+            u32::try_from(source_top)?,
+            source_width,
+            source_height,
+        )
+        .to_rgba8();
+    let mut cropped = image::RgbaImage::new(rect_width, rect_height);
+    image::imageops::overlay(&mut cropped, &source, source_left - left, source_top - top);
     let mut cursor = std::io::Cursor::new(Vec::new());
-    cropped.write_to(&mut cursor, image::ImageFormat::Png)?;
+    image::DynamicImage::ImageRgba8(cropped).write_to(&mut cursor, image::ImageFormat::Png)?;
     Ok(cursor.into_inner())
 }
 
@@ -4527,6 +4550,40 @@ mod tests {
             crop_png_to_rect(encoded.get_ref(), 2, 1, 3, 4, "fixture").expect("crop fixture PNG");
         let decoded = image::load_from_memory(&cropped).expect("decode cropped PNG");
         assert_eq!((decoded.width(), decoded.height()), (3, 4));
+    }
+
+    #[test]
+    fn offscreen_window_capture_preserves_window_local_coordinates() {
+        let source = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8,
+            6,
+            image::Rgba([20, 40, 60, 255]),
+        ));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture PNG");
+
+        let cropped = crop_png_to_rect(encoded.get_ref(), -2, -1, 6, 5, "fixture")
+            .expect("pad offscreen window capture");
+        let decoded = image::load_from_memory(&cropped)
+            .expect("decode padded PNG")
+            .to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (6, 5));
+        assert_eq!(decoded.get_pixel(0, 0), &image::Rgba([0, 0, 0, 0]));
+        assert_eq!(decoded.get_pixel(2, 1), &image::Rgba([20, 40, 60, 255]));
+    }
+
+    #[test]
+    fn oversized_window_capture_fails_before_allocation() {
+        let source = image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 6));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture PNG");
+        let error = crop_png_to_rect(encoded.get_ref(), 0, 0, 8193, 1, "fixture")
+            .expect_err("reject oversized geometry");
+        assert!(error.to_string().contains("exceeds the safety limit"));
     }
 
     #[test]

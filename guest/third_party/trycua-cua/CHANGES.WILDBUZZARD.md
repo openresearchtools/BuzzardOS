@@ -10,6 +10,9 @@ intentionally not vendored.
 
 Local changes are kept as ordinary reviewable source changes in this tree:
 
+- partially off-output Sway windows retain transparent padding in their
+  per-window screenshots, so screenshot pixels and window-local pointer input
+  keep the same origin instead of shifting by the clipped edge;
 - product telemetry is removed rather than disabled: the PostHog endpoint and
   key, payload/sender workers, installation identity and preference state,
   telemetry CLI, lifecycle/tool hooks, and telemetry-only tests are absent;

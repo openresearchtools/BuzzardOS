@@ -26,10 +26,6 @@ pub fn window_origin_for_pid(pid: u32) -> Option<(i32, i32)> {
     window_for_pid(pid).map(|window| (window.x, window.y))
 }
 
-pub fn window_content_offset_for_pid(pid: u32) -> Option<(i32, i32)> {
-    window_for_pid(pid).map(|window| (window.content_x, window.content_y))
-}
-
 pub fn window_origin_for_title(title: &str) -> Option<(i32, i32)> {
     window_for_title(title).map(|window| (window.x, window.y))
 }
