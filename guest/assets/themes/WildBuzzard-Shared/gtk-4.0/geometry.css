@@ -115,19 +115,31 @@ switch slider {
 }
 
 scale trough {
+  min-width: 6px;
+  min-height: 6px;
   background-color: @wb_field;
-  border-color: @wb_border;
+  border: 1px solid @wb_border;
+  border-radius: 4px;
+}
+
+scale highlight {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 4px;
 }
 
 scale highlight,
 progressbar progress {
   background-color: @wb_selection;
-  border-color: @wb_focus;
+  border: 1px solid @wb_focus;
 }
 
 scale slider {
+  min-width: 18px;
+  min-height: 18px;
   background-color: @wb_raised;
-  border-color: @wb_control_border;
+  border: 1px solid @wb_control_border;
+  border-radius: 9px;
 }
 
 entry,

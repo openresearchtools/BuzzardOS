@@ -489,6 +489,8 @@ mod tests {
             assert!(geometry.contains("@wb_selection"));
             assert!(geometry.contains("@wb_focus"));
             assert!(geometry.contains("@wb_hover"));
+            assert!(geometry.contains("scale trough {\n  min-width: 6px;\n  min-height: 6px;"));
+            assert!(geometry.contains("scale slider {\n  min-width: 18px;\n  min-height: 18px;"));
         }
 
         for (mode, palette_css) in [
