@@ -22,6 +22,7 @@ from email.utils import formatdate
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import updater_core as updater
+import wildbuzzard_updater as updater_service
 
 
 REVISION = "test-runtime-1"
@@ -609,6 +610,26 @@ class UpdaterCoreTests(unittest.TestCase):
 
 
 class UpdaterInterfaceTests(unittest.TestCase):
+    def test_transient_worker_has_only_fixed_systemd_unit_arguments(self):
+        command = updater_service._transient_worker_command(
+            "install",
+            GENERATION,
+            "wildbuzzard-update-install-0123456789abcdef",
+        )
+        self.assertEqual(command[0], "/usr/bin/systemd-run")
+        self.assertIn("--property=Type=exec", command)
+        self.assertIn("--property=UMask=0077", command)
+        self.assertEqual(command[-2:], ["--worker-install", GENERATION])
+        self.assertNotIn("sh", command)
+        self.assertNotIn("-c", command)
+
+        with self.assertRaises(updater.UpdaterError):
+            updater_service._transient_worker_command(
+                "install",
+                GENERATION,
+                "wildbuzzard-update-install-bad;name",
+            )
+
     def test_dbus_introspection_exposes_only_fixed_methods(self):
         script = Path(__file__).resolve().parent / "wildbuzzard_updater.py"
         result = subprocess.run(

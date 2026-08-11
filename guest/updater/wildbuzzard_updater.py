@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 
 from updater_core import (
     BusyError,
@@ -66,6 +67,38 @@ def _glib_modules():
     except (ImportError, ValueError) as error:
         raise UpdaterError("python3-gi and Gio are required by the updater service") from error
     return Gio, GLib
+
+
+def _transient_worker_command(
+    operation: str,
+    generation: str | None,
+    unit: str,
+) -> list[str]:
+    if operation not in {"check", "install", "repair"}:
+        raise UpdaterError("unknown fixed updater operation")
+    worker_arguments = [sys.executable, os.path.realpath(__file__), f"--worker-{operation}"]
+    if operation == "check":
+        if generation is not None:
+            raise UpdaterError("check worker does not accept a generation")
+    else:
+        worker_arguments.append(validate_generation(generation))
+    if not unit.startswith(f"wildbuzzard-update-{operation}-") or not all(
+        character.isalnum() or character in "-_" for character in unit
+    ):
+        raise UpdaterError("invalid fixed updater unit name")
+    return [
+        "/usr/bin/systemd-run",
+        "--wait",
+        "--collect",
+        "--quiet",
+        f"--unit={unit}",
+        "--property=Type=exec",
+        "--property=UMask=0077",
+        "--property=PrivateTmp=yes",
+        "--property=ProtectHome=read-only",
+        "--",
+        *worker_arguments,
+    ]
 
 
 class SystemBusService:
@@ -171,17 +204,16 @@ class SystemBusService:
             self._return_error(invocation, error)
 
     def _start_worker(self, operation: str, generation: str | None = None) -> int:
-        if operation not in {"check", "install", "repair"}:
-            raise UpdaterError("unknown fixed updater operation")
         with self.worker_lock:
             if self.worker is not None and self.worker.poll() is None:
                 raise BusyError("an updater operation is already running")
-            arguments = [sys.executable, os.path.realpath(__file__), f"--worker-{operation}"]
-            if operation == "check":
-                if generation is not None:
-                    raise UpdaterError("check worker does not accept a generation")
-            else:
-                arguments.append(validate_generation(generation))
+            # APT deliberately drops to the `_apt` uid for repository I/O.
+            # A direct child inherits this long-lived D-Bus service's
+            # NoNewPrivileges sandbox and cannot perform that uid transition
+            # in the rootless user namespace.  A fixed transient unit is a
+            # fresh service process with no user-controlled command surface.
+            unit = f"wildbuzzard-update-{operation}-{uuid.uuid4().hex}"
+            arguments = _transient_worker_command(operation, generation, unit)
             self.worker = subprocess.Popen(
                 arguments,
                 stdin=subprocess.DEVNULL,

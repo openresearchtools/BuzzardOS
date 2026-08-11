@@ -834,18 +834,13 @@ fn build_appearance_page(
                 return;
             }
             changing.set(true);
-            match store.borrow_mut().set_theme(mode) {
-                Ok(_) => match store.borrow_mut().set_background(background) {
-                    Ok(generation) => {
-                        colour.set_rgba(&solid_to_rgba(color));
-                        apply_current_process_theme(mode);
-                        let _ = bus.emit_changed(generation, &[ChangeSection::Appearance]);
-                    }
-                    Err(error) => {
-                        show_error(&window, "Background was not changed", &error.to_string())
-                    }
-                },
-                Err(error) => show_error(&window, "Theme was not changed", &error.to_string()),
+            match store.borrow_mut().set_appearance(mode, background) {
+                Ok(generation) => {
+                    colour.set_rgba(&solid_to_rgba(color));
+                    apply_current_process_theme(mode);
+                    let _ = bus.emit_changed(generation, &[ChangeSection::Appearance]);
+                }
+                Err(error) => show_error(&window, "Appearance was not changed", &error.to_string()),
             }
             changing.set(false);
         });
@@ -1162,7 +1157,10 @@ fn show_error(parent: &gtk::ApplicationWindow, title: &str, detail: &str) {
 fn apply_current_process_theme(mode: ThemeMode) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_theme_name(Some(mode.gtk_theme_name()));
-        settings.set_gtk_application_prefer_dark_theme(mode == ThemeMode::Dark);
+        // WildBuzzard-Dark is already the explicit dark theme. Asking GTK for
+        // a dark *variant* of that name can fall back to Adwaita-dark, which
+        // reintroduces its blue accent instead of the Cinnamon palette.
+        settings.set_gtk_application_prefer_dark_theme(false);
     }
 }
 

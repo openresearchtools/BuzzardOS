@@ -195,6 +195,43 @@ impl SettingsStore {
         Ok(self.settings.generation)
     }
 
+    /// Persist a toolkit theme and its matching recommended desktop colour as
+    /// one generation.  Writing these independently creates a visible mixed
+    /// state (light controls over the previous dark desktop) if the GTK theme
+    /// reload interrupts the settings process between the two writes.
+    pub fn set_appearance(
+        &mut self,
+        mode: ThemeMode,
+        background: BackgroundChoice,
+    ) -> Result<u64, StoreError> {
+        self.ensure_writable()?;
+        if self.settings.appearance.theme == mode
+            && self.settings.appearance.background == background
+        {
+            return Ok(self.settings.generation);
+        }
+        let old = self.settings.clone();
+        let mut candidate = old.clone();
+        candidate.appearance.theme = mode;
+        candidate.appearance.background = background;
+        candidate.generation = candidate
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Settings("settings generation overflow".into()))?;
+
+        apply_theme_files(&self.paths.config_home, &ThemeConfigSet::for_mode(mode))
+            .map_err(|error| StoreError::Theme(error.to_string()))?;
+        if let Err(error) = candidate.save(&self.paths.settings_path()) {
+            let _ = apply_theme_files(
+                &self.paths.config_home,
+                &ThemeConfigSet::for_mode(old.appearance.theme),
+            );
+            return Err(StoreError::Settings(error.to_string()));
+        }
+        self.settings = candidate;
+        Ok(self.settings.generation)
+    }
+
     /// Persist only after the display runtime confirms its independent
     /// geometry generation. Settings generation is a separate monotonic
     /// sequence and must never be assigned from the coordinate epoch.
@@ -774,6 +811,29 @@ mod tests {
     }
 
     #[test]
+    fn theme_and_recommended_background_persist_as_one_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(xdg(temp.path())).unwrap();
+
+        assert_eq!(
+            store
+                .set_appearance(ThemeMode::Light, BackgroundChoice::LightPlain)
+                .unwrap(),
+            1
+        );
+
+        let saved = Settings::load(&store.paths.settings_path()).unwrap().value;
+        assert_eq!(saved.appearance.theme, ThemeMode::Light);
+        assert_eq!(saved.appearance.background, BackgroundChoice::LightPlain);
+        assert_eq!(saved.generation, 1);
+        assert!(
+            fs::read_to_string(store.paths.config_home.join("gtk-4.0/settings.ini"))
+                .unwrap()
+                .contains("gtk-theme-name=WildBuzzard-Light")
+        );
+    }
+
+    #[test]
     fn invalid_newer_settings_are_preserved_and_ui_becomes_read_only() {
         let temp = tempfile::tempdir().unwrap();
         let paths = xdg(temp.path());
@@ -828,6 +888,11 @@ mod tests {
         assert_eq!(store.settings, before);
         assert!(!store.paths.settings_path().exists());
         assert!(store.set_background(BackgroundChoice::LightPlain).is_err());
+        assert!(
+            store
+                .set_appearance(ThemeMode::Light, BackgroundChoice::LightPlain)
+                .is_err()
+        );
         assert_eq!(store.settings, before);
         assert!(!store.paths.settings_path().exists());
         assert!(

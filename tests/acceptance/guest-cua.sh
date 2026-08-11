@@ -99,4 +99,4 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         fi
         export WAYLAND_DISPLAY SWAYSOCK
         exec "$@"
-    ' sh cua-driver "$tool" "$arguments"
+    ' sh /opt/wildbuzzard/runtime/current/bin/cua-driver "$tool" "$arguments"

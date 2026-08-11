@@ -215,7 +215,11 @@ fn rgb(color: SolidColor) -> String {
 }
 
 fn render_gtk_settings(mode: ThemeMode, major: u8) -> String {
-    let prefer_dark = u8::from(mode == ThemeMode::Dark);
+    // Dark and Light are complete, separately named themes.  GTK's
+    // prefer-dark flag asks for a dark variant of the selected theme; because
+    // WildBuzzard-Dark has no second "-dark" variant, that request can fall
+    // back to Adwaita-dark and its blue accent.
+    let prefer_dark = 0;
     let button_images = if major == 3 {
         "gtk-menu-images=1\ngtk-button-images=1\n"
     } else {
@@ -422,7 +426,7 @@ mod tests {
         assert_eq!(light, ThemeConfigSet::for_mode(ThemeMode::Light));
         assert!(dark.gtk3_settings.contains("WildBuzzard-Dark"));
         assert!(light.gtk3_settings.contains("WildBuzzard-Light"));
-        assert!(dark.gtk3_settings.contains("prefer-dark-theme=1"));
+        assert!(dark.gtk3_settings.contains("prefer-dark-theme=0"));
         assert!(light.gtk3_settings.contains("prefer-dark-theme=0"));
         assert!(dark.kde_globals.contains("ForegroundNormal=24,24,24"));
         assert!(light.kde_globals.contains("ForegroundNormal=24,24,24"));

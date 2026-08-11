@@ -4197,7 +4197,11 @@ fn show_error_dialog(parent: &gtk::ApplicationWindow, heading: &str, error: &any
 
 fn show_info_dialog(parent: &gtk::ApplicationWindow, heading: &str, detail: &str) {
     let dialog = gtk::AlertDialog::builder()
-        .modal(true)
+        // A modal GTK alert temporarily prevents the application-owned GDK
+        // clipboard provider from answering a host client's data request.
+        // Successful clipboard transfer feedback must never make the newly
+        // installed clipboard appear to hang until the dialog is dismissed.
+        .modal(false)
         .message(heading)
         .detail(detail)
         .buttons(["Close"])
