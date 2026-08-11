@@ -76,7 +76,12 @@ def _transient_worker_command(
 ) -> list[str]:
     if operation not in {"check", "install", "repair"}:
         raise UpdaterError("unknown fixed updater operation")
-    worker_arguments = [sys.executable, os.path.realpath(__file__), f"--worker-{operation}"]
+    worker_arguments = [
+        sys.executable,
+        "-B",
+        os.path.realpath(__file__),
+        f"--worker-{operation}",
+    ]
     if operation == "check":
         if generation is not None:
             raise UpdaterError("check worker does not accept a generation")
@@ -96,6 +101,7 @@ def _transient_worker_command(
         "--property=UMask=0077",
         "--property=PrivateTmp=yes",
         "--property=ProtectHome=read-only",
+        "--setenv=PYTHONDONTWRITEBYTECODE=1",
         "--",
         *worker_arguments,
     ]
