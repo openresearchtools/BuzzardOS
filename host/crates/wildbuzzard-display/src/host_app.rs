@@ -3939,7 +3939,7 @@ async fn read_bounded_stream(stream: gio::InputStream, limit: usize) -> Result<V
     Ok(std::mem::take(&mut value.0))
 }
 
-const HEADER_MENU_LABELS: [&str; 5] = ["Machine", "Ports", "Devices", "Clipboard", "Settings"];
+const HEADER_MENU_LABELS: [&str; 4] = ["Machine", "Ports", "Devices", "Clipboard"];
 const MACHINE_LIFECYCLE_MENU_ITEMS: [(&str, &str); 3] = [
     ("Start", "app.start"),
     ("Stop", "app.stop"),
@@ -3966,9 +3966,9 @@ fn build_header_controls() -> gtk::Box {
     let shutdown = gio::Menu::new();
     append_menu_items(&shutdown, &MACHINE_WINDOW_MENU_ITEMS);
     machine.append_section(None, &shutdown);
-
     let settings = gio::Menu::new();
     append_menu_items(&settings, &SETTINGS_MENU_ITEMS);
+    machine.append_section(None, &settings);
 
     let ports = gio::Menu::new();
     append_menu_items(&ports, &PORTS_MENU_ITEMS);
@@ -3997,11 +3997,6 @@ fn build_header_controls() -> gtk::Box {
             HEADER_MENU_LABELS[3],
             "Explicit one-shot text or image clipboard transfer",
             clipboard,
-        ),
-        (
-            HEADER_MENU_LABELS[4],
-            "Machine settings and display diagnostics",
-            settings,
         ),
     ] {
         let button = gtk::MenuButton::builder()
@@ -4584,7 +4579,7 @@ mod tests {
     fn header_menus_keep_every_host_action_in_the_requested_order() {
         assert_eq!(
             HEADER_MENU_LABELS,
-            ["Machine", "Ports", "Devices", "Clipboard", "Settings"]
+            ["Machine", "Ports", "Devices", "Clipboard"]
         );
         assert_eq!(
             MACHINE_LIFECYCLE_MENU_ITEMS,

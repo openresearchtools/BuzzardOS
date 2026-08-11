@@ -261,6 +261,9 @@ impl DesktopDirectory {
             validate_name(&name)?;
             let stat = stat_at(&self.file, &name, &self.path)?;
             let kind = item_kind(&self.file, &name, &stat, &self.path)?;
+            if kind == DesktopItemKind::Launcher && stat.st_mode & libc::S_IXUSR == 0 {
+                authorize_desktop_launcher(&self.file, &name, &stat, &self.path)?;
+            }
             items.push(DesktopItem {
                 display_name: name.to_string_lossy().into_owned(),
                 path: self.path.join(&name),
@@ -602,6 +605,59 @@ impl DesktopDirectory {
             source_removed: moving,
         })
     }
+}
+
+fn authorize_desktop_launcher(
+    directory: &File,
+    name: &OsStr,
+    observed: &libc::stat,
+    display_directory: &Path,
+) -> Result<(), DesktopFileError> {
+    if mode_type(observed.st_mode) != libc::S_IFREG || observed.st_uid != unsafe { libc::geteuid() }
+    {
+        return Err(DesktopFileError::UnsupportedType(
+            display_directory.join(name).display().to_string(),
+        ));
+    }
+    let name_c = c_string(name)?;
+    // SAFETY: the directory descriptor and validated NUL-terminated leaf are
+    // live. O_NOFOLLOW prevents a launcher replacement symlink from being
+    // authorized.
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io_error(
+            display_directory.join(name),
+            std::io::Error::last_os_error(),
+        ));
+    }
+    // SAFETY: openat returned an owned descriptor.
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    let current = file
+        .metadata()
+        .map_err(|error| io_error(display_directory.join(name), error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if !current.is_file()
+            || current.uid() != unsafe { libc::geteuid() }
+            || current.dev() != observed.st_dev
+            || current.ino() != observed.st_ino
+        {
+            return Err(DesktopFileError::ChangedIdentity(
+                display_directory.join(name).display().to_string(),
+            ));
+        }
+        let mode = current.permissions().mode() | libc::S_IXUSR;
+        file.set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(|error| io_error(display_directory.join(name), error))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1434,7 +1490,7 @@ fn temporary_name(purpose: &str) -> Result<OsString, DesktopFileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, symlink};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     fn directories() -> (tempfile::TempDir, DesktopDirectory, DesktopDirectory) {
         let temp = tempfile::tempdir().unwrap();
@@ -1479,6 +1535,24 @@ mod tests {
         assert_eq!(
             by_name[OsStr::new("tool.desktop")],
             DesktopItemKind::Launcher
+        );
+        assert_ne!(
+            fs::metadata(source.path().join("tool.desktop"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & libc::S_IXUSR,
+            0,
+            "validated owner desktop launchers are trusted on discovery"
+        );
+        assert_eq!(
+            fs::metadata(source.path().join("note.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & libc::S_IXUSR,
+            0,
+            "ordinary files never gain execute permission"
         );
         assert_eq!(by_name[OsStr::new("folder")], DesktopItemKind::Directory);
         assert_eq!(

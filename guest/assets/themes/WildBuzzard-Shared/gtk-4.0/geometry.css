@@ -14,6 +14,17 @@ window,
   background-color: @wb_surface;
 }
 
+window:backdrop,
+.background:backdrop,
+.view:backdrop,
+textview:backdrop,
+textview text:backdrop,
+entry:backdrop {
+  color: @wb_backdrop_text;
+  background-color: @wb_backdrop_surface;
+  border-color: @wb_border;
+}
+
 headerbar {
   color: @wb_text;
   background-color: @wb_header;
@@ -59,6 +70,66 @@ button:disabled {
   border-color: @wb_border;
 }
 
+button.suggested-action {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+dropdown button,
+combobox button {
+  color: @wb_text;
+  background-color: @wb_raised;
+  border-color: @wb_control_border;
+}
+
+check,
+radio {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+check:checked,
+radio:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+switch:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch slider {
+  background-color: @wb_raised;
+  border-color: @wb_border;
+}
+
+scale trough {
+  background-color: @wb_field;
+  border-color: @wb_border;
+}
+
+scale highlight,
+progressbar progress {
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+scale slider {
+  background-color: @wb_raised;
+  border-color: @wb_control_border;
+}
+
 entry,
 textview,
 textview text,
@@ -78,6 +149,13 @@ textview:focus,
 selection,
 textview text selection,
 .view:selected {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+}
+
+.view:selected:backdrop,
+.navigation-sidebar row:selected:backdrop,
+placessidebar row:selected:backdrop {
   color: @wb_selected_text;
   background-color: @wb_selection;
 }

@@ -13,8 +13,6 @@ const CALL_TIMEOUT_MILLISECONDS: i32 = 10_000;
 pub(crate) enum UpdateRequest {
     Check,
     InstallPlan(String),
-    RetryRepair(String),
-    CancelDownload(String),
 }
 
 impl UpdateRequest {
@@ -22,17 +20,13 @@ impl UpdateRequest {
         match self {
             Self::Check => "Check",
             Self::InstallPlan(_) => "InstallPlan",
-            Self::RetryRepair(_) => "RetryRepair",
-            Self::CancelDownload(_) => "CancelDownload",
         }
     }
 
     fn parameters(&self) -> Result<Option<glib::Variant>, String> {
         match self {
             Self::Check => Ok(None),
-            Self::InstallPlan(generation)
-            | Self::RetryRepair(generation)
-            | Self::CancelDownload(generation) => {
+            Self::InstallPlan(generation) => {
                 validate_generation(generation)?;
                 Ok(Some((generation.as_str(),).to_variant()))
             }
@@ -127,21 +121,7 @@ mod tests {
         let generation = "a".repeat(64);
         let cases = [
             (UpdateRequest::Check, "Check", false),
-            (
-                UpdateRequest::InstallPlan(generation.clone()),
-                "InstallPlan",
-                true,
-            ),
-            (
-                UpdateRequest::RetryRepair(generation.clone()),
-                "RetryRepair",
-                true,
-            ),
-            (
-                UpdateRequest::CancelDownload(generation),
-                "CancelDownload",
-                true,
-            ),
+            (UpdateRequest::InstallPlan(generation), "InstallPlan", true),
         ];
         for (request, method, has_parameters) in cases {
             assert_eq!(request.method_name(), method);

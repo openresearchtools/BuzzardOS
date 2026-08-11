@@ -95,16 +95,17 @@ impl<'de> Deserialize<'de> for SolidColor {
     }
 }
 
-/// Wallpaper selection is independent from [`ThemeMode`]. No variant can
-/// represent a path, image, gradient, URL, or remote resource.
+/// Desktop background selection. Deprecated logo preset names deserialize as
+/// their corresponding solid colour so existing persistent machines migrate
+/// without becoming read-only; newly saved settings are always plain/solid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BackgroundChoice {
     #[default]
+    #[serde(alias = "dark_logo")]
     DarkPlain,
-    DarkLogo,
+    #[serde(alias = "light_logo")]
     LightPlain,
-    LightLogo,
     CustomSolid {
         color: SolidColor,
     },
@@ -113,14 +114,10 @@ pub enum BackgroundChoice {
 impl BackgroundChoice {
     pub const fn solid_color(self) -> SolidColor {
         match self {
-            Self::DarkPlain | Self::DarkLogo => DARK_WALLPAPER,
-            Self::LightPlain | Self::LightLogo => LIGHT_WALLPAPER,
+            Self::DarkPlain => DARK_WALLPAPER,
+            Self::LightPlain => LIGHT_WALLPAPER,
             Self::CustomSolid { color } => color,
         }
-    }
-
-    pub const fn shows_logo(self) -> bool {
-        matches!(self, Self::DarkLogo | Self::LightLogo)
     }
 }
 
@@ -965,11 +962,9 @@ mod tests {
             "#202225"
         );
         assert_eq!(
-            BackgroundChoice::LightLogo.solid_color().to_string(),
+            BackgroundChoice::LightPlain.solid_color().to_string(),
             "#F4F1EC"
         );
-        assert!(!BackgroundChoice::LightPlain.shows_logo());
-        assert!(BackgroundChoice::LightLogo.shows_logo());
         for hostile in [
             "red",
             "#fff",

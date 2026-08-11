@@ -7,12 +7,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use wildbuzzard_desktop_core::BackgroundChoice;
 
 const ICON_SIZE: u32 = 64;
-const DARK_WALLPAPER_MARK: &str = "/usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg";
-const LIGHT_WALLPAPER_MARK: &str = "/usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg";
-const WALLPAPER_MARK_PERCENT: u32 = 20;
 
 #[derive(Debug)]
 pub struct AppIcon {
@@ -37,7 +33,7 @@ pub fn load_application_icons(applications: &[Application]) -> BTreeMap<String, 
         .collect()
 }
 
-fn load_icon(name: &str) -> Option<AppIcon> {
+pub fn load_icon(name: &str) -> Option<AppIcon> {
     let Some(path) = resolve_icon(name) else {
         eprintln!("wildbuzzard-shell: icon theme has no file for {name}");
         return None;
@@ -150,29 +146,6 @@ fn load_svg(path: &Path) -> Option<AppIcon> {
     load_svg_at_size(path, ICON_SIZE)
 }
 
-pub fn render_wallpaper_mark(
-    choice: BackgroundChoice,
-    physical_width: u32,
-    physical_height: u32,
-) -> Option<AppIcon> {
-    let path = match choice {
-        BackgroundChoice::DarkLogo => Path::new(DARK_WALLPAPER_MARK),
-        BackgroundChoice::LightLogo => Path::new(LIGHT_WALLPAPER_MARK),
-        BackgroundChoice::DarkPlain
-        | BackgroundChoice::LightPlain
-        | BackgroundChoice::CustomSolid { .. } => return None,
-    };
-    load_svg_at_size(path, wallpaper_mark_extent(physical_width, physical_height))
-}
-
-fn wallpaper_mark_extent(physical_width: u32, physical_height: u32) -> u32 {
-    physical_width
-        .min(physical_height)
-        .saturating_mul(WALLPAPER_MARK_PERCENT)
-        .div_ceil(100)
-        .max(1)
-}
-
 fn load_svg_at_size(path: &Path, target_size: u32) -> Option<AppIcon> {
     let bytes = fs::read(path).ok()?;
     let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).ok()?;
@@ -229,14 +202,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn wallpaper_mark_tracks_twenty_percent_of_the_short_physical_side() {
-        assert_eq!(wallpaper_mark_extent(1920, 1080), 216);
-        assert_eq!(wallpaper_mark_extent(1595, 940), 188);
-        assert_eq!(wallpaper_mark_extent(1, 1), 1);
-    }
-
-    #[test]
-    fn svg_wallpaper_render_keeps_the_requested_physical_extent() {
+    fn svg_icon_render_keeps_the_requested_extent() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("mark.svg");
         fs::write(

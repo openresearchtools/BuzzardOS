@@ -10,8 +10,8 @@
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufReader, Cursor, Read, Write};
-use std::mem;
-use std::os::fd::AsFd;
+use std::mem::{self, MaybeUninit};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -24,7 +24,6 @@ use image::codecs::webp::WebPDecoder;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 use rustix::fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-use rustix::net::sockopt::socket_peercred;
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 use wildbuzzard_clipboard_protocol::{
     Frame, IO_TIMEOUT_SECONDS, Kind, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS,
@@ -37,6 +36,7 @@ const RUNTIME_DIRECTORY: &str = "/run/wildbuzzard-host";
 const SOCKET_PATH: &str = "/run/wildbuzzard-host/clipboard-agent.sock";
 const READY_PATH: &str = "/run/wildbuzzard-host/clipboard-ready";
 const EXPECTED_HOST_PEER_UID: u32 = 1000;
+const EXPECTED_HOST_PEER_GID: u32 = 1000;
 const PRE_REQUEST_IDLE_SECONDS: u64 = IO_TIMEOUT_SECONDS + 1;
 const MAX_MIME_OFFERS: usize = 128;
 const MAX_MIME_METADATA_BYTES: usize = 64 * 1024;
@@ -1324,6 +1324,33 @@ fn peer_uid_allowed(uid: u32) -> bool {
     uid == EXPECTED_HOST_PEER_UID
 }
 
+fn peer_credentials(stream: &UnixStream) -> io::Result<libc::ucred> {
+    let mut credentials = MaybeUninit::<libc::ucred>::uninit();
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `credentials` points to writable storage of exactly `length`
+    // bytes and `stream` remains alive for the complete getsockopt call.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            credentials.as_mut_ptr().cast(),
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SO_PEERCRED returned the wrong credential size",
+        ));
+    }
+    // SAFETY: a successful SO_PEERCRED call initialized the complete ucred.
+    Ok(unsafe { credentials.assume_init() })
+}
+
 fn protocol_failure(error: &ProtocolError) -> Failure {
     match error {
         ProtocolError::PayloadTooLarge { .. } => Failure::new(Status::TooLarge, "frame_too_large"),
@@ -1345,9 +1372,9 @@ fn serve_connection(
     backend: &mut impl ClipboardBackend,
 ) -> Result<(), Failure> {
     ensure_cloexec(&stream).map_err(|_| Failure::new(Status::Internal, "socket_cloexec"))?;
-    let credentials = socket_peercred(&stream)
+    let credentials = peer_credentials(&stream)
         .map_err(|_| Failure::new(Status::InvalidRequest, "peer_credentials"))?;
-    if !peer_uid_allowed(credentials.uid.as_raw()) {
+    if !peer_uid_allowed(credentials.uid) || credentials.gid != EXPECTED_HOST_PEER_GID {
         return Err(Failure::new(Status::InvalidRequest, "peer_uid"));
     }
 
@@ -1616,11 +1643,11 @@ mod tests {
     #[test]
     fn peer_credentials_come_from_the_connected_unix_process() {
         let (server, _client) = UnixStream::pair().unwrap();
-        let credentials = socket_peercred(&server).unwrap();
-        assert_eq!(credentials.uid, rustix::process::getuid());
+        let credentials = peer_credentials(&server).unwrap();
+        assert_eq!(credentials.uid, rustix::process::getuid().as_raw());
         assert_eq!(
-            peer_uid_allowed(credentials.uid.as_raw()),
-            credentials.uid.as_raw() == EXPECTED_HOST_PEER_UID
+            peer_uid_allowed(credentials.uid),
+            credentials.uid == EXPECTED_HOST_PEER_UID
         );
     }
 

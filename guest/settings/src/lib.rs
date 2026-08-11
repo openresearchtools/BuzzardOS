@@ -29,16 +29,12 @@ const INTROSPECTION_XML: &str = r#"
 #[derive(Default)]
 pub(crate) struct ChangeBus {
     connection: RefCell<Option<gio::DBusConnection>>,
-    registration_error: RefCell<Option<String>>,
     registered: Cell<bool>,
 }
 
 impl ChangeBus {
     fn register(&self, application: &gtk4::Application) -> Result<(), String> {
-        let result = self.register_inner(application);
-        self.registration_error
-            .replace(result.as_ref().err().cloned());
-        result
+        self.register_inner(application)
     }
 
     fn register_inner(&self, application: &gtk4::Application) -> Result<(), String> {
@@ -60,10 +56,6 @@ impl ChangeBus {
         self.connection.replace(Some(connection));
         self.registered.set(true);
         Ok(())
-    }
-
-    pub(crate) fn diagnostic(&self) -> Option<String> {
-        self.registration_error.borrow().clone()
     }
 
     pub(crate) fn emit_changed(

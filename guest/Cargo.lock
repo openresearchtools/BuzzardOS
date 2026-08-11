@@ -2191,6 +2191,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "image",
+ "libc",
  "rustix",
  "tiff",
  "wildbuzzard-clipboard-protocol",

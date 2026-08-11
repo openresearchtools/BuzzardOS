@@ -4,7 +4,7 @@ audited_at = "2026-08-10"
 [[asset]]
 id = "wildbuzzard-project-assets"
 paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/WildBuzzard.desktop"]
-exclude = ["guest/assets/branding/**", "guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**", "guest/assets/icons/WildBuzzard/**"]
+exclude = ["guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**", "guest/assets/icons/WildBuzzard/**"]
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE"]
 status = "covered-by-repository-license"
@@ -17,23 +17,16 @@ evidence = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml:metad
 status = "declared-inline"
 
 [[asset]]
-id = "wildbuzzard-branding-candidate-assets"
+id = "wildbuzzard-application-icons"
 paths = [
   "host/packaging/wildbuzzard.svg",
-  "guest/assets/branding/**",
   "guest/assets/icons/WildBuzzard/scalable/apps/**",
   "guest/assets/icons/WildBuzzard/symbolic/apps/**",
 ]
 license = "AGPL-3.0-or-later"
-evidence = [
-  "LICENSE",
-  "NOTICE",
-  "guest/branding/buzzard-mark.json",
-  "docs/branding/PROVENANCE.md",
-  "docs/branding/CLEARANCE_REPORT.md",
-]
-provenance = "Project-authored generated SVG and preset outputs derived from the canonical guest/branding/buzzard-mark.json geometry. Authorship and reference boundaries are recorded in docs/branding/PROVENANCE.md. Trademark and visual-similarity review remains incomplete as recorded in docs/branding/CLEARANCE_REPORT.md."
-status = "requires-trademark-clearance-before-publication"
+evidence = ["LICENSE", "NOTICE", "host/packaging/wildbuzzard.svg"]
+provenance = "Project-authored generic monitor and settings glyphs. They contain no bird, mascot, traced reference, or company logo geometry."
+status = "project-authored-and-licensed"
 
 [[asset]]
 id = "wildbuzzard-graphite-gtk-theme"

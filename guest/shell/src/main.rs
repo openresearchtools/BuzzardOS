@@ -15,7 +15,7 @@ use accesskit_unix::Adapter as A11yAdapter;
 use anyhow::{Context, Result};
 use fontdue::{Font, FontSettings};
 use gio::prelude::*;
-use icons::{AppIcon, load_application_icons, render_wallpaper_mark};
+use icons::{AppIcon, load_application_icons, load_icon};
 use model::{
     APPLICATIONS_MENU_FOOTER_HEIGHT, APPLICATIONS_MENU_HEADER_HEIGHT,
     APPLICATIONS_MENU_SECTION_HEIGHT, Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT,
@@ -72,9 +72,9 @@ use wayland_protocols::wp::{
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 use wildbuzzard_desktop_core::{
-    BackgroundChoice, CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind,
-    RegistrationId, Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files,
-    atomic_write, read_bounded,
+    CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind, RegistrationId,
+    Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
+    read_bounded,
 };
 use wildbuzzard_shortcut_helper::{HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore};
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
@@ -813,6 +813,7 @@ fn run() -> Result<()> {
         seat: None,
         applications,
         application_icons,
+        desktop_icons: BTreeMap::new(),
         application_watch_roots,
         application_watcher,
         application_rescan_after: None,
@@ -836,8 +837,6 @@ fn run() -> Result<()> {
         full_repaint_after: None,
         palette: *initial_settings.appearance.theme.palette(),
         desktop_background: initial_settings.appearance.background.solid_color().rgba(),
-        desktop_background_choice: initial_settings.appearance.background,
-        wallpaper_mark: None,
         settings_tracker: SettingsTracker::new(settings_path, initial_settings),
         config_home,
         accessibility: None,
@@ -894,13 +893,6 @@ enum MenuKind {
     Window(u32),
 }
 
-struct WallpaperMarkCache {
-    choice: BackgroundChoice,
-    physical_width: u32,
-    physical_height: u32,
-    icon: Option<AppIcon>,
-}
-
 struct Shell {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -951,6 +943,7 @@ struct Shell {
     seat: Option<wl_seat::WlSeat>,
     applications: Vec<Application>,
     application_icons: BTreeMap<String, AppIcon>,
+    desktop_icons: BTreeMap<PathBuf, AppIcon>,
     application_watch_roots: Vec<PathBuf>,
     application_watcher: DirectoryWatcher,
     application_rescan_after: Option<Instant>,
@@ -971,8 +964,6 @@ struct Shell {
     full_repaint_after: Option<Instant>,
     palette: ThemePalette,
     desktop_background: [u8; 4],
-    desktop_background_choice: BackgroundChoice,
-    wallpaper_mark: Option<WallpaperMarkCache>,
     settings_tracker: SettingsTracker,
     config_home: PathBuf,
     accessibility: Option<Accessibility>,
@@ -1106,10 +1097,6 @@ impl Shell {
                 Ok(()) => {
                     self.palette = *settings.appearance.theme.palette();
                     self.desktop_background = settings.appearance.background.solid_color().rgba();
-                    if self.desktop_background_choice != settings.appearance.background {
-                        self.desktop_background_choice = settings.appearance.background;
-                        self.wallpaper_mark = None;
-                    }
                     let generation = settings.generation;
                     self.settings_tracker.commit(settings);
                     self.dirty = true;
@@ -1345,9 +1332,22 @@ impl Shell {
     }
 
     fn rebuild_desktop_targets(&mut self) -> Result<()> {
+        self.desktop_icons.clear();
         let mut visual = builtin_desktop_targets();
         let mut accessible = visual.clone();
         for positioned in self.desktop_model.positioned(self.desktop_size)? {
+            if positioned.item.kind == DesktopItemKind::Launcher
+                && let Some(file_name) = positioned.item.path.file_name().and_then(OsStr::to_str)
+                && let Some(icon_name) = self
+                    .applications
+                    .iter()
+                    .find(|application| application.id == file_name)
+                    .and_then(|application| application.icon.as_deref())
+                && let Some(icon) = load_icon(icon_name)
+            {
+                self.desktop_icons
+                    .insert(positioned.item.path.clone(), icon);
+            }
             let target = HitTarget {
                 rect: positioned.rect,
                 label: positioned.item.display_name,
@@ -2411,6 +2411,7 @@ impl Shell {
                     eprintln!("wildbuzzard-shell: add desktop shortcut failed: {error:#}");
                 }
                 let _ = self.desktop_model.rescan();
+                self.desktop_model.show_first_page();
                 let _ = self.rebuild_desktop_targets();
                 self.hide_context();
             }
@@ -2812,19 +2813,6 @@ impl Shell {
         let theme = self.palette;
         let (logical_width, logical_height) = nonzero_size(self.desktop_size);
         let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
-        let mark_is_current = self.wallpaper_mark.as_ref().is_some_and(|cached| {
-            cached.choice == self.desktop_background_choice
-                && cached.physical_width == width
-                && cached.physical_height == height
-        });
-        if !mark_is_current {
-            self.wallpaper_mark = Some(WallpaperMarkCache {
-                choice: self.desktop_background_choice,
-                physical_width: width,
-                physical_height: height,
-                icon: render_wallpaper_mark(self.desktop_background_choice, width, height),
-            });
-        }
         let (buffer, canvas) = self
             .pool
             .create_buffer(
@@ -2835,24 +2823,6 @@ impl Shell {
             )
             .context("allocating desktop frame")?;
         clear(canvas, self.desktop_background);
-        if let Some(mark) = self
-            .wallpaper_mark
-            .as_ref()
-            .and_then(|cached| cached.icon.as_ref())
-        {
-            draw_app_icon(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: i32::try_from(width.saturating_sub(mark.width) / 2).unwrap_or_default(),
-                    y: i32::try_from(height.saturating_sub(mark.height) / 2).unwrap_or_default(),
-                    width: i32::try_from(mark.width).unwrap_or(i32::MAX),
-                    height: i32::try_from(mark.height).unwrap_or(i32::MAX),
-                },
-                mark,
-            );
-        }
         for target in &self.desktop_hit_targets {
             let selected = matches!(
                 &target.action,
@@ -2878,12 +2848,17 @@ impl Shell {
             }
             draw_desktop_shortcut(
                 canvas,
-                width,
-                height,
+                (width, height),
                 self.font.as_ref(),
                 target,
                 self.scale_120,
                 theme,
+                match &target.action {
+                    ShellAction::OpenDesktopItem(path, DesktopItemKind::Launcher) => {
+                        self.desktop_icons.get(path)
+                    }
+                    _ => None,
+                },
             );
         }
         if let Some(DesktopPointerGesture::RubberBand { start, current, .. }) =
@@ -4523,7 +4498,7 @@ fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
         })
         .context("application changed before shortcut creation")?;
     let bytes = read_bounded(&current.source, 1024 * 1024)?;
-    atomic_write(&paths.desktop_dir.join(&application.id), &bytes, 0o600)?;
+    atomic_write(&paths.desktop_dir.join(&application.id), &bytes, 0o755)?;
     Ok(())
 }
 
@@ -5160,13 +5135,14 @@ fn draw_app_icon(
 
 fn draw_desktop_shortcut(
     canvas: &mut [u8],
-    width: u32,
-    height: u32,
+    canvas_size: (u32, u32),
     font: Option<&Font>,
     target: &HitTarget,
     scale_120: u32,
     theme: ThemePalette,
+    application_icon: Option<&AppIcon>,
 ) {
+    let (width, height) = canvas_size;
     let rect = target.rect;
     let item_kind = match target.action {
         ShellAction::OpenDesktopItem(_, kind) => Some(kind),
@@ -5222,6 +5198,22 @@ fn draw_desktop_shortcut(
                 theme.surface.rgba(),
             );
         }
+    } else if let Some(icon) = application_icon {
+        draw_app_icon(
+            canvas,
+            width,
+            height,
+            scale_rect(
+                Rect {
+                    x: rect.x + 18,
+                    y: rect.y + 4,
+                    width: 52,
+                    height: 52,
+                },
+                scale_120,
+            ),
+            icon,
+        );
     } else {
         let document = Rect {
             x: rect.x + 24,

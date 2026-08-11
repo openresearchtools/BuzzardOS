@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
@@ -10,20 +9,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 use wildbuzzard_desktop_core::{
-    AppImageRegistration, BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings,
-    Settings, ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files,
-    effective_user_id, read_bounded,
+    BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
+    ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files, effective_user_id,
 };
 
 pub const OUTPUT_STATE_PATH: &str = "/run/wildbuzzard-display-state/output-state.json";
-pub const INTEGRATION_CONTROL_PATH: &str = "/run/wildbuzzard-display-state/integration.json";
-pub const INTEGRATION_STATUS_PATH: &str = "/run/wildbuzzard-host/integration-status.json";
 pub const UPDATE_STATE_PATH: &str = "/var/lib/wildbuzzard-updater/state.json";
-pub const GNOME_INTERFACE_SCHEMA_PATH: &str =
-    "/usr/share/glib-2.0/schemas/org.gnome.desktop.interface.gschema.xml";
-pub const GSETTINGS_TOOL_PATH: &str = "/usr/bin/gsettings";
 const MAX_RUNTIME_STATE_BYTES: usize = 1024 * 1024;
-const MAX_REGISTRATION_FILES: usize = 16_384;
 const MAX_SCALE_MESSAGE_BYTES: usize = 4096;
 const MAX_KEYBOARD_MESSAGE_BYTES: usize = 4096;
 const MAX_ACTIVE_LAYOUT_NAME_BYTES: usize = 256;
@@ -32,59 +24,49 @@ const KEYBOARD_SOCKET_NAME: &str = "wildbuzzard-keyboard-settings.sock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageId {
-    Appearance,
     Display,
-    Keyboard,
     Sound,
-    ApplicationsDesktop,
+    Keyboard,
+    Appearance,
     Updates,
-    About,
 }
 
 impl PageId {
-    pub const ALL: [Self; 7] = [
-        Self::Appearance,
+    pub const ALL: [Self; 5] = [
         Self::Display,
-        Self::Keyboard,
         Self::Sound,
+        Self::Keyboard,
+        Self::Appearance,
         Self::Updates,
-        Self::ApplicationsDesktop,
-        Self::About,
     ];
 
     pub const fn stack_name(self) -> &'static str {
         match self {
-            Self::Appearance => "appearance",
             Self::Display => "display",
-            Self::Keyboard => "keyboard",
             Self::Sound => "sound",
-            Self::ApplicationsDesktop => "applications-desktop",
+            Self::Keyboard => "keyboard",
+            Self::Appearance => "appearance",
             Self::Updates => "updates",
-            Self::About => "about",
         }
     }
 
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Appearance => "Appearance",
             Self::Display => "Display",
-            Self::Keyboard => "Keyboard",
             Self::Sound => "Sound",
-            Self::ApplicationsDesktop => "Applications & Desktop",
+            Self::Keyboard => "Keyboard",
+            Self::Appearance => "Appearance",
             Self::Updates => "Updates",
-            Self::About => "About",
         }
     }
 
     pub const fn icon_name(self) -> &'static str {
         match self {
-            Self::Appearance => "preferences-desktop-theme-symbolic",
             Self::Display => "video-display-symbolic",
-            Self::Keyboard => "input-keyboard-symbolic",
             Self::Sound => "audio-volume-high-symbolic",
-            Self::ApplicationsDesktop => "application-x-executable-symbolic",
+            Self::Keyboard => "input-keyboard-symbolic",
+            Self::Appearance => "preferences-desktop-theme-symbolic",
             Self::Updates => "software-update-available-symbolic",
-            Self::About => "help-about-symbolic",
         }
     }
 }
@@ -414,12 +396,6 @@ pub enum ScaleServiceError {
     },
 }
 
-impl ScaleServiceError {
-    pub fn is_stale_geometry(&self) -> bool {
-        matches!(self, Self::Rejected { code, .. } if code == "stale_geometry")
-    }
-}
-
 #[derive(Debug, Serialize)]
 struct ScaleRequest {
     schema: u32,
@@ -734,236 +710,18 @@ pub fn set_guest_keyboard(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeState {
-    Disabled,
-    Unavailable,
-    Connected,
-    Failed,
-}
-
-impl BridgeState {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Disabled => "Disabled",
-            Self::Unavailable => "Unavailable",
-            Self::Connected => "Connected",
-            Self::Failed => "Failed",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MediaBridgeView {
-    pub guest_audio_output: BridgeState,
-    pub host_microphone: BridgeState,
-    pub host_camera: BridgeState,
-    pub diagnostic: Option<String>,
-}
-
-impl Default for MediaBridgeView {
-    fn default() -> Self {
-        Self {
-            guest_audio_output: BridgeState::Unavailable,
-            host_microphone: BridgeState::Unavailable,
-            host_camera: BridgeState::Unavailable,
-            diagnostic: Some("Host bridge state is unavailable.".into()),
-        }
-    }
-}
-
-pub fn load_media_bridges(control_path: &Path, status_path: &Path) -> MediaBridgeView {
-    let control = match load_json(control_path) {
-        Ok(value) => value,
-        Err(error) => {
-            return MediaBridgeView {
-                diagnostic: Some(format!("Host bridge state is unavailable: {error}")),
-                ..MediaBridgeView::default()
-            };
-        }
-    };
-    let status = load_json(status_path).ok();
-    let status_error = status
-        .as_ref()
-        .and_then(|value| value.get("error"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-
-    let state_for = |name: &str| {
-        let enabled = control
-            .get("media")
-            .and_then(|media| media.get(name))
-            .and_then(Value::as_bool);
-        match enabled {
-            Some(false) => BridgeState::Disabled,
-            None => BridgeState::Unavailable,
-            Some(true) => match status.as_ref() {
-                Some(value)
-                    if value
-                        .get("media")
-                        .and_then(|media| media.get(name))
-                        .and_then(|process| process.get("running"))
-                        .and_then(Value::as_bool)
-                        == Some(true) =>
-                {
-                    BridgeState::Connected
-                }
-                Some(_) if status_error.is_some() => BridgeState::Failed,
-                _ => BridgeState::Unavailable,
-            },
-        }
-    };
-
-    MediaBridgeView {
-        guest_audio_output: state_for("guest_audio_output"),
-        host_microphone: state_for("host_microphone"),
-        host_camera: state_for("host_camera"),
-        diagnostic: status_error,
-    }
-}
-
-fn load_json(path: &Path) -> Result<Value, String> {
-    let bytes = read_bounded(path, MAX_RUNTIME_STATE_BYTES).map_err(|error| error.to_string())?;
-    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RegistrationCatalog {
-    pub registrations: Vec<AppImageRegistration>,
-    pub diagnostics: Vec<String>,
-}
-
-pub fn load_registrations(directory: &Path) -> RegistrationCatalog {
-    let mut catalog = RegistrationCatalog::default();
-    let metadata = match fs::symlink_metadata(directory) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return catalog,
-        Err(error) => {
-            catalog
-                .diagnostics
-                .push(format!("Cannot inspect AppImage registrations: {error}"));
-            return catalog;
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        catalog
-            .diagnostics
-            .push("AppImage registration path is not a real directory.".into());
-        return catalog;
-    }
-    let mut paths = match fs::read_dir(directory) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            catalog
-                .diagnostics
-                .push(format!("Cannot read AppImage registrations: {error}"));
-            return catalog;
-        }
-    };
-    paths.sort();
-    if paths.len() > MAX_REGISTRATION_FILES {
-        catalog.diagnostics.push(format!(
-            "Only the first {MAX_REGISTRATION_FILES} registration files were inspected."
-        ));
-        paths.truncate(MAX_REGISTRATION_FILES);
-    }
-    for path in paths {
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                catalog
-                    .diagnostics
-                    .push(format!("Ignored unsafe registration {}.", path.display()));
-            }
-            Ok(_) => match AppImageRegistration::load(&path) {
-                Ok(outcome) => catalog.registrations.push(outcome.value),
-                Err(error) => catalog
-                    .diagnostics
-                    .push(format!("{}: {error}", path.display())),
-            },
-            Err(error) => catalog
-                .diagnostics
-                .push(format!("{}: {error}", path.display())),
-        }
-    }
-    catalog
-        .registrations
-        .sort_by(|left, right| left.display_name.cmp(&right.display_name));
-    catalog
-}
-
 #[derive(Debug, Clone)]
 pub struct UpdateView {
     pub state: UpdateState,
-    pub diagnostic: Option<String>,
 }
 
 pub fn load_update_view(path: &Path) -> UpdateView {
-    let (state, diagnostic) = if path.exists() {
-        match UpdateState::load(path) {
-            Ok(state) => (state, None),
-            Err(error) => (
-                UpdateState::default(),
-                Some(format!(
-                    "Updater state was preserved but could not be read: {error}"
-                )),
-            ),
-        }
+    let state = if path.exists() {
+        UpdateState::load(path).unwrap_or_default()
     } else {
-        (
-            UpdateState::default(),
-            Some("The fixed-operation updater service is not installed yet.".into()),
-        )
+        UpdateState::default()
     };
-    UpdateView { state, diagnostic }
-}
-
-pub fn theme_compatibility_diagnostic() -> Option<String> {
-    theme_compatibility_diagnostic_for(
-        Path::new(GSETTINGS_TOOL_PATH),
-        Path::new(GNOME_INTERFACE_SCHEMA_PATH),
-    )
-}
-
-fn theme_compatibility_diagnostic_for(
-    gsettings_path: &Path,
-    interface_schema_path: &Path,
-) -> Option<String> {
-    let mut missing = Vec::new();
-    if !gsettings_path.is_file() {
-        missing.push("gsettings");
-    }
-    if !interface_schema_path.is_file() {
-        missing.push("org.gnome.desktop.interface schema");
-    }
-    (!missing.is_empty()).then(|| {
-        format!(
-            "Persistent-machine compatibility warning: {} is missing. Theme propagation to GTK portals is degraded, but the desktop remains bootable. Run inside this guest: sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend",
-            missing.join(" and ")
-        )
-    })
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AboutBuild {
-    pub product: String,
-    pub version: String,
-    pub application_id: String,
-}
-
-pub fn about_build() -> AboutBuild {
-    AboutBuild {
-        product: "Wild Buzzard Settings".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
-        application_id: crate::APPLICATION_ID.into(),
-    }
+    UpdateView { state }
 }
 
 #[cfg(test)]
@@ -986,11 +744,10 @@ mod tests {
 
     #[test]
     fn page_contract_is_complete_and_stable() {
-        assert_eq!(PageId::ALL.len(), 7);
-        assert_eq!(PageId::ALL[0].stack_name(), "appearance");
+        assert_eq!(PageId::ALL.len(), 5);
+        assert_eq!(PageId::ALL[0].stack_name(), "display");
         assert_eq!(PageId::ALL[2].title(), "Keyboard");
         assert_eq!(PageId::ALL[4].title(), "Updates");
-        assert_eq!(PageId::ALL[5].title(), "Applications & Desktop");
         assert!(PageId::ALL.iter().all(|page| !page.icon_name().is_empty()));
     }
 
@@ -1180,57 +937,10 @@ mod tests {
     }
 
     #[test]
-    fn media_state_never_claims_connected_without_running_evidence() {
-        let temp = tempfile::tempdir().unwrap();
-        let control = temp.path().join("control.json");
-        let status = temp.path().join("status.json");
-        fs::write(
-            &control,
-            br#"{"media":{"guest_audio_output":true,"host_microphone":false,"host_camera":true}}"#,
-        )
-        .unwrap();
-        fs::write(
-            &status,
-            br#"{"media":{"guest_audio_output":{"running":true},"host_camera":{"running":false}},"error":null}"#,
-        )
-        .unwrap();
-        let view = load_media_bridges(&control, &status);
-        assert_eq!(view.guest_audio_output, BridgeState::Connected);
-        assert_eq!(view.host_microphone, BridgeState::Disabled);
-        assert_eq!(view.host_camera, BridgeState::Unavailable);
-    }
-
-    #[test]
-    fn registration_scan_rejects_symlink_records() {
-        let temp = tempfile::tempdir().unwrap();
-        let records = temp.path().join("records");
-        fs::create_dir(&records).unwrap();
-        let victim = temp.path().join("victim.json");
-        fs::write(&victim, b"{}").unwrap();
-        symlink(&victim, records.join("record.json")).unwrap();
-        let catalog = load_registrations(&records);
-        assert!(catalog.registrations.is_empty());
-        assert_eq!(catalog.diagnostics.len(), 1);
-    }
-
-    #[test]
     fn absent_updater_is_not_reported_as_ready() {
         let temp = tempfile::tempdir().unwrap();
         let view = load_update_view(&temp.path().join("missing.json"));
         assert_eq!(view.state.status, UpdateStatus::NeverChecked);
         assert!(!view.state.runtime_ready);
-        assert!(view.diagnostic.is_some());
-    }
-
-    #[test]
-    fn migrated_guest_theme_compatibility_diagnostic_is_actionable() {
-        let temp = tempfile::tempdir().unwrap();
-        let diagnostic = theme_compatibility_diagnostic_for(
-            &temp.path().join("gsettings"),
-            &temp.path().join("interface.gschema.xml"),
-        )
-        .unwrap();
-        assert!(diagnostic.contains("desktop remains bootable"));
-        assert!(diagnostic.contains("sudo apt install"));
     }
 }

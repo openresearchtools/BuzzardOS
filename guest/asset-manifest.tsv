@@ -54,10 +54,6 @@
 0644	assets/icons/WildBuzzard/symbolic/mimetypes/inode-directory-symbolic.svg	usr/share/icons/WildBuzzard/symbolic/mimetypes/inode-directory-symbolic.svg
 0644	assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg	usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-symbolic.svg
 0644	assets/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg	usr/share/icons/WildBuzzard/symbolic/apps/wildbuzzard-settings-symbolic.svg
-0644	assets/branding/wildbuzzard-mark-dark.svg	usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg
-0644	assets/branding/wildbuzzard-mark-light.svg	usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg
-0644	assets/branding/wildbuzzard-icon-light.svg	usr/share/wildbuzzard/branding/wildbuzzard-icon-light.svg
-0644	assets/branding/wallpaper-presets.json	usr/share/wildbuzzard/branding/wallpaper-presets.json
 0644	assets/WildBuzzard.colors	usr/share/color-schemes/WildBuzzard-Dark.colors
 0644	assets/WildBuzzard-Light.colors	usr/share/color-schemes/WildBuzzard-Light.colors
 0644	assets/kdeglobals	etc/wildbuzzard/xdg/kdeglobals

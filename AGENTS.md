@@ -5,7 +5,7 @@ in this repository. Implementations, tests, documentation, packaging, and
 design decisions must preserve the requirements below.
 
 The approved guest Settings, desktop-file operations, AppImage registration,
-updates, theming, sound, scaling, and branding contract is incorporated by
+updates, theming, sound, and scaling contract is incorporated by
 reference from `docs/GUEST_SETTINGS_DESKTOP_INTEGRATION_PLAN.md`. Changes to
 those features must update that plan and this specification together.
 
@@ -529,11 +529,9 @@ full-screen launcher or a tile-grid dashboard:
   only overflowing rows scroll. A labelled, AT-SPI-visible close button sits
   at the right of the menu header.
 - Desktop shortcuts for `Files` and `Shared`; `Shared` opens `/shared`.
-- Appearance settings provide `Dark Plain`, `Dark + Logo`, `Light Plain`, and
-  `Light + Logo` desktop backgrounds plus an accessible custom solid-colour
-  choice. Plain and logo variants share the same recommended dark or light
-  background colour, render at the guest output's native physical resolution,
-  and persist independently from toolkit theme selection.
+- Appearance settings provide exactly Light/Dark toolkit theme selection and
+  one accessible solid desktop background-colour picker. The product ships no
+  logo wallpaper, wallpaper image, preview, gradient, or remote background.
 - New `.desktop` files installed by the user appear without rebuilding the
   image.
 
@@ -548,12 +546,6 @@ inode and record state. Ambiguity or replacement fails closed and never
 deletes a possible target. Because XDG Desktop and XDG state/data can reside
 on different filesystems, the contract is ordered fsync plus deterministic
 journal recovery, not an impossible cross-filesystem atomic rename.
-
-The Buzzard mark is an original calm near-front three-quarter European common
-buzzard portrait. Its head and gaze are slightly off-axis; direct-staring,
-perfectly mirrored mascot treatment and owl/eagle/falcon substitutions are not
-acceptable. Dark, light, symbolic, icon, and wallpaper variants derive from
-one audited vector geometry source.
 
 The Sway session provides synchronized compositor-side guest decorations and
 window operations for normal Wayland and Xwayland windows: title, drag,

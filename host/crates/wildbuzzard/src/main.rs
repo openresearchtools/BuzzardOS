@@ -287,26 +287,6 @@ const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
         0o644,
     ),
     (
-        "usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg",
-        include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg",
-        include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-light.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/wildbuzzard/branding/wildbuzzard-icon-light.svg",
-        include_bytes!("../../../../guest/assets/branding/wildbuzzard-icon-light.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/wildbuzzard/branding/wallpaper-presets.json",
-        include_bytes!("../../../../guest/assets/branding/wallpaper-presets.json"),
-        0o644,
-    ),
-    (
         "usr/share/color-schemes/WildBuzzard-Dark.colors",
         include_bytes!("../../../../guest/assets/WildBuzzard.colors"),
         0o644,
@@ -5506,30 +5486,14 @@ mod layer_tests {
     }
 
     #[test]
-    fn fresh_install_includes_branding_assets_and_discoverable_application_icons() {
+    fn fresh_install_includes_discoverable_application_icons() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
         fs::create_dir(&rootfs).unwrap();
 
         install_guest_assets_without_shell(&rootfs).unwrap();
 
-        let branding_assets: &[(&str, &[u8])] = &[
-            (
-                "usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg",
-                include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
-            ),
-            (
-                "usr/share/wildbuzzard/branding/wildbuzzard-mark-light.svg",
-                include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-light.svg"),
-            ),
-            (
-                "usr/share/wildbuzzard/branding/wildbuzzard-icon-light.svg",
-                include_bytes!("../../../../guest/assets/branding/wildbuzzard-icon-light.svg"),
-            ),
-            (
-                "usr/share/wildbuzzard/branding/wallpaper-presets.json",
-                include_bytes!("../../../../guest/assets/branding/wallpaper-presets.json"),
-            ),
+        let application_icons: &[(&str, &[u8])] = &[
             (
                 "usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard.svg",
                 include_bytes!(
@@ -5555,7 +5519,7 @@ mod layer_tests {
                 ),
             ),
         ];
-        for (relative, expected) in branding_assets {
+        for (relative, expected) in application_icons {
             let destination = rootfs.join(relative);
             assert_eq!(fs::read(&destination).unwrap(), *expected, "{relative}");
             assert_eq!(
@@ -5664,47 +5628,6 @@ mod layer_tests {
             fs::metadata(destination).unwrap().permissions().mode() & 0o7777,
             0o644
         );
-    }
-
-    #[test]
-    fn branding_migration_updates_managed_content_and_preserves_guest_edits() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let managed = Path::new("usr/share/wildbuzzard/branding/wildbuzzard-mark-dark.svg");
-        let modified = Path::new("usr/share/icons/WildBuzzard/scalable/apps/wildbuzzard.svg");
-        let old_distributed = b"<svg><!-- old distributed branding --></svg>\n";
-        let guest_modified = b"<svg><!-- guest replacement branding --></svg>\n";
-        let previous = guest_asset_record(old_distributed, 0o644);
-        install_guest_asset(&rootfs, managed, old_distributed, 0o644).unwrap();
-        install_guest_asset(&rootfs, modified, guest_modified, 0o644).unwrap();
-
-        migrate_guest_asset(
-            &rootfs,
-            managed,
-            include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg"),
-            0o644,
-            Some(&previous),
-            None,
-        )
-        .unwrap();
-        migrate_guest_asset(
-            &rootfs,
-            modified,
-            include_bytes!(
-                "../../../../guest/assets/icons/WildBuzzard/scalable/apps/wildbuzzard.svg"
-            ),
-            0o644,
-            Some(&previous),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            fs::read(rootfs.join(managed)).unwrap(),
-            include_bytes!("../../../../guest/assets/branding/wildbuzzard-mark-dark.svg")
-        );
-        assert_eq!(fs::read(rootfs.join(modified)).unwrap(), guest_modified);
     }
 
     #[test]

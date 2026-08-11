@@ -49,6 +49,16 @@ toolbar,
   border-color: @wb_border;
 }
 
+menubar:backdrop,
+toolbar:backdrop,
+.toolbar:backdrop,
+.primary-toolbar:backdrop {
+  color: @wb_backdrop_text;
+  background-image: none;
+  background-color: @wb_header_backdrop;
+  border-color: @wb_border;
+}
+
 separator {
   background-color: @wb_border;
   min-width: 1px;
@@ -139,10 +149,79 @@ iconview.view:selected:focus {
   background-color: @wb_selection;
 }
 
+.view:selected:backdrop,
+treeview.view:selected:backdrop,
+iconview.view:selected:backdrop,
+placessidebar row:selected:backdrop {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_selection;
+}
+
 .view:hover,
 iconview:hover {
   color: @wb_text;
   background-color: @wb_hover;
+}
+
+.view:backdrop,
+treeview.view:backdrop,
+iconview.view:backdrop,
+iconview.view cell:backdrop,
+textview:backdrop,
+textview text:backdrop,
+entry:backdrop {
+  color: @wb_backdrop_text;
+  background-color: @wb_field;
+  border-color: @wb_border;
+  background-image: none;
+}
+
+check,
+radio {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+check:checked,
+radio:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+switch:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch slider {
+  background-color: @wb_raised;
+  border-color: @wb_border;
+}
+
+scale trough {
+  background-color: @wb_field;
+  border-color: @wb_border;
+}
+
+scale highlight,
+progressbar progress {
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+scale slider {
+  background-color: @wb_raised;
+  border-color: @wb_control_border;
 }
 
 .sidebar,

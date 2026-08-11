@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 
@@ -79,6 +80,8 @@ class SystemBusService:
         self.fatal_bus_error: str | None = None
         self.uid_cache: dict[str, int] = {}
         self.uid_lock = threading.Lock()
+        self.worker_lock = threading.Lock()
+        self.worker: subprocess.Popen[bytes] | None = None
         self.node = self.Gio.DBusNodeInfo.new_for_xml(INTROSPECTION_XML)
         self.interface = self.node.interfaces[0]
 
@@ -141,7 +144,7 @@ class SystemBusService:
             if method_name == "Check":
                 if parameters.unpack() != ():
                     raise UpdaterError("Check takes no arguments")
-                generation = self.engine.start_check()
+                generation = self._start_worker("check")
                 invocation.return_value(self.GLib.Variant("(bt)", (True, generation)))
             elif method_name == "GetState":
                 if parameters.unpack() != ():
@@ -153,9 +156,9 @@ class SystemBusService:
                     raise UpdaterError(f"{method_name} takes exactly one opaque generation")
                 generation = validate_generation(unpacked[0])
                 if method_name == "InstallPlan":
-                    state_generation = self.engine.start_install(generation)
+                    state_generation = self._start_worker("install", generation)
                 elif method_name == "RetryRepair":
-                    state_generation = self.engine.start_repair(generation)
+                    state_generation = self._start_worker("repair", generation)
                 else:
                     self.engine.cancel_download(generation)
                     state_generation = int(self.engine.state()["state_generation"])
@@ -166,6 +169,27 @@ class SystemBusService:
                 raise UpdaterError("method is not part of the fixed updater interface")
         except BaseException as error:
             self._return_error(invocation, error)
+
+    def _start_worker(self, operation: str, generation: str | None = None) -> int:
+        if operation not in {"check", "install", "repair"}:
+            raise UpdaterError("unknown fixed updater operation")
+        with self.worker_lock:
+            if self.worker is not None and self.worker.poll() is None:
+                raise BusyError("an updater operation is already running")
+            arguments = [sys.executable, os.path.realpath(__file__), f"--worker-{operation}"]
+            if operation == "check":
+                if generation is not None:
+                    raise UpdaterError("check worker does not accept a generation")
+            else:
+                arguments.append(validate_generation(generation))
+            self.worker = subprocess.Popen(
+                arguments,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            return int(self.engine.state()["state_generation"])
 
     def _bus_acquired(self, connection, _name) -> None:
         try:
@@ -230,8 +254,31 @@ def main(arguments: list[str]) -> int:
         _validate_introspection()
         print(INTROSPECTION_XML.strip())
         return 0
+    worker = {
+        "--worker-check": "check",
+        "--worker-install": "install",
+        "--worker-repair": "repair",
+    }
+    if arguments and arguments[0] in worker:
+        operation = worker[arguments[0]]
+        if (operation == "check" and len(arguments) != 1) or (
+            operation != "check" and len(arguments) != 2
+        ):
+            raise UpdaterError("fixed updater worker received invalid arguments")
+        engine = UpdateEngine(PythonAptBackend())
+        try:
+            if operation == "check":
+                engine.check()
+            elif operation == "install":
+                engine.install_plan(validate_generation(arguments[1]))
+            else:
+                engine.retry_repair(validate_generation(arguments[1]))
+        except BaseException as error:
+            engine._record_worker_failure(operation, error)
+            return 1
+        return 0
     if arguments:
-        raise UpdaterError("updater service accepts no command-line operation or apt arguments")
+        raise UpdaterError("updater service accepts only its fixed internal worker operations")
     _validate_introspection()
     return SystemBusService(UpdateEngine(PythonAptBackend())).run()
 

@@ -78,6 +78,10 @@ impl DesktopModel {
         self.page
     }
 
+    pub fn show_first_page(&mut self) {
+        self.page = 0;
+    }
+
     pub fn scroll_page(&mut self, amount: f64) -> bool {
         if amount == 0.0 {
             return false;
@@ -360,6 +364,43 @@ mod tests {
         assert!(model.scroll_page(-1.0));
         assert_eq!(model.page(), 0);
         assert!(!model.scroll_page(-1.0));
+    }
+
+    #[test]
+    fn new_shortcut_uses_the_first_visible_cell_after_files_and_shared() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = XdgPaths::from_bases(
+            temp.path().join("home"),
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("state"),
+            vec![temp.path().join("share")],
+            temp.path().join("Desktop"),
+        )
+        .unwrap();
+        fs::create_dir_all(paths.managed_state_dir()).unwrap();
+        fs::create_dir_all(&paths.desktop_dir).unwrap();
+        let shortcut = paths.desktop_dir.join("Example.desktop");
+        fs::write(
+            &shortcut,
+            b"[Desktop Entry]\nType=Application\nName=Example\nExec=/bin/true\n",
+        )
+        .unwrap();
+
+        let mut model = DesktopModel::open(paths).unwrap();
+        let item = model
+            .positioned((800, 600))
+            .unwrap()
+            .into_iter()
+            .find(|item| item.item.path == shortcut)
+            .unwrap();
+        assert_eq!(item.page, 0);
+        assert_eq!(item.rect.x, ICON_LEFT);
+        assert_eq!(item.rect.y, ICON_TOP + 2 * ICON_CELL_HEIGHT);
+
+        model.page = 3;
+        model.show_first_page();
+        assert_eq!(model.page(), 0);
     }
 
     #[test]

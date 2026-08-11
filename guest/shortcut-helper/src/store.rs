@@ -880,6 +880,21 @@ impl RegistrationStore {
                     .join(registration.id.desktop_file_id()),
                 registration.desktop_shortcut,
             )?;
+            if registration.desktop_shortcut {
+                let desktop_entry = self
+                    .paths
+                    .desktop_dir
+                    .join(registration.id.desktop_file_id());
+                let metadata = fs::symlink_metadata(&desktop_entry)
+                    .map_err(|source| io_error(&desktop_entry, source))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(StoreError::UnsafeManagedPath(
+                        desktop_entry.display().to_string(),
+                    ));
+                }
+                fs::set_permissions(&desktop_entry, fs::Permissions::from_mode(0o755))
+                    .map_err(|source| io_error(&desktop_entry, source))?;
+            }
             registration.save(&self.paths.appimage_registration_path(registration.id))?;
             Ok(())
         })();
@@ -1310,6 +1325,15 @@ mod tests {
             assert!(!contents.contains(target.to_str().unwrap()));
             assert!(!contents.contains("sh -c"));
         }
+        assert_ne!(
+            fs::metadata(store.paths.desktop_dir.join(id.desktop_file_id()))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o100,
+            0,
+            "a generated desktop shortcut is immediately trusted"
+        );
         assert_eq!(store.load(id).unwrap(), record);
     }
 

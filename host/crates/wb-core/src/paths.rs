@@ -150,7 +150,7 @@ mod tests {
         let socket = host_control_socket(&machine).unwrap();
 
         assert!(socket.as_os_str().as_bytes().len() < 108);
-        assert!(socket.starts_with("/run/user"));
+        assert!(socket.starts_with(std::env::var_os("XDG_RUNTIME_DIR").unwrap()));
         assert_ne!(
             socket,
             host_control_socket(&PathBuf::from("/tmp/elsewhere/vm/demo")).unwrap()
