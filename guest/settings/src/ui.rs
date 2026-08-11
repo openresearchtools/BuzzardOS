@@ -316,7 +316,7 @@ fn build_sound_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
     let output = section("Output");
     let output_volume = volume_scale();
-    let output_percent = gtk::Label::new(Some("100%"));
+    let output_percent = gtk::Label::new(Some("Unavailable"));
     let output_control = volume_control(&output_volume, &output_percent);
     let output_mute = gtk::Switch::new();
     accessible(&output_volume, "Output volume", "Set speaker volume.");
@@ -335,7 +335,7 @@ fn build_sound_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
 
     let input = section("Microphone input");
     let input_volume = volume_scale();
-    let input_percent = gtk::Label::new(Some("100%"));
+    let input_percent = gtk::Label::new(Some("Unavailable"));
     let input_control = volume_control(&input_volume, &input_percent);
     let input_mute = gtk::Switch::new();
     accessible(
@@ -526,6 +526,10 @@ fn render_sound(
             .output_percent
             .set_label(&format!("{}%", device.volume_percent.round() as u16));
         widgets.output_mute.set_active(device.muted);
+    } else {
+        widgets.output_volume.set_value(0.0);
+        widgets.output_percent.set_label("Unavailable");
+        widgets.output_mute.set_active(false);
     }
     if let Some(device) = input {
         widgets.input_volume.set_value(device.volume_percent);
@@ -533,6 +537,10 @@ fn render_sound(
             .input_percent
             .set_label(&format!("{}%", device.volume_percent.round() as u16));
         widgets.input_mute.set_active(device.muted);
+    } else {
+        widgets.input_volume.set_value(0.0);
+        widgets.input_percent.set_label("Unavailable");
+        widgets.input_mute.set_active(false);
     }
     widgets
         .output_volume
