@@ -17,7 +17,7 @@ an ordinary Sway-managed window and exposes native GTK accessibility objects
 to the private guest AT-SPI bus. It uses no libadwaita, Electron, browser UI,
 GNOME Control Center, or permanent GUI process.
 
-The navigation contains exactly these five pages in this order:
+The navigation contains exactly these six pages in this order:
 
 ```text
 Settings
@@ -34,6 +34,11 @@ Settings
 │   ├── Language
 │   ├── Layout
 │   └── Hardware
+│
+├── Time & Location
+│   ├── Automatic date and time
+│   ├── Current local date and time
+│   └── Time zone [searchable IANA location dropdown]
 │
 ├── Appearance
 │   ├── Theme
@@ -60,6 +65,9 @@ guest UI-density setting. The native host window continues to determine the
 guest monitor's physical pixel dimensions, and the display path must not
 bitmap-stretch the guest output.
 
+The Display page presents one row labelled `Scaling`; it does not repeat a
+second `Scaling` section heading above that row.
+
 The setting is sent through the owner-only typed scale endpoint and persisted
 only after the active Sway output confirms it. A rejected change restores the
 last confirmed selection and shows a short user-facing error.
@@ -84,6 +92,18 @@ RMLVO names are compiled against the protected pinned XKB data on both sides
 of the nested physical-keyboard boundary. The guest and host activate the
 same canonical digest atomically. CUA uses its own distinct virtual keyboard
 on the same Sway seat; enabling CUA never disables ordinary human input.
+
+## 4.1. Time and location
+
+The guest shares the kernel clock, so the actual date/time remains automatic
+and cannot be manually changed from the guest. The page shows a live local
+date/time and an always-enabled automatic-clock state. It does not start a
+second NTP client or expose a clock-setting action.
+
+Time zone is guest-local persistent configuration. Its searchable dropdown is
+generated from the installed IANA `zone.tab`; it has no free-form path field.
+Selecting a validated location applies that exact zone through systemd
+`timedatectl`. The guest timezone can change without changing the host clock.
 
 ## 5. Appearance
 
@@ -116,6 +136,13 @@ the package name, installed version, candidate version, and download size.
 There is no arbitrary command, package, path, repository, environment, or APT
 argument surface.
 
+`Check for updates` and `Install now` are visually complete Cinnamon-orange
+buttons with dark high-contrast text, not label-like highlights. Active work
+shows a native progress bar and a textual phase: repository refresh, plan
+resolution, the current Debian archive with percentage/bytes and measured
+download speed, the current package/install count, completion, or the bounded
+failure reason.
+
 The system-bus service is guest-root-owned and callable only by guest root or
 the interactive UID 1000 user. It protects Wild Buzzard's managed runtime
 payload from package replacement. Updates are never installed automatically.
@@ -137,6 +164,11 @@ Owner-owned regular `.desktop` files in the guest Desktop directory are
 automatically owner-executable after validation, so activating a shortcut
 launches it without a redundant trust prompt. Symlinks, non-regular files,
 foreign-owned files, and unsafe launchers are never auto-authorized.
+
+The on-desktop visual and AT-SPI label of a valid launcher is its localized
+FreeDesktop `Name=`, matching the Applications menu (for example,
+`Firefox ESR`). The `.desktop` suffix and storage ID remain visible as the
+real filename in file managers, but are never shown as the desktop icon label.
 
 The desktop provides selection, Ctrl/Shift selection, rubber-band selection,
 Cut, Copy, Paste, Rename, New Folder, Arrange, and confirmed Delete. Delete is

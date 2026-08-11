@@ -27,15 +27,17 @@ pub enum PageId {
     Display,
     Sound,
     Keyboard,
+    TimeLocation,
     Appearance,
     Updates,
 }
 
 impl PageId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Display,
         Self::Sound,
         Self::Keyboard,
+        Self::TimeLocation,
         Self::Appearance,
         Self::Updates,
     ];
@@ -45,6 +47,7 @@ impl PageId {
             Self::Display => "display",
             Self::Sound => "sound",
             Self::Keyboard => "keyboard",
+            Self::TimeLocation => "time-location",
             Self::Appearance => "appearance",
             Self::Updates => "updates",
         }
@@ -55,6 +58,7 @@ impl PageId {
             Self::Display => "Display",
             Self::Sound => "Sound",
             Self::Keyboard => "Keyboard",
+            Self::TimeLocation => "Time & Location",
             Self::Appearance => "Appearance",
             Self::Updates => "Updates",
         }
@@ -65,6 +69,7 @@ impl PageId {
             Self::Display => "video-display-symbolic",
             Self::Sound => "audio-volume-high-symbolic",
             Self::Keyboard => "input-keyboard-symbolic",
+            Self::TimeLocation => "preferences-system-time-symbolic",
             Self::Appearance => "preferences-desktop-theme-symbolic",
             Self::Updates => "software-update-available-symbolic",
         }
@@ -781,10 +786,11 @@ mod tests {
 
     #[test]
     fn page_contract_is_complete_and_stable() {
-        assert_eq!(PageId::ALL.len(), 5);
+        assert_eq!(PageId::ALL.len(), 6);
         assert_eq!(PageId::ALL[0].stack_name(), "display");
         assert_eq!(PageId::ALL[2].title(), "Keyboard");
-        assert_eq!(PageId::ALL[4].title(), "Updates");
+        assert_eq!(PageId::ALL[3].title(), "Time & Location");
+        assert_eq!(PageId::ALL[5].title(), "Updates");
         assert!(PageId::ALL.iter().all(|page| !page.icon_name().is_empty()));
     }
 

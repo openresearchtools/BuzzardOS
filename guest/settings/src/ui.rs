@@ -12,12 +12,14 @@ use gtk::gdk;
 use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
+use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wildbuzzard_desktop_core::{
-    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode, UpdateState,
-    UpdateStatus,
+    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode, UpdateProgress,
+    UpdateProgressPhase, UpdateProgressUnit, UpdateState, UpdateStatus,
 };
 
 const COMPACT_BREAKPOINT: i32 = 720;
@@ -25,6 +27,9 @@ const PAGE_MARGIN: i32 = 24;
 const ROW_SPACING: i32 = 12;
 const DARK_BACKGROUND: SolidColor = SolidColor::new(0x20, 0x22, 0x25);
 const LIGHT_BACKGROUND: SolidColor = SolidColor::new(0xf4, 0xf1, 0xec);
+const ZONE_TAB_PATH: &str = "/usr/share/zoneinfo/zone.tab";
+const ZONEINFO_ROOT: &str = "/usr/share/zoneinfo";
+const MAX_ZONE_TAB_BYTES: u64 = 2 * 1024 * 1024;
 
 #[cfg(test)]
 const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
@@ -38,10 +43,14 @@ const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
     "Keyboard language",
     "Keyboard layout",
     "Keyboard hardware",
+    "Automatic date and time",
+    "Current local date and time",
+    "Time zone",
     "Light theme",
     "Dark theme",
     "Desktop background colour",
     "Check for updates",
+    "Update progress",
     "Available updates",
     "Install now",
 ];
@@ -140,6 +149,10 @@ pub(crate) fn build_window(
         Some(PageId::Keyboard.stack_name()),
     );
     pages.add_named(
+        &build_time_location_page(&window),
+        Some(PageId::TimeLocation.stack_name()),
+    );
+    pages.add_named(
         &build_appearance_page(&window, Rc::clone(&store), Rc::clone(&bus)),
         Some(PageId::Appearance.stack_name()),
     );
@@ -216,7 +229,6 @@ fn build_display_page(
     bus: Rc<ChangeBus>,
 ) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
-    let section = section("Scaling");
     let labels = ["Automatic", "100%", "125%", "150%", "175%", "200%"];
     let presets = GuestScalePreset::ALL;
     let scale = gtk::DropDown::from_strings(&labels);
@@ -234,12 +246,11 @@ fn build_display_page(
     );
     let availability = scale_service().map_err(|error| error.to_string());
     scale.set_sensitive(store.borrow().writable && availability.is_ok());
-    section.append(&setting_row(
+    contents.append(&setting_row(
         "Scaling",
         "Changes text and control size without stretching the desktop image.",
         &scale,
     ));
-    contents.append(&section);
 
     if let Ok(socket) = availability {
         let changing = Rc::new(Cell::new(false));
@@ -771,6 +782,190 @@ fn install_layouts(dropdown: &gtk::DropDown, language_index: usize, selected_cod
     );
 }
 
+fn build_time_location_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
+    let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
+
+    let automatic = gtk::Switch::new();
+    automatic.set_active(true);
+    automatic.set_sensitive(false);
+    accessible(
+        &automatic,
+        "Automatic date and time",
+        "The system clock is kept up to date automatically.",
+    );
+    contents.append(&setting_row(
+        "Automatic date and time",
+        "The system clock is kept up to date automatically.",
+        &automatic,
+    ));
+
+    let current_time = gtk::Label::new(Some(&formatted_local_time()));
+    current_time.set_xalign(1.0);
+    current_time.add_css_class("heading");
+    accessible(
+        &current_time,
+        "Current local date and time",
+        "Current guest-local date and time in the selected time zone.",
+    );
+    contents.append(&setting_row(
+        "Date and time",
+        "Shown using the selected time-zone location.",
+        &current_time,
+    ));
+    {
+        let current_time = current_time.clone();
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            current_time.set_label(&formatted_local_time());
+            glib::ControlFlow::Continue
+        });
+    }
+
+    let zones = Rc::new(
+        load_time_zones(Path::new(ZONE_TAB_PATH)).unwrap_or_else(|error| {
+            eprintln!("wildbuzzard-settings: cannot load time-zone locations: {error}");
+            vec!["Etc/UTC".to_owned()]
+        }),
+    );
+    let zone_labels = zones.iter().map(String::as_str).collect::<Vec<_>>();
+    let time_zone = gtk::DropDown::from_strings(&zone_labels);
+    time_zone.set_enable_search(true);
+    let selected = current_time_zone()
+        .ok()
+        .and_then(|current| zones.iter().position(|zone| zone == &current))
+        .unwrap_or_else(|| zones.iter().position(|zone| zone == "Etc/UTC").unwrap_or(0));
+    time_zone.set_selected(selected as u32);
+    accessible(
+        &time_zone,
+        "Time zone",
+        "Search IANA time-zone locations and choose the guest-local time zone.",
+    );
+    contents.append(&setting_row(
+        "Time zone",
+        "Choose a searchable city/region location for local time.",
+        &time_zone,
+    ));
+
+    let changing = Rc::new(Cell::new(false));
+    let confirmed = Rc::new(Cell::new(selected as u32));
+    {
+        let zones = Rc::clone(&zones);
+        let changing = Rc::clone(&changing);
+        let confirmed = Rc::clone(&confirmed);
+        let window = window.clone();
+        time_zone.connect_selected_notify(move |dropdown| {
+            if changing.get() {
+                return;
+            }
+            let selected = dropdown.selected();
+            let Some(zone) = zones.get(selected as usize) else {
+                return;
+            };
+            match set_time_zone(zone) {
+                Ok(()) => confirmed.set(selected),
+                Err(error) => {
+                    changing.set(true);
+                    dropdown.set_selected(confirmed.get());
+                    changing.set(false);
+                    show_error(&window, "Time zone was not changed", &error);
+                }
+            }
+        });
+    }
+
+    page("Time & Location", &contents)
+}
+
+fn formatted_local_time() -> String {
+    glib::DateTime::now_local()
+        .and_then(|value| value.format("%A, %e %B %Y, %H:%M:%S"))
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "Local time unavailable".to_owned())
+}
+
+fn valid_time_zone_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !value.starts_with('/')
+        && value.split('/').all(|component| {
+            !component.is_empty()
+                && component != "."
+                && component != ".."
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'+'))
+        })
+}
+
+fn parse_time_zones(contents: &str) -> Vec<String> {
+    let mut zones = contents
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split('\t').nth(2))
+        .filter(|zone| valid_time_zone_name(zone))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    zones.push("Etc/UTC".to_owned());
+    zones.sort();
+    zones.dedup();
+    zones
+}
+
+fn load_time_zones(path: &Path) -> Result<Vec<String>, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_ZONE_TAB_BYTES {
+        return Err("the installed IANA zone table is not a bounded regular file".to_owned());
+    }
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let zones = parse_time_zones(&contents);
+    if zones.is_empty() {
+        return Err("the installed IANA zone table contains no usable locations".to_owned());
+    }
+    Ok(zones)
+}
+
+fn current_time_zone() -> Result<String, String> {
+    let output = Command::new("/usr/bin/timedatectl")
+        .args(["show", "--property=Timezone", "--value"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let value = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let value = value.trim();
+    if !valid_time_zone_name(value) {
+        return Err("timedatectl returned an invalid time-zone name".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
+fn set_time_zone(zone: &str) -> Result<(), String> {
+    if !valid_time_zone_name(zone) {
+        return Err("the selected time-zone name is invalid".to_owned());
+    }
+    let zone_path = Path::new(ZONEINFO_ROOT).join(zone);
+    if !zone_path.exists() {
+        return Err("the selected time zone is not installed".to_owned());
+    }
+    let output = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/bin/timedatectl", "set-timezone", zone])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            "timedatectl rejected the selected time zone".to_owned()
+        } else {
+            detail
+        });
+    }
+    Ok(())
+}
+
 fn build_appearance_page(
     window: &gtk::ApplicationWindow,
     store: Rc<RefCell<SettingsStore>>,
@@ -883,15 +1078,55 @@ struct UpdateWidgets {
     packages: gtk::ListBox,
     check: gtk::Button,
     install: gtk::Button,
+    progress: gtk::ProgressBar,
+    progress_detail: gtk::Label,
+    download_rate: Rc<RefCell<DownloadRate>>,
+}
+
+#[derive(Debug, Default)]
+struct DownloadRate {
+    previous: Option<(u64, Instant)>,
+    bytes_per_second: Option<f64>,
+}
+
+impl DownloadRate {
+    fn observe(&mut self, progress: Option<&UpdateProgress>, now: Instant) -> Option<f64> {
+        let Some(progress) = progress.filter(|value| {
+            value.phase == UpdateProgressPhase::Downloading
+                && value.unit == UpdateProgressUnit::Bytes
+        }) else {
+            self.previous = None;
+            self.bytes_per_second = None;
+            return None;
+        };
+        if let Some((previous_bytes, previous_at)) = self.previous {
+            if progress.completed < previous_bytes {
+                self.bytes_per_second = None;
+            } else if progress.completed > previous_bytes {
+                let elapsed = now.saturating_duration_since(previous_at).as_secs_f64();
+                if elapsed > 0.0 {
+                    let measured = (progress.completed - previous_bytes) as f64 / elapsed;
+                    self.bytes_per_second = Some(match self.bytes_per_second {
+                        Some(previous) => previous * 0.65 + measured * 0.35,
+                        None => measured,
+                    });
+                }
+            }
+        }
+        self.previous = Some((progress.completed, now));
+        self.bytes_per_second
+    }
 }
 
 fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 16);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let check = gtk::Button::with_label("Check for updates");
+    check.add_css_class("wb-primary-action");
     let status = gtk::Label::new(Some("Not checked"));
     status.set_xalign(0.0);
     status.set_hexpand(true);
+    status.set_wrap(true);
     accessible(
         &check,
         "Check for updates",
@@ -900,6 +1135,23 @@ fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
     actions.append(&check);
     actions.append(&status);
     contents.append(&actions);
+
+    let progress = gtk::ProgressBar::new();
+    progress.set_show_text(true);
+    progress.set_hexpand(true);
+    progress.set_visible(false);
+    accessible(
+        &progress,
+        "Update progress",
+        "Current Debian update download or installation progress.",
+    );
+    let progress_detail = gtk::Label::new(None);
+    progress_detail.set_xalign(0.0);
+    progress_detail.set_wrap(true);
+    progress_detail.add_css_class("dim-label");
+    progress_detail.set_visible(false);
+    contents.append(&progress);
+    contents.append(&progress_detail);
 
     let list_heading = gtk::Label::new(Some("Available updates"));
     list_heading.set_xalign(0.0);
@@ -922,7 +1174,7 @@ fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
         .build();
     contents.append(&list_scroll);
     let install = gtk::Button::with_label("Install now");
-    install.add_css_class("suggested-action");
+    install.add_css_class("wb-primary-action");
     install.set_halign(gtk::Align::Start);
     accessible(
         &install,
@@ -936,6 +1188,9 @@ fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
         packages,
         check: check.clone(),
         install: install.clone(),
+        progress,
+        progress_detail,
+        download_rate: Rc::new(RefCell::new(DownloadRate::default())),
     };
     let initial = load_update_view(Path::new(UPDATE_STATE_PATH));
     let state = Rc::new(RefCell::new(initial.state));
@@ -1021,15 +1276,43 @@ fn poll_updates(state: Rc<RefCell<UpdateState>>, widgets: UpdateWidgets, baselin
 }
 
 fn render_updates(widgets: &UpdateWidgets, state: &UpdateState) {
-    widgets.status.set_label(match state.status {
-        UpdateStatus::NeverChecked => "Not checked",
-        UpdateStatus::Checking => "Checking…",
-        UpdateStatus::UpToDate => "Up to date",
-        UpdateStatus::Available => "Updates available",
-        UpdateStatus::Installing => "Installing…",
-        UpdateStatus::Failed => "Check failed",
-        UpdateStatus::RestartRecommended => "Installed — restart recommended",
-    });
+    let status = match state.status {
+        UpdateStatus::NeverChecked => "Not checked".to_owned(),
+        UpdateStatus::Checking => "Checking…".to_owned(),
+        UpdateStatus::UpToDate => "Complete — system is up to date".to_owned(),
+        UpdateStatus::Available => "Updates available".to_owned(),
+        UpdateStatus::Installing => "Installing updates…".to_owned(),
+        UpdateStatus::Failed => state
+            .failure
+            .as_deref()
+            .map(|failure| format!("Failed — {failure}"))
+            .unwrap_or_else(|| "Failed".to_owned()),
+        UpdateStatus::RestartRecommended => "Complete — restart recommended".to_owned(),
+    };
+    widgets.status.set_label(&status);
+
+    let speed = widgets
+        .download_rate
+        .borrow_mut()
+        .observe(state.progress.as_ref(), Instant::now());
+    if let Some(progress) = state.progress.as_ref() {
+        let fraction = if progress.total == 0 {
+            0.0
+        } else {
+            progress.completed as f64 / progress.total as f64
+        };
+        let percent = (fraction * 100.0).clamp(0.0, 100.0).round() as u64;
+        widgets.progress.set_fraction(fraction.clamp(0.0, 1.0));
+        widgets.progress.set_text(Some(&format!("{percent}%")));
+        widgets.progress.set_visible(true);
+        widgets
+            .progress_detail
+            .set_label(&progress_description(progress, speed));
+        widgets.progress_detail.set_visible(true);
+    } else {
+        widgets.progress.set_visible(false);
+        widgets.progress_detail.set_visible(false);
+    }
     while let Some(child) = widgets.packages.first_child() {
         if let Ok(row) = child.downcast::<gtk::ListBoxRow>() {
             widgets.packages.remove(&row);
@@ -1068,6 +1351,21 @@ fn render_updates(widgets: &UpdateWidgets, state: &UpdateState) {
             versions.add_css_class("dim-label");
             box_.append(&name);
             box_.append(&versions);
+            if state
+                .progress
+                .as_ref()
+                .is_some_and(|progress| progress.phase == UpdateProgressPhase::Installing)
+                && state
+                    .progress
+                    .as_ref()
+                    .and_then(|progress| progress.detail.as_deref())
+                    .is_some_and(|detail| detail.starts_with(&format!("{}:", package.name)))
+            {
+                let current = gtk::Label::new(Some("Installing now"));
+                current.set_xalign(0.0);
+                current.add_css_class("accent");
+                box_.append(&current);
+            }
             row.set_child(Some(&box_));
             widgets.packages.append(&row);
         }
@@ -1083,6 +1381,43 @@ fn render_updates(widgets: &UpdateWidgets, state: &UpdateState) {
             && state.plan_generation.is_some()
             && state.runtime_ready,
     );
+}
+
+fn progress_description(progress: &UpdateProgress, speed: Option<f64>) -> String {
+    let detail = progress.detail.as_deref().unwrap_or_default();
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" — {detail}")
+    };
+    match progress.phase {
+        UpdateProgressPhase::Downloading => {
+            let mut text = format!(
+                "Downloading — {} of {}",
+                format_bytes(progress.completed),
+                format_bytes(progress.total)
+            );
+            if let Some(speed) = speed.filter(|value| value.is_finite() && *value >= 0.0) {
+                text.push_str(&format!(" — {}/s", format_bytes(speed.round() as u64)));
+            }
+            if !detail.is_empty() {
+                text.push_str(&format!(" — {detail}"));
+            }
+            text
+        }
+        UpdateProgressPhase::Installing => format!(
+            "Installing — {} of {} packages{}",
+            progress.completed, progress.total, suffix
+        ),
+        UpdateProgressPhase::Repairing => format!(
+            "Repairing — {} of {} packages{}",
+            progress.completed, progress.total, suffix
+        ),
+        UpdateProgressPhase::Refreshing => {
+            format!("Refreshing package information{suffix}")
+        }
+        UpdateProgressPhase::Resolving => format!("Resolving available updates{suffix}"),
+    }
 }
 
 fn page(title: &str, contents: &gtk::Box) -> gtk::ScrolledWindow {
@@ -1212,10 +1547,17 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn settings_exposes_only_the_five_requested_pages() {
+    fn settings_exposes_only_the_requested_pages() {
         assert_eq!(
             PageId::ALL.map(PageId::title),
-            ["Display", "Sound", "Keyboard", "Appearance", "Updates"]
+            [
+                "Display",
+                "Sound",
+                "Keyboard",
+                "Time & Location",
+                "Appearance",
+                "Updates"
+            ]
         );
     }
 
@@ -1246,5 +1588,71 @@ mod tests {
     fn byte_format_is_human_readable() {
         assert_eq!(format_bytes(1024), "1.0 KiB");
         assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
+    }
+
+    #[test]
+    fn update_progress_is_phase_specific_and_human_readable() {
+        let progress = UpdateProgress {
+            phase: UpdateProgressPhase::Downloading,
+            completed: 4 * 1024 * 1024,
+            total: 16 * 1024 * 1024,
+            unit: UpdateProgressUnit::Bytes,
+            detail: Some("Downloading firefox-esr".to_owned()),
+            cancellable: true,
+        };
+        assert_eq!(
+            progress_description(&progress, Some(2.0 * 1024.0 * 1024.0)),
+            "Downloading — 4.0 MiB of 16.0 MiB — 2.0 MiB/s — Downloading firefox-esr"
+        );
+
+        let installing = UpdateProgress {
+            phase: UpdateProgressPhase::Installing,
+            completed: 3,
+            total: 10,
+            unit: UpdateProgressUnit::Packages,
+            detail: Some("firefox-esr: unpacking".to_owned()),
+            cancellable: false,
+        };
+        assert_eq!(
+            progress_description(&installing, None),
+            "Installing — 3 of 10 packages — firefox-esr: unpacking"
+        );
+    }
+
+    #[test]
+    fn download_rate_uses_progress_deltas_and_resets_between_phases() {
+        let start = Instant::now();
+        let mut tracker = DownloadRate::default();
+        let mut progress = UpdateProgress {
+            phase: UpdateProgressPhase::Downloading,
+            completed: 1024,
+            total: 4096,
+            unit: UpdateProgressUnit::Bytes,
+            detail: None,
+            cancellable: true,
+        };
+        assert_eq!(tracker.observe(Some(&progress), start), None);
+        progress.completed = 3072;
+        let speed = tracker
+            .observe(Some(&progress), start + Duration::from_secs(2))
+            .unwrap();
+        assert!((speed - 1024.0).abs() < f64::EPSILON);
+        progress.phase = UpdateProgressPhase::Installing;
+        progress.unit = UpdateProgressUnit::Packages;
+        assert_eq!(
+            tracker.observe(Some(&progress), start + Duration::from_secs(3)),
+            None
+        );
+    }
+
+    #[test]
+    fn time_zone_table_accepts_iana_locations_without_manual_paths() {
+        let zones = parse_time_zones(
+            "# country\tcoordinates\tzone\nGB\t+513030-0000731\tEurope/London\nUS\t+404251-0740023\tAmerica/New_York\nXX\t+0000\t../escape\n",
+        );
+        assert_eq!(zones, ["America/New_York", "Etc/UTC", "Europe/London"]);
+        assert!(valid_time_zone_name("Asia/Kathmandu"));
+        assert!(!valid_time_zone_name("../Europe/London"));
+        assert!(!valid_time_zone_name("Europe//London"));
     }
 }

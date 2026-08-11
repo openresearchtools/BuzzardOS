@@ -168,6 +168,31 @@ class UpdaterCoreTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_download_detail_exposes_only_a_canonical_current_package(self):
+        active = type(
+            "AcquireItem",
+            (),
+            {
+                "complete": False,
+                "destfile": "/var/cache/apt/archives/firefox-esr_1.0_amd64.deb",
+                "active_subprocess": "https",
+            },
+        )()
+        hostile = type(
+            "AcquireItem",
+            (),
+            {
+                "complete": False,
+                "destfile": "/tmp/not-a-package.deb",
+                "active_subprocess": "https",
+            },
+        )()
+        owner = type("Acquire", (), {"items": [hostile, active]})()
+        self.assertEqual(
+            updater._current_debian_download_detail(owner),
+            "Downloading firefox-esr",
+        )
+
     def test_runtime_gate_accepts_exact_protected_revision(self):
         self.assertEqual(updater.inspect_runtime_gate(self.paths), (True, REVISION, None))
 

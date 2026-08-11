@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use gio::prelude::AppInfoExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use wildbuzzard_desktop_core::{
@@ -104,7 +105,18 @@ impl DesktopModel {
     }
 
     pub fn rescan(&mut self) -> Result<bool> {
-        let items = self.directory.list().context("listing XDG Desktop")?;
+        let mut items = self.directory.list().context("listing XDG Desktop")?;
+        for item in &mut items {
+            if item.kind == wildbuzzard_desktop_core::DesktopItemKind::Launcher {
+                item.display_name = launcher_display_name(item);
+            }
+        }
+        items.sort_by(|left, right| {
+            left.display_name
+                .to_lowercase()
+                .cmp(&right.display_name.to_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+        });
         let changed = items != self.items;
         self.items = items;
         self.layout.retain_items(&self.items);
@@ -251,6 +263,22 @@ impl DesktopModel {
     }
 }
 
+/// Desktop launchers keep their real `.desktop` filename on disk (and Thunar
+/// continues to show that filename), while the desktop surface presents the
+/// localized FreeDesktop `Name=` just like the Applications menu. A malformed
+/// launcher still never leaks the implementation suffix into the visual label.
+fn launcher_display_name(item: &DesktopItem) -> String {
+    gio::DesktopAppInfo::from_filename(&item.path)
+        .map(|info| info.display_name().to_string())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| {
+            item.display_name
+                .strip_suffix(".desktop")
+                .unwrap_or(&item.display_name)
+                .to_owned()
+        })
+}
+
 fn grid_extent(desktop_size: (u32, u32)) -> (u32, u32) {
     let usable_width = i32::try_from(desktop_size.0)
         .unwrap_or(i32::MAX)
@@ -380,10 +408,10 @@ mod tests {
         .unwrap();
         fs::create_dir_all(paths.managed_state_dir()).unwrap();
         fs::create_dir_all(&paths.desktop_dir).unwrap();
-        let shortcut = paths.desktop_dir.join("Example.desktop");
+        let shortcut = paths.desktop_dir.join("firefox-esr.desktop");
         fs::write(
             &shortcut,
-            b"[Desktop Entry]\nType=Application\nName=Example\nExec=/bin/true\n",
+            b"[Desktop Entry]\nType=Application\nName=Firefox ESR\nExec=/bin/true\n",
         )
         .unwrap();
 
@@ -394,6 +422,8 @@ mod tests {
             .into_iter()
             .find(|item| item.item.path == shortcut)
             .unwrap();
+        assert_eq!(item.item.display_name, "Firefox ESR");
+        assert!(!item.item.display_name.ends_with(".desktop"));
         assert_eq!(item.page, 0);
         assert_eq!(item.rect.x, ICON_LEFT);
         assert_eq!(item.rect.y, ICON_TOP + 2 * ICON_CELL_HEIGHT);

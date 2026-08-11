@@ -270,6 +270,35 @@ def _sanitize_dynamic_text(
     return suffix
 
 
+def _current_debian_download_detail(owner: object) -> str:
+    """Return a bounded package-oriented label for python-apt progress.
+
+    ``apt_pkg.Acquire.items`` is untrusted repository-derived state.  We never
+    expose its URI or destination path.  A canonical Debian archive basename
+    lets the UI say which package is being downloaded; otherwise it uses a
+    generic truthful label.
+    """
+
+    items = getattr(owner, "items", ())
+    if not isinstance(items, (list, tuple)):
+        return "Downloading package archives"
+    candidates: list[tuple[bool, str]] = []
+    for item in items[:MAX_PACKAGES]:
+        if bool(getattr(item, "complete", False)):
+            continue
+        filename = os.path.basename(str(getattr(item, "destfile", "")))
+        if not filename.endswith(".deb") or "_" not in filename:
+            continue
+        package = filename.split("_", 1)[0]
+        if not PACKAGE_RE.fullmatch(package):
+            continue
+        candidates.append((bool(getattr(item, "active_subprocess", "")), package))
+    if not candidates:
+        return "Downloading package archives"
+    package = next((name for active, name in candidates if active), candidates[0][1])
+    return f"Downloading {package}"
+
+
 def _validate_text(field: str, value: object, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str):
         raise UpdaterError(f"{field} must be text")
@@ -1861,7 +1890,13 @@ class PythonAptBackend:
             def pulse(self, owner):  # type: ignore[no-untyped-def]
                 total = max(0, int(getattr(owner, "total_bytes", plan.download_size)))
                 current = max(0, min(int(getattr(owner, "current_bytes", 0)), total))
-                progress("downloading", current, total, "Downloading package archives", True)
+                progress(
+                    "downloading",
+                    current,
+                    total,
+                    _current_debian_download_detail(owner),
+                    True,
+                )
                 return not cancelled.is_set()
 
             def stop(self):

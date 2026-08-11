@@ -529,9 +529,16 @@ full-screen launcher or a tile-grid dashboard:
   only overflowing rows scroll. A labelled, AT-SPI-visible close button sits
   at the right of the menu header.
 - Desktop shortcuts for `Files` and `Shared`; `Shared` opens `/shared`.
+- Desktop launcher icons display the launcher's localized FreeDesktop `Name=`
+  rather than its on-disk `.desktop` filename. File managers continue to show
+  the real filename.
 - Appearance settings provide exactly Light/Dark toolkit theme selection and
   one accessible solid desktop background-colour picker. The product ships no
   logo wallpaper, wallpaper image, preview, gradient, or remote background.
+- Guest Settings also provides a `Time & Location` page with a live automatic
+  date/time display and a searchable installed IANA time-zone dropdown. The
+  guest may change only its persistent timezone, never the shared kernel
+  clock, and does not run a second NTP client.
 - New `.desktop` files installed by the user appear without rebuilding the
   image.
 

@@ -70,10 +70,29 @@ button:disabled {
   border-color: @wb_border;
 }
 
-button.suggested-action {
+button.suggested-action,
+button.wb-primary-action {
   color: @wb_selected_text;
   background-color: @wb_selection;
   border-color: @wb_focus;
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 14px;
+}
+
+button.wb-primary-action:hover,
+button.wb-primary-action:active,
+button.wb-primary-action:checked,
+button.wb-primary-action:focus-visible {
+  color: @wb_selected_text;
+}
+
+button.wb-primary-action:disabled {
+  color: @wb_disabled;
+  background-color: @wb_canvas;
+  border-color: @wb_border;
 }
 
 dropdown button,
