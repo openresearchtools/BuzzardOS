@@ -327,9 +327,14 @@ fn render_kde_globals(mode: ThemeMode) -> String {
 
 fn render_foot(mode: ThemeMode) -> String {
     let p = mode.palette();
+    let theme_name = if mode == ThemeMode::Dark {
+        "dark"
+    } else {
+        "light"
+    };
     format!(
-        "[main]\nfont=Noto Sans Mono:size=11\npad=8x6\n\n\
-         [colors]\nforeground={}\nbackground={}\nselection-foreground={}\nselection-background={}\ncursor={} {}\nurls={}\n\n\
+        "[main]\nfont=Noto Sans Mono:size=11\npad=8x6\ninitial-color-theme={theme_name}\n\n\
+         [colors-{theme_name}]\nforeground={}\nbackground={}\nselection-foreground={}\nselection-background={}\ncursor={} {}\nurls={}\n\n\
          regular0={}\nregular1={}\nregular2={}\nregular3={}\nregular4={}\nregular5={}\nregular6={}\nregular7={}\n\n\
          bright0={}\nbright1={}\nbright2={}\nbright3={}\nbright4={}\nbright5={}\nbright6={}\nbright7={}\n",
         hex(p.text),
@@ -435,6 +440,19 @@ mod tests {
     }
 
     #[test]
+    fn foot_uses_the_current_non_deprecated_color_section() {
+        let dark = render_foot(ThemeMode::Dark);
+        assert!(dark.contains("initial-color-theme=dark\n"));
+        assert!(dark.contains("[colors-dark]\n"));
+        assert!(!dark.contains("[colors]\n"));
+
+        let light = render_foot(ThemeMode::Light);
+        assert!(light.contains("initial-color-theme=light\n"));
+        assert!(light.contains("[colors-light]\n"));
+        assert!(!light.contains("[colors]\n"));
+    }
+
+    #[test]
     fn applying_projection_writes_exact_private_files_atomically() {
         let temp = tempfile::tempdir().unwrap();
         let configs = ThemeConfigSet::for_mode(ThemeMode::Light);
@@ -492,6 +510,10 @@ mod tests {
             assert!(geometry.contains("scale trough {\n  min-width: 6px;\n  min-height: 6px;"));
             assert!(geometry.contains("scale slider {\n  min-width: 18px;\n  min-height: 18px;"));
         }
+        let gtk4_geometry =
+            include_str!("../../assets/themes/WildBuzzard-Shared/gtk-4.0/geometry.css");
+        assert!(gtk4_geometry.contains("button.wb-primary-action label,"));
+        assert!(gtk4_geometry.contains("color: @wb_selected_text;"));
 
         for (mode, palette_css) in [
             (

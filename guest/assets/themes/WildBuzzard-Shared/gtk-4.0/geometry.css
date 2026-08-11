@@ -89,10 +89,24 @@ button.wb-primary-action:focus-visible {
   color: @wb_selected_text;
 }
 
+/* GTK's stock suggested-action theme targets the child label directly.  Keep
+ * the Cinnamon-style dark foreground authoritative at that same level. */
+button.wb-primary-action label,
+button.wb-primary-action:hover label,
+button.wb-primary-action:active label,
+button.wb-primary-action:checked label,
+button.wb-primary-action:focus-visible label {
+  color: @wb_selected_text;
+}
+
 button.wb-primary-action:disabled {
   color: @wb_disabled;
   background-color: @wb_canvas;
   border-color: @wb_border;
+}
+
+button.wb-primary-action:disabled label {
+  color: @wb_disabled;
 }
 
 dropdown button,
