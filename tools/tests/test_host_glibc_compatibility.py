@@ -44,6 +44,7 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
             r"debian:trixie-slim@sha256:[0-9a-f]{64}",
         )
         self.assertIn("ldd -r --", self.workflow)
+        self.assertIn('grep -Fq "=> not found"', self.workflow)
         self.assertIn("wildbuzzard-display --version", self.workflow)
 
     def test_complete_appdir_has_a_glibc_2_39_ceiling(self) -> None:
@@ -65,6 +66,15 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
             "videoconvert/libspa-videoconvert.so",
         ):
             self.assertIn(plugin, self.builder)
+
+    def test_builder_completes_linuxdeploys_excluded_library_closure(self) -> None:
+        self.assertIn("complete_host_library_closure()", self.builder)
+        self.assertIn(
+            'complete_host_library_closure "$appdir" "$appdir/usr/lib"',
+            self.builder,
+        )
+        self.assertIn("libpthread.so.0", self.builder)
+        self.assertIn("libresolv.so.2", self.builder)
 
 
 if __name__ == "__main__":

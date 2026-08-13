@@ -55,7 +55,7 @@ case "$(uname -m)" in
         ;;
 esac
 
-for command_name in cargo cmp curl dd file find git id install make mksquashfs ninja patch python3 readelf realpath sha256sum sort tar touch unzip zstd bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
+for command_name in awk cargo cmp curl dd file find git id install ldd make mksquashfs ninja patch python3 readelf readlink realpath seq sha256sum sort tar touch unzip zstd bwrap unshare dpkg-deb pkg-config gst-launch-1.0 gst-inspect-1.0 pw-dump; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "build dependency missing: $command_name" >&2
         exit 1
@@ -200,6 +200,73 @@ verify_elf_relocation_closure() {
         printf '%s\n' "$closure" >&2
         return 1
     fi
+}
+
+complete_host_library_closure() {
+    local app_root=$1
+    local library_dir=$2
+    local pass copied object soname resolved destination closure
+    for pass in $(seq 1 32); do
+        copied=0
+        while IFS= read -r -d '' object; do
+            file -b -- "$object" | grep -q ELF || continue
+            closure=$(LD_LIBRARY_PATH="$library_dir" ldd -- "$object" 2>&1) || {
+                echo "cannot inspect portable ELF dependency closure: $object" >&2
+                printf '%s\n' "$closure" >&2
+                return 1
+            }
+            if grep -Fq '=> not found' <<<"$closure"; then
+                echo "portable ELF has an unresolved build dependency: $object" >&2
+                printf '%s\n' "$closure" >&2
+                return 1
+            fi
+            while IFS=$'\t' read -r soname resolved; do
+                [[ -n "$soname" && -n "$resolved" ]] || continue
+                case "$soname" in
+                    libc.so.6|libdl.so.2|libm.so.6|libpthread.so.0|\
+                        libresolv.so.2|librt.so.1|libutil.so.1)
+                        continue
+                        ;;
+                esac
+                case "$soname" in
+                    *[!A-Za-z0-9._+-]*|'')
+                        echo "unsafe portable ELF dependency name: $soname" >&2
+                        return 1
+                        ;;
+                esac
+                case "$resolved" in
+                    "$app_root"/*) continue ;;
+                    /lib/*|/usr/lib/*) ;;
+                    *)
+                        echo "portable ELF dependency resolved outside the build system libraries: $resolved" >&2
+                        return 1
+                        ;;
+                esac
+                destination="$library_dir/$soname"
+                if [[ ! -e "$destination" && ! -L "$destination" ]]; then
+                    resolved=$(readlink -f -- "$resolved")
+                    [[ -f "$resolved" && ! -L "$resolved" ]] || {
+                        echo "portable ELF dependency is not a regular resolved file: $resolved" >&2
+                        return 1
+                    }
+                    install -m755 "$resolved" "$destination"
+                    copied=$((copied + 1))
+                fi
+            done < <(awk '$2 == "=>" && $3 ~ /^\// {print $1 "\t" $3}' <<<"$closure")
+        done < <(
+            find "$app_root/usr/bin" -maxdepth 1 -type f -print0
+            find "$app_root/usr/lib" -maxdepth 1 -type f -print0
+            find "$app_root/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -print0
+            find "$app_root/usr/lib/spa-0.2" -type f -print0
+            find "$app_root/usr/libexec/wildbuzzard" -maxdepth 1 \
+                -type f ! -name tar.real -print0
+        )
+        if (( copied == 0 )); then
+            return 0
+        fi
+    done
+    echo 'portable host library closure did not converge after 32 passes' >&2
+    return 1
 }
 
 verify_pinned_libxkbcommon() {
@@ -913,6 +980,7 @@ verify_pinned_libxkbcommon \
     "$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
     "$appdir/usr/share/wildbuzzard/libxkbcommon0.version" \
     "$appdir/usr/share/doc/libxkbcommon0/copyright"
+complete_host_library_closure "$appdir" "$appdir/usr/lib"
 verify_elf_relocation_closure \
     "$appdir/usr/bin/wildbuzzard-display" \
     "wildbuzzard-display" \

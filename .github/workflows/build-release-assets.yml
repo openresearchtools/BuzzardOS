@@ -152,6 +152,9 @@ jobs:
                 linkage_status=0
                 linkage=$(ldd -r -- "$executable" 2>&1) || linkage_status=$?
                 printf "%s\n" "$linkage"
+                if grep -Fq "=> not found" <<<"$linkage"; then
+                  exit 1
+                fi
                 if [[ $linkage_status -ne 0 ]] &&
                     ! grep -Fq "not a dynamic executable" <<<"$linkage"; then
                   exit "$linkage_status"
