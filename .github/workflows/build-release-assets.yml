@@ -49,12 +49,9 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            acl attr jq rsync skopeo uidmap xz-utils zstd
+            acl attr jq lxc rsync skopeo uidmap xz-utils zstd
           rustup toolchain install 1.96.0 --profile minimal
           rustup default 1.96.0
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
           docker buildx version
 
       - name: Create pinned Ubuntu 26.04 application build environment

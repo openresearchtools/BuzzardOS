@@ -102,6 +102,17 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
             "apparmor_restrict_unprivileged_userns = 0", self.dependency_installer
         )
 
+    def test_runner_uses_the_trusted_ubuntu_userns_gate(self) -> None:
+        self.assertIn(
+            "acl attr jq lxc rsync skopeo uidmap xz-utils zstd", self.workflow
+        )
+        self.assertNotIn(
+            "apparmor_restrict_unprivileged_userns=0", self.workflow
+        )
+        self.assertNotIn(
+            "apparmor_restrict_unprivileged_userns = 0", self.workflow
+        )
+
     def test_export_tar_is_pinned_to_the_oldest_supported_glibc(self) -> None:
         self.assertIn("tar_package_version=1.34+dfsg-1+deb11u1", self.portable_builder)
         self.assertIn("tar_binary_sha256=8498b0a43e820b0f", self.portable_builder)
