@@ -14,25 +14,11 @@ if ! command -v apt-get >/dev/null 2>&1; then
     fail "automatic installation currently supports Debian and Ubuntu. Install the uidmap package, then rerun ./Install-Dependencies."
 fi
 
-apparmor_userns_restricted=false
-if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] &&
-    [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 ]; then
-    apparmor_userns_restricted=true
-fi
-
 if [ "$(id -u)" -eq 0 ]; then
     fail "run this installer as the desktop user, not through sudo"
 elif command -v sudo >/dev/null 2>&1; then
     sudo apt-get update
-    if [ "$apparmor_userns_restricted" = true ]; then
-        # Ubuntu deliberately denies the capabilities required by arbitrary
-        # user-writable unshare binaries. Its root-owned, AppArmor-profiled
-        # lxc-usernsexec is the narrow distro entry point for the same map;
-        # Buzzard OS does not use the LXC daemon, storage or networking.
-        sudo apt-get install --yes --no-install-recommends uidmap lxc
-    else
-        sudo apt-get install --yes --no-install-recommends uidmap
-    fi
+    sudo apt-get install --yes --no-install-recommends uidmap
 else
     fail "sudo is unavailable. As an administrator install the uidmap package."
 fi
@@ -53,23 +39,23 @@ gid=$(id -g)
 find_range() {
     file=$1
     awk -F: -v account="$account" -v uid="$uid" \
-        '($1 == account || $1 == uid) && $3 >= 65535 { print $2 ":" $3; exit }' \
+        '($1 == account || $1 == uid) && $3 >= 65536 { print $2 ":" $3; exit }' \
         "$file"
 }
 
 uid_range=$(find_range /etc/subuid)
 gid_range=$(find_range /etc/subgid)
-[ -n "$uid_range" ] || fail "no subordinate UID range of at least 65535 IDs exists for $account in /etc/subuid"
-[ -n "$gid_range" ] || fail "no subordinate GID range of at least 65535 IDs exists for $account in /etc/subgid"
+[ -n "$uid_range" ] || fail "no subordinate UID range of at least 65536 IDs exists for $account in /etc/subuid"
+[ -n "$gid_range" ] || fail "no subordinate GID range of at least 65536 IDs exists for $account in /etc/subgid"
 subuid_start=${uid_range%%:*}
 subgid_start=${gid_range%%:*}
 case "$subuid_start:$subgid_start:$uid:$gid" in
     *[!0-9:]*) fail "subordinate-ID configuration is not numeric" ;;
 esac
-if [ "$uid" -ge "$subuid_start" ] && [ "$uid" -lt $((subuid_start + 65535)) ]; then
+if [ "$uid" -ge "$subuid_start" ] && [ "$uid" -lt $((subuid_start + 65536)) ]; then
     fail "the subordinate UID range overlaps the desktop user's host UID"
 fi
-if [ "$gid" -ge "$subgid_start" ] && [ "$gid" -lt $((subgid_start + 65535)) ]; then
+if [ "$gid" -ge "$subgid_start" ] && [ "$gid" -lt $((subgid_start + 65536)) ]; then
     fail "the subordinate GID range overlaps the desktop user's host GID"
 fi
 
@@ -79,40 +65,14 @@ unshare="$portable_dir/app/usr/libexec/wildbuzzard/unshare"
 helper_path=$(dirname -- "$(command -v newuidmap)")
 [ "$(dirname -- "$(command -v newgidmap)")" = "$helper_path" ] || \
     fail "newuidmap and newgidmap must be installed in the same trusted system directory"
-tail_count=64535
-if [ "$apparmor_userns_restricted" = true ]; then
-    namespace_entry=/usr/bin/lxc-usernsexec
-    [ -f "$namespace_entry" ] && [ ! -L "$namespace_entry" ] && [ -x "$namespace_entry" ] ||
-        fail "Ubuntu AppArmor requires the trusted lxc-usernsexec installed by the lxc package"
-    entry_owner_mode=$(stat -c '%u:%a' -- "$namespace_entry")
-    case "$entry_owner_mode" in
-        0:*[2367]?|0:*[2367])
-            fail "$namespace_entry must not be group- or world-writable (found $entry_owner_mode)"
-            ;;
-        0:*) ;;
-        *) fail "$namespace_entry must be root-owned (found $entry_owner_mode)" ;;
-    esac
-    env PATH="$helper_path" "$namespace_entry" \
-        -m "u:0:$subuid_start:1000" \
-        -m "u:1000:$uid:1" \
-        -m "u:1001:$((subuid_start + 1000)):$tail_count" \
-        -m "g:0:$subgid_start:1000" \
-        -m "g:1000:$gid:1" \
-        -m "g:1001:$((subgid_start + 1000)):$tail_count" \
-        -- /bin/true ||
-        fail "Ubuntu AppArmor rejected Buzzard OS's rootless UID/GID namespace"
-else
-    env PATH="$helper_path" "$unshare" \
-        --user \
-        --map-users "0:$subuid_start:1000" \
-        --map-users "1000:$uid:1" \
-        --map-users "1001:$((subuid_start + 1000)):$tail_count" \
-        --map-groups "0:$subgid_start:1000" \
-        --map-groups "1000:$gid:1" \
-        --map-groups "1001:$((subgid_start + 1000)):$tail_count" \
-        --setuid 0 --setgid 0 -- /bin/true ||
-        fail "the kernel or host security policy rejected Buzzard OS's rootless UID/GID namespace"
-fi
+env PATH="$helper_path" "$unshare" \
+    --user \
+    --map-users "0:$subuid_start:65536" \
+    --map-user 1000 \
+    --map-groups "0:$subgid_start:65536" \
+    --map-group 1000 \
+    --setuid 0 --setgid 0 -- /bin/true ||
+    fail "the kernel or host security policy rejected Buzzard OS's rootless UID/GID namespace"
 
 [ -n "${XDG_RUNTIME_DIR:-}" ] || fail "XDG_RUNTIME_DIR is missing; run from the logged-in desktop session"
 [ -n "${WAYLAND_DISPLAY:-}" ] || fail "WAYLAND_DISPLAY is missing; a host Wayland session is required"

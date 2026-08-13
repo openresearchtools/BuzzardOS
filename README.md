@@ -68,14 +68,12 @@ needs:
 - a normal host PipeWire session only for optional audio, microphone, and
   camera integration.
 
-On Debian or Ubuntu, `./Install-Dependencies` installs `uidmap` and verifies
-the authorization helpers and subordinate ranges. On Ubuntu systems enforcing
-AppArmor's unprivileged-user-namespace policy, it also installs the distro's
-root-owned, AppArmor-profiled `lxc-usernsexec` entry point; Buzzard OS uses
-that executable only to establish its explicit UID/GID map and never uses LXC
-services, storage, networking, or machine management. It does not disable the
-host's AppArmor policy. Buzzard OS remains rootless and installs no daemon,
-service, setuid helper, kernel module, or package of its own.
+On Debian or Ubuntu, `./Install-Dependencies` installs only `uidmap` and
+verifies the authorization helpers and subordinate ranges. Buzzard OS uses
+its bundled namespace helper with those distro-owned authorization gates. It
+does not install or use LXC and does not disable the host's AppArmor policy.
+Buzzard OS remains rootless and installs no daemon, service, setuid helper,
+kernel module, or package of its own.
 
 ## Machines and OCI exchange
 

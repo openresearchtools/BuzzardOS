@@ -114,17 +114,14 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("`../../provenance/guest/`", self.guest_license_readme)
         self.assertNotIn("`../../provenance/guest-rootfs/`", self.guest_license_readme)
 
-    def test_dependency_installer_handles_ubuntu_userns_policy_without_disabling_it(
-        self,
-    ) -> None:
-        self.assertIn(
-            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
-            self.dependency_installer,
-        )
-        self.assertIn("uidmap lxc", self.dependency_installer)
-        self.assertIn("/usr/bin/lxc-usernsexec", self.dependency_installer)
-        self.assertIn('-m "u:1000:$uid:1"', self.dependency_installer)
-        self.assertIn('-m "g:1000:$gid:1"', self.dependency_installer)
+    def test_dependency_installer_uses_only_uidmap_and_bundled_unshare(self) -> None:
+        self.assertIn("install --yes --no-install-recommends uidmap", self.dependency_installer)
+        self.assertNotIn("lxc-usernsexec", self.dependency_installer)
+        self.assertNotIn("uidmap lxc", self.dependency_installer)
+        self.assertIn('--map-users "0:$subuid_start:65536"', self.dependency_installer)
+        self.assertIn("--map-user 1000", self.dependency_installer)
+        self.assertIn('--map-groups "0:$subgid_start:65536"', self.dependency_installer)
+        self.assertIn("--map-group 1000", self.dependency_installer)
         self.assertNotIn(
             "apparmor_restrict_unprivileged_userns=0", self.dependency_installer
         )
@@ -132,10 +129,11 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
             "apparmor_restrict_unprivileged_userns = 0", self.dependency_installer
         )
 
-    def test_runner_uses_the_trusted_ubuntu_userns_gate(self) -> None:
+    def test_runner_installs_uidmap_without_lxc(self) -> None:
         self.assertIn(
-            "acl attr jq lxc rsync skopeo uidmap xz-utils zstd", self.workflow
+            "acl attr jq rsync skopeo uidmap xz-utils zstd", self.workflow
         )
+        self.assertNotIn("jq lxc rsync", self.workflow)
         self.assertNotIn(
             "apparmor_restrict_unprivileged_userns=0", self.workflow
         )

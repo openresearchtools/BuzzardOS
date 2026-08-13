@@ -161,11 +161,11 @@ archive="$runtime_dir/default-rootfs.oci.tar.zst"
 "$launcher" --storage-dir "$roundtrip_root" import "$layout" --name imported
 mapped_rootfs="$roundtrip_root/Machines/imported/rootfs"
 subuid_start=$(awk -F: -v owner="$(id -un)" -v numeric="$runner_uid" \
-    '($1 == owner || $1 == numeric) && $3 >= 65535 { print $2; exit }' /etc/subuid)
+    '($1 == owner || $1 == numeric) && $3 >= 65536 { print $2; exit }' /etc/subuid)
 subgid_start=$(awk -F: -v owner="$(id -un)" -v numeric="$runner_gid" \
-    '($1 == owner || $1 == numeric) && $3 >= 65535 { print $2; exit }' /etc/subgid)
+    '($1 == owner || $1 == numeric) && $3 >= 65536 { print $2; exit }' /etc/subgid)
 [[ -n "$subuid_start" && -n "$subgid_start" ]] || {
-    echo 'runner account needs subordinate UID/GID ranges of at least 65535 IDs' >&2
+    echo 'runner account needs subordinate UID/GID ranges of at least 65536 IDs' >&2
     exit 1
 }
 [[ "$(stat -c %u "$mapped_rootfs/etc/passwd")" == "$subuid_start" ]] || {

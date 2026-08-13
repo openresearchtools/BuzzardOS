@@ -176,13 +176,9 @@ Normal host prerequisites are limited to:
 - Linux kernel support for the required unprivileged namespaces and mounts.
 - Configured subordinate UID/GID ranges and trusted host
   `newuidmap`/`newgidmap` authorization gates.
-- On Ubuntu hosts enforcing AppArmor's unprivileged-user-namespace
-  restriction, the root-owned distro `lxc-usernsexec` entry point and its
-  distro AppArmor profile. `Install-Dependencies` installs it from Ubuntu's
-  `lxc` package. Buzzard OS uses no LXC daemon, storage, network, machine
-  configuration, or lifecycle service; this executable only establishes the
-  same explicit three-part UID/GID map that bundled `unshare` establishes on
-  other hosts. The global AppArmor restriction must never be disabled.
+- The bundled namespace helper uses the distro-owned `newuidmap` and
+  `newgidmap` gates to authorize the exact subordinate-ID map. Buzzard OS does
+  not install or use LXC and never disables Ubuntu's global AppArmor policy.
 - A host Wayland session.
 - A working host GPU kernel driver and permission to selected devices.
 - For optional audio, microphone, and camera integration, a working host
