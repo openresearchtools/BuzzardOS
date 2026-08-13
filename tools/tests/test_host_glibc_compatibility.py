@@ -56,6 +56,16 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
             ),
         )
 
+    def test_ubuntu_24_spa_payload_uses_real_plugin_paths(self) -> None:
+        self.assertNotIn("    libspa.so \\\n", self.builder)
+        for plugin in (
+            "support/libspa-support.so",
+            "support/libspa-dbus.so",
+            "audioconvert/libspa-audioconvert.so",
+            "videoconvert/libspa-videoconvert.so",
+        ):
+            self.assertIn(plugin, self.builder)
+
 
 if __name__ == "__main__":
     unittest.main()

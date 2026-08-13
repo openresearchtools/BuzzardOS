@@ -678,7 +678,6 @@ for plugin in "${gst_plugins[@]}"; do
 done
 spa_plugin_sources=()
 for relative in \
-    libspa.so \
     support/libspa-support.so \
     support/libspa-dbus.so \
     audioconvert/libspa-audioconvert.so \
