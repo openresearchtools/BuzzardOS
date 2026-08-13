@@ -2,7 +2,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
-portable_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+case $0 in
+    */*) portable_parent=${0%/*} ;;
+    *)
+        printf '%s\n' \
+            "Buzzard OS must be launched through an explicit executable path" >&2
+        exit 126
+        ;;
+esac
+portable_dir=$(CDPATH= cd -P -- "$portable_parent" && pwd -P)
 app_dir="$portable_dir/app"
 launcher="$app_dir/AppRun"
 

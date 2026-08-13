@@ -27,4 +27,22 @@ if [ ! -s /etc/machine-id ]; then
     systemd-machine-id-setup
 fi
 
+# Clone identity reset removes every SSH host key while the machine is still
+# private staging.  OpenSSH's -A operation creates only missing default host
+# keys, so an existing machine's identity is never rotated during boot.  SSH
+# remains optional: imported guests without the distro helper continue booting.
+ssh_host_keys_missing=0
+for key in \
+    /etc/ssh/ssh_host_rsa_key \
+    /etc/ssh/ssh_host_ecdsa_key \
+    /etc/ssh/ssh_host_ed25519_key; do
+    if [ ! -e "$key" ] && [ ! -L "$key" ]; then
+        ssh_host_keys_missing=1
+        break
+    fi
+done
+if [ "$ssh_host_keys_missing" -eq 1 ] && [ -x /usr/bin/ssh-keygen ]; then
+    /usr/bin/ssh-keygen -A
+fi
+
 exec /lib/systemd/systemd --system

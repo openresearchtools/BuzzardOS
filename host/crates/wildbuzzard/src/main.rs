@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
@@ -31,6 +32,7 @@ const DEFAULT_ROOTFS_OCI_ARCHIVE: &str = "default-rootfs.oci.tar.zst";
 const DEFAULT_ROOTFS_OCI_MANIFEST: &str = "default-rootfs.oci.json";
 const MAX_GUEST_ID: u64 = 65_535;
 const MAX_OCI_PAX_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OCI_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
 const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
@@ -520,6 +522,15 @@ enum Commands {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Flatten one release-builder machine into a generic identity-free OCI seed.
+    #[command(name = "__export-generic-seed", hide = true)]
+    ExportGenericSeed {
+        name: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        source_date_epoch: i64,
+    },
     /// Clone one stopped machine and regenerate its machine identity.
     Clone { source: String, name: String },
     /// Permanently delete one stopped machine and its persistent rootfs.
@@ -562,6 +573,10 @@ enum Commands {
         output: PathBuf,
         #[arg(long)]
         work_dir: PathBuf,
+        #[arg(long)]
+        generic_seed: bool,
+        #[arg(long, requires = "generic_seed")]
+        source_date_epoch: Option<i64>,
     },
     #[command(name = "__reset-clone-identity", hide = true)]
     ResetCloneIdentity {
@@ -696,9 +711,14 @@ fn run() -> Result<()> {
         machine_config,
         output,
         work_dir,
+        generic_seed,
+        source_date_epoch,
     }) = &cli.command
     {
-        export_oci_archive(rootfs, machine_config, output, work_dir)?;
+        if *generic_seed != source_date_epoch.is_some() {
+            bail!("generic OCI seed export requires exactly one source timestamp");
+        }
+        export_oci_archive(rootfs, machine_config, output, work_dir, *source_date_epoch)?;
         return Ok(());
     }
     if let Some(Commands::ResetCloneIdentity { rootfs }) = &cli.command {
@@ -788,7 +808,12 @@ fn run() -> Result<()> {
             mode,
             manifest,
         }) => import_machine(&paths, &source, &name, manifest.as_deref(), mode, None),
-        Some(Commands::Export { name, output }) => export_machine(&paths, &name, &output),
+        Some(Commands::Export { name, output }) => export_machine(&paths, &name, &output, None),
+        Some(Commands::ExportGenericSeed {
+            name,
+            output,
+            source_date_epoch,
+        }) => export_machine(&paths, &name, &output, Some(source_date_epoch)),
         Some(Commands::Clone { source, name }) => clone_machine(&paths, &source, &name),
         Some(Commands::Delete { name, yes }) => delete_machine(&paths, &name, yes),
         Some(Commands::Window { name, action }) => window(&paths, &name, action),
@@ -1123,6 +1148,16 @@ fn import_machine(
             )
         });
         config.oci = imported_oci_metadata.clone();
+        // Restore identity uniqueness is a portable-root invariant. Serialize
+        // only the check/commit window so two completed private stages cannot
+        // both observe the same identity as absent and then commit it under
+        // different names.
+        let _identity_registry_lock = if mode == ImportModeArg::Restore && carries_portable_identity
+        {
+            Some(lock_machine_identity_registry(paths)?)
+        } else {
+            None
+        };
         if mode == ImportModeArg::Restore && carries_portable_identity {
             reject_duplicate_machine_identity(paths, config.id)?;
         } else {
@@ -1206,9 +1241,31 @@ fn reject_duplicate_machine_identity(paths: &WbPaths, identity: uuid::Uuid) -> R
     Ok(())
 }
 
+fn lock_machine_identity_registry(paths: &WbPaths) -> Result<File> {
+    let machines = paths.machines();
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&machines)
+        .with_context(|| format!("opening {} for identity locking", machines.display()))?;
+    if !file.metadata()?.is_dir() {
+        bail!("portable Machines path is not a directory");
+    }
+    file.lock_exclusive()
+        .context("locking the portable machine identity registry")?;
+    Ok(file)
+}
+
 fn read_oci_index(layout: &Path) -> Result<OciIndex> {
     let path = layout.join("index.json");
-    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut file = open_regular_nofollow(&path, "OCI image index")?;
+    let size = file.metadata()?.len();
+    if size > MAX_OCI_METADATA_BYTES {
+        bail!("OCI image index exceeds {MAX_OCI_METADATA_BYTES} bytes");
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
     let index: OciIndex = serde_json::from_slice(&bytes).context("parsing OCI image index")?;
     if index.schema_version != 2 {
         bail!(
@@ -1246,9 +1303,17 @@ fn canonical_oci_layout(path: &Path) -> Result<PathBuf> {
         );
     }
     let layout = candidates.remove(0).canonicalize()?;
+    let mut layout_file = open_regular_nofollow(&layout.join("oci-layout"), "oci-layout")?;
+    let mut layout_bytes = Vec::new();
+    Read::by_ref(&mut layout_file)
+        .take(MAX_ROOTFS_MANIFEST_BYTES + 1)
+        .read_to_end(&mut layout_bytes)
+        .context("reading oci-layout")?;
+    if layout_bytes.len() as u64 > MAX_ROOTFS_MANIFEST_BYTES {
+        bail!("oci-layout exceeds {MAX_ROOTFS_MANIFEST_BYTES} bytes");
+    }
     let layout_record: serde_json::Value =
-        serde_json::from_slice(&fs::read(layout.join("oci-layout")).context("reading oci-layout")?)
-            .context("parsing oci-layout")?;
+        serde_json::from_slice(&layout_bytes).context("parsing oci-layout")?;
     if layout_record
         .get("imageLayoutVersion")
         .and_then(|v| v.as_str())
@@ -1387,7 +1452,12 @@ impl<W: Write> Write for DigestingWriter<W> {
     }
 }
 
-fn export_machine(paths: &WbPaths, name: &str, output: &Path) -> Result<()> {
+fn export_machine(
+    paths: &WbPaths,
+    name: &str,
+    output: &Path,
+    generic_seed_source_date_epoch: Option<i64>,
+) -> Result<()> {
     let machine_dir = require_machine(paths, name)?;
     let _lock = lock_stopped_machine_for_export(&machine_dir)?;
     let output = std::path::absolute(output)
@@ -1422,7 +1492,7 @@ fn export_machine(paths: &WbPaths, name: &str, output: &Path) -> Result<()> {
     let launcher = std::env::current_exe().context("locating launcher for OCI export")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
-    let status_result = command
+    command
         .args(id_map.namespace_args())
         .arg(launcher)
         .arg("__export-oci")
@@ -1433,15 +1503,19 @@ fn export_machine(paths: &WbPaths, name: &str, output: &Path) -> Result<()> {
         .arg("--output")
         .arg(temporary.path())
         .arg("--work-dir")
-        .arg(work.path())
-        .stdin(Stdio::null())
-        .status()
-        .with_context(|| {
-            format!(
-                "starting OCI export namespace with {}",
-                namespace_program.display()
-            )
-        });
+        .arg(work.path());
+    if let Some(source_date_epoch) = generic_seed_source_date_epoch {
+        command
+            .arg("--generic-seed")
+            .arg("--source-date-epoch")
+            .arg(source_date_epoch.to_string());
+    }
+    let status_result = command.stdin(Stdio::null()).status().with_context(|| {
+        format!(
+            "starting OCI export namespace with {}",
+            namespace_program.display()
+        )
+    });
     let cleanup_result = cleanup_export_stage(&resources, work.path(), &paths.cache());
     let status = match (status_result, cleanup_result) {
         (Ok(status), Ok(())) => status,
@@ -1528,6 +1602,7 @@ fn export_oci_archive(
     machine_config_path: &Path,
     output: &Path,
     work_dir: &Path,
+    generic_seed_source_date_epoch: Option<i64>,
 ) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     reject_rootfs_submounts(rootfs)?;
@@ -1542,14 +1617,30 @@ fn export_oci_archive(
     let blob_dir = layout.join("blobs/sha256");
     fs::create_dir_all(&blob_dir).context("creating OCI layout blob directory")?;
 
+    // Generic install media must not retain an imported machine identity, but
+    // export must also remain read-only with respect to its source machine.
+    // Make the reset in a private, exact tar copy inside this same guest-ID
+    // namespace, then snapshot only that private copy.
+    let generic_rootfs = generic_seed_source_date_epoch
+        .map(|timestamp| copy_rootfs_for_generic_seed(&tar, rootfs, work_dir, timestamp))
+        .transpose()?;
+    let export_rootfs = generic_rootfs.as_deref().unwrap_or(rootfs);
+
     let layer_temporary = work_dir.join("rootfs-layer.tar.zst");
     let (diff_digest, layer_digest, layer_size) =
-        write_rootfs_layer(&tar, rootfs, &layer_temporary)?;
+        write_rootfs_layer(&tar, export_rootfs, &layer_temporary)?;
     let layer_hex = validate_sha256_digest(&layer_digest)?;
     fs::rename(&layer_temporary, blob_dir.join(layer_hex))
         .context("committing OCI filesystem layer blob")?;
 
-    let created = config.created_at.to_rfc3339();
+    let created = generic_seed_source_date_epoch
+        .map(|timestamp| {
+            DateTime::<Utc>::from_timestamp(timestamp, 0)
+                .context("generic seed source timestamp is outside the supported range")
+        })
+        .transpose()?
+        .unwrap_or(config.created_at)
+        .to_rfc3339();
     let environment = if config.oci.environment.is_empty() {
         vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned()]
     } else {
@@ -1561,9 +1652,15 @@ fn export_oci_archive(
         config.oci.entrypoint.clone()
     };
     let mut labels = config.oci.labels.clone();
-    labels
-        .entry("org.opencontainers.image.title".into())
-        .or_insert_with(|| "Buzzard OS persistent machine export".into());
+    if generic_seed_source_date_epoch.is_some() {
+        labels
+            .entry("org.opencontainers.image.title".into())
+            .or_insert_with(|| "Buzzard OS rootfs seed".into());
+    } else {
+        labels
+            .entry("org.opencontainers.image.title".into())
+            .or_insert_with(|| "Buzzard OS persistent machine export".into());
+    }
     labels
         .entry("org.opencontainers.image.source".into())
         .or_insert_with(|| "https://github.com/openresearchtools/BuzzardOS".into());
@@ -1589,7 +1686,19 @@ fn export_oci_archive(
         "os": "linux",
         "config": process_config,
         "rootfs": {"type": "layers", "diff_ids": [diff_digest]},
-        "history": [{"created": created, "created_by": "BuzzardOS export", "comment": "full persistent rootfs snapshot"}]
+        "history": [{
+            "created": created,
+            "created_by": if generic_seed_source_date_epoch.is_some() {
+                "BuzzardOS generic seed flattener"
+            } else {
+                "BuzzardOS export"
+            },
+            "comment": if generic_seed_source_date_epoch.is_some() {
+                "identity-free flattened rootfs install seed"
+            } else {
+                "full persistent rootfs snapshot"
+            }
+        }]
     });
     let config_descriptor = write_json_blob(
         &blob_dir,
@@ -1597,15 +1706,22 @@ fn export_oci_archive(
         &image_config,
     )?;
 
-    let mut portable_config = config.clone();
-    sanitize_imported_machine_config(&mut portable_config);
-    let portable_config = serde_json::to_string(&portable_config)?;
     let mut annotations = BTreeMap::new();
-    annotations.insert(
-        "org.opencontainers.image.title".to_owned(),
-        format!("Buzzard OS machine {}", config.name),
-    );
-    annotations.insert(BUZZARD_OCI_CONFIG_ANNOTATION.to_owned(), portable_config);
+    if generic_seed_source_date_epoch.is_some() {
+        annotations.insert(
+            "org.opencontainers.image.title".to_owned(),
+            "Buzzard OS rootfs seed".to_owned(),
+        );
+    } else {
+        let mut portable_config = config.clone();
+        sanitize_imported_machine_config(&mut portable_config);
+        let portable_config = serde_json::to_string(&portable_config)?;
+        annotations.insert(
+            "org.opencontainers.image.title".to_owned(),
+            format!("Buzzard OS machine {}", config.name),
+        );
+        annotations.insert(BUZZARD_OCI_CONFIG_ANNOTATION.to_owned(), portable_config);
+    }
     let manifest = OciManifest {
         schema_version: 2,
         config: config_descriptor,
@@ -1630,7 +1746,10 @@ fn export_oci_archive(
     });
     index_descriptor.annotations.insert(
         OCI_REF_NAME_ANNOTATION.into(),
-        format!("{}-snapshot", config.name),
+        generic_seed_source_date_epoch.map_or_else(
+            || format!("{}-snapshot", config.name),
+            |_| "buzzardos-rootfs-seed".into(),
+        ),
     );
     let index = OciIndex {
         schema_version: 2,
@@ -1642,14 +1761,16 @@ fn export_oci_archive(
         b"{\"imageLayoutVersion\":\"1.0.0\"}\n",
     )?;
     sync_tree_metadata(&layout)?;
-    write_compressed_layout_archive(&tar, &layout, output)?;
+    write_compressed_layout_archive(&tar, &layout, output, generic_seed_source_date_epoch)?;
     Ok(())
 }
 
 fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(String, String, u64)> {
-    let mut child = Command::new(tar)
+    let mut command = Command::new(tar);
+    command
         .args(["--create", "--file=-", "--directory"])
-        .arg(rootfs)
+        .arg(rootfs);
+    let mut child = command
         .args([
             "--format=pax",
             "--numeric-owner",
@@ -1659,6 +1780,7 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
             "--xattrs-include=*",
             "--sparse",
             "--one-file-system",
+            "--atime-preserve=system",
             "--exclude=./proc/*",
             "--exclude=./sys/*",
             "--exclude=./dev/*",
@@ -1666,7 +1788,7 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
             "--exclude=./tmp/*",
             "--exclude=./shared/*",
             "--sort=name",
-            "--pax-option=delete=atime,delete=ctime",
+            "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
             ".",
         ])
         .stdin(Stdio::null())
@@ -1712,6 +1834,122 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
     ))
 }
 
+fn copy_rootfs_for_generic_seed(
+    tar: &Path,
+    source: &Path,
+    work_dir: &Path,
+    source_date_epoch: i64,
+) -> Result<PathBuf> {
+    let destination = work_dir.join("generic-rootfs");
+    fs::create_dir(&destination).context("creating private generic-seed rootfs stage")?;
+
+    let mut producer = Command::new(tar)
+        .args(["--create", "--file=-", "--directory"])
+        .arg(source)
+        .args([
+            "--format=pax",
+            "--numeric-owner",
+            "--acls",
+            "--selinux",
+            "--xattrs",
+            "--xattrs-include=*",
+            "--sparse",
+            "--one-file-system",
+            "--atime-preserve=system",
+            "--exclude=./proc/*",
+            "--exclude=./sys/*",
+            "--exclude=./dev/*",
+            "--exclude=./run/*",
+            "--exclude=./tmp/*",
+            "--exclude=./shared/*",
+            "--sort=name",
+            "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+            ".",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "starting bundled tar {} for private seed copy",
+                tar.display()
+            )
+        })?;
+    let producer_stdout = producer
+        .stdout
+        .take()
+        .context("private seed copy tar stdout was not piped")?;
+    let mut consumer = Command::new(tar)
+        .args(["--extract", "--file=-", "--directory"])
+        .arg(&destination)
+        .args([
+            "--numeric-owner",
+            "--same-owner",
+            "--acls",
+            "--selinux",
+            "--xattrs",
+            "--xattrs-include=*",
+            "--sparse",
+        ])
+        .stdin(Stdio::from(producer_stdout))
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "starting bundled tar {} to restore private seed copy",
+                tar.display()
+            )
+        })?;
+    let producer_status = producer
+        .wait()
+        .context("waiting for private seed copy writer")?;
+    let consumer_status = consumer
+        .wait()
+        .context("waiting for private seed copy reader")?;
+    if !producer_status.success() || !consumer_status.success() {
+        bail!(
+            "private generic-seed rootfs copy failed: writer={producer_status}, reader={consumer_status}"
+        );
+    }
+
+    reset_cloned_rootfs_identity(&destination)?;
+    for relative in ["", "etc/machine-id", "etc", "etc/ssh", "var/lib/systemd"] {
+        let path = destination.join(relative);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => set_link_mtime(&path, (source_date_epoch, 0))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    validate_identity_free_rootfs(&destination)?;
+    Ok(destination)
+}
+
+fn validate_identity_free_rootfs(rootfs: &Path) -> Result<()> {
+    if !fs::read(rootfs.join("etc/machine-id"))?.is_empty() {
+        bail!("generic seed staging rootfs retains a machine ID");
+    }
+    if rootfs.join("var/lib/systemd/random-seed").exists() {
+        bail!("generic seed staging rootfs retains a systemd random seed");
+    }
+    let ssh = rootfs.join("etc/ssh");
+    match fs::symlink_metadata(&ssh) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            for entry in fs::read_dir(&ssh)? {
+                if entry?.file_name().as_bytes().starts_with(b"ssh_host_") {
+                    bail!("generic seed staging rootfs retains an SSH host identity");
+                }
+            }
+        }
+        Ok(_) => bail!("generic seed staging SSH directory has an unsafe type"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn write_json_blob<T: Serialize>(
     blob_dir: &Path,
     media_type: &str,
@@ -1732,7 +1970,12 @@ fn write_json_blob<T: Serialize>(
     })
 }
 
-fn write_compressed_layout_archive(tar: &Path, layout: &Path, output: &Path) -> Result<()> {
+fn write_compressed_layout_archive(
+    tar: &Path,
+    layout: &Path,
+    output: &Path,
+    normalized_mtime: Option<i64>,
+) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -1742,10 +1985,20 @@ fn write_compressed_layout_archive(tar: &Path, layout: &Path, output: &Path) -> 
     if !file.metadata()?.is_file() {
         bail!("export output must be a regular file");
     }
-    let mut child = Command::new(tar)
+    let mut command = Command::new(tar);
+    command
         .args(["--create", "--file=-", "--directory"])
-        .arg(layout)
-        .args(["--format=posix", "--sort=name", "."])
+        .arg(layout);
+    if let Some(timestamp) = normalized_mtime {
+        command.arg(format!("--mtime=@{timestamp}"));
+    }
+    let mut child = command
+        .args([
+            "--format=posix",
+            "--sort=name",
+            "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
+            ".",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1837,7 +2090,7 @@ fn clone_machine(paths: &WbPaths, source: &str, name: &str) -> Result<()> {
     temporary
         .close()
         .context("releasing the clone export placeholder")?;
-    export_machine(paths, source, &archive_path)?;
+    export_machine(paths, source, &archive_path, None)?;
     let result = import_machine(
         paths,
         archive_path
@@ -1919,19 +2172,24 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
         }
     }
     let ssh = rootfs.join("etc/ssh");
-    if ssh.is_dir() {
-        for entry in fs::read_dir(&ssh)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            if name.as_bytes().starts_with(b"ssh_host_") {
-                let metadata = fs::symlink_metadata(entry.path())?;
-                if metadata.is_file() || metadata.file_type().is_symlink() {
-                    fs::remove_file(entry.path())?;
-                } else {
-                    bail!("SSH host identity entry has an unsafe type");
+    match fs::symlink_metadata(&ssh) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            for entry in fs::read_dir(&ssh)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name.as_bytes().starts_with(b"ssh_host_") {
+                    let metadata = fs::symlink_metadata(entry.path())?;
+                    if metadata.is_file() || metadata.file_type().is_symlink() {
+                        fs::remove_file(entry.path())?;
+                    } else {
+                        bail!("SSH host identity entry has an unsafe type");
+                    }
                 }
             }
         }
+        Ok(_) => bail!("SSH identity directory has an unsafe type"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     sync_parent_directory(&machine_id)?;
     Ok(())
@@ -2224,6 +2482,7 @@ struct BundledOciSeedManifest {
     platform: RootfsSeedPlatform,
     archive: BundledOciSeedArchive,
     manifest_digest: String,
+    source_manifest_digest: String,
     source_commit: String,
 }
 
@@ -2277,6 +2536,7 @@ fn bundled_rootfs_oci_archive(paths: &WbPaths) -> Result<PathBuf> {
     }
     validate_sha256_hex(&manifest.archive.sha256, "bundled OCI archive")?;
     validate_sha256_digest(&manifest.manifest_digest)?;
+    validate_sha256_digest(&manifest.source_manifest_digest)?;
     if !matches!(manifest.source_commit.len(), 40 | 64)
         || !manifest
             .source_commit
@@ -2938,13 +3198,15 @@ fn validate_sha256_digest(digest: &str) -> Result<&str> {
 }
 
 fn verified_blob_path(layout: &Path, descriptor: &OciDescriptor) -> Result<PathBuf> {
+    let (path, _) = open_verified_blob(layout, descriptor)?;
+    Ok(path)
+}
+
+fn open_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<(PathBuf, File)> {
     let hexadecimal = validate_sha256_digest(&descriptor.digest)?;
     let path = layout.join("blobs/sha256").join(hexadecimal);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("reading OCI blob {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        bail!("OCI blob {} is not a regular file", path.display());
-    }
+    let mut file = open_regular_nofollow(&path, "OCI blob")?;
+    let metadata = file.metadata()?;
     if metadata.len() != descriptor.size {
         bail!(
             "OCI blob {} has size {}, expected {}",
@@ -2954,7 +3216,6 @@ fn verified_blob_path(layout: &Path, descriptor: &OciDescriptor) -> Result<PathB
         );
     }
 
-    let mut file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
     let mut hash = Sha256::new();
     std::io::copy(&mut file, &mut hash)
         .with_context(|| format!("hashing OCI blob {}", descriptor.digest))?;
@@ -2965,12 +3226,31 @@ fn verified_blob_path(layout: &Path, descriptor: &OciDescriptor) -> Result<PathB
             descriptor.digest
         );
     }
-    Ok(path)
+    file.rewind()
+        .with_context(|| format!("rewinding OCI blob {}", descriptor.digest))?;
+    Ok((path, file))
 }
 
 fn read_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<Vec<u8>> {
-    let path = verified_blob_path(layout, descriptor)?;
-    fs::read(&path).with_context(|| format!("reading {}", path.display()))
+    if descriptor.size > MAX_OCI_METADATA_BYTES {
+        bail!(
+            "OCI metadata blob {} is {} bytes; maximum is {MAX_OCI_METADATA_BYTES}",
+            descriptor.digest,
+            descriptor.size
+        );
+    }
+    let (path, mut file) = open_verified_blob(layout, descriptor)?;
+    let mut bytes = Vec::with_capacity(descriptor.size as usize);
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let actual = format!("sha256:{:x}", Sha256::digest(&bytes));
+    if actual != descriptor.digest {
+        bail!(
+            "OCI blob changed after verification: expected {}, got {actual}",
+            descriptor.digest
+        );
+    }
+    Ok(bytes)
 }
 
 fn host_oci_architecture() -> Result<&'static str> {
@@ -3172,17 +3452,7 @@ fn apply_image_archive(
     chown(rootfs, Some(Uid::from_raw(0)), Some(Gid::from_raw(0)))
         .with_context(|| format!("setting root ownership on {}", rootfs.display()))?;
 
-    let index_path = layout.join("index.json");
-    let index_bytes =
-        fs::read(&index_path).with_context(|| format!("reading {}", index_path.display()))?;
-    let index: OciIndex =
-        serde_json::from_slice(&index_bytes).context("parsing OCI image index")?;
-    if index.schema_version != 2 {
-        bail!(
-            "unsupported OCI index schema version {}",
-            index.schema_version
-        );
-    }
+    let index = read_oci_index(layout)?;
     let descriptor = find_oci_manifest_descriptor(layout, &index, expected_digest)?;
     if descriptor.media_type != "application/vnd.oci.image.manifest.v1+json"
         && descriptor.media_type != "application/vnd.docker.distribution.manifest.v2+json"
@@ -3229,9 +3499,8 @@ fn apply_image_archive(
         ) {
             bail!("unsupported OCI layer media type {}", descriptor.media_type);
         }
-        let compressed = verified_blob_path(layout, descriptor)?;
         let layer_tar = work_dir.join(format!("layer-{index}.tar"));
-        decompress_layer(&compressed, &layer_tar)?;
+        decompress_verified_layer(layout, descriptor, &layer_tar)?;
         apply_layer(&layer_tar, rootfs)
             .with_context(|| format!("applying OCI layer {}", index + 1))?;
         fs::remove_file(&layer_tar).context("removing expanded OCI layer")?;
@@ -3240,10 +3509,72 @@ fn apply_image_archive(
     Ok(())
 }
 
+#[cfg(test)]
 fn decompress_layer(source: &Path, destination: &Path) -> Result<()> {
-    let mut input = BufReader::new(
-        File::open(source).with_context(|| format!("opening layer {}", source.display()))?,
-    );
+    let input = open_regular_nofollow(source, "OCI layer")?;
+    decompress_layer_file(input, destination)
+}
+
+fn decompress_verified_layer(
+    layout: &Path,
+    descriptor: &OciDescriptor,
+    destination: &Path,
+) -> Result<()> {
+    let hexadecimal = validate_sha256_digest(&descriptor.digest)?;
+    let path = layout.join("blobs/sha256").join(hexadecimal);
+    let mut input = open_regular_nofollow(&path, "OCI layer")?;
+    let metadata = input.metadata()?;
+    if metadata.len() != descriptor.size {
+        bail!(
+            "OCI blob {} has size {}, expected {}",
+            descriptor.digest,
+            metadata.len(),
+            descriptor.size
+        );
+    }
+    let mut magic = [0_u8; 4];
+    let read = input.read(&mut magic).context("reading OCI layer header")?;
+    input.rewind().context("rewinding OCI layer")?;
+    let input = HashingReader::new(BufReader::new(input));
+    let mut output =
+        File::create(destination).with_context(|| format!("creating {}", destination.display()))?;
+
+    let (_input, compressed_size, compressed_hash) = if read >= 2 && magic[..2] == [0x1f, 0x8b] {
+        let mut decoder = GzDecoder::new(input);
+        std::io::copy(&mut decoder, &mut output).context("decompressing gzip OCI layer")?;
+        let mut input = decoder.into_inner();
+        std::io::copy(&mut input, &mut std::io::sink())
+            .context("finishing gzip OCI layer verification")?;
+        input.finish()
+    } else if read == 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
+        let mut decoder = zstd::stream::read::Decoder::new(input)
+            .context("initializing zstd OCI layer decoder")?;
+        std::io::copy(&mut decoder, &mut output).context("decompressing zstd OCI layer")?;
+        let mut input = decoder.finish();
+        std::io::copy(&mut input, &mut std::io::sink())
+            .context("finishing zstd OCI layer verification")?;
+        input.into_inner().finish()
+    } else {
+        let mut input = input;
+        std::io::copy(&mut input, &mut output).context("copying uncompressed OCI layer")?;
+        input.finish()
+    };
+    let actual_digest = format!("sha256:{compressed_hash}");
+    if compressed_size != descriptor.size || actual_digest != descriptor.digest {
+        let _ = fs::remove_file(destination);
+        bail!(
+            "OCI layer changed while it was being read: expected {} bytes at {}, got {compressed_size} bytes at {actual_digest}",
+            descriptor.size,
+            descriptor.digest
+        );
+    }
+    output.sync_all().context("syncing expanded OCI layer")?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn decompress_layer_file(input: File, destination: &Path) -> Result<()> {
+    let mut input = BufReader::new(input);
     let mut magic = [0_u8; 4];
     let read = input.read(&mut magic).context("reading OCI layer header")?;
     input.rewind().context("rewinding OCI layer")?;
@@ -3365,7 +3696,7 @@ fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
             .context("reading OCI whiteout path")?
             .into_owned();
         let path = safe_relative_path(&entry_path)?;
-        if let Some(action) = whiteout_action(path) {
+        if let Some(action) = whiteout_action(path)? {
             match action {
                 Whiteout::Remove(target) => remove_whiteout_target(rootfs, &target)?,
                 Whiteout::Opaque(parent) => clear_whiteout_directory(rootfs, parent)?,
@@ -3393,7 +3724,7 @@ fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
             entry.path().context("reading OCI layer path")?.into_owned()
         };
         let path = safe_relative_path(&entry_path)?;
-        if whiteout_action(path).is_some() {
+        if whiteout_action(path)?.is_some() {
             continue;
         }
 
@@ -3521,14 +3852,23 @@ enum Whiteout<'a> {
     Opaque(&'a Path),
 }
 
-fn whiteout_action(path: &Path) -> Option<Whiteout<'_>> {
-    let name = path.file_name()?.to_str()?;
+fn whiteout_action(path: &Path) -> Result<Option<Whiteout<'_>>> {
+    let Some(name) = path.file_name().map(OsStr::as_bytes) else {
+        return Ok(None);
+    };
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    if name == ".wh..wh..opq" {
-        return Some(Whiteout::Opaque(parent));
+    if name == b".wh..wh..opq" {
+        return Ok(Some(Whiteout::Opaque(parent)));
     }
-    name.strip_prefix(".wh.")
-        .map(|target| Whiteout::Remove(parent.join(target)))
+    let Some(target) = name.strip_prefix(b".wh.") else {
+        return Ok(None);
+    };
+    if target.is_empty() {
+        bail!("OCI whiteout has no target at {}", path.display());
+    }
+    Ok(Some(Whiteout::Remove(
+        parent.join(OsStr::from_bytes(target)),
+    )))
 }
 
 fn safe_relative_path(path: &Path) -> Result<&Path> {
@@ -6846,6 +7186,22 @@ mod layer_tests {
     }
 
     #[test]
+    fn rejects_a_whiteout_without_a_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("etc")).unwrap();
+        fs::write(rootfs.join("etc/must-survive"), b"lower").unwrap();
+        let layer = layer_file(&temp, |builder| {
+            append_file(builder, "etc/.wh.", b"", 0o000);
+        });
+
+        let error = apply_layer(&layer, &rootfs).unwrap_err();
+
+        assert!(error.to_string().contains("whiteout has no target"));
+        assert_eq!(fs::read(rootfs.join("etc/must-survive")).unwrap(), b"lower");
+    }
+
+    #[test]
     fn preserves_hardlinks_symlinks_modes_ownership_and_xattrs() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
@@ -7424,6 +7780,40 @@ mod layer_tests {
     }
 
     #[test]
+    fn public_export_cannot_request_a_generic_seed() {
+        let parsed = Cli::try_parse_from([
+            "BuzzardOS",
+            "export",
+            "fixture",
+            "--output",
+            "fixture.oci.tar.zst",
+            "--generic-seed",
+        ]);
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn restore_identity_check_and_commit_use_one_portable_registry_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = WbPaths::discover(Some(temp.path())).unwrap();
+        paths.ensure().unwrap();
+        let first = lock_machine_identity_registry(&paths).unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(paths.machines())
+            .unwrap();
+
+        assert_eq!(
+            second.try_lock_exclusive().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(first);
+        second.try_lock_exclusive().unwrap();
+    }
+
+    #[test]
     fn clone_identity_reset_creates_a_missing_machine_id_and_removes_secrets() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
@@ -7611,7 +8001,14 @@ mod layer_tests {
         config.save(&machine).unwrap();
         let output = temp.path().join("machine.oci.tar.zst");
         File::create(&output).unwrap();
-        export_oci_archive(&rootfs, &machine.join(MachineConfig::FILE), &output, &work).unwrap();
+        export_oci_archive(
+            &rootfs,
+            &machine.join(MachineConfig::FILE),
+            &output,
+            &work,
+            None,
+        )
+        .unwrap();
 
         let extracted = temp.path().join("layout");
         fs::create_dir(&extracted).unwrap();
@@ -7637,6 +8034,138 @@ mod layer_tests {
                 .get("example.buzzard.test")
                 .map(String::as_str),
             Some("preserved")
+        );
+
+        fs::create_dir_all(rootfs.join("etc/ssh")).unwrap();
+        fs::create_dir_all(rootfs.join("var/lib/systemd")).unwrap();
+        fs::write(rootfs.join("etc/machine-id"), b"builder-machine-id\n").unwrap();
+        fs::write(rootfs.join("etc/ssh/ssh_host_ed25519_key"), b"builder-key").unwrap();
+        fs::write(rootfs.join("var/lib/systemd/random-seed"), b"builder-seed").unwrap();
+        let source_machine_id = fs::read(rootfs.join("etc/machine-id")).unwrap();
+        let source_ssh_key = fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap();
+        let source_random_seed = fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap();
+        let generic_work = temp.path().join("generic-work");
+        fs::create_dir(&generic_work).unwrap();
+        let generic_output = temp.path().join("rootfs-seed.oci.tar.zst");
+        File::create(&generic_output).unwrap();
+        export_oci_archive(
+            &rootfs,
+            &machine.join(MachineConfig::FILE),
+            &generic_output,
+            &generic_work,
+            Some(1_700_000_000),
+        )
+        .unwrap();
+        let generic_extracted = temp.path().join("generic-layout");
+        fs::create_dir(&generic_extracted).unwrap();
+        extract_oci_archive(&generic_output, &generic_extracted).unwrap();
+        let generic_layout = canonical_oci_layout(&generic_extracted).unwrap();
+        let generic_index = read_oci_index(&generic_layout).unwrap();
+        let generic_descriptor =
+            resolve_oci_manifest_descriptor(&generic_layout, &generic_index, None).unwrap();
+        assert_eq!(
+            generic_descriptor
+                .annotations
+                .get(OCI_REF_NAME_ANNOTATION)
+                .map(String::as_str),
+            Some("buzzardos-rootfs-seed")
+        );
+        assert!(
+            portable_config_from_manifest(&generic_layout, &generic_descriptor)
+                .unwrap()
+                .is_none()
+        );
+        let generic_metadata =
+            oci_metadata_from_manifest(&generic_layout, &generic_descriptor).unwrap();
+        assert_eq!(generic_metadata.environment, config.oci.environment);
+        assert_eq!(generic_metadata.labels["example.buzzard.test"], "preserved");
+        assert_eq!(
+            generic_metadata.labels["org.opencontainers.image.title"],
+            "Buzzard OS rootfs seed"
+        );
+        assert_eq!(generic_metadata.working_dir, config.oci.working_dir);
+        assert_eq!(generic_metadata.user, config.oci.user);
+        assert_eq!(generic_metadata.entrypoint, config.oci.entrypoint);
+        assert_eq!(generic_metadata.command, config.oci.command);
+        assert_eq!(generic_metadata.stop_signal, config.oci.stop_signal);
+        let generic_manifest: OciManifest = serde_json::from_slice(
+            &read_verified_blob(&generic_layout, &generic_descriptor).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(generic_manifest.layers.len(), 1);
+        assert!(
+            !generic_manifest
+                .annotations
+                .contains_key(BUZZARD_OCI_CONFIG_ANNOTATION)
+        );
+        assert_eq!(
+            generic_manifest.annotations["org.opencontainers.image.title"],
+            "Buzzard OS rootfs seed"
+        );
+        let generic_config: serde_json::Value = serde_json::from_slice(
+            &read_verified_blob(&generic_layout, &generic_manifest.config).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(generic_config["created"], "2023-11-14T22:13:20+00:00");
+        assert_eq!(
+            generic_config["rootfs"]["diff_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let generic_layer = temp.path().join("generic-layer.tar");
+        decompress_verified_layer(&generic_layout, &generic_manifest.layers[0], &generic_layer)
+            .unwrap();
+        let generic_rootfs = temp.path().join("generic-rootfs");
+        fs::create_dir(&generic_rootfs).unwrap();
+        apply_layer(&generic_layer, &generic_rootfs).unwrap();
+        assert_eq!(
+            fs::read(generic_rootfs.join("etc/machine-id")).unwrap(),
+            b""
+        );
+        assert!(!generic_rootfs.join("etc/ssh/ssh_host_ed25519_key").exists());
+        assert!(!generic_rootfs.join("var/lib/systemd/random-seed").exists());
+        assert_eq!(
+            fs::read(rootfs.join("etc/machine-id")).unwrap(),
+            source_machine_id
+        );
+        assert_eq!(
+            fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap(),
+            source_ssh_key
+        );
+        assert_eq!(
+            fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap(),
+            source_random_seed
+        );
+
+        let repeated_work = temp.path().join("repeated-generic-work");
+        fs::create_dir(&repeated_work).unwrap();
+        let repeated_output = temp.path().join("repeated-rootfs-seed.oci.tar.zst");
+        File::create(&repeated_output).unwrap();
+        export_oci_archive(
+            &rootfs,
+            &machine.join(MachineConfig::FILE),
+            &repeated_output,
+            &repeated_work,
+            Some(1_700_000_000),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(&generic_output).unwrap(),
+            fs::read(&repeated_output).unwrap()
+        );
+        assert_eq!(
+            fs::read(rootfs.join("etc/machine-id")).unwrap(),
+            source_machine_id
+        );
+        assert_eq!(
+            fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap(),
+            source_ssh_key
+        );
+        assert_eq!(
+            fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap(),
+            source_random_seed
         );
 
         let manifest: OciManifest =
@@ -7730,6 +8259,63 @@ mod layer_tests {
                 .annotations[OCI_REF_NAME_ANNOTATION],
             "two"
         );
+    }
+
+    #[test]
+    fn oversized_oci_metadata_is_rejected_before_allocation() {
+        let temp = tempfile::tempdir().unwrap();
+        let descriptor = OciDescriptor {
+            digest: format!("sha256:{}", "0".repeat(64)),
+            size: MAX_OCI_METADATA_BYTES + 1,
+            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            platform: None,
+            annotations: BTreeMap::new(),
+        };
+
+        let error = read_verified_blob(temp.path(), &descriptor).unwrap_err();
+
+        assert!(error.to_string().contains("metadata blob"));
+        assert!(error.to_string().contains("maximum"));
+    }
+
+    #[test]
+    fn layer_bytes_are_authenticated_before_the_expanded_layer_is_accepted() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_dir = temp.path().join("blobs/sha256");
+        fs::create_dir_all(&blob_dir).unwrap();
+        let contents = b"authenticated layer bytes";
+        let compressed = zstd::stream::encode_all(Cursor::new(contents), 1).unwrap();
+        let digest = format!("sha256:{:x}", Sha256::digest(&compressed));
+        fs::write(
+            blob_dir.join(digest.strip_prefix("sha256:").unwrap()),
+            &compressed,
+        )
+        .unwrap();
+        let descriptor = OciDescriptor {
+            digest,
+            size: compressed.len() as u64,
+            media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),
+            platform: None,
+            annotations: BTreeMap::new(),
+        };
+        let expanded = temp.path().join("expanded-layer.tar");
+
+        decompress_verified_layer(temp.path(), &descriptor, &expanded).unwrap();
+        assert_eq!(fs::read(&expanded).unwrap(), contents);
+
+        let wrong_digest = format!("sha256:{}", "0".repeat(64));
+        fs::write(
+            blob_dir.join(wrong_digest.strip_prefix("sha256:").unwrap()),
+            &compressed,
+        )
+        .unwrap();
+        let invalid = OciDescriptor {
+            digest: wrong_digest,
+            ..descriptor
+        };
+        let rejected = temp.path().join("rejected-layer.tar");
+        assert!(decompress_verified_layer(temp.path(), &invalid, &rejected).is_err());
+        assert!(!rejected.exists());
     }
 
     #[test]

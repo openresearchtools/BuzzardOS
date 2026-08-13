@@ -127,7 +127,7 @@ custom colour then persists that explicit colour.
 ## 6. Debian updates
 
 The Updates page manages packages inside the persistent Debian rootfs only.
-It never checks, downloads, or replaces the host AppImage.
+It never checks, downloads, or replaces the extracted host application.
 
 `Check for updates` starts one fixed fresh updater worker. The worker refreshes
 APT metadata and creates an exact candidate plan. The scrollable list shows
@@ -144,7 +144,7 @@ download speed, the current package/install count, completion, or the bounded
 failure reason.
 
 The system-bus service is guest-root-owned and callable only by guest root or
-the interactive UID 1000 user. It protects Wild Buzzard's managed runtime
+the interactive UID 1000 user. It protects Buzzard OS's managed runtime
 payload from package replacement. Updates are never installed automatically.
 
 ## 7. Desktop and application discovery
@@ -217,8 +217,9 @@ setting gains access to host D-Bus, host files outside explicit shares, host
 clipboard, host window policy, or another machine. Every managed read/write
 rejects unsafe types and symlink escapes and uses bounded data.
 
-Acceptance must rebuild the managed guest binaries/assets and the AppImage,
-launch an actual persistent machine, and then verify at minimum:
+Acceptance must rebuild the managed guest binaries/assets and the extracted
+portable application, launch an actual persistent machine, and then verify at
+minimum:
 
 - all five Settings pages at normal and small window sizes;
 - scaling persistence and pixel-aligned input;

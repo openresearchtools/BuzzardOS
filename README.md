@@ -23,7 +23,7 @@ The Linux download is one high-compression archive:
 
 Extract it and run `BuzzardOS/BuzzardOS`. Buzzard OS itself is not an AppImage
 and does not use FUSE. Its layout follows ordinary extracted applications such
-as Blender. Its OCI exporter uses a pinned GLIBC-2.28-compatible GNU tar
+as Blender. Its OCI exporter uses a pinned GLIBC-2.31-compatible GNU tar
 runtime rather than inheriting the build machine's newer tar ABI:
 
 ```text
@@ -106,10 +106,13 @@ a Buzzard OS export, or a remote OCI reference. A multi-platform/multi-image
 local layout requires an unambiguous native Linux entry or `--manifest`
 selection. `--mode restore` preserves the identity carried by a Buzzard OS
 export and rejects a duplicate in the same portable folder. `--mode clone`
-regenerates the host metadata UUID, guest machine ID, random seed, and SSH host
-keys while the new machine is still private staging; a failed reset never
-commits a partially cloned machine. Generic OCI images have no portable Buzzard
-OS identity annotation and therefore always receive fresh local identity.
+regenerates the host metadata UUID and removes the guest machine ID, random
+seed, and SSH host keys while the new machine is still private staging; a
+failed reset never commits a partially cloned machine. On first boot, guest
+init creates the new machine ID and asks the distro `ssh-keygen`, when present,
+to create only missing default host keys before systemd starts. Generic OCI
+images have no portable Buzzard OS identity annotation and therefore always
+receive fresh local identity.
 Layers are applied in order with OCI whiteouts and preserved ownership, modes,
 times, links, xattrs, ACLs, and file capabilities.
 
@@ -125,7 +128,8 @@ guest IDs directly, and writes a standards-compliant OCI layout containing a
 config, manifest, index, content-addressed blobs, and portable machine
 annotation. It excludes `/shared` and ephemeral mounts. Importing the export on
 another host remaps canonical guest IDs to that host's ranges. Clone preserves
-the filesystem but regenerates machine identity and host keys.
+the filesystem but resets machine identity and host keys for first-boot
+regeneration.
 
 Docker and Podman are not runtime dependencies. They are used only by
 developers and the disposable Actions runner to build the reference image from

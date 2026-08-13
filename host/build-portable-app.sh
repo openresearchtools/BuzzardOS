@@ -285,7 +285,7 @@ verify_pinned_libxkbcommon \
 
 cargo_pkg_config_path=${PKG_CONFIG_PATH:-}
 cargo_rustflags=${RUSTFLAGS:-}
-if pkg-config --exists 'gtk4 >= 4.18' 'graphene-gobject-1.0 >= 1.10'; then
+if pkg-config --exists 'gtk4 >= 4.14' 'graphene-gobject-1.0 >= 1.10'; then
     # cargo-zigbuild does not reliably retain pkg-config's native search
     # directory when a GTK-using binary reaches those libraries through a
     # same-workspace Rust library (the shortcut helper is such a binary).
@@ -306,7 +306,7 @@ else
         cargo_rustflags="-L native=$gtk_sdk_lib${cargo_rustflags:+ $cargo_rustflags}"
         printf 'Using staged GTK SDK: %s\n' "$gtk_sdk"
     else
-        echo "build dependency missing: GTK >= 4.18 development files" >&2
+        echo "build dependency missing: GTK >= 4.14 development files" >&2
         echo "install them or set WILDBUZZARD_GTK_SDK to a staged /usr tree" >&2
         exit 1
     fi
@@ -1001,6 +1001,9 @@ stage_release_license_payload
 python3 "$project_dir/tools/license_audit.py" \
     --stage-appdir-host-notices "$appdir"
 "$project_dir/tools/check-licenses.sh" --appdir "$appdir" --structural
+python3 "$project_dir/tools/verify-elf-glibc-floor.py" \
+    --root "$appdir" \
+    --maximum 2.39
 
 rm -rf -- "$final_output"
 mv -- "$appdir" "$final_output"

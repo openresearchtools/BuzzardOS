@@ -14,17 +14,11 @@ CUA_VIRTUAL_KEYBOARD = (
     / "guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/src"
     / "wayland/virtual_keyboard.rs"
 )
-GNOME_HOST_KEYBOARD = (
-    PROJECT_DIR / "tests/acceptance/gnome-host-keyboard-input.py"
-)
-
-
 class HardwareAcceptanceContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.script = HARDWARE_ACCEPTANCE.read_text(encoding="utf-8")
         self.sway_config = SWAY_CONFIG.read_text(encoding="utf-8")
         self.cua_keyboard = CUA_VIRTUAL_KEYBOARD.read_text(encoding="utf-8")
-        self.gnome_host_keyboard = GNOME_HOST_KEYBOARD.read_text(encoding="utf-8")
 
     def test_sway_reload_uses_ipc_without_terminating_the_compositor(self) -> None:
         self.assertNotIn('guest kill -HUP "$compositor_pid"', self.script)
@@ -140,9 +134,9 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         )
         self.assertEqual(asserted_widths, [configured_width])
 
-    def test_cua_keyboard_handoff_acceptance_is_ordered_and_observable(self) -> None:
+    def test_cua_keyboard_acceptance_is_guest_private_and_observable(self) -> None:
         coexistence = self.script.split(
-            "# Verifiable CUA/human-keyboard coexistence", maxsplit=1
+            "# Exercise the guest-private CUA keyboard", maxsplit=1
         )[1].split(
             "# Classic state changes remain compositor-owned", maxsplit=1
         )[0]
@@ -151,36 +145,23 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             "assert_cua_ok hotkey",
             r'[\"ctrl\",\"l\"]',
             "assert_cua_ok type_text",
-            "host_keyboard_input z",
-            'expected_cua_host_value="${marker%?}z"',
-            'cat /home/wildbuzzard/.wildbuzzard-cua-input) == "$expected_cua_host_value"',
             "assert_cua_ok press_key",
             r'\"key\":\"backspace\"',
             "assert_cua_ok type_text",
             r'\"text\":\"z\"',
             "assert_cua_ok press_key",
             r'\"key\":\"enter\"',
-            "cat /home/wildbuzzard/.wildbuzzard-peer-while-cua-input) == az",
+            'cat /home/wildbuzzard/.wildbuzzard-cua-input) == "${marker%?}z"',
             "assert_cua_ok end_session",
-            "host_keyboard_input q",
-            "cat /home/wildbuzzard/.wildbuzzard-peer-after-cua-input) == xq",
         )
         cursor = 0
         for fragment in ordered_fragments:
             cursor = coexistence.index(fragment, cursor) + len(fragment)
 
-        self.assertIn('"IFS= read -e -r -i ab coexist_value"', coexistence)
-        self.assertIn('"IFS= read -e -r -i xy teardown_value"', coexistence)
-        first_type = coexistence.index("assert_cua_ok type_text")
-        host_input = coexistence.index("host_keyboard_input z", first_type)
-        next_cua_key = coexistence.index("assert_cua_ok press_key", first_type)
-        self.assertLess(first_type, host_input)
-        self.assertLess(host_input, next_cua_key)
-        self.assertLess(host_input, coexistence.index("assert_cua_ok end_session"))
         self.assertNotIn("guest wtype", coexistence)
-        self.assertIn('wb window "$machine" focus-monitor', self.script)
-        self.assertIn("gnome-host-keyboard-input.py", self.script)
-        self.assertIn("WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK", self.script)
+        self.assertNotIn("host_keyboard_input", self.script)
+        self.assertNotIn('wb window "$machine" focus-monitor', self.script)
+        self.assertNotIn("WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK", self.script)
 
     def test_cua_session_end_waits_for_a_neutral_keyboard_acknowledgement(self) -> None:
         self.assertIn("register_session_end_hook", self.cua_keyboard)
@@ -232,31 +213,6 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("OPERATION_LOCK.try_lock", hook)
         self.assertGreaterEqual(self.cua_keyboard.count("keycode: 14"), 2)
 
-    def test_active_cua_typing_is_cancelled_before_real_host_input(self) -> None:
-        coexistence = self.script.split(
-            "# Verifiable CUA/human-keyboard coexistence", maxsplit=1
-        )[1].split(
-            "# Classic state changes remain compositor-owned", maxsplit=1
-        )[0]
-        ordered = (
-            "active_cua_session=",
-            "guest cua-driver type_text",
-            ".wildbuzzard-active-cua-progress",
-            'assert_cua_ok end_session "{\\"session\\":\\"$active_cua_session\\"}"',
-            "host_keyboard_input z",
-            "cancelled CUA type_text did not return promptly",
-            'contains("cancel")',
-            ".wildbuzzard-active-cua-late",
-        )
-        cursor = 0
-        for fragment in ordered:
-            cursor = coexistence.index(fragment, cursor) + len(fragment)
-        self.assertIn("[[ $active_cua_value =~ ^k*z$ ]]", coexistence)
-        self.assertIn(
-            "guest test ! -s /home/wildbuzzard/.wildbuzzard-active-cua-late",
-            coexistence,
-        )
-
     def test_supported_sway_text_does_not_spawn_one_shot_wtype(self) -> None:
         wayland = (
             PROJECT_DIR
@@ -267,33 +223,13 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertIn("virtual_keyboard::type_text", wayland)
         self.assertIn("Cmd::TypeText", self.cua_keyboard)
 
-    def test_gnome_host_input_is_bounded_focused_and_clipboard_free(self) -> None:
-        self.assertIn("EVDEV_BACKSPACE = 14", self.gnome_host_keyboard)
-        self.assertEqual(
-            self.gnome_host_keyboard.count("wait_monitor_focus(status)"), 2
+    def test_acceptance_has_no_host_keyboard_injection_helper(self) -> None:
+        self.assertFalse(
+            (PROJECT_DIR / "tests/acceptance/gnome-host-keyboard-input.py").exists()
         )
-        self.assertIn('frame.get_action_name(index) == "default.activate"', self.gnome_host_keyboard)
-        self.assertIn("finally:", self.gnome_host_keyboard)
-        self.assertRegex(
-            self.gnome_host_keyboard,
-            r"(?s)CreateSession\(\s*timeout=DBUS_TIMEOUT\s*\)",
-        )
-        self.assertIn("remote.Start(timeout=DBUS_TIMEOUT)", self.gnome_host_keyboard)
-        self.assertIn(
-            "remote.NotifyKeyboardKeycode(dbus.UInt32(code), True, timeout=DBUS_TIMEOUT)",
-            self.gnome_host_keyboard,
-        )
-        self.assertIn(
-            "remote.NotifyKeyboardKeysym(dbus.UInt32(symbol), True, timeout=DBUS_TIMEOUT)",
-            self.gnome_host_keyboard,
-        )
-        self.assertIn("remote.Stop(timeout=DBUS_TIMEOUT)", self.gnome_host_keyboard)
-        self.assertIn("Mutter RemoteDesktop Stop failed", self.gnome_host_keyboard)
-        self.assertIn("raise operation_error", self.gnome_host_keyboard)
-        self.assertNotIn("EnableClipboard", self.gnome_host_keyboard)
-        self.assertNotIn("nsenter", self.gnome_host_keyboard)
-        self.assertNotIn("cua-driver", self.gnome_host_keyboard)
-        self.assertNotIn("wtype", self.gnome_host_keyboard)
+        self.assertNotIn("org.gnome.Mutter.RemoteDesktop", self.script)
+        self.assertNotIn("CreateSession", self.script)
+        self.assertNotIn("NotifyKeyboard", self.script)
 
 
 if __name__ == "__main__":

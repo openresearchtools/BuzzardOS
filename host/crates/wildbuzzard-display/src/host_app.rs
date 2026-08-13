@@ -42,6 +42,8 @@ use crate::offload_verifier::{OffloadExpectation, OffloadResetKind, OffloadVerif
 
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const INITIAL_MONITOR_SIZE_TIMEOUT: Duration = Duration::from_secs(10);
+const MIN_GUEST_MONITOR_WIDTH: u32 = 320;
+const MIN_GUEST_MONITOR_HEIGHT: u32 = 240;
 const CONTINUITY_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const BACKGROUND_CLOCK_GRACE: Duration = Duration::from_millis(50);
 const DEFAULT_REFRESH_MHZ: u32 = 60_000;
@@ -103,11 +105,6 @@ impl HostApplication {
     }
 
     pub(crate) fn run(self, _gateway: GatewaySockets) -> Result<()> {
-        // Wild Buzzard does not use host file choosers, screenshot portals, or
-        // inhibit portals. Disabling them before GTK initialization keeps the
-        // native window independent of a wedged or unavailable desktop portal
-        // and avoids creating unnecessary host-service capabilities.
-        gtk::disable_portals();
         let application = gtk::Application::builder()
             .application_id(&self.launch.app_id)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
@@ -325,12 +322,13 @@ impl InitialMonitorSizing {
     fn observe(
         &mut self,
         now: Instant,
-        window_width: i32,
-        window_height: i32,
-        viewport_width: u32,
-        viewport_height: u32,
+        window_size: (i32, i32),
+        viewport_size: (u32, u32),
         scale_denominator: u32,
+        accept_compositor_granted_size: bool,
     ) -> InitialSizeDecision {
+        let (window_width, window_height) = window_size;
+        let (viewport_width, viewport_height) = viewport_size;
         if self.settled {
             return InitialSizeDecision::AlreadySettled;
         }
@@ -342,6 +340,22 @@ impl InitialMonitorSizing {
         let target_height = align_extent_up(self.configured_height, scale_denominator)
             .unwrap_or(self.configured_height);
         if viewport_width == target_width && viewport_height == target_height {
+            self.settled = true;
+            self.last_request = None;
+            return InitialSizeDecision::Settled;
+        }
+        // A compositor may maximize or otherwise constrain a requested native
+        // toplevel when the configured guest monitor plus host chrome cannot
+        // fit in the work area.  The resulting child allocation is still the
+        // real, pixel-aligned monitor; rejecting it would make a 1280x800 host
+        // unable to boot a nominal 1280x800 machine merely because two logical
+        // rows were consumed to align a 150% subsurface.  Never accept GTK's
+        // tiny bootstrap allocation, and keep the exact configured-size
+        // handshake for an unconstrained window.
+        if accept_compositor_granted_size
+            && viewport_width >= MIN_GUEST_MONITOR_WIDTH
+            && viewport_height >= MIN_GUEST_MONITOR_HEIGHT
+        {
             self.settled = true;
             self.last_request = None;
             return InitialSizeDecision::Settled;
@@ -715,7 +729,6 @@ impl NativeWindow {
         let offload = gtk::GraphicsOffload::new(Some(&picture));
         offload.set_direction(gtk::TextDirection::Ltr);
         offload.set_enabled(gtk::GraphicsOffloadEnabled::Enabled);
-        offload.set_black_background(true);
         offload.set_hexpand(true);
         offload.set_vexpand(true);
         monitor_view.set_child(Some(&monitor_backing));
@@ -944,11 +957,10 @@ impl NativeWindow {
         let denominator = self.initial_monitor_scale_denominator();
         let decision = self.initial_monitor_sizing.borrow_mut().observe(
             Instant::now(),
-            self.window.width().max(1),
-            self.window.height().max(1),
-            viewport_width,
-            viewport_height,
+            (self.window.width().max(1), self.window.height().max(1)),
+            (viewport_width, viewport_height),
             denominator,
+            self.window.is_maximized() || self.window.is_fullscreen(),
         );
         match decision {
             InitialSizeDecision::AlreadySettled => true,
@@ -4970,14 +4982,14 @@ mod tests {
         let now = Instant::now();
         let mut sizing = InitialMonitorSizing::new(1280, 800);
         assert_eq!(
-            sizing.observe(now, 1280, 800, 1280, 800, denominator),
+            sizing.observe(now, (1280, 800), (1280, 800), denominator, false),
             InitialSizeDecision::Request {
                 window_width: 1281,
                 window_height: 801,
             }
         );
         assert_eq!(
-            sizing.observe(now, 1281, 801, 1281, 801, denominator),
+            sizing.observe(now, (1281, 801), (1281, 801), denominator, false),
             InitialSizeDecision::Settled
         );
         let mapping = PixelMapping::new(1281, 801, 160).unwrap();
@@ -4993,7 +5005,7 @@ mod tests {
         let started_at = Instant::now();
         let mut sizing = InitialMonitorSizing::new(1280, 800);
         assert_eq!(
-            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            sizing.observe(started_at, (1280, 800), (1276, 752), 4, false),
             InitialSizeDecision::Request {
                 window_width: 1284,
                 window_height: 848,
@@ -5001,16 +5013,16 @@ mod tests {
         );
         for _ in 0..32 {
             assert_eq!(
-                sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+                sizing.observe(started_at, (1280, 800), (1276, 752), 4, false),
                 InitialSizeDecision::Waiting
             );
         }
         assert_eq!(
-            sizing.observe(started_at, 1284, 848, 1280, 800, 4),
+            sizing.observe(started_at, (1284, 848), (1280, 800), 4, false),
             InitialSizeDecision::Settled
         );
         assert_eq!(
-            sizing.observe(started_at, 1284, 848, 1280, 800, 4),
+            sizing.observe(started_at, (1284, 848), (1280, 800), 4, false),
             InitialSizeDecision::AlreadySettled
         );
     }
@@ -5020,11 +5032,11 @@ mod tests {
         let started_at = Instant::now();
         let mut sizing = InitialMonitorSizing::new(1280, 800);
         assert!(matches!(
-            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            sizing.observe(started_at, (1280, 800), (1276, 752), 4, false),
             InitialSizeDecision::Request { .. }
         ));
         assert_eq!(
-            sizing.observe(started_at, 1284, 848, 1278, 798, 4),
+            sizing.observe(started_at, (1284, 848), (1278, 798), 4, false),
             InitialSizeDecision::Request {
                 window_width: 1286,
                 window_height: 850,
@@ -5033,33 +5045,51 @@ mod tests {
     }
 
     #[test]
+    fn compositor_constrained_initial_monitor_accepts_native_aligned_viewport() {
+        let started_at = Instant::now();
+        let mut sizing = InitialMonitorSizing::new(1280, 800);
+        assert_eq!(
+            sizing.observe(started_at, (1280, 800), (1280, 798), 2, true),
+            InitialSizeDecision::Settled
+        );
+        assert_eq!(
+            sizing.observe(started_at, (1280, 800), (1280, 798), 2, true),
+            InitialSizeDecision::AlreadySettled
+        );
+
+        let mut bootstrap = InitialMonitorSizing::new(1280, 800);
+        assert!(matches!(
+            bootstrap.observe(started_at, (1, 1), (1, 1), 2, true),
+            InitialSizeDecision::Request { .. }
+        ));
+    }
+
+    #[test]
     fn ignored_initial_resize_fails_on_wall_clock_without_reduced_mode() {
         let started_at = Instant::now();
         let mut sizing = InitialMonitorSizing::new(1280, 800);
         sizing.begin(started_at);
         assert!(matches!(
-            sizing.observe(started_at, 1280, 800, 1276, 752, 4),
+            sizing.observe(started_at, (1280, 800), (1276, 752), 4, false),
             InitialSizeDecision::Request { .. }
         ));
         assert_eq!(
             sizing.observe(
                 started_at + INITIAL_MONITOR_SIZE_TIMEOUT - Duration::from_nanos(1),
-                1280,
-                800,
-                1276,
-                752,
+                (1280, 800),
+                (1276, 752),
                 4,
+                false,
             ),
             InitialSizeDecision::Waiting
         );
         assert_eq!(
             sizing.observe(
                 started_at + INITIAL_MONITOR_SIZE_TIMEOUT,
-                1280,
-                800,
-                1276,
-                752,
+                (1280, 800),
+                (1276, 752),
                 4,
+                false,
             ),
             InitialSizeDecision::TimedOut {
                 target_width: 1280,
@@ -5071,11 +5101,10 @@ mod tests {
         assert_eq!(
             sizing.observe(
                 started_at + INITIAL_MONITOR_SIZE_TIMEOUT + Duration::from_secs(1),
-                1280,
-                800,
-                1276,
-                752,
+                (1280, 800),
+                (1276, 752),
                 4,
+                false,
             ),
             InitialSizeDecision::AlreadyFailed
         );

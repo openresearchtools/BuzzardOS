@@ -34,6 +34,7 @@ const GUEST_RUNTIME_MODE: u32 = 0o700;
 const DESKTOP_READY_MODE: u32 = 0o600;
 const SESSION_TOKEN_BYTES: usize = 32;
 const MAX_DESKTOP_READY_BYTES: u64 = 256;
+const MAX_BUBBLEWRAP_INFO_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug)]
 struct DesktopReadinessDeadline {
@@ -1379,12 +1380,12 @@ fn lock_machine(machine_dir: &Path) -> Result<File> {
 }
 
 fn add_bubblewrap_pid_report(command: &mut Command, info_fd: RawFd) {
-    // `--info-fd` is deliberately one-shot: Bubblewrap writes the child PID
-    // after setup and closes its copy of the descriptor immediately. Do not
-    // replace this with `--json-status-fd` unless its multi-record stream is
-    // kept open and drained until Bubblewrap writes the final exit-code. An
-    // early close makes that final write hit EPIPE and can turn an orderly
-    // guest shutdown into a SIGPIPE exit from Bubblewrap itself.
+    // `--info-fd` is deliberately one-shot: Bubblewrap writes one JSON object
+    // containing the child PID after setup. Some supported Bubblewrap builds
+    // retain their copy of this descriptor for the sandbox lifetime, so the
+    // reader must stop at the end of that first object rather than waiting for
+    // EOF. Do not replace this with `--json-status-fd`: that interface is a
+    // lifecycle stream rather than the single startup record needed here.
     command.arg("--info-fd").arg(info_fd.to_string());
 }
 
@@ -1392,11 +1393,14 @@ fn read_container_pid(info_read: RawFd) -> Result<u32> {
     // SAFETY: pipe() returned this new descriptor and ownership is transferred
     // to the File exactly once here.
     let file = unsafe { fs::File::from_raw_fd(info_read) };
-    // Bubblewrap's one-shot information document is pretty-printed across
-    // multiple lines. `from_reader` consumes it through EOF, which arrives as
-    // soon as Bubblewrap closes its information descriptor after setup.
-    let value: serde_json::Value =
-        serde_json::from_reader(file).context("parsing container information")?;
+    // Deserialize exactly one bounded JSON value. `serde_json::from_reader`
+    // additionally waits for EOF to reject trailing data, which deadlocks
+    // against Bubblewrap versions that keep `--info-fd` open while their child
+    // is paused at `--block-fd`.
+    let mut deserializer =
+        serde_json::Deserializer::from_reader(file.take(MAX_BUBBLEWRAP_INFO_BYTES));
+    let value = serde_json::Value::deserialize(&mut deserializer)
+        .context("parsing container information")?;
     value
         .get("child-pid")
         .and_then(serde_json::Value::as_u64)
@@ -3276,6 +3280,33 @@ mod tests {
         drop(info_write);
 
         assert_eq!(read_container_pid(info_read).unwrap(), 4242);
+    }
+
+    #[test]
+    fn reads_bubblewrap_information_without_waiting_for_descriptor_eof() {
+        let (info_read, mut info_write) = pipe().unwrap();
+        info_write
+            .write_all(
+                br#"{
+    "child-pid": 4242,
+    "mnt-namespace": 123456
+}
+"#,
+            )
+            .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            sender.send(read_container_pid(info_read)).unwrap();
+        });
+        let child_pid = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("PID parser waited for Bubblewrap to close --info-fd")
+            .unwrap();
+        assert_eq!(child_pid, 4242);
+
+        drop(info_write);
+        reader.join().unwrap();
     }
 
     #[test]

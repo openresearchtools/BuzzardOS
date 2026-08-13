@@ -16,6 +16,7 @@ portable_root=$(realpath -- "$1")
 output_dir=$(realpath -m -- "$2")
 launcher="$portable_root/BuzzardOS"
 source_commit=$(git -C "$project_dir" rev-parse --verify HEAD^{commit})
+source_date_epoch=$(git -C "$project_dir" show -s --format=%ct "$source_commit")
 short_commit=${source_commit:0:12}
 runner_uid=$(id -u)
 runner_gid=$(id -g)
@@ -124,12 +125,17 @@ else
     podman save --quiet --format oci-dir --output "$layout" "$image"
 fi
 
-manifest_digest=$(jq -er '
+source_manifest_digest=$(jq -er '
   if .schemaVersion != 2 or (.manifests | length) != 1 then
     error("reference OCI index must contain exactly one manifest")
   else .manifests[0].digest end
 ' "$layout/index.json")
-[[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+[[ "$source_manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+source_manifest="$layout/blobs/sha256/${source_manifest_digest#sha256:}"
+source_config_digest=$(jq -er '.config.digest' "$source_manifest")
+[[ "$source_config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+source_config="$layout/blobs/sha256/${source_config_digest#sha256:}"
+[[ -f "$source_config" && ! -L "$source_config" ]]
 
 "$container_engine" image rm --force "$image" >/dev/null
 image_loaded=false
@@ -148,46 +154,11 @@ mkdir -p \
     "$guest_licenses/usr-share-common-licenses" \
     "$guest_provenance"
 archive="$runtime_dir/default-rootfs.oci.tar.zst"
-temporary_archive=$(mktemp "$runtime_dir/.default-rootfs.oci.tar.zst.XXXXXX")
-tar \
-    --sort=name \
-    --format=posix \
-    --pax-option=delete=atime,delete=ctime \
-    --mtime="@$(git -C "$project_dir" show -s --format=%ct "$source_commit")" \
-    --owner=0 --group=0 --numeric-owner \
-    -C "$layout" -cf - . |
-    zstd -T0 -19 --long=27 --no-progress --force -o "$temporary_archive"
-zstd -q -t -- "$temporary_archive"
-mv -- "$temporary_archive" "$archive"
-chmod 0644 "$archive"
-
-archive_sha256=$(sha256sum "$archive" | awk '{print $1}')
-archive_size=$(stat -c '%s' "$archive")
-jq -n \
-    --arg source_commit "$source_commit" \
-    --arg archive_sha256 "$archive_sha256" \
-    --arg manifest_digest "$manifest_digest" \
-    --argjson archive_size "$archive_size" \
-    '{schema:1,kind:"buzzardos-oci-seed",platform:{os:"linux",architecture:"amd64"},archive:{name:"default-rootfs.oci.tar.zst",size:$archive_size,sha256:$archive_sha256},manifest_digest:$manifest_digest,source_commit:$source_commit}' \
-    >"$runtime_dir/default-rootfs.oci.json"
-
-# Independently unpack the seed and verify every content-addressed blob before
-# either the canonical extraction or recipient-style import is trusted.
-seed_check="$build_root/seed-check"
-mkdir -p "$seed_check"
-zstd -q -dc -- "$archive" | tar --no-same-owner -xf - -C "$seed_check"
-cmp "$layout/oci-layout" "$seed_check/oci-layout"
-cmp "$layout/index.json" "$seed_check/index.json"
-while IFS= read -r blob; do
-    digest=${blob##*/}
-    [[ "$(sha256sum "$blob" | awk '{print $1}')" == "$digest" ]] || {
-        echo "OCI seed contains a blob whose name does not match its digest: $blob" >&2
-        exit 1
-    }
-done < <(find "$seed_check/blobs/sha256" -type f -print | LC_ALL=C sort)
-
-# Exercise the exact distributed importer using the ordinary runner account.
-"$launcher" --storage-dir "$roundtrip_root" import "$archive" --name imported
+# Materialize the verified source image with the exact distributed importer.
+# The mapped rootfs is then snapshotted from its canonical guest-ID namespace
+# by the launcher's pinned export tar. This creates one identity-free layer;
+# host-side tar must never interpret subordinate owners or security metadata.
+"$launcher" --storage-dir "$roundtrip_root" import "$layout" --name imported
 mapped_rootfs="$roundtrip_root/Machines/imported/rootfs"
 subuid_start=$(awk -F: -v owner="$(id -un)" -v numeric="$runner_uid" \
     '($1 == owner || $1 == numeric) && $3 >= 65535 { print $2; exit }' /etc/subuid)
@@ -207,6 +178,87 @@ subgid_start=$(awk -F: -v owner="$(id -un)" -v numeric="$runner_gid" \
 }
 if findmnt -rn -o TARGET | awk -v root="$mapped_rootfs" '$0 == root || index($0, root "/") == 1 { found=1 } END { exit found ? 0 : 1 }'; then
     echo 'refusing to inspect an imported rootfs containing active mounts' >&2
+    exit 1
+fi
+
+"$launcher" --storage-dir "$roundtrip_root" __export-generic-seed imported \
+    --output "$archive" \
+    --source-date-epoch "$source_date_epoch"
+zstd -q -t -- "$archive"
+chmod 0644 "$archive"
+
+# Independently unpack the flattened seed and verify every content-addressed
+# blob, the one-layer invariant, and the absence of portable machine identity.
+seed_check="$build_root/seed-check"
+mkdir -p "$seed_check"
+zstd -q -dc -- "$archive" | tar --no-same-owner -xf - -C "$seed_check"
+cmp "$layout/oci-layout" "$seed_check/oci-layout"
+manifest_digest=$(jq -er '
+  if .schemaVersion != 2 or (.manifests | length) != 1 then
+    error("flattened OCI index must contain exactly one manifest")
+  else .manifests[0].digest end
+' "$seed_check/index.json")
+[[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+while IFS= read -r blob; do
+    digest=${blob##*/}
+    [[ "$(sha256sum "$blob" | awk '{print $1}')" == "$digest" ]] || {
+        echo "OCI seed contains a blob whose name does not match its digest: $blob" >&2
+        exit 1
+    }
+done < <(find "$seed_check/blobs/sha256" -type f -print | LC_ALL=C sort)
+flattened_manifest="$seed_check/blobs/sha256/${manifest_digest#sha256:}"
+jq -e \
+    '(.schemaVersion == 2) and (.layers | length == 1) and
+     (.annotations["org.openresearchtools.buzzardos.machine-config.v1"] == null)' \
+    "$flattened_manifest" >/dev/null
+flattened_config_digest=$(jq -er '.config.digest' "$flattened_manifest")
+[[ "$flattened_config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+flattened_config="$seed_check/blobs/sha256/${flattened_config_digest#sha256:}"
+python3 - "$source_config" "$flattened_config" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("config") or {}
+flattened = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8")).get("config") or {}
+for key in ("Env", "Entrypoint", "Cmd", "WorkingDir", "User", "StopSignal"):
+    if key in source and flattened.get(key) != source[key]:
+        raise SystemExit(f"flattened OCI seed changed authenticated process field {key}")
+source_labels = source.get("Labels")
+flattened_labels = flattened.get("Labels")
+if source_labels is not None:
+    if not isinstance(source_labels, dict) or not isinstance(flattened_labels, dict):
+        raise SystemExit("flattened OCI seed changed authenticated process field Labels")
+    for key, value in source_labels.items():
+        if flattened_labels.get(key) != value:
+            raise SystemExit(f"flattened OCI seed changed authenticated label {key}")
+PY
+
+archive_sha256=$(sha256sum "$archive" | awk '{print $1}')
+archive_size=$(stat -c '%s' "$archive")
+jq -n \
+    --arg source_commit "$source_commit" \
+    --arg archive_sha256 "$archive_sha256" \
+    --arg manifest_digest "$manifest_digest" \
+    --arg source_manifest_digest "$source_manifest_digest" \
+    --argjson archive_size "$archive_size" \
+    '{schema:1,kind:"buzzardos-oci-seed",platform:{os:"linux",architecture:"amd64"},archive:{name:"default-rootfs.oci.tar.zst",size:$archive_size,sha256:$archive_sha256},manifest_digest:$manifest_digest,source_manifest_digest:$source_manifest_digest,source_commit:$source_commit}' \
+    >"$runtime_dir/default-rootfs.oci.json"
+
+# Exercise the final flattened archive, not only its pre-flattening source.
+"$launcher" --storage-dir "$roundtrip_root" delete imported --yes
+"$launcher" --storage-dir "$roundtrip_root" import "$archive" --name imported
+mapped_rootfs="$roundtrip_root/Machines/imported/rootfs"
+[[ "$(stat -c %u "$mapped_rootfs/etc/passwd")" == "$subuid_start" ]] || {
+    echo 'flattened seed did not map guest root to the configured subordinate UID' >&2
+    exit 1
+}
+[[ "$(stat -c %u "$mapped_rootfs/home/wildbuzzard")" == "$runner_uid" ]] || {
+    echo 'flattened seed did not keep guest UID 1000 as the desktop host user' >&2
+    exit 1
+}
+if findmnt -rn -o TARGET | awk -v root="$mapped_rootfs" '$0 == root || index($0, root "/") == 1 { found=1 } END { exit found ? 0 : 1 }'; then
+    echo 'refusing to inspect a flattened rootfs containing active mounts' >&2
     exit 1
 fi
 

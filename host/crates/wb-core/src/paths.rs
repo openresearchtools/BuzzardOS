@@ -21,8 +21,7 @@ impl WbPaths {
         // stable identity regardless of whether the CLI was given `./dist`,
         // `dist`, or an absolute spelling. Portable machine metadata remains
         // relative; this normalization is never persisted into machine.json.
-        let base = std::path::absolute(&base)
-            .with_context(|| format!("resolving portable folder {}", base.display()))?;
+        let base = physical_absolute(&base)?;
         Ok(Self { base })
     }
 
@@ -60,6 +59,43 @@ impl WbPaths {
             }
         }
         Ok(())
+    }
+}
+
+fn physical_absolute(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("resolving portable folder {}", path.display()))?;
+    let mut cursor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match cursor.canonicalize() {
+            Ok(mut physical) => {
+                for component in missing.into_iter().rev() {
+                    if component == ".." {
+                        physical.pop();
+                    } else if component != "." {
+                        physical.push(component);
+                    }
+                }
+                return Ok(physical);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor
+                    .components()
+                    .next_back()
+                    .context("portable folder has no existing ancestor")?
+                    .as_os_str()
+                    .to_owned();
+                missing.push(component);
+                cursor = cursor
+                    .parent()
+                    .context("portable folder has no existing ancestor")?;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("resolving portable folder {}", path.display()));
+            }
+        }
     }
 }
 
@@ -182,6 +218,37 @@ mod tests {
         assert_eq!(
             host_control_socket_in(runtime, &relative.machine("demo")).unwrap(),
             host_control_socket_in(runtime, &absolute.machine("demo")).unwrap()
+        );
+    }
+
+    #[test]
+    fn symlinked_storage_override_has_the_physical_runtime_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().join("physical");
+        let alias = temp.path().join("portable-alias");
+        std::fs::create_dir(&physical).unwrap();
+        symlink(&physical, &alias).unwrap();
+
+        let direct = WbPaths::discover(Some(&physical)).unwrap();
+        let linked = WbPaths::discover(Some(&alias)).unwrap();
+
+        assert_eq!(linked.base(), direct.base());
+        let runtime = Path::new("/tmp/buzzardos-test-runtime");
+        assert_eq!(
+            host_control_socket_in(runtime, &linked.machine("demo")).unwrap(),
+            host_control_socket_in(runtime, &direct.machine("demo")).unwrap()
+        );
+    }
+
+    #[test]
+    fn missing_storage_override_normalizes_lexical_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let direct = temp.path().join("portable");
+        let lexical = temp.path().join("not-created/../portable");
+
+        assert_eq!(
+            WbPaths::discover(Some(&lexical)).unwrap().base(),
+            WbPaths::discover(Some(&direct)).unwrap().base()
         );
     }
 }

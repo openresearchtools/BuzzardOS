@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -406,19 +407,18 @@ impl MachineConfig {
         Self::validate_guest_scale(config.guest_scale_120)?;
         config.oci.validate()?;
         config.integrations.validate(config.network)?;
-        if !(320..=16384).contains(&config.width) || !(240..=16384).contains(&config.height) {
-            bail!(
-                "machine display size {}x{} is outside the supported range",
-                config.width,
-                config.height
-            );
-        }
+        Self::validate_display_size(config.width, config.height)?;
         Ok(config)
     }
 
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
+        if !matches!(self.schema, 1..=3) {
+            bail!("unsupported machine metadata schema {}", self.schema);
+        }
+        Self::validate_name(&self.name)?;
         Self::validate_guest_scale(self.guest_scale_120)?;
         Self::validate_gpus(&self.gpus)?;
+        Self::validate_display_size(self.width, self.height)?;
         self.oci.validate()?;
         self.integrations.validate(self.network)?;
         atomic_json(&machine_dir.join(Self::FILE), self)
@@ -428,6 +428,13 @@ impl MachineConfig {
         const PRESETS: [u32; 5] = [120, 150, 180, 210, 240];
         if scale_120.is_some_and(|scale| !PRESETS.contains(&scale)) {
             bail!("guest desktop scale must be Follow Host, 100%, 125%, 150%, 175%, or 200%");
+        }
+        Ok(())
+    }
+
+    fn validate_display_size(width: u32, height: u32) -> Result<()> {
+        if !(320..=16384).contains(&width) || !(240..=16384).contains(&height) {
+            bail!("machine display size {width}x{height} is outside the supported range");
         }
         Ok(())
     }
@@ -703,10 +710,16 @@ fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().context("state path has no parent")?;
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     let mut temp = tempfile_in(parent)?;
+    temp.set_permissions(fs::Permissions::from_mode(0o600))
+        .context("securing temporary state file")?;
     serde_json::to_writer_pretty(&mut temp, value).context("serializing state")?;
     temp.write_all(b"\n").context("finishing state file")?;
     temp.sync_all().context("syncing state file")?;
     fs::rename(temp_path(&temp), path).with_context(|| format!("saving {}", path.display()))?;
+    fs::File::open(parent)
+        .with_context(|| format!("opening {} for sync", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("syncing {}", parent.display()))?;
     Ok(())
 }
 
@@ -716,6 +729,8 @@ fn tempfile_in(parent: &Path) -> Result<fs::File> {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(&path)
         {
             Ok(file) => return Ok(file),
@@ -738,6 +753,7 @@ use std::os::fd::AsRawFd;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn validates_machine_names() {
@@ -837,12 +853,66 @@ mod tests {
             vec!["all".into()],
         );
         config.name = "../escape".into();
-        config.save(temp.path()).unwrap();
+        assert!(config.save(temp.path()).is_err());
+        fs::write(
+            temp.path().join(MachineConfig::FILE),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
         assert!(MachineConfig::load(temp.path()).is_err());
 
         config.name = "valid".into();
         config.schema = 99;
-        config.save(temp.path()).unwrap();
+        assert!(config.save(temp.path()).is_err());
+        fs::write(
+            temp.path().join(MachineConfig::FILE),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
         assert!(MachineConfig::load(temp.path()).is_err());
+    }
+
+    #[test]
+    fn save_rejects_a_machine_that_load_would_reject() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = MachineConfig::new(
+            "invalid-display".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.width = 0;
+
+        assert!(config.save(temp.path()).is_err());
+        assert!(!temp.path().join(MachineConfig::FILE).exists());
+    }
+
+    #[test]
+    fn machine_and_runtime_metadata_are_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = MachineConfig::new(
+            "private".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(temp.path()).unwrap();
+        RuntimeState::new(MachineState::Stopped)
+            .save(temp.path())
+            .unwrap();
+
+        for name in [MachineConfig::FILE, RuntimeState::FILE] {
+            assert_eq!(
+                fs::metadata(temp.path().join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "{name} exposed portable machine metadata"
+            );
+        }
     }
 }

@@ -696,9 +696,13 @@ done
 assert_container_unchanged
 
 # Resolve the host's real default microphone and camera from the live PipeWire
-# graph, then require their physical ALSA/V4L2/libcamera backends for hardware
-# acceptance.  Current WirePlumber configurations commonly publish integrated
-# cameras only through libcamera, with no parallel api.v4l2.path property.
+# graph, then require real ALSA/V4L2/libcamera backends for hardware
+# acceptance. ALSA may expose a hardware PCM through a named mapping such as
+# `front:0` instead of the equivalent `hw:*` spelling (notably for QEMU's ICH9
+# capture device), so provenance is established by device.api plus a nonempty
+# PCM path rather than by one spelling. Current WirePlumber configurations
+# commonly publish integrated cameras only through libcamera, with no parallel
+# api.v4l2.path property.
 host_graph=$(pw-dump)
 host_mic_name=$(jq -er '
     first(.[]
@@ -721,9 +725,10 @@ jq -e --arg name "$host_mic_name" '
         .type == "PipeWire:Interface:Node" and
         .info.props["node.name"] == $name and
         .info.props["media.class"] == "Audio/Source" and
-        ((.info.props["api.alsa.path"] // "") | startswith("hw:")))
+        .info.props["device.api"] == "alsa" and
+        ((.info.props["api.alsa.path"] // "") | length > 0))
 ' <<<"$host_graph" >/dev/null ||
-    fail "default microphone is not a physical ALSA-backed PipeWire source"
+    fail "default microphone is not an ALSA-backed PipeWire source"
 jq -e --arg name "$host_camera_name" '
     any(.[];
         .type == "PipeWire:Interface:Node" and

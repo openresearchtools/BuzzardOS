@@ -196,6 +196,10 @@ Normal host prerequisites are limited to:
   its private libacl/libselinux/libpcre2 closure. It must remain compatible
   with the declared GLIBC 2.31 host floor and must never copy the disposable
   build host's newer tar or libraries into the artifact.
+- The native host application is built in the pinned Ubuntu 24.04 environment
+  and every bundled ELF object is recursively required to need no newer than
+  GLIBC 2.39. The final folder is also relocation-checked on pinned Debian 13;
+  a newer build-host library may never silently raise this floor.
 
 The product remains rootless. It does not install a Buzzard OS setuid
 helper, daemon, package, or system service. Host packages installed by the
@@ -227,11 +231,13 @@ policy must produce a precise diagnostic instead of weakening isolation.
   without replacing an existing file.
 - Restore mode preserves a Buzzard OS export's guest machine identity and
   rejects a duplicate identity in the same portable root. Clone mode and the
-  `BuzzardOS clone SOURCE NEW_NAME` convenience command deliberately regenerate
-  the host metadata UUID, `/etc/machine-id`, random seed, and SSH host keys.
-  That reset occurs inside private staging before the atomic machine-directory
-  commit. Generic OCI images without a Buzzard OS identity annotation always
-  receive fresh destination-local identity.
+  `BuzzardOS clone SOURCE NEW_NAME` convenience command assign a new host
+  metadata UUID and remove `/etc/machine-id`, the random seed, and SSH host keys
+  inside private staging before the atomic machine-directory commit. On first
+  boot, guest init creates the machine ID and, when the distro `ssh-keygen` is
+  present, creates only missing default host keys before systemd starts.
+  Generic OCI images without a Buzzard OS identity annotation always receive
+  fresh destination-local identity.
 - Portable annotations retain machine intent but never pin destination-host
   GPU nodes, PipeWire node names, camera nodes, monitor details, runtime
   sockets, or active capture. Imported port rules start disabled and imported

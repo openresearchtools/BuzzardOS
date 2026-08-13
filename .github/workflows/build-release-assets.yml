@@ -35,7 +35,11 @@ jobs:
             host/packaging/Install-Dependencies \
             tools/build-release-rootfs.sh \
             tools/assemble-release-assets.sh
-          python3 -m py_compile tools/license_audit.py tools/release_metadata.py
+          python3 -m py_compile \
+            tools/license_audit.py \
+            tools/release_metadata.py \
+            tools/verify-elf-glibc-floor.py \
+            tools/verify-portable-release-inputs.py
           python3 -m unittest discover -s tools/tests -v
           ./tools/check-licenses.sh --structural
           # Bracket the final character so this guard cannot match its own
@@ -54,14 +58,14 @@ jobs:
           rustup default 1.96.0
           docker buildx version
 
-      - name: Create pinned Ubuntu 26.04 application build environment
+      - name: Create pinned Ubuntu 24.04 application build environment
         shell: bash
         run: |
           set -euo pipefail
           build_environment="$RUNNER_TEMP/buzzardos-portable-builder.Dockerfile"
           cat >"$build_environment" <<'EOF'
           FROM rust:1.96.0-bookworm@sha256:c993d32d95cc146bd12c84d66f0b924a6a96f3988325f39c144f2f9893dea120 AS rust-toolchain
-          FROM ubuntu:26.04@sha256:7b202b0e2e0028c6250f5fcf41d04df492d145a1654c6995a6553f0c1f6f1960
+          FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467
           COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
           COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
           ENV PATH=/usr/local/cargo/bin:${PATH}
@@ -120,6 +124,42 @@ jobs:
           docker run --rm --platform linux/amd64 \
             --volume "$RUNNER_TEMP/BuzzardOS:/portable:ro" \
             "$BUILD_IMAGE" /portable/BuzzardOS --version
+
+      - name: Verify the portable dynamic-link closure on Debian trixie
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_image=debian:trixie-slim@sha256:38a76d01668772e381ad2826d876627c89e7133e2f8a0f5d567306798b0f2a16
+          docker run --rm --platform linux/amd64 \
+            --volume "$RUNNER_TEMP/BuzzardOS:/portable:ro" \
+            "$smoke_image" bash -euo pipefail -c '
+              export LD_LIBRARY_PATH=/portable/app/usr/lib:/portable/app/usr/lib/x86_64-linux-gnu
+              for executable in \
+                /portable/app/usr/bin/wildbuzzard \
+                /portable/app/usr/bin/wildbuzzard-broker \
+                /portable/app/usr/bin/wildbuzzard-display \
+                /portable/app/usr/libexec/wildbuzzard/bwrap \
+                /portable/app/usr/libexec/wildbuzzard/unshare \
+                /portable/app/usr/libexec/wildbuzzard/gst-launch-1.0 \
+                /portable/app/usr/libexec/wildbuzzard/pw-dump \
+                /portable/app/usr/libexec/wildbuzzard/gst-plugin-scanner \
+                /portable/app/usr/libexec/wildbuzzard/slirp4netns \
+                /portable/app/usr/libexec/wildbuzzard/nvidia-ctk \
+                /portable/app/usr/libexec/wildbuzzard/nvidia-cdi-hook \
+                /portable/app/usr/libexec/wildbuzzard/nvidia-container-cli \
+                /portable/app/usr/libexec/wildbuzzard/tar.real; do
+                test -x "$executable"
+                linkage_status=0
+                linkage=$(ldd -r -- "$executable" 2>&1) || linkage_status=$?
+                printf "%s\n" "$linkage"
+                if [[ $linkage_status -ne 0 ]] &&
+                    ! grep -Fq "not a dynamic executable" <<<"$linkage"; then
+                  exit "$linkage_status"
+                fi
+              done
+              /portable/BuzzardOS --version
+              /portable/app/usr/bin/wildbuzzard-display --version
+            '
 
       - name: Build verified OCI seed and assemble portable archive
         shell: bash

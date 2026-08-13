@@ -31,6 +31,7 @@ fn run() -> Result<()> {
     if let Some(result) = clipboard::maybe_run_image_worker() {
         return result;
     }
+    configure_gtk_portal_policy();
     reexec_with_display_desktop_identity()?;
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--machine-manager")) {
         return machine_manager::run_from_args();
@@ -44,6 +45,27 @@ fn run() -> Result<()> {
     // connection. Dropping `gateway` is the one place that removes the
     // private guest and host-control endpoints.
     application.run(gateway)
+}
+
+/// Buzzard OS does not use host file chooser, screenshot, or inhibit portals.
+/// Apply GTK's documented no-portals policy before GTK initialization and
+/// before any display or manager worker threads can exist. Preserve any
+/// independently configured GDK diagnostics instead of replacing them.
+fn configure_gtk_portal_policy() {
+    let mut flags = std::env::var("GDK_DEBUG").unwrap_or_default();
+    if flags
+        .split(',')
+        .any(|flag| flag.trim().eq_ignore_ascii_case("no-portals"))
+    {
+        return;
+    }
+    if !flags.is_empty() {
+        flags.push(',');
+    }
+    flags.push_str("no-portals");
+    // SAFETY: `run` calls this before GTK initialization and before any
+    // display, gateway, or machine-manager worker thread can be created.
+    unsafe { std::env::set_var("GDK_DEBUG", flags) };
 }
 
 /// GLib records the PID that was launched from a desktop file. AppRun starts

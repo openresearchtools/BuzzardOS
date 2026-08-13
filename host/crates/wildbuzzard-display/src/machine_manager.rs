@@ -38,7 +38,6 @@ pub(crate) fn run_from_args() -> Result<()> {
             args.launcher.display()
         );
     }
-    gtk::disable_portals();
     let application = gtk::Application::builder()
         .application_id("org.openresearchtools.buzzardos.manager")
         .flags(gio::ApplicationFlags::NON_UNIQUE)

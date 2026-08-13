@@ -10,7 +10,7 @@ separate from the extracted host-application notice group.
   referenced by package copyright records.
 - `project-source/` contains a checksum-addressed archive of the exact clean
   Buzzard OS Git commit used for the build.
-- `../../provenance/guest-rootfs/` records base-image, Sway/wlroots, TryCua,
+- `../../provenance/guest/` records base-image, Sway/wlroots, TryCua,
   package-inventory, source-OCI, and flattened-rootfs identities.
 
 These records are evidence, not legal advice. Publication remains blocked until
