@@ -69,6 +69,7 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
 
     def test_builder_completes_linuxdeploys_excluded_library_closure(self) -> None:
         self.assertIn("complete_host_library_closure()", self.builder)
+        self.assertIn("not a dynamic executable", self.builder)
         self.assertIn(
             'complete_host_library_closure "$appdir" "$appdir/usr/lib"',
             self.builder,

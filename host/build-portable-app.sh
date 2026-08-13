@@ -205,16 +205,23 @@ verify_elf_relocation_closure() {
 complete_host_library_closure() {
     local app_root=$1
     local library_dir=$2
-    local pass copied object soname resolved destination closure
+    local pass copied object soname resolved destination closure closure_status
     for pass in $(seq 1 32); do
         copied=0
         while IFS= read -r -d '' object; do
             file -b -- "$object" | grep -q ELF || continue
-            closure=$(LD_LIBRARY_PATH="$library_dir" ldd -- "$object" 2>&1) || {
+            closure_status=0
+            closure=$(LD_LIBRARY_PATH="$library_dir" ldd -- "$object" 2>&1) || \
+                closure_status=$?
+            if (( closure_status != 0 )) && \
+                grep -Fq 'not a dynamic executable' <<<"$closure"; then
+                continue
+            fi
+            if (( closure_status != 0 )); then
                 echo "cannot inspect portable ELF dependency closure: $object" >&2
                 printf '%s\n' "$closure" >&2
                 return 1
-            }
+            fi
             if grep -Fq '=> not found' <<<"$closure"; then
                 echo "portable ELF has an unresolved build dependency: $object" >&2
                 printf '%s\n' "$closure" >&2
