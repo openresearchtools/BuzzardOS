@@ -1,5 +1,5 @@
 [Icon Theme]
-Name=Wild Buzzard Graphite
+Name=Buzzard OS Graphite
 Comment=Independently authored graphite desktop navigation icons with a warm orange palette
 Inherits=Adwaita,hicolor
 Directories=scalable/apps,scalable/places,scalable/mimetypes,symbolic/apps,symbolic/places,symbolic/mimetypes

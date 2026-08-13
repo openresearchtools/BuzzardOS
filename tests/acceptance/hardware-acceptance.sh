@@ -5,8 +5,8 @@ trap 'rc=$?; echo "hardware acceptance failed at line $LINENO: $BASH_COMMAND" >&
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 task_uid=$(id -u)
-default_appimage="${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid/out/WildBuzzard-x86_64.AppImage"
-appimage=${1:-${WILDBUZZARD_APPIMAGE:-$default_appimage}}
+default_launcher="${TMPDIR:-/tmp}/buzzardos-build-$task_uid/out/BuzzardOS/BuzzardOS"
+launcher=${1:-${BUZZARDOS_LAUNCHER:-$default_launcher}}
 machine=${2:-acceptance}
 install_package=${WILDBUZZARD_ACCEPT_INSTALL_PACKAGE:-0}
 full_matrix=${WILDBUZZARD_ACCEPT_FULL_MATRIX:-0}
@@ -32,9 +32,8 @@ restore_interrupted_relocation() {
         [[ -n "$relocation_target" ]] &&
         [[ -d "$relocation_target" ]] &&
         [[ ! -e "$relocation_original" ]]; then
-        if [[ -x "$relocation_target/$(basename -- "$appimage")" ]]; then
-            APPIMAGE_EXTRACT_AND_RUN=1 \
-                "$relocation_target/$(basename -- "$appimage")" \
+        if [[ -x "$relocation_target/$(basename -- "$launcher")" ]]; then
+            "$relocation_target/$(basename -- "$launcher")" \
                 stop "$machine" >/dev/null 2>&1 || true
         fi
         mv -- "$relocation_target" "$relocation_original"
@@ -59,24 +58,23 @@ if [[ -n "$host_input_hook" ]] &&
     echo "WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK must be an absolute executable path" >&2
     exit 1
 fi
-[[ -x "$appimage" ]] || {
-    echo "AppImage is missing or not executable: $appimage" >&2
+[[ -x "$launcher" ]] || {
+    echo "portable Buzzard OS launcher is missing or not executable: $launcher" >&2
     exit 1
 }
 
-portable_dir=$(CDPATH= cd -- "$(dirname -- "$appimage")" && pwd)
-appimage="$portable_dir/$(basename -- "$appimage")"
-runtime="$portable_dir/vm/$machine/runtime.json"
+portable_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
+launcher="$portable_dir/$(basename -- "$launcher")"
+runtime="$portable_dir/Machines/$machine/runtime.json"
 marker="wildbuzzard-acceptance-$(date +%s)-$$"
 
 wb() {
-    APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" "$@"
+    "$launcher" "$@"
 }
 
 wb_without_host_path() {
     env PATH=/definitely-not-a-host-helper-path \
-        APPIMAGE_EXTRACT_AND_RUN=1 \
-        "$appimage" "$@"
+        "$launcher" "$@"
 }
 
 wait_running() {
@@ -103,23 +101,6 @@ wait_stopped() {
     done
     echo "machine did not complete orderly window-close shutdown" >&2
     exit 1
-}
-
-appdir_for_process() {
-    local pid=$1
-    python3 - "$pid" <<'PY'
-from pathlib import Path
-import sys
-
-values = [
-    entry.removeprefix(b"APPDIR=")
-    for entry in Path(f"/proc/{sys.argv[1]}/environ").read_bytes().split(b"\0")
-    if entry.startswith(b"APPDIR=")
-]
-if len(values) != 1 or not values[0]:
-    raise SystemExit(f"process {sys.argv[1]} does not expose exactly one APPDIR")
-print(values[0].decode("utf-8"))
-PY
 }
 
 process_start_time() {
@@ -156,27 +137,6 @@ wait_process_identity_gone() {
         sleep 0.1
     done
     echo "process identity remained live: pid=$pid start_time=$start_time" >&2
-    exit 1
-}
-
-wait_appdir_lease_released() {
-    local pid=$1
-    local start_time=$2
-    local appdir=$3
-    local deadline=$((SECONDS + 30))
-    local current_start_time=
-    while ((SECONDS < deadline)); do
-        if [[ -r "/proc/$pid/stat" ]]; then
-            current_start_time=$(process_start_time "$pid" 2>/dev/null || true)
-        else
-            current_start_time=
-        fi
-        if [[ "$current_start_time" != "$start_time" && ! -e "$appdir" ]]; then
-            return
-        fi
-        sleep 0.1
-    done
-    echo "AppImage broker lease was not released: pid=$pid appdir=$appdir" >&2
     exit 1
 }
 
@@ -440,7 +400,7 @@ guest() {
                 sleep 0.1
             done
             if [ "$shell_observed" -eq 0 ]; then
-                echo "Wild Buzzard shell session is unavailable" >&2
+                echo "Buzzard OS shell session is unavailable" >&2
                 exit 1
             fi
             if [ -z "$session_pid" ]; then
@@ -611,20 +571,20 @@ host_keyboard_input() {
     local replacement=$1
     wb window "$machine" focus-monitor
     if [[ -n "$host_input_hook" ]]; then
-        "$host_input_hook" "$machine" "$extract_lease_broker_pid" "$replacement"
+        "$host_input_hook" "$machine" "$portable_broker_pid" "$replacement"
         return
     fi
     case ",${XDG_CURRENT_DESKTOP:-},${XDG_SESSION_DESKTOP:-}," in
         *GNOME* | *gnome* | *ubuntu*)
             python3 "$project_dir/tests/acceptance/gnome-host-keyboard-input.py" \
-                --broker-pid "$extract_lease_broker_pid" \
+                --broker-pid "$portable_broker_pid" \
                 --title "$machine" \
                 --replacement "$replacement"
             ;;
         *)
             if [[ -t 0 ]]; then
                 echo "Manual host-input acceptance required." >&2
-                echo "In the focused Wild Buzzard monitor: press Backspace, type '$replacement', then press Enter." >&2
+                echo "In the focused Buzzard OS monitor: press Backspace, type '$replacement', then press Enter." >&2
                 read -r -p "Press Enter here only after completing that host keyboard sequence: "
             else
                 echo "No deterministic host-compositor keyboard injector is available. Set WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK to an absolute executable that injects Backspace, the replacement argument, and Enter through the focused native monitor; guest input tools are not accepted as proof." >&2
@@ -826,19 +786,19 @@ drag_guest_frame_edge() {
 }
 
 wb doctor
-if [[ ! -f "$portable_dir/vm/$machine/machine.json" ]]; then
+if [[ ! -f "$portable_dir/Machines/$machine/machine.json" ]]; then
     create_arguments=(create "$machine" --gpu all)
     if [[ -n "$accept_image" ]]; then
         create_arguments+=(--image "$accept_image")
     fi
     wb "${create_arguments[@]}"
 fi
-configured_width=$(jq -er '.width' "$portable_dir/vm/$machine/machine.json")
-configured_height=$(jq -er '.height' "$portable_dir/vm/$machine/machine.json")
+configured_width=$(jq -er '.width' "$portable_dir/Machines/$machine/machine.json")
+configured_height=$(jq -er '.height' "$portable_dir/Machines/$machine/machine.json")
 # Stop deliberately preserves the native host window and its supervising
 # broker. Close any live supervisor instead, including one already in Stopped
-# state, so the lease test below unequivocally exercises this AppImage/runtime
-# rather than reusing an older build's process and AppDir.
+# state, so this run unequivocally exercises the supplied portable application
+# folder rather than reusing an older build's process.
 existing_supervisor_pid=$(jq -r '.launcher_pid // empty' "$runtime" 2>/dev/null || true)
 if [[ "$existing_supervisor_pid" =~ ^[1-9][0-9]*$ ]] &&
     [[ -r "/proc/$existing_supervisor_pid/stat" ]]; then
@@ -853,40 +813,22 @@ wait_running
 refresh_pid
 wait_configured_initial_window_frame "$configured_width" "$configured_height"
 
-# `wb` deliberately forces the AppImage runtime's FUSE-less path. Its direct
-# AppRun/launcher process returns after readiness, but the detached broker must
-# retain a lease on that private AppDir because Stop keeps the same native host
-# window alive and a later Start can need bundled helpers. This is a behavioral
-# assertion against the real broker rather than an assumption about a magic fd
-# number. It prevents extract-and-run from deleting gst-launch and the media
-# plugins immediately after `start --detach` returns.
-extract_lease_broker_pid=$(jq -er '.launcher_pid' "$runtime")
-extract_lease_broker_start_time=$(process_start_time "$extract_lease_broker_pid")
-extract_lease_appdir=$(appdir_for_process "$extract_lease_broker_pid")
-case "$extract_lease_appdir" in
-    "${TMPDIR:-/tmp}"/appimage_extracted_*) ;;
-    *)
-        echo "forced extract-and-run used an unexpected APPDIR: $extract_lease_appdir" >&2
-        exit 1
-        ;;
-esac
-[[ -d "$extract_lease_appdir" ]]
-[[ $(stat -c %u "$extract_lease_appdir") == "$task_uid" ]]
-[[ $(stat -c %a "$extract_lease_appdir") == 700 ]]
-[[ -x "$extract_lease_appdir/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
-
+# The portable launcher returns after readiness. Stop keeps the same native
+# host window and supervising broker alive; a later Start must reuse that
+# process and the dependency-complete sibling app/ tree.
+portable_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+portable_broker_start_time=$(process_start_time "$portable_broker_pid")
 wb stop "$machine"
 wait_stopped
-[[ $(process_start_time "$extract_lease_broker_pid") == \
-    "$extract_lease_broker_start_time" ]]
-[[ -x "$extract_lease_appdir/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
+[[ $(process_start_time "$portable_broker_pid") == \
+    "$portable_broker_start_time" ]]
+[[ -x "$portable_dir/app/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(jq -er '.launcher_pid' "$runtime") == "$extract_lease_broker_pid" ]]
-[[ $(process_start_time "$extract_lease_broker_pid") == \
-    "$extract_lease_broker_start_time" ]]
-[[ $(appdir_for_process "$extract_lease_broker_pid") == "$extract_lease_appdir" ]]
+[[ $(jq -er '.launcher_pid' "$runtime") == "$portable_broker_pid" ]]
+[[ $(process_start_time "$portable_broker_pid") == \
+    "$portable_broker_start_time" ]]
 wait_native_window_frame
 
 # Exercise live TCP/UDP mappings in both directions and all three separately
@@ -894,7 +836,7 @@ wait_native_window_frame
 # snapshots and restores machine.json and asserts that the container PID never
 # changes, so this also guards the no-restart live-reconciliation contract.
 if [[ "$integration_acceptance" == 1 ]]; then
-    "$project_dir/tests/acceptance/integration-acceptance.sh" "$appimage" "$machine"
+    "$project_dir/tests/acceptance/integration-acceptance.sh" "$launcher" "$machine"
     refresh_pid
 fi
 
@@ -955,7 +897,7 @@ rm -f -- "$loopback_probe"
 
 [[ $(guest stat -c %a /run/wildbuzzard-host/wayland-0) == 0 ]]
 ! guest test -e /run/wildbuzzard-host/window-control
-! test -e "$portable_dir/vm/$machine/.window-control.sock"
+! test -e "$portable_dir/Machines/$machine/.window-control.sock"
 ! guest python3 -c \
     'import socket; client = socket.socket(socket.AF_UNIX); client.connect("/run/wildbuzzard-host/wayland-0")' \
     2>/dev/null
@@ -963,7 +905,7 @@ rm -f -- "$loopback_probe"
 ! guest test -S /run/docker.sock
 ! guest test -S /var/run/docker.sock
 [[ $(guest sudo -n id -u) == 0 ]]
-rootfs_host_uid=$(stat -c %u "$portable_dir/vm/$machine/rootfs")
+rootfs_host_uid=$(stat -c %u "$portable_dir/Machines/$machine/rootfs")
 [[ "$rootfs_host_uid" != 0 ]]
 [[ "$rootfs_host_uid" != "$(id -u)" ]]
 guest findmnt -T / -n -o OPTIONS | grep -q 'nosuid'
@@ -992,7 +934,7 @@ for host_gpu_device in \
         "$runtime" >/dev/null
 done
 ! jq -e '.. | strings | select(startswith("/"))' \
-    "$portable_dir/vm/$machine/machine.json" >/dev/null
+    "$portable_dir/Machines/$machine/machine.json" >/dev/null
 
 # The private desktop sockets may use familiar names, but they must be
 # different kernel socket objects from the host session.
@@ -1191,7 +1133,7 @@ def walk(node, depth=0):
 
 nodes = list(walk(desktop))
 labels = [node.name for node in nodes if node.name]
-assert "Wild Buzzard Desktop" in labels
+assert "Buzzard OS Desktop" in labels
 assert "Applications" in labels
 
 button = next(node for node in nodes if node.name == "Applications")
@@ -1502,7 +1444,7 @@ def walk(node, depth=0):
 
 target = f"Switch to {sys.argv[1]}"
 desktop = pyatspi.Registry.getDesktop(0)
-shell = next(node for node in walk(desktop) if node.name == "Wild Buzzard Desktop")
+shell = next(node for node in walk(desktop) if node.name == "Buzzard OS Desktop")
 button = next(node for node in walk(shell) if node.name == target)
 extents = button.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
 print(extents.x + extents.width // 2, extents.y + extents.height // 2)
@@ -1538,7 +1480,7 @@ maximize_label = f"Maximize {sys.argv[1]}"
 restore_label = f"Restore {sys.argv[1]}"
 for _ in range(100):
     desktop = pyatspi.Registry.getDesktop(0)
-    shell = next(node for node in walk(desktop) if node.name == "Wild Buzzard Desktop")
+    shell = next(node for node in walk(desktop) if node.name == "Buzzard OS Desktop")
     nodes = list(walk(shell))
     labels = [node.name for node in nodes]
     if maximize_label in labels:
@@ -1880,14 +1822,10 @@ wait_native_window_frame
 wb window "$machine" minimize
 sleep 1
 [[ $(jq -r '.state' "$runtime") == running ]]
-[[ -d "$extract_lease_appdir" ]]
-[[ -x "$extract_lease_appdir/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
+[[ -x "$portable_dir/app/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
 wb window "$machine" close
 wait_stopped
-wait_appdir_lease_released \
-    "$extract_lease_broker_pid" \
-    "$extract_lease_broker_start_time" \
-    "$extract_lease_appdir"
+wait_process_identity_gone "$portable_broker_pid" "$portable_broker_start_time"
 
 # A full orderly close/start proves the same mutable rootfs and shared
 # directory return.
@@ -1917,25 +1855,20 @@ relocation_outbound_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 relocation_outbound_broker_start_time=$(
     process_start_time "$relocation_outbound_broker_pid"
 )
-relocation_outbound_appdir=$(
-    appdir_for_process "$relocation_outbound_broker_pid"
-)
 wb window "$machine" close
 wait_stopped
-wait_appdir_lease_released \
-    "$relocation_outbound_broker_pid" \
-    "$relocation_outbound_broker_start_time" \
-    "$relocation_outbound_appdir"
-machine_config_hash=$(sha256sum "$portable_dir/vm/$machine/machine.json" | cut -d' ' -f1)
-appimage_name=$(basename -- "$appimage")
+wait_process_identity_gone \
+    "$relocation_outbound_broker_pid" "$relocation_outbound_broker_start_time"
+machine_config_hash=$(sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1)
+launcher_name=$(basename -- "$launcher")
 relocation_original=$portable_dir
 relocation_target="${portable_dir}.wildbuzzard-relocation-$$"
 [[ ! -e "$relocation_target" ]]
 mv -- "$relocation_original" "$relocation_target"
 relocation_active=1
 portable_dir=$relocation_target
-appimage="$portable_dir/$appimage_name"
-runtime="$portable_dir/vm/$machine/runtime.json"
+launcher="$portable_dir/$launcher_name"
+runtime="$portable_dir/Machines/$machine/runtime.json"
 
 wb_without_host_path list | grep "^$machine"$'\t' >/dev/null
 wb_without_host_path start "$machine" --detach
@@ -1945,30 +1878,25 @@ refresh_pid
 [[ $(guest cat /shared/.wildbuzzard-acceptance) == "$marker" ]]
 [[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
 relocated_machine_config_hash=$(
-    sha256sum "$portable_dir/vm/$machine/machine.json" | cut -d' ' -f1
+    sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1
 )
 [[ "$relocated_machine_config_hash" == "$machine_config_hash" ]]
 wb status "$machine" |
-    grep -Fx "rootfs: $portable_dir/vm/$machine/rootfs" >/dev/null
+    grep -Fx "rootfs: $portable_dir/Machines/$machine/rootfs" >/dev/null
 relocation_return_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 relocation_return_broker_start_time=$(
     process_start_time "$relocation_return_broker_pid"
 )
-relocation_return_appdir=$(
-    appdir_for_process "$relocation_return_broker_pid"
-)
 wb window "$machine" close
 wait_stopped
-wait_appdir_lease_released \
-    "$relocation_return_broker_pid" \
-    "$relocation_return_broker_start_time" \
-    "$relocation_return_appdir"
+wait_process_identity_gone \
+    "$relocation_return_broker_pid" "$relocation_return_broker_start_time"
 
 mv -- "$relocation_target" "$relocation_original"
 relocation_active=0
 portable_dir=$relocation_original
-appimage="$portable_dir/$appimage_name"
-runtime="$portable_dir/vm/$machine/runtime.json"
+launcher="$portable_dir/$launcher_name"
+runtime="$portable_dir/Machines/$machine/runtime.json"
 wb start "$machine" --detach
 wait_running
 refresh_pid
@@ -1998,32 +1926,23 @@ refresh_pid
 # only the host's preferred-scale value; Sway still renders and submits the
 # resulting dmabuf through the real host compositor. The override is consumed
 # only when the display process starts, while Stop deliberately keeps that
-# process alive. Close the normal display and release its exact AppDir lease so
-# this start cannot silently reuse a process that never received the override.
+# process alive. Close the normal display so this start cannot silently reuse
+# a process that never received the override.
 fractional_baseline_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 fractional_baseline_broker_start_time=$(
     process_start_time "$fractional_baseline_broker_pid"
 )
-fractional_baseline_appdir=$(
-    appdir_for_process "$fractional_baseline_broker_pid"
-)
 wb window "$machine" close
 wait_stopped
-wait_appdir_lease_released \
-    "$fractional_baseline_broker_pid" \
-    "$fractional_baseline_broker_start_time" \
-    "$fractional_baseline_appdir"
+wait_process_identity_gone \
+    "$fractional_baseline_broker_pid" "$fractional_baseline_broker_start_time"
 WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180 \
-    APPIMAGE_EXTRACT_AND_RUN=1 \
-    "$appimage" start "$machine" --detach
+    "$launcher" start "$machine" --detach
 wait_running
 refresh_pid
 fractional_override_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 fractional_override_broker_start_time=$(
     process_start_time "$fractional_override_broker_pid"
-)
-fractional_override_appdir=$(
-    appdir_for_process "$fractional_override_broker_pid"
 )
 wait_scaled_window_frame 180
 guest pgrep -f '^/usr/bin/python3 /usr/libexec/wildbuzzard-output-sync$' >/dev/null
@@ -2042,14 +1961,12 @@ wait_scaled_window_frame 180
 wb window "$machine" restore
 wait_maximized false
 wait_scaled_window_frame 180
-# Close and release the overridden display's exact lease before starting
-# normally; otherwise Stop would preserve the startup-only test setting.
+# Close the overridden display before starting normally; otherwise Stop would
+# preserve the startup-only test setting.
 wb window "$machine" close
 wait_stopped
-wait_appdir_lease_released \
-    "$fractional_override_broker_pid" \
-    "$fractional_override_broker_start_time" \
-    "$fractional_override_appdir"
+wait_process_identity_gone \
+    "$fractional_override_broker_pid" "$fractional_override_broker_start_time"
 wb start "$machine" --detach
 wait_running
 refresh_pid
@@ -2059,4 +1976,4 @@ rm -f -- "$portable_dir/shared/.wildbuzzard-acceptance"
 rm -f -- "$portable_dir/shared/.wildbuzzard-guest-created"
 rm -f -- "$portable_dir/shared/.wildbuzzard-guest-directory/host-file"
 rmdir -- "$portable_dir/shared/.wildbuzzard-guest-directory"
-echo "Wild Buzzard hardware acceptance passed for '$machine'"
+echo "Buzzard OS hardware acceptance passed for '$machine'"

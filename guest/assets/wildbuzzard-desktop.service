@@ -1,5 +1,5 @@
 [Unit]
-Description=Wild Buzzard Sway desktop session
+Description=Buzzard OS Sway desktop session
 After=dbus.service
 Wants=dbus.service
 

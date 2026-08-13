@@ -83,7 +83,7 @@ use crate::desktop::DesktopModel;
 use crate::updates::{UPDATER_STATE_DIRECTORY, UPDATER_STATE_PATH, UpdateTracker};
 use crate::watch::DirectoryWatcher;
 
-const SHELL_NAME: &str = "Wild Buzzard Desktop";
+const SHELL_NAME: &str = "Buzzard OS Desktop";
 const REPAINT_REQUEST: &str = "wildbuzzard-shell-repaint";
 const REPAINT_ACKNOWLEDGEMENT: &str = "wildbuzzard-shell-repaint-ack";
 const SHELL_READY: &str = "shell-ready";

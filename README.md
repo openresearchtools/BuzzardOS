@@ -92,7 +92,8 @@ The same operations are available from the command line:
 ./BuzzardOS create work
 ./BuzzardOS start work
 ./BuzzardOS stop work
-./BuzzardOS import SOURCE --name imported
+./BuzzardOS import SOURCE --name restored --mode restore
+./BuzzardOS import SOURCE --name independent-copy --mode clone
 ./BuzzardOS export work --output shared/work.oci.tar.zst
 ./BuzzardOS clone work work-copy
 ./BuzzardOS delete work-copy --yes
@@ -102,9 +103,21 @@ The same operations are available from the command line:
 
 Import accepts a local OCI image-layout directory, a tar/gzip/zstd OCI archive,
 a Buzzard OS export, or a remote OCI reference. A multi-platform/multi-image
-layout requires an unambiguous native Linux entry or `--manifest` selection.
+local layout requires an unambiguous native Linux entry or `--manifest`
+selection. `--mode restore` preserves the identity carried by a Buzzard OS
+export and rejects a duplicate in the same portable folder. `--mode clone`
+regenerates the host metadata UUID, guest machine ID, random seed, and SSH host
+keys while the new machine is still private staging; a failed reset never
+commits a partially cloned machine. Generic OCI images have no portable Buzzard
+OS identity annotation and therefore always receive fresh local identity.
 Layers are applied in order with OCI whiteouts and preserved ownership, modes,
 times, links, xattrs, ACLs, and file capabilities.
+
+Authenticated OCI environment values and descriptive process metadata are
+retained and round-trip through export. Buzzard OS is a desktop-machine
+runtime, so an imported image must provide systemd and always boots systemd as
+PID 1; an image's foreground `Entrypoint`, `Cmd`, `User`, or `WorkingDir` is
+preserved as OCI metadata rather than replacing the machine boot contract.
 
 Export requires a stopped, exclusively locked machine. Buzzard OS enters the
 same subordinate-ID namespace used by that machine, archives the canonical

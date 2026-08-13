@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""System-bus front end for the fixed-operation Wild Buzzard updater."""
+"""System-bus front end for the fixed-operation Buzzard OS updater."""
 
 from __future__ import annotations
 

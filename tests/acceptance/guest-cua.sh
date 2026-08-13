@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if (($# < 3 || $# > 4)); then
-    echo "usage: $0 APPIMAGE-OR-PORTABLE-DIR MACHINE TOOL [JSON-ARGUMENTS]" >&2
+    echo "usage: $0 BUZZARDOS-LAUNCHER-OR-PORTABLE-DIR MACHINE TOOL [JSON-ARGUMENTS]" >&2
     exit 2
 fi
 
@@ -26,7 +26,7 @@ if [[ ! "$machine" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; then
     exit 2
 fi
 
-runtime=$portable_dir/vm/$machine/runtime.json
+runtime=$portable_dir/Machines/$machine/runtime.json
 container_pid=$(jq -er '
     select(.state == "running") |
     .container_pid |
@@ -90,7 +90,7 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
             sleep 0.1
         done
         if [ "$shell_observed" -eq 0 ]; then
-            echo "Wild Buzzard shell session is unavailable" >&2
+            echo "Buzzard OS shell session is unavailable" >&2
             exit 1
         fi
         if [ -z "$session_pid" ]; then

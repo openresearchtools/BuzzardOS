@@ -9,14 +9,14 @@ imports.gi.versions.Atspi = '2.0';
 const {Atspi, GLib, Gvc} = imports.gi;
 const System = imports.system;
 
-const applicationId = ARGV[0] ?? 'org.openresearchtools.WildBuzzard';
+const applicationId = ARGV[0] ?? 'org.openresearchtools.BuzzardOS';
 const skippedApplicationIds = new Set([
     'org.gnome.VolumeControl',
     'org.PulseAudio.pavucontrol',
 ]);
 
 const control = new Gvc.MixerControl({
-    name: 'Wild Buzzard GNOME microphone acceptance probe',
+    name: 'Buzzard OS GNOME microphone acceptance probe',
 });
 const loop = new GLib.MainLoop(null, false);
 let result = null;

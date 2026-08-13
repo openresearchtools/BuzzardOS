@@ -51,7 +51,7 @@ const SPEAKER_TEST_HARD_LIMIT: Duration = Duration::from_secs(8);
 const MICROPHONE_TEST_HARD_LIMIT: Duration = Duration::from_secs(30);
 const MICROPHONE_FRAGMENT_BYTES: u32 = 9_600;
 const MAX_MICROPHONE_FRAGMENTS_PER_TICK: usize = 4;
-const APPLICATION_NAME: &str = "Wild Buzzard Settings";
+const APPLICATION_NAME: &str = "Buzzard OS Settings";
 const APPLICATION_ID: &str = "org.openresearchtools.WildBuzzard.Settings1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1636,7 +1636,7 @@ impl SpeakerTest {
         let mut properties = stream_properties("Speaker Test")?;
         let mut stream = Stream::new_with_proplist(
             context,
-            "Wild Buzzard Speaker Test",
+            "Buzzard OS Speaker Test",
             &spec,
             None,
             &mut properties,
@@ -1759,7 +1759,7 @@ impl MicrophoneTest {
         let mut properties = stream_properties("Microphone Level Test")?;
         let mut stream = Stream::new_with_proplist(
             context,
-            "Wild Buzzard Microphone Level Test",
+            "Buzzard OS Microphone Level Test",
             &spec,
             None,
             &mut properties,

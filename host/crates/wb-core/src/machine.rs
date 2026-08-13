@@ -3,6 +3,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
@@ -223,6 +224,94 @@ pub struct MachineConfig {
     /// is outside the guest rootfs and cannot be changed by guest processes.
     #[serde(default)]
     pub integrations: IntegrationSettings,
+    /// Authenticated OCI process metadata retained for portability. Buzzard
+    /// OS always boots systemd as PID 1, but applies the image environment to
+    /// that guest process and preserves the remaining metadata on export.
+    #[serde(default)]
+    pub oci: OciImageMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OciImageMetadata {
+    #[serde(default)]
+    pub environment: Vec<String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Vec<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub stop_signal: Option<String>,
+}
+
+impl OciImageMetadata {
+    const MAX_ITEMS: usize = 4096;
+    const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+    pub fn validate(&self) -> Result<()> {
+        if self.environment.len() > Self::MAX_ITEMS
+            || self.labels.len() > Self::MAX_ITEMS
+            || self.entrypoint.len() > Self::MAX_ITEMS
+            || self.command.len() > Self::MAX_ITEMS
+        {
+            bail!("OCI process metadata contains too many entries");
+        }
+        let mut total = 0_usize;
+        for variable in &self.environment {
+            let (name, _) = variable
+                .split_once('=')
+                .context("OCI environment entry has no '=' separator")?;
+            if name.is_empty()
+                || !name.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte.is_ascii_alphanumeric() && (index != 0 || !byte.is_ascii_digit())
+                })
+            {
+                bail!("OCI environment entry has an invalid variable name");
+            }
+            total = total.saturating_add(variable.len());
+        }
+        for (key, value) in &self.labels {
+            if key.is_empty() {
+                bail!("OCI label name cannot be empty");
+            }
+            total = total.saturating_add(key.len()).saturating_add(value.len());
+        }
+        for value in self.entrypoint.iter().chain(&self.command) {
+            total = total.saturating_add(value.len());
+        }
+        for value in [
+            self.working_dir.as_deref(),
+            self.user.as_deref(),
+            self.stop_signal.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            total = total.saturating_add(value.len());
+        }
+        if total > Self::MAX_TEXT_BYTES {
+            bail!("OCI process metadata exceeds the 1 MiB limit");
+        }
+        Ok(())
+    }
+
+    pub fn environment_pairs(&self) -> Result<Vec<(&str, &str)>> {
+        self.validate()?;
+        self.environment
+            .iter()
+            .map(|variable| {
+                variable
+                    .split_once('=')
+                    .context("OCI environment entry has no '=' separator")
+            })
+            .collect()
+    }
 }
 
 fn default_width() -> u32 {
@@ -265,6 +354,7 @@ impl MachineConfig {
             gpus,
             guest_scale_120: None,
             integrations: IntegrationSettings::default(),
+            oci: OciImageMetadata::default(),
         }
     }
 
@@ -314,6 +404,7 @@ impl MachineConfig {
         Self::validate_name(&config.name)?;
         Self::validate_gpus(&config.gpus)?;
         Self::validate_guest_scale(config.guest_scale_120)?;
+        config.oci.validate()?;
         config.integrations.validate(config.network)?;
         if !(320..=16384).contains(&config.width) || !(240..=16384).contains(&config.height) {
             bail!(
@@ -328,6 +419,7 @@ impl MachineConfig {
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
         Self::validate_guest_scale(self.guest_scale_120)?;
         Self::validate_gpus(&self.gpus)?;
+        self.oci.validate()?;
         self.integrations.validate(self.network)?;
         atomic_json(&machine_dir.join(Self::FILE), self)
     }
@@ -673,6 +765,25 @@ mod tests {
         }
         assert!(MachineConfig::validate_guest_scale(Some(160)).is_err());
         assert!(MachineConfig::validate_guest_scale(Some(0)).is_err());
+    }
+
+    #[test]
+    fn validates_and_splits_oci_environment_without_shell_parsing() {
+        let metadata = OciImageMetadata {
+            environment: vec!["PATH=/custom/bin:/usr/bin".into(), "EMPTY=".into()],
+            ..OciImageMetadata::default()
+        };
+        assert_eq!(
+            metadata.environment_pairs().unwrap(),
+            vec![("PATH", "/custom/bin:/usr/bin"), ("EMPTY", "")]
+        );
+        for invalid in ["NO_SEPARATOR", "1BAD=value", "BAD-NAME=value", "=value"] {
+            let metadata = OciImageMetadata {
+                environment: vec![invalid.into()],
+                ..OciImageMetadata::default()
+            };
+            assert!(metadata.validate().is_err(), "accepted {invalid:?}");
+        }
     }
 
     #[test]

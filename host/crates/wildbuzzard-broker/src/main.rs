@@ -516,6 +516,9 @@ fn launch_container(
         .arg("--block-fd")
         .arg(block_read.to_string());
     add_bubblewrap_pid_report(&mut command, info_write.as_raw_fd());
+    for (name, value) in config.oci.environment_pairs()? {
+        command.args(["--setenv", name, value]);
+    }
     command
         .args(["--setenv", "container", "wildbuzzard"])
         .args([

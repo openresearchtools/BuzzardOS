@@ -67,12 +67,12 @@ if [ -f "$bookmarks" ]; then
 fi
 
 # Thunar resolves one uca.xml through XDG rather than merging the system and
-# user files. Refresh only Wild Buzzard's fixed AppImage actions in the user's
+# user files. Refresh only Buzzard OS's fixed AppImage actions in the user's
 # file, preserving all user-created custom actions. A malformed or unsafe user
 # file is deliberately left untouched; the actionable error is recorded in
 # the guest session log without preventing the desktop from booting.
 if ! /usr/libexec/wildbuzzard-shortcut-helper install-thunar-actions >/dev/null; then
-    echo "Wild Buzzard could not refresh Thunar AppImage actions; inspect the preceding shortcut-helper diagnostic and ~/.config/Thunar/uca.xml" >&2
+    echo "Buzzard OS could not refresh Thunar AppImage actions; inspect the preceding shortcut-helper diagnostic and ~/.config/Thunar/uca.xml" >&2
 fi
 
 export WAYLAND_DISPLAY=/run/wildbuzzard-host/wayland-0

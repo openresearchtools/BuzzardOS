@@ -8,7 +8,7 @@ if [ "${WILDBUZZARD_SERVICES_LOCKED:-0}" != 1 ]; then
 fi
 
 status_dir=${WILDBUZZARD_STATUS_DIR:-/run/wildbuzzard-host}
-: "${WILDBUZZARD_SESSION_TOKEN:?missing Wild Buzzard session token}"
+: "${WILDBUZZARD_SESSION_TOKEN:?missing Buzzard OS session token}"
 rm -f \
     "$status_dir/desktop-ready" \
     "$status_dir/shell-ready" \
@@ -180,7 +180,7 @@ cua_socket=$HOME/.cache/cua-driver/cua-driver.sock
 attempt=0
 while [ "$attempt" -lt 450 ]; do
     if ! kill -0 "$shell_pid" 2>/dev/null; then
-        echo "Wild Buzzard shell exited before becoming ready" >&2
+        echo "Buzzard OS shell exited before becoming ready" >&2
         exit 1
     fi
     if ! kill -0 "$cua_pid" 2>/dev/null; then

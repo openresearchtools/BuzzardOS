@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 [Unit]
-Description=Ask Wild Buzzard to check configured Debian repositories
+Description=Ask Buzzard OS to check configured Debian repositories
 After=dbus.service network-online.target wildbuzzard-updater.service
 Wants=network-online.target wildbuzzard-updater.service
 

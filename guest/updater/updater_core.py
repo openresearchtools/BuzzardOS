@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Fixed-operation Debian updater used inside the Wild Buzzard guest.
+"""Fixed-operation Debian updater used inside the Buzzard OS guest.
 
 This module deliberately contains no D-Bus argument that can become an apt
 command line.  The public daemon passes only opaque plan generations into this
@@ -1173,7 +1173,7 @@ class UpdateEngine:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise BusyError("another updater or package operation owns the Wild Buzzard lock") from error
+                raise BusyError("another updater or package operation owns the Buzzard OS lock") from error
             yield
         finally:
             os.close(descriptor)

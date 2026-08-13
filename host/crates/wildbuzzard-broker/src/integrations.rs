@@ -38,7 +38,7 @@ const GUEST_AUDIO_PORT: u16 = 47_130;
 const HOST_MICROPHONE_PORT: u16 = 47_131;
 const HOST_CAMERA_PORT: u16 = 47_132;
 const MAX_PIPEWIRE_DUMP_BYTES: usize = 32 * 1024 * 1024;
-const MICROPHONE_APPLICATION_ID: &str = "org.openresearchtools.WildBuzzard";
+const MICROPHONE_APPLICATION_ID: &str = "org.openresearchtools.BuzzardOS";
 const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
 const V4L2_PIX_FMT_MJPEG: u32 = u32::from_le_bytes(*b"MJPG");
 const VIDIOC_ENUM_FMT: libc::c_ulong = 0xc040_5602;
@@ -1542,7 +1542,7 @@ fn append_microphone_capture_source(
         "buffer-time=40000",
         "latency-time=10000",
         &format!(
-            "stream-properties=props,application.id={MICROPHONE_APPLICATION_ID},application.name=WildBuzzard,media.role=communication"
+            "stream-properties=props,application.id={MICROPHONE_APPLICATION_ID},application.name=BuzzardOS,media.role=communication"
         ),
     ]);
 }
@@ -1950,7 +1950,7 @@ mod tests {
                 .any(|argument| argument == "device=stable-host-node")
         );
         assert!(arguments.iter().any(|argument| {
-            argument.contains("application.id=org.openresearchtools.WildBuzzard")
+            argument.contains("application.id=org.openresearchtools.BuzzardOS")
         }));
         assert!(!arguments.iter().any(|argument| argument == "alsasrc"));
         assert!(!arguments.iter().any(|argument| argument.contains("hw:")));

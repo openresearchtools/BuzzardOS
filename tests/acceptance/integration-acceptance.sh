@@ -4,12 +4,12 @@ set -Eeuo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 task_uid=$(id -u)
-default_appimage="${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid/out/WildBuzzard-x86_64.AppImage"
-appimage=${1:-${WILDBUZZARD_APPIMAGE:-$default_appimage}}
+default_launcher="${TMPDIR:-/tmp}/buzzardos-build-$task_uid/out/BuzzardOS/BuzzardOS"
+launcher=${1:-${BUZZARDOS_LAUNCHER:-$default_launcher}}
 machine=${2:-machine1}
-portable_dir=$(CDPATH= cd -- "$(dirname -- "$appimage")" && pwd)
-appimage="$portable_dir/$(basename -- "$appimage")"
-machine_dir="$portable_dir/vm/$machine"
+portable_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
+launcher="$portable_dir/$(basename -- "$launcher")"
+machine_dir="$portable_dir/Machines/$machine"
 config="$machine_dir/machine.json"
 runtime="$machine_dir/runtime.json"
 shared="$portable_dir/shared"
@@ -163,7 +163,7 @@ for command_name in awk cp date gst-launch-1.0 id install jq mktemp nsenter pw-d
     command -v "$command_name" >/dev/null 2>&1 ||
         fail "host dependency is missing: $command_name"
 done
-[[ -x "$appimage" ]] || fail "AppImage is missing or not executable: $appimage"
+[[ -x "$launcher" ]] || fail "portable Buzzard OS launcher is missing or not executable: $launcher"
 [[ -f "$fixture" ]] || fail "echo fixture is missing: $fixture"
 [[ -f "$gnome_microphone_probe" ]] || fail "GNOME microphone probe is missing: $gnome_microphone_probe"
 [[ -f "$config" && -f "$runtime" ]] || fail "machine '$machine' does not exist"
@@ -202,7 +202,7 @@ install -m 0755 -- "$fixture" "$host_fixture"
 container_pid=$(jq -er '.container_pid' "$runtime")
 initial_container_pid=$container_pid
 
-APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" doctor >"$artifact_dir/doctor.txt"
+"$launcher" doctor >"$artifact_dir/doctor.txt"
 
 wait_runtime() {
     local expression=$1
@@ -257,7 +257,7 @@ wait_host_microphone_stream() {
                         $corked != 1 and $corked != "1") and
                     .info.props["media.class"] == "Stream/Input/Audio" and
                     .info.props["client.api"] == "pipewire-pulse" and
-                    .info.props["application.id"] == "org.openresearchtools.WildBuzzard" and
+                    .info.props["application.id"] == "org.openresearchtools.BuzzardOS" and
                     (.info.props["application.process.id"] | tostring) == $pid and
                     .info.props["target.object"] == $target
                 )] as $streams |
@@ -357,7 +357,7 @@ wait_gnome_microphone_accounting() {
             DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
             GI_TYPELIB_PATH="$gnome_shell_libdir" \
             LD_LIBRARY_PATH="$gnome_shell_libdir" \
-            gjs "$gnome_microphone_probe" org.openresearchtools.WildBuzzard \
+            gjs "$gnome_microphone_probe" org.openresearchtools.BuzzardOS \
             2>"$stderr_evidence"); then
             local gvc_matches=false
             if [[ "$wanted" == true ]]; then
@@ -588,8 +588,8 @@ assert_media_disabled() {
     wait_guest_node wildbuzzard_host_camera false
     if pw-dump | jq -e '
         any(.[];
-            ((.info.props?["application.name"]? // "") | contains("Wild Buzzard Guest Audio")) or
-            ((.info.props?["node.description"]? // "") | contains("Wild Buzzard Guest Audio")))
+            ((.info.props?["application.name"]? // "") | contains("Buzzard OS Guest Audio")) or
+            ((.info.props?["node.description"]? // "") | contains("Buzzard OS Guest Audio")))
     ' >/dev/null; then
         fail "disabled guest-audio bridge remains registered with host PipeWire"
     fi
@@ -597,7 +597,7 @@ assert_media_disabled() {
         any(.[];
             .type == "PipeWire:Interface:Node" and
             .info.props["media.class"] == "Stream/Input/Audio" and
-            .info.props["application.id"] == "org.openresearchtools.WildBuzzard")
+            .info.props["application.id"] == "org.openresearchtools.BuzzardOS")
     ' >/dev/null; then
         fail "disabled microphone bridge remains registered as a host recording stream"
     fi
@@ -861,8 +861,8 @@ jq -e '.bytes > 4096 and .nonzero_bytes > 1024' <<<"$audio_metrics" >/dev/null |
     fail "guest output monitor produced no measurable samples: $audio_metrics"
 pw-dump | jq -e '
     any(.[];
-        ((.info.props?["application.name"]? // "") | contains("Wild Buzzard Guest Audio")) or
-        ((.info.props?["node.description"]? // "") | contains("Wild Buzzard Guest Audio")))
+        ((.info.props?["application.name"]? // "") | contains("Buzzard OS Guest Audio")) or
+        ((.info.props?["node.description"]? // "") | contains("Buzzard OS Guest Audio")))
 ' >/dev/null || fail "guest audio bridge is absent from host PipeWire"
 
 stop_guest_pid "$guest_audio_generator_pid"

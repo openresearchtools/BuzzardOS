@@ -18,7 +18,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wb_core::{
     DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, IdMap, MachineConfig, MachineState, NetworkMode,
-    ResourceLocator, RuntimeState, WaylandCapabilities, WbPaths, host_control_socket,
+    OciImageMetadata, ResourceLocator, RuntimeState, WaylandCapabilities, WbPaths,
+    host_control_socket,
 };
 
 const ROOTFS_SEED_ARCHIVE: &str = "WildBuzzard-rootfs-linux-x86_64.tar.zst";
@@ -506,6 +507,9 @@ enum Commands {
         source: String,
         #[arg(long)]
         name: String,
+        /// Restore the exported identity, or clone it with fresh guest identity material.
+        #[arg(long, value_enum, default_value_t = ImportModeArg::Restore)]
+        mode: ImportModeArg,
         /// Select a manifest digest or org.opencontainers.image.ref.name from a multi-image index.
         #[arg(long)]
         manifest: Option<String>,
@@ -622,6 +626,12 @@ enum NetworkArg {
     User,
     Host,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ImportModeArg {
+    Restore,
+    Clone,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -775,8 +785,9 @@ fn run() -> Result<()> {
         Some(Commands::Import {
             source,
             name,
+            mode,
             manifest,
-        }) => import_machine(&paths, &source, &name, manifest.as_deref(), true),
+        }) => import_machine(&paths, &source, &name, manifest.as_deref(), mode, None),
         Some(Commands::Export { name, output }) => export_machine(&paths, &name, &output),
         Some(Commands::Clone { source, name }) => clone_machine(&paths, &source, &name),
         Some(Commands::Delete { name, yes }) => delete_machine(&paths, &name, yes),
@@ -881,7 +892,7 @@ fn create(
         let rootfs = machine_dir.join("rootfs");
         fs::create_dir(&rootfs).context("creating persistent rootfs")?;
 
-        let (source_reference, image_digest) = if let Some(image) = image {
+        let (source_reference, image_digest, oci_metadata) = if let Some(image) = image {
             // Portable releases always resolve the bundled copy. PATH fallback only makes
             // source-tree development convenient and is never required of end users.
             let crane = resources.helper_or_path("crane")?;
@@ -923,8 +934,9 @@ fn create(
                 .context("extracting downloaded OCI layout archive")?;
             let image_layout = canonical_oci_layout(&image_layout_stage)?;
             let index = read_oci_index(&image_layout)?;
-            find_oci_manifest_descriptor(&image_layout, &index, &image_digest)
+            let descriptor = find_oci_manifest_descriptor(&image_layout, &index, &image_digest)
                 .context("downloaded OCI layout does not contain the resolved manifest")?;
+            let oci_metadata = oci_metadata_from_manifest(&image_layout, &descriptor)?;
 
             eprintln!("Applying OCI layers to the persistent root filesystem…");
             apply_image_in_user_namespace(
@@ -936,7 +948,7 @@ fn create(
             )?;
             fs::remove_file(&image_archive).context("removing downloaded OCI archive")?;
             fs::remove_dir_all(&image_layout_stage).context("removing temporary OCI layout")?;
-            (image.to_owned(), image_digest)
+            (image.to_owned(), image_digest, oci_metadata)
         } else {
             let archive = bundled_rootfs_oci_archive(paths)?;
             let layout_stage = machine_dir.join("bundled-oci-layout");
@@ -946,22 +958,25 @@ fn create(
             let index = read_oci_index(&layout)?;
             let descriptor = resolve_oci_manifest_descriptor(&layout, &index, None)?;
             let digest = descriptor.digest.clone();
+            let oci_metadata = oci_metadata_from_manifest(&layout, &descriptor)?;
             eprintln!("Applying the bundled OCI rootfs to the persistent root filesystem…");
             apply_image_in_user_namespace(&resources, &layout, &digest, &rootfs, machine_dir)?;
             fs::remove_dir_all(&layout_stage).context("removing bundled OCI staging layout")?;
             (
                 format!("bundle:app/runtime/{DEFAULT_ROOTFS_OCI_ARCHIVE}"),
                 digest,
+                oci_metadata,
             )
         };
 
-        let config = MachineConfig::new(
+        let mut config = MachineConfig::new(
             name.to_owned(),
             source_reference.clone(),
             image_digest,
             network,
             gpus,
         );
+        config.oci = oci_metadata;
         config.save(machine_dir)?;
         RuntimeState::new(MachineState::Stopped).save(machine_dir)?;
         File::create(machine_dir.join("machine.lock")).context("creating machine lock")?;
@@ -997,23 +1012,14 @@ fn import_machine(
     source: &str,
     name: &str,
     selector: Option<&str>,
-    preserve_identity: bool,
+    mode: ImportModeArg,
+    source_reference_override: Option<&str>,
 ) -> Result<()> {
     MachineConfig::validate_name(name)?;
-    let source_path = Path::new(source);
-    if !source_path.exists() {
-        if selector.is_some() {
-            bail!("--manifest is supported only for local OCI layouts and archives");
-        }
-        return create(
-            paths,
-            name,
-            Some(source),
-            NetworkMode::User,
-            vec!["all".into()],
-        );
+    if source.trim().is_empty() {
+        bail!("OCI import source cannot be empty");
     }
-
+    let source_path = Path::new(source);
     let final_dir = paths.machine(name);
     if final_dir.exists() {
         bail!("machine '{name}' already exists at {}", final_dir.display());
@@ -1028,23 +1034,85 @@ fn import_machine(
         .tempdir_in(paths.cache())
         .context("creating OCI import staging directory")?;
 
-    let layout = if source_path.is_dir() {
-        canonical_oci_layout(source_path)?
+    let (layout, source_reference, expected_digest) = if source_path.exists() {
+        let layout = if source_path.is_dir() {
+            canonical_oci_layout(source_path)?
+        } else {
+            let extracted = source_stage.path().join("layout");
+            fs::create_dir(&extracted).context("creating local OCI extraction directory")?;
+            extract_oci_archive(source_path, &extracted)?;
+            canonical_oci_layout(&extracted)?
+        };
+        (layout, local_oci_source_reference(source_path), None)
     } else {
-        extract_oci_archive(source_path, source_stage.path())?;
-        canonical_oci_layout(source_stage.path())?
+        if selector.is_some() {
+            bail!("--manifest is supported only for local OCI layouts and archives");
+        }
+        let crane = resources.helper_or_path("crane")?;
+        let platform = oci_platform()?;
+        let digest_output = Command::new(&crane)
+            .args(["digest", "--platform", platform, source])
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("resolving OCI reference with {}", crane.display()))?;
+        if !digest_output.status.success() {
+            bail!("OCI digest resolution failed with {}", digest_output.status);
+        }
+        let digest = String::from_utf8(digest_output.stdout)
+            .context("OCI digest is not UTF-8")?
+            .trim()
+            .to_owned();
+        validate_sha256_digest(&digest)?;
+        let immutable_source = if source.contains("@sha256:") {
+            source.to_owned()
+        } else {
+            format!("{source}@{digest}")
+        };
+        let archive = source_stage.path().join("remote.oci.tar");
+        let cache = paths.cache().join("oci-blobs");
+        fs::create_dir_all(&cache).context("creating OCI download cache")?;
+        eprintln!("Pulling {source}…");
+        let status = Command::new(&crane)
+            .args(["pull", "--platform", platform, "--format", "oci"])
+            .arg("--cache_path")
+            .arg(&cache)
+            .arg(&immutable_source)
+            .arg(&archive)
+            .stdin(Stdio::null())
+            .status()
+            .with_context(|| format!("starting {}", crane.display()))?;
+        if !status.success() {
+            bail!("OCI pull failed with {status}");
+        }
+        let extracted = source_stage.path().join("layout");
+        fs::create_dir(&extracted).context("creating remote OCI extraction directory")?;
+        extract_oci_archive(&archive, &extracted)?;
+        (
+            canonical_oci_layout(&extracted)?,
+            format!("oci:{source}"),
+            Some(digest),
+        )
     };
     let index = read_oci_index(&layout)?;
-    let descriptor = resolve_oci_manifest_descriptor(&layout, &index, selector)?;
+    let descriptor = if let Some(digest) = expected_digest.as_deref() {
+        find_oci_manifest_descriptor(&layout, &index, digest)
+            .context("downloaded OCI layout does not contain the resolved manifest")?
+    } else {
+        resolve_oci_manifest_descriptor(&layout, &index, selector)?
+    };
     let digest = descriptor.digest.clone();
     let imported_config = portable_config_from_manifest(&layout, &descriptor)?;
-    let source_reference = local_oci_source_reference(source_path);
+    let imported_oci_metadata = oci_metadata_from_manifest(&layout, &descriptor)?;
+    let source_reference = source_reference_override
+        .map(ToOwned::to_owned)
+        .unwrap_or(source_reference);
 
     let result = (|| -> Result<()> {
         let rootfs = stage.path().join("rootfs");
         fs::create_dir(&rootfs).context("creating imported machine rootfs")?;
         apply_image_in_user_namespace(&resources, &layout, &digest, &rootfs, stage.path())?;
 
+        let carries_portable_identity = imported_config.is_some();
         let mut config = imported_config.unwrap_or_else(|| {
             MachineConfig::new(
                 name.to_owned(),
@@ -1054,10 +1122,12 @@ fn import_machine(
                 vec!["all".into()],
             )
         });
-        if preserve_identity {
+        config.oci = imported_oci_metadata.clone();
+        if mode == ImportModeArg::Restore && carries_portable_identity {
             reject_duplicate_machine_identity(paths, config.id)?;
         } else {
             config.id = uuid::Uuid::new_v4();
+            reset_cloned_machine_identity_in_stage(&resources, &rootfs)?;
         }
         config.name = name.to_owned();
         config.title = name.to_owned();
@@ -1069,8 +1139,11 @@ fn import_machine(
         File::create(stage.path().join("machine.lock")).context("creating machine lock")?;
         commit_new_machine(stage.path(), &final_dir)?;
         println!(
-            "Imported '{name}' from {}\nPersistent rootfs: {}\nShared data: {}",
-            source_path.display(),
+            "Imported '{name}' from {source} in {} mode\nPersistent rootfs: {}\nShared data: {}",
+            match mode {
+                ImportModeArg::Restore => "restore",
+                ImportModeArg::Clone => "clone",
+            },
             final_dir.join("rootfs").display(),
             paths.shared().display()
         );
@@ -1237,6 +1310,44 @@ fn portable_config_from_manifest(
         .get(BUZZARD_OCI_CONFIG_ANNOTATION)
         .map(|value| serde_json::from_str(value).context("parsing Buzzard OS machine annotation"))
         .transpose()
+}
+
+fn oci_metadata_from_manifest(
+    layout: &Path,
+    descriptor: &OciDescriptor,
+) -> Result<OciImageMetadata> {
+    const MAX_OCI_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+    let manifest_bytes = read_verified_blob(layout, descriptor)?;
+    let manifest: OciManifest =
+        serde_json::from_slice(&manifest_bytes).context("parsing OCI manifest")?;
+    if manifest.config.size > MAX_OCI_CONFIG_BYTES {
+        bail!(
+            "OCI image config is {} bytes; maximum is {MAX_OCI_CONFIG_BYTES}",
+            manifest.config.size
+        );
+    }
+    let config_bytes = read_verified_blob(layout, &manifest.config)?;
+    let config: OciImageConfigDocument =
+        serde_json::from_slice(&config_bytes).context("parsing OCI image config")?;
+    if config.os != "linux" || config.architecture != host_oci_architecture()? {
+        bail!(
+            "OCI image config targets {}/{}, expected linux/{}",
+            config.os,
+            config.architecture,
+            host_oci_architecture()?
+        );
+    }
+    let metadata = OciImageMetadata {
+        environment: config.config.environment,
+        labels: config.config.labels,
+        working_dir: config.config.working_dir.filter(|value| !value.is_empty()),
+        user: config.config.user.filter(|value| !value.is_empty()),
+        entrypoint: config.config.entrypoint,
+        command: config.config.command,
+        stop_signal: config.config.stop_signal.filter(|value| !value.is_empty()),
+    };
+    metadata.validate()?;
+    Ok(metadata)
 }
 
 struct DigestingWriter<W> {
@@ -1439,18 +1550,44 @@ fn export_oci_archive(
         .context("committing OCI filesystem layer blob")?;
 
     let created = config.created_at.to_rfc3339();
+    let environment = if config.oci.environment.is_empty() {
+        vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned()]
+    } else {
+        config.oci.environment.clone()
+    };
+    let entrypoint = if config.oci.entrypoint.is_empty() {
+        vec!["/lib/systemd/systemd".to_owned()]
+    } else {
+        config.oci.entrypoint.clone()
+    };
+    let mut labels = config.oci.labels.clone();
+    labels
+        .entry("org.opencontainers.image.title".into())
+        .or_insert_with(|| "Buzzard OS persistent machine export".into());
+    labels
+        .entry("org.opencontainers.image.source".into())
+        .or_insert_with(|| "https://github.com/openresearchtools/BuzzardOS".into());
+    let mut process_config = serde_json::Map::new();
+    process_config.insert("Env".into(), serde_json::to_value(environment)?);
+    process_config.insert("Entrypoint".into(), serde_json::to_value(entrypoint)?);
+    process_config.insert("Labels".into(), serde_json::to_value(labels)?);
+    if !config.oci.command.is_empty() {
+        process_config.insert("Cmd".into(), serde_json::to_value(&config.oci.command)?);
+    }
+    if let Some(value) = &config.oci.working_dir {
+        process_config.insert("WorkingDir".into(), serde_json::to_value(value)?);
+    }
+    if let Some(value) = &config.oci.user {
+        process_config.insert("User".into(), serde_json::to_value(value)?);
+    }
+    if let Some(value) = &config.oci.stop_signal {
+        process_config.insert("StopSignal".into(), serde_json::to_value(value)?);
+    }
     let image_config = serde_json::json!({
         "created": created,
         "architecture": host_oci_architecture()?,
         "os": "linux",
-        "config": {
-            "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
-            "Entrypoint": ["/lib/systemd/systemd"],
-            "Labels": {
-                "org.opencontainers.image.title": "Buzzard OS persistent machine export",
-                "org.opencontainers.image.source": "https://github.com/openresearchtools/BuzzardOS"
-            }
-        },
+        "config": process_config,
         "rootfs": {"type": "layers", "diff_ids": [diff_digest]},
         "history": [{"created": created, "created_by": "BuzzardOS export", "comment": "full persistent rootfs snapshot"}]
     });
@@ -1708,24 +1845,20 @@ fn clone_machine(paths: &WbPaths, source: &str, name: &str) -> Result<()> {
             .context("clone archive path is not UTF-8")?,
         name,
         None,
-        false,
+        ImportModeArg::Clone,
+        Some(&format!("clone:{source}")),
     );
     let _ = fs::remove_file(&archive_path);
-    result?;
-    let clone_dir = paths.machine(name);
-    let mut clone_config = MachineConfig::load(&clone_dir)?;
-    clone_config.image = format!("clone:{source}");
-    clone_config.save(&clone_dir)?;
-    reset_cloned_machine_identity(paths, name)
+    result
 }
 
-fn reset_cloned_machine_identity(paths: &WbPaths, name: &str) -> Result<()> {
-    let machine_dir = require_machine(paths, name)?;
-    let resources = ResourceLocator::discover()?;
+fn reset_cloned_machine_identity_in_stage(
+    resources: &ResourceLocator,
+    rootfs: &Path,
+) -> Result<()> {
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let rootfs = machine_dir.join("rootfs");
     let launcher = std::env::current_exe()?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
@@ -1734,13 +1867,12 @@ fn reset_cloned_machine_identity(paths: &WbPaths, name: &str) -> Result<()> {
         .arg(launcher)
         .arg("__reset-clone-identity")
         .arg("--rootfs")
-        .arg(&rootfs)
+        .arg(rootfs)
         .stdin(Stdio::null())
         .status()?;
     if !status.success() {
         bail!("clone identity reset failed with {status}");
     }
-    println!("Cloned '{name}' with a new machine identity");
     Ok(())
 }
 
@@ -1748,12 +1880,24 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     let rootfs = rootfs.canonicalize()?;
     let machine_id = rootfs.join("etc/machine-id");
-    let mut file = OpenOptions::new()
+    let mut file = match OpenOptions::new()
         .write(true)
         .truncate(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&machine_id)
-        .with_context(|| format!("resetting {}", machine_id.display()))?;
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o444)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&machine_id)
+            .with_context(|| format!("creating {}", machine_id.display()))?,
+        Err(error) => {
+            return Err(error).with_context(|| format!("resetting {}", machine_id.display()));
+        }
+    };
     file.flush()?;
     file.sync_all()?;
 
@@ -2729,6 +2873,32 @@ struct OciManifest {
     layers: Vec<OciDescriptor>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     annotations: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct OciImageConfigSection {
+    #[serde(default, rename = "Env")]
+    environment: Vec<String>,
+    #[serde(default, rename = "Labels")]
+    labels: BTreeMap<String, String>,
+    #[serde(default, rename = "WorkingDir")]
+    working_dir: Option<String>,
+    #[serde(default, rename = "User")]
+    user: Option<String>,
+    #[serde(default, rename = "Entrypoint")]
+    entrypoint: Vec<String>,
+    #[serde(default, rename = "Cmd")]
+    command: Vec<String>,
+    #[serde(default, rename = "StopSignal")]
+    stop_signal: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OciImageConfigDocument {
+    architecture: String,
+    os: String,
+    #[serde(default)]
+    config: OciImageConfigSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -7217,6 +7387,76 @@ mod layer_tests {
     }
 
     #[test]
+    fn import_mode_defaults_to_restore_and_accepts_explicit_clone() {
+        let restore = Cli::try_parse_from([
+            "BuzzardOS",
+            "import",
+            "machine.oci.tar.zst",
+            "--name",
+            "restored",
+        ])
+        .unwrap();
+        assert!(matches!(
+            restore.command,
+            Some(Commands::Import {
+                mode: ImportModeArg::Restore,
+                ..
+            })
+        ));
+
+        let clone = Cli::try_parse_from([
+            "BuzzardOS",
+            "import",
+            "machine.oci.tar.zst",
+            "--name",
+            "copy",
+            "--mode",
+            "clone",
+        ])
+        .unwrap();
+        assert!(matches!(
+            clone.command,
+            Some(Commands::Import {
+                mode: ImportModeArg::Clone,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn clone_identity_reset_creates_a_missing_machine_id_and_removes_secrets() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("etc/ssh")).unwrap();
+        fs::create_dir_all(rootfs.join("var/lib/systemd")).unwrap();
+        fs::write(rootfs.join("etc/ssh/ssh_host_ed25519_key"), b"secret").unwrap();
+        fs::write(rootfs.join("var/lib/systemd/random-seed"), b"seed").unwrap();
+
+        reset_cloned_rootfs_identity(&rootfs).unwrap();
+
+        let machine_id = rootfs.join("etc/machine-id");
+        assert_eq!(fs::read(&machine_id).unwrap(), b"");
+        assert_eq!(
+            fs::metadata(&machine_id).unwrap().permissions().mode() & 0o777,
+            0o444
+        );
+        assert!(!rootfs.join("etc/ssh/ssh_host_ed25519_key").exists());
+        assert!(!rootfs.join("var/lib/systemd/random-seed").exists());
+    }
+
+    #[test]
+    fn clone_identity_reset_rejects_a_machine_id_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir_all(rootfs.join("etc")).unwrap();
+        fs::write(temp.path().join("outside"), b"keep").unwrap();
+        symlink(temp.path().join("outside"), rootfs.join("etc/machine-id")).unwrap();
+
+        assert!(reset_cloned_rootfs_identity(&rootfs).is_err());
+        assert_eq!(fs::read(temp.path().join("outside")).unwrap(), b"keep");
+    }
+
+    #[test]
     fn failed_machine_staging_cleanup_rejects_unrelated_paths() {
         let temp = tempfile::tempdir().unwrap();
         let machines = temp.path().join("vm");
@@ -7352,13 +7592,22 @@ mod layer_tests {
                 Some(libc::ENOTSUP)
             );
         }
-        let config = MachineConfig::new(
+        let mut config = MachineConfig::new(
             "source".into(),
             "fixture".into(),
             format!("sha256:{}", "0".repeat(64)),
             NetworkMode::User,
             vec!["all".into()],
         );
+        config.oci = OciImageMetadata {
+            environment: vec!["PATH=/custom/bin:/usr/bin".into(), "EDITOR=mousepad".into()],
+            labels: BTreeMap::from([("example.buzzard.test".into(), "preserved".into())]),
+            working_dir: Some("/opt/data".into()),
+            user: Some("1000:1000".into()),
+            entrypoint: vec!["/lib/systemd/systemd".into()],
+            command: vec!["--unit=graphical.target".into()],
+            stop_signal: Some("SIGRTMIN+3".into()),
+        };
         config.save(&machine).unwrap();
         let output = temp.path().join("machine.oci.tar.zst");
         File::create(&output).unwrap();
@@ -7375,6 +7624,20 @@ mod layer_tests {
             .unwrap();
         assert_eq!(portable.id, config.id);
         assert_eq!(portable.name, config.name);
+        let restored_oci = oci_metadata_from_manifest(&layout, &descriptor).unwrap();
+        assert_eq!(restored_oci.environment, config.oci.environment);
+        assert_eq!(restored_oci.working_dir, config.oci.working_dir);
+        assert_eq!(restored_oci.user, config.oci.user);
+        assert_eq!(restored_oci.entrypoint, config.oci.entrypoint);
+        assert_eq!(restored_oci.command, config.oci.command);
+        assert_eq!(restored_oci.stop_signal, config.oci.stop_signal);
+        assert_eq!(
+            restored_oci
+                .labels
+                .get("example.buzzard.test")
+                .map(String::as_str),
+            Some("preserved")
+        );
 
         let manifest: OciManifest =
             serde_json::from_slice(&read_verified_blob(&layout, &descriptor).unwrap()).unwrap();

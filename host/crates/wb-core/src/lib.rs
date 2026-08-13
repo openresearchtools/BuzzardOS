@@ -10,8 +10,8 @@ mod wayland;
 pub use idmap::IdMap;
 pub use machine::{
     DisplayDiagnostics, IntegrationDiagnostics, IntegrationSettings, MachineConfig, MachineState,
-    MediaIntegrationDiagnostics, MediaSharing, NetworkMode, PortDirection, PortForward,
-    PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics, RuntimeState,
+    MediaIntegrationDiagnostics, MediaSharing, NetworkMode, OciImageMetadata, PortDirection,
+    PortForward, PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics, RuntimeState,
     WindowDiagnostics,
 };
 pub use media::{HostMediaBackend, HostMediaDevice, HostMediaKind, discover_host_media};

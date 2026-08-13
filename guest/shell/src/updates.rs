@@ -168,7 +168,7 @@ fn emit_notification(notice: &UpdateNotice) -> Result<(), String> {
     };
     let child = Command::new("/usr/bin/notify-send")
         .args([
-            "--app-name=Wild Buzzard",
+            "--app-name=Buzzard OS",
             "--icon=software-update-available-symbolic",
             "--urgency=normal",
             "Software Updates Available",

@@ -37,6 +37,14 @@ Buzzard OS is not an ephemeral application container:
 - The nested compositor is the guest display, input, screenshot, and
   accessibility boundary.
 
+All human-facing product names are `Buzzard OS`. Existing lowercase
+`wildbuzzard` executable names, environment variables, private runtime paths,
+theme-directory identifiers, D-Bus interfaces, and FreeDesktop extension keys
+are stable internal compatibility IDs for already-persistent machines. They
+are not shown as branding and must remain accepted during migration; changing
+one requires a versioned dual-read/atomic-write migration rather than a blind
+rename.
+
 ## Repository and build boundaries
 
 The source tree mirrors the three independently understandable deployment
@@ -197,7 +205,7 @@ policy must produce a precise diagnostic instead of weakening isolation.
 
 ## Machine portability and OCI exchange
 
-- `BuzzardOS import SOURCE --name NAME` accepts a local OCI image-layout
+- `BuzzardOS import SOURCE --name NAME --mode restore|clone` accepts a local OCI image-layout
   directory, an OCI tar/gzip/zstd archive, a Buzzard OS export, or a remote OCI
   reference. Multi-image indexes require an unambiguous native Linux manifest
   or explicit `--manifest` digest/reference selection.
@@ -205,6 +213,11 @@ policy must produce a precise diagnostic instead of weakening isolation.
   layers in order with OCI whiteouts; and materializes ownership through the
   destination host's subordinate-ID map. No source host UID is persisted as a
   portability requirement.
+- Authenticated OCI environment values are applied to the machine boot
+  environment. Entrypoint, command, user, working directory, labels, and stop
+  signal are retained for a lossless OCI exchange, but do not replace the
+  required desktop-machine boot: systemd remains guest PID 1 and the rootfs
+  must satisfy the systemd desktop contract before the machine is committed.
 - `BuzzardOS export NAME --output FILE` requires the machine to be fully
   stopped and exclusively locked. It enters the exact machine ID namespace,
   snapshots the flat rootfs as one canonical OCI layer, preserves numeric
@@ -212,10 +225,13 @@ policy must produce a precise diagnostic instead of weakening isolation.
   and sparse files, excludes runtime mounts and `shared/`, writes all OCI blobs
   content-addressed, verifies the completed archive, and commits it atomically
   without replacing an existing file.
-- Restore/import preserves the guest machine identity and rejects a duplicate
-  identity in the same portable root. `BuzzardOS clone SOURCE NEW_NAME`
-  deliberately regenerates the host metadata UUID, `/etc/machine-id`, random
-  seed, and SSH host keys.
+- Restore mode preserves a Buzzard OS export's guest machine identity and
+  rejects a duplicate identity in the same portable root. Clone mode and the
+  `BuzzardOS clone SOURCE NEW_NAME` convenience command deliberately regenerate
+  the host metadata UUID, `/etc/machine-id`, random seed, and SSH host keys.
+  That reset occurs inside private staging before the atomic machine-directory
+  commit. Generic OCI images without a Buzzard OS identity annotation always
+  receive fresh destination-local identity.
 - Portable annotations retain machine intent but never pin destination-host
   GPU nodes, PipeWire node names, camera nodes, monitor details, runtime
   sockets, or active capture. Imported port rules start disabled and imported

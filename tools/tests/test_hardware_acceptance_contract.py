@@ -48,14 +48,14 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
     def test_guest_json_is_parsed_by_host_jq(self) -> None:
         self.assertNotRegex(self.script, r"\bguest\s+jq\b")
 
-    def test_portable_relocation_waits_for_both_appdir_leases(self) -> None:
+    def test_portable_relocation_waits_for_both_broker_processes(self) -> None:
         relocation = self.script.split(
             "# Move the complete stopped portable folder", maxsplit=1
         )[1].split(
             "# `stop` must not return while its detached broker", maxsplit=1
         )[0]
         self.assertEqual(relocation.count('wb window "$machine" close'), 2)
-        self.assertEqual(relocation.count("wait_appdir_lease_released"), 2)
+        self.assertEqual(relocation.count("wait_process_identity_gone"), 2)
         self.assertIn(
             """relocation_outbound_broker_pid=$(jq -er '.launcher_pid' \"$runtime\")""",
             relocation,
@@ -65,7 +65,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             relocation,
         )
         outbound_close = relocation.index('wb window "$machine" close')
-        outbound_wait = relocation.index("wait_appdir_lease_released")
+        outbound_wait = relocation.index("wait_process_identity_gone")
         outbound_move = relocation.index('mv -- "$relocation_original" "$relocation_target"')
         self.assertLess(outbound_close, outbound_wait)
         self.assertLess(outbound_wait, outbound_move)
@@ -73,7 +73,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             'wb window "$machine" close', outbound_close + 1
         )
         return_wait = relocation.index(
-            "wait_appdir_lease_released", outbound_wait + 1
+            "wait_process_identity_gone", outbound_wait + 1
         )
         return_move = relocation.index('mv -- "$relocation_target" "$relocation_original"')
         self.assertLess(return_close, return_wait)
@@ -88,32 +88,26 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertNotIn('wb stop "$machine"', fractional)
         self.assertEqual(fractional.count('wb window "$machine" close'), 2)
         self.assertEqual(fractional.count("wait_stopped"), 2)
-        self.assertEqual(fractional.count("wait_appdir_lease_released"), 2)
+        self.assertEqual(fractional.count("wait_process_identity_gone"), 2)
         self.assertEqual(fractional.count("wait_scaled_window_frame 180"), 3)
 
         ordered_fragments = (
             "fractional_baseline_broker_pid=$(jq -er '.launcher_pid' \"$runtime\")",
             'process_start_time "$fractional_baseline_broker_pid"',
-            'appdir_for_process "$fractional_baseline_broker_pid"',
             'wb window "$machine" close',
             "wait_stopped",
-            "wait_appdir_lease_released \\\n"
-            '    "$fractional_baseline_broker_pid" \\\n'
-            '    "$fractional_baseline_broker_start_time" \\\n'
-            '    "$fractional_baseline_appdir"',
+            "wait_process_identity_gone \\\n"
+            '    "$fractional_baseline_broker_pid" "$fractional_baseline_broker_start_time"',
             "WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180",
             "fractional_override_broker_pid=$(jq -er '.launcher_pid' \"$runtime\")",
             'process_start_time "$fractional_override_broker_pid"',
-            'appdir_for_process "$fractional_override_broker_pid"',
             "wait_scaled_window_frame 180",
             "wait_scaled_window_frame 180",
             "wait_scaled_window_frame 180",
             'wb window "$machine" close',
             "wait_stopped",
-            "wait_appdir_lease_released \\\n"
-            '    "$fractional_override_broker_pid" \\\n'
-            '    "$fractional_override_broker_start_time" \\\n'
-            '    "$fractional_override_appdir"',
+            "wait_process_identity_gone \\\n"
+            '    "$fractional_override_broker_pid" "$fractional_override_broker_start_time"',
             'wb start "$machine" --detach',
         )
         cursor = 0

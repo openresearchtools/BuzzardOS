@@ -303,22 +303,85 @@ impl ManagerUi {
     }
 
     fn show_import_dialog(self: &Rc<Self>) {
+        let dialog = gtk::Window::builder()
+            .transient_for(&self.window)
+            .modal(true)
+            .title("Import OCI machine")
+            .resizable(false)
+            .build();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.set_margin_start(16);
+        root.set_margin_end(16);
+        root.set_margin_top(16);
+        root.set_margin_bottom(16);
+        let grid = gtk::Grid::builder()
+            .column_spacing(10)
+            .row_spacing(8)
+            .build();
+        let source_label = gtk::Label::new(Some("OCI path or reference"));
+        source_label.set_xalign(0.0);
+        let source = gtk::Entry::new();
+        source.set_hexpand(true);
+        grid.attach(&source_label, 0, 0, 1, 1);
+        grid.attach(&source, 1, 0, 1, 1);
+        let name_label = gtk::Label::new(Some("Machine name"));
+        name_label.set_xalign(0.0);
+        let name = gtk::Entry::new();
+        name.set_hexpand(true);
+        grid.attach(&name_label, 0, 1, 1, 1);
+        grid.attach(&name, 1, 1, 1, 1);
+        let mode_label = gtk::Label::new(Some("Identity"));
+        mode_label.set_xalign(0.0);
+        let mode = gtk::DropDown::from_strings(&[
+            "Restore — preserve exported identity",
+            "Clone — generate a new identity",
+        ]);
+        mode.set_hexpand(true);
+        grid.attach(&mode_label, 0, 2, 1, 1);
+        grid.attach(&mode, 1, 2, 1, 1);
+        root.append(&grid);
+
+        let explanation = gtk::Label::new(Some(
+            "Restore rejects an identity already present here. Clone keeps the filesystem but regenerates machine identity and host keys before the new machine appears.",
+        ));
+        explanation.set_wrap(true);
+        explanation.set_xalign(0.0);
+        explanation.add_css_class("dim-label");
+        root.append(&explanation);
+
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        let accept = gtk::Button::with_label("Import");
+        accept.add_css_class("suggested-action");
+        actions.append(&cancel);
+        actions.append(&accept);
+        root.append(&actions);
+        dialog.set_child(Some(&root));
+
+        let close = dialog.clone();
+        cancel.connect_clicked(move |_| close.close());
+        let close = dialog.clone();
         let weak = Rc::downgrade(self);
-        show_text_dialog(
-            &self.window,
-            "Import OCI machine",
-            &[("OCI path or reference", ""), ("Machine name", "")],
-            move |values| {
-                if let Some(manager) = weak.upgrade() {
-                    manager.run_command(vec![
-                        "import".into(),
-                        values[0].clone(),
-                        "--name".into(),
-                        values[1].clone(),
-                    ]);
-                }
-            },
-        );
+        accept.connect_clicked(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                let mode = if mode.selected() == 1 {
+                    "clone"
+                } else {
+                    "restore"
+                };
+                manager.run_command(vec![
+                    "import".into(),
+                    source.text().trim().to_owned(),
+                    "--name".into(),
+                    name.text().trim().to_owned(),
+                    "--mode".into(),
+                    mode.into(),
+                ]);
+            }
+            close.close();
+        });
+        dialog.present();
     }
 
     fn show_export_dialog(self: &Rc<Self>, machine: &str) {

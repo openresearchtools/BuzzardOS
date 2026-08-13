@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Guest half of Wild Buzzard's host-authorized live integration boundary.
+"""Guest half of Buzzard OS's host-authorized live integration boundary.
 
 The host-owned integration.json is mounted read-only. This process can create
 guest listeners and private PipeWire nodes, but it has no host PipeWire socket
