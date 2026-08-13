@@ -38,7 +38,9 @@ jobs:
           python3 -m py_compile tools/license_audit.py tools/release_metadata.py
           python3 -m unittest discover -s tools/tests -v
           ./tools/check-licenses.sh --structural
-          ! grep -Eq 'uses: .*(release|publish)' \
+          # Bracket the final character so this guard cannot match its own
+          # source line while still rejecting release/publish actions.
+          ! grep -Eq 'uses: .*(releas[e]|publis[h])' \
             .github/workflows/build-release-assets.yml
 
       - name: Install disposable runner build tools

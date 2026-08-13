@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Generate and verify Wild Buzzard's release licensing evidence."""
+"""Generate and verify Buzzard OS release licensing evidence."""
 
 from __future__ import annotations
 
