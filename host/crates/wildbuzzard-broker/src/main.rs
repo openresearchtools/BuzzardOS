@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use wb_core::{
-    AppImageRuntimeLease, DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, DisplayDiagnostics, IdMap,
-    MachineConfig, MachineState, NetworkMode, PresentationDiagnostics, ResourceLocator,
-    RuntimeState, WaylandCapabilities, WindowDiagnostics, host_control_socket,
+    DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, DisplayDiagnostics, IdMap, MachineConfig,
+    MachineState, NetworkMode, PresentationDiagnostics, ResourceLocator, RuntimeState,
+    WaylandCapabilities, WindowDiagnostics, host_control_socket,
 };
 
 use integrations::{IntegrationRuntime, SlirpRuntime};
@@ -108,11 +108,6 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    // Keep a mounted or temporarily extracted AppDir alive for every late
-    // helper lookup (media bridges included). capture() marks the descriptor
-    // close-on-exec, so guest and helper descendants cannot extend the lease
-    // after this supervising broker exits.
-    let _appimage_lease = AppImageRuntimeLease::capture()?;
     match Cli::parse().command {
         Commands::Run {
             machine_dir,
@@ -234,7 +229,7 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
                     failed.container_pid = None;
                     failed.detail = Some(machine_session_failure_detail(&error));
                     failed.save(&machine_dir)?;
-                    eprintln!("Wild Buzzard machine session failed: {error:#}");
+                    eprintln!("Buzzard OS machine session failed: {error:#}");
                     start_requested = false;
                 }
             }
@@ -286,7 +281,7 @@ fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
                 failed.container_pid = None;
                 failed.detail = Some(format!("invalid host lifecycle request: {error:#}"));
                 failed.save(&machine_dir)?;
-                eprintln!("Wild Buzzard rejected host lifecycle request: {error:#}");
+                eprintln!("Buzzard OS rejected host lifecycle request: {error:#}");
             }
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -331,12 +326,12 @@ fn launch_container(
     let resolv_conf = guest_runtime.join("resolv.conf");
     let resolv_contents = match config.network {
         NetworkMode::User => {
-            "# Wild Buzzard slirp4netns DNS\nnameserver 10.0.2.3\noptions edns0\n".to_owned()
+            "# Buzzard OS slirp4netns DNS\nnameserver 10.0.2.3\noptions edns0\n".to_owned()
         }
         NetworkMode::Host => {
             fs::read_to_string("/etc/resolv.conf").context("reading host resolver configuration")?
         }
-        NetworkMode::None => "# Networking disabled by Wild Buzzard\n".to_owned(),
+        NetworkMode::None => "# Networking disabled by Buzzard OS\n".to_owned(),
     };
     fs::write(&resolv_conf, resolv_contents)
         .with_context(|| format!("writing {}", resolv_conf.display()))?;
@@ -383,7 +378,7 @@ fn launch_container(
         ("WILDBUZZARD_MACHINE_NAME".into(), config.name.clone()),
         (
             "WILDBUZZARD_WINDOW_TITLE".into(),
-            format!("Wild Buzzard — {}", config.name),
+            format!("Buzzard OS — {}", config.name),
         ),
         (
             "WILDBUZZARD_WINDOW_APP_ID".into(),
@@ -423,6 +418,7 @@ fn launch_container(
         Some(path)
     };
     let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(unshare)?;
     let host_apparmor_access = Path::new("/sys/kernel/security/apparmor/.access");
     let apparmor_access_source =
         if !matches!(config.network, NetworkMode::Host) && host_apparmor_access.exists() {
@@ -434,10 +430,10 @@ fn launch_container(
         } else {
             None
         };
-    let mut command = Command::new(unshare);
+    let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
-    command.args(id_map.unshare_args());
+    command.args(id_map.namespace_args());
     match config.network {
         NetworkMode::Host => {
             command.arg(bwrap);
@@ -531,7 +527,7 @@ fn launch_container(
         .args([
             "--setenv",
             "WILDBUZZARD_WINDOW_TITLE",
-            &format!("Wild Buzzard — {}", config.name),
+            &format!("Buzzard OS — {}", config.name),
         ])
         .args([
             "--setenv",
@@ -630,7 +626,7 @@ fn launch_container(
         &host_status.join("presentation.json"),
     )?);
     state.save(machine_dir)?;
-    eprintln!("Wild Buzzard desktop '{}' is ready", config.name);
+    eprintln!("Buzzard OS desktop '{}' is ready", config.name);
 
     let mut integrations = IntegrationRuntime::new(guest_runtime, display_state, host_status)?;
     let mut integration_snapshot = config.integrations.clone();
@@ -745,7 +741,7 @@ fn launch_container(
                         // `IntegrationRuntime` separately tracks fully applied
                         // state and retries until host and guest converge.
                         integration_snapshot = latest.integrations;
-                        eprintln!("Wild Buzzard live integration retry pending: {error:#}");
+                        eprintln!("Buzzard OS live integration retry pending: {error:#}");
                         state.integrations = Some(integrations.diagnostics(&integration_snapshot));
                         state.detail = Some(format!("live integration rejected: {error:#}"));
                         save_diagnostics_preserving_stop(machine_dir, state)?;
@@ -754,7 +750,7 @@ fn launch_container(
             }
             Ok(_) => {}
             Err(error) => {
-                eprintln!("Wild Buzzard could not reload live integration settings: {error:#}");
+                eprintln!("Buzzard OS could not reload live integration settings: {error:#}");
             }
         }
         if !host_action_shutdown_requested
@@ -1437,7 +1433,7 @@ impl LifecycleRuntime {
         let (root, guard) = if std::env::var_os("WILDBUZZARD_KEEP_RUNTIME").is_some() {
             let path = temporary.keep();
             eprintln!(
-                "Wild Buzzard development runtime evidence will remain at {}",
+                "Buzzard OS development runtime evidence will remain at {}",
                 path.display()
             );
             (path, None)
@@ -2433,7 +2429,7 @@ fn generate_nvidia_cdi(
     )
     .context("writing NVIDIA CDI selection diagnostics")?;
     eprintln!(
-        "Wild Buzzard NVIDIA CDI: toolkit={toolkit_version}, devices={}",
+        "Buzzard OS NVIDIA CDI: toolkit={toolkit_version}, devices={}",
         selected_names.join(",")
     );
 
@@ -2851,11 +2847,12 @@ impl Drop for MachineCgroup {
 
 fn cleanup_cgroup_with_id_map(unshare: &Path, path: &Path) -> Result<()> {
     let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(unshare)?;
     let broker = std::env::current_exe().context("locating broker for cgroup cleanup")?;
-    let mut command = Command::new(unshare);
+    let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     let status = command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg(broker)
         .arg("__cleanup-cgroup")
         .arg("--path")
@@ -2887,7 +2884,7 @@ fn validate_cgroup_cleanup_path(path: &Path) -> Result<()> {
         .context("cgroup cleanup path has no UTF-8 name")?;
     let identifier = name
         .strip_prefix("wildbuzzard-")
-        .context("cgroup cleanup target is not a Wild Buzzard cgroup")?;
+        .context("cgroup cleanup target is not a Buzzard OS cgroup")?;
     if identifier.len() != 32 || !identifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("cgroup cleanup target has an invalid machine identifier");
     }
@@ -3085,9 +3082,9 @@ fn mount_raw(
 
 fn host_wayland_socket() -> Result<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .context("XDG_RUNTIME_DIR is not set; launch Wild Buzzard from a Wayland session")?;
+        .context("XDG_RUNTIME_DIR is not set; launch Buzzard OS from a Wayland session")?;
     let display = std::env::var_os("WAYLAND_DISPLAY")
-        .context("WAYLAND_DISPLAY is not set; launch Wild Buzzard from a Wayland session")?;
+        .context("WAYLAND_DISPLAY is not set; launch Buzzard OS from a Wayland session")?;
     let display = PathBuf::from(display);
     let socket = if display.is_absolute() {
         display
@@ -3126,12 +3123,12 @@ fn validate_portable_layout(
 ) -> Result<()> {
     let machines = machine_dir
         .parent()
-        .context("machine directory has no vm parent")?;
+        .context("machine directory has no Machines parent")?;
     let portable = machines
         .parent()
-        .context("vm directory has no portable parent")?;
-    if machines.file_name().and_then(|name| name.to_str()) != Some("vm") {
-        bail!("machine directory must be directly inside the portable vm directory");
+        .context("Machines directory has no portable parent")?;
+    if machines.file_name().and_then(|name| name.to_str()) != Some("Machines") {
+        bail!("machine directory must be directly inside the portable Machines directory");
     }
     if shared != portable.join("shared") {
         bail!("shared folder must be the portable folder's direct shared directory");
@@ -3327,7 +3324,18 @@ mod tests {
         );
 
         let mut command = Command::new("true");
-        add_fuse_device_at(&mut command, Path::new("/dev/fuse")).unwrap();
+        match fs::symlink_metadata("/dev/fuse") {
+            Ok(_) => add_fuse_device_at(&mut command, Path::new("/dev/fuse")).unwrap(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(
+                    add_fuse_device_at(&mut command, Path::new("/dev/fuse"))
+                        .unwrap_err()
+                        .to_string()
+                        .contains("required FUSE device")
+                );
+            }
+            Err(error) => panic!("could not inspect /dev/fuse: {error}"),
+        }
 
         let directory = tempfile::tempdir().unwrap();
         let regular = directory.path().join("fuse");
@@ -3342,7 +3350,7 @@ mod tests {
 
     fn portable_machine() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, MachineConfig) {
         let portable = tempfile::tempdir().unwrap();
-        let machine = portable.path().join("vm/demo");
+        let machine = portable.path().join("Machines/demo");
         let rootfs = machine.join("rootfs");
         let data = portable.path().join("shared");
         fs::create_dir_all(&rootfs).unwrap();

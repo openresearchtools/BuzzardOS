@@ -18,7 +18,17 @@ pub struct IdMap {
     subuid_start: u32,
     subgid_start: u32,
     mapping_helper_path: &'static str,
+    namespace_backend: NamespaceBackend,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NamespaceBackend {
+    Unshare,
+    LxcUsernsExec,
+}
+
+const LXC_USERNS_EXEC: &str = "/usr/bin/lxc-usernsexec";
+const APPARMOR_USERNS_RESTRICTION: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
 
 impl IdMap {
     pub fn discover() -> Result<Self> {
@@ -46,6 +56,7 @@ impl IdMap {
             );
         }
         let mapping_helper_path = mapping_helper_path()?;
+        let namespace_backend = namespace_backend()?;
 
         Ok(Self {
             host_uid,
@@ -53,6 +64,7 @@ impl IdMap {
             subuid_start,
             subgid_start,
             mapping_helper_path,
+            namespace_backend,
         })
     }
 
@@ -64,45 +76,112 @@ impl IdMap {
         command.env("PATH", self.mapping_helper_path)
     }
 
-    /// Arguments for util-linux unshare. Guest UID/GID 1000 maps to the host
+    /// Select the root-owned distro entry point required by Ubuntu's AppArmor
+    /// user-namespace policy, or the bundled util-linux unshare elsewhere.
+    pub fn namespace_program<'a>(&self, bundled_unshare: &'a Path) -> Result<&'a Path> {
+        match self.namespace_backend {
+            NamespaceBackend::Unshare => Ok(bundled_unshare),
+            NamespaceBackend::LxcUsernsExec => {
+                let program = Path::new(LXC_USERNS_EXEC);
+                if !trusted_lxc_userns_exec(program) {
+                    bail!(
+                        "Ubuntu's AppArmor user-namespace restriction is active, but trusted {LXC_USERNS_EXEC} is unavailable; run ./Install-Dependencies"
+                    );
+                }
+                // The path is process-static even though the caller's bundled
+                // path has a shorter lifetime.
+                Ok(Path::new(LXC_USERNS_EXEC))
+            }
+        }
+    }
+
+    /// Guest UID/GID 1000 maps to the host
     /// desktop user, while every other guest identity maps into subordinate
     /// ranges. The interactive guest can therefore access the portable data
     /// directory without giving guest root the host user's identity. Host
     /// Wayland access is separately scoped to the display gateway's private
     /// socket; the real host compositor socket never enters this namespace.
-    pub fn unshare_args(&self) -> Vec<OsString> {
+    pub fn namespace_args(&self) -> Vec<OsString> {
         let tail_count = GUEST_ID_COUNT - GUEST_USER_ID - 1;
-        vec![
-            "--user".into(),
-            "--map-users".into(),
-            format!("0:{}:{GUEST_USER_ID}", self.subuid_start).into(),
-            "--map-users".into(),
-            format!("{GUEST_USER_ID}:{}:1", self.host_uid).into(),
-            "--map-users".into(),
+        let user_maps = [
+            format!("0:{}:{GUEST_USER_ID}", self.subuid_start),
+            format!("{GUEST_USER_ID}:{}:1", self.host_uid),
             format!(
                 "{}:{}:{tail_count}",
                 GUEST_USER_ID + 1,
                 self.subuid_start + GUEST_USER_ID
-            )
-            .into(),
-            "--map-groups".into(),
-            format!("0:{}:{GUEST_USER_ID}", self.subgid_start).into(),
-            "--map-groups".into(),
-            format!("{GUEST_USER_ID}:{}:1", self.host_gid).into(),
-            "--map-groups".into(),
+            ),
+        ];
+        let group_maps = [
+            format!("0:{}:{GUEST_USER_ID}", self.subgid_start),
+            format!("{GUEST_USER_ID}:{}:1", self.host_gid),
             format!(
                 "{}:{}:{tail_count}",
                 GUEST_USER_ID + 1,
                 self.subgid_start + GUEST_USER_ID
-            )
-            .into(),
-            "--setuid".into(),
-            "0".into(),
-            "--setgid".into(),
-            "0".into(),
-            "--".into(),
-        ]
+            ),
+        ];
+        match self.namespace_backend {
+            NamespaceBackend::Unshare => {
+                let mut arguments = vec!["--user".into()];
+                for mapping in user_maps {
+                    arguments.extend([OsString::from("--map-users"), mapping.into()]);
+                }
+                for mapping in group_maps {
+                    arguments.extend([OsString::from("--map-groups"), mapping.into()]);
+                }
+                arguments.extend([
+                    "--setuid".into(),
+                    "0".into(),
+                    "--setgid".into(),
+                    "0".into(),
+                    "--".into(),
+                ]);
+                arguments
+            }
+            NamespaceBackend::LxcUsernsExec => {
+                let mut arguments = Vec::new();
+                for mapping in user_maps {
+                    arguments.extend([OsString::from("-m"), format!("u:{mapping}").into()]);
+                }
+                for mapping in group_maps {
+                    arguments.extend([OsString::from("-m"), format!("g:{mapping}").into()]);
+                }
+                arguments.push("--".into());
+                arguments
+            }
+        }
     }
+}
+
+fn namespace_backend() -> Result<NamespaceBackend> {
+    let restricted = match fs::read_to_string(APPARMOR_USERNS_RESTRICTION) {
+        Ok(value) => value.trim() == "1",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).context("reading Ubuntu AppArmor user-namespace policy");
+        }
+    };
+    if !restricted {
+        return Ok(NamespaceBackend::Unshare);
+    }
+    if trusted_lxc_userns_exec(Path::new(LXC_USERNS_EXEC)) {
+        Ok(NamespaceBackend::LxcUsernsExec)
+    } else {
+        bail!(
+            "Ubuntu's AppArmor user-namespace restriction is active, but trusted {LXC_USERNS_EXEC} is unavailable; run ./Install-Dependencies"
+        )
+    }
+}
+
+fn trusted_lxc_userns_exec(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        !metadata.file_type().is_symlink()
+            && metadata.is_file()
+            && metadata.uid() == 0
+            && metadata.permissions().mode() & 0o022 == 0
+            && metadata.permissions().mode() & 0o111 != 0
+    })
 }
 
 fn range_contains(start: u32, count: u32, id: u32) -> bool {
@@ -173,9 +252,10 @@ mod tests {
             subuid_start: 100_000,
             subgid_start: 200_000,
             mapping_helper_path: "/usr/bin",
+            namespace_backend: NamespaceBackend::Unshare,
         };
         let arguments = map
-            .unshare_args()
+            .namespace_args()
             .into_iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -209,6 +289,42 @@ mod tests {
             arguments
                 .windows(2)
                 .any(|pair| { pair == ["--map-groups", "1001:201000:64535"] })
+        );
+    }
+
+    #[test]
+    fn restricted_ubuntu_backend_uses_lxc_mapping_syntax() {
+        let map = IdMap {
+            host_uid: 1000,
+            host_gid: 1000,
+            subuid_start: 100_000,
+            subgid_start: 200_000,
+            mapping_helper_path: "/usr/bin",
+            namespace_backend: NamespaceBackend::LxcUsernsExec,
+        };
+        let arguments = map
+            .namespace_args()
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            arguments,
+            [
+                "-m",
+                "u:0:100000:1000",
+                "-m",
+                "u:1000:1000:1",
+                "-m",
+                "u:1001:101000:64535",
+                "-m",
+                "g:0:200000:1000",
+                "-m",
+                "g:1000:1000:1",
+                "-m",
+                "g:1001:201000:64535",
+                "--"
+            ]
         );
     }
 

@@ -1,6 +1,6 @@
 # Guest userspace
 
-This directory is everything Wild Buzzard installs into the persistent guest:
+This directory is everything Buzzard OS installs into the persistent guest:
 
 - `shell/` is the Rust classic desktop shell;
 - `desktop-core/` owns the versioned Settings/AppImage schemas, XDG

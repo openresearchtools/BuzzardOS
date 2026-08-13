@@ -35,7 +35,7 @@ uuid = { version = "1.17", features = ["v4", "serde"] }
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging", "unstable"] }
 wayland-server = "0.31"
 xkbcommon = "0.8"
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 wildbuzzard-clipboard-protocol = { path = "../clipboard-protocol" }
 
 [profile.release]

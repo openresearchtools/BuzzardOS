@@ -44,7 +44,7 @@ impl ResourceLocator {
     pub fn helper(&self, name: &str) -> Result<PathBuf> {
         self.find_executable(name).ok_or_else(|| {
             anyhow::anyhow!(
-                "the bundled helper '{name}' is missing; this is a broken Wild Buzzard build"
+                "the bundled helper '{name}' is missing; this is a broken Buzzard OS build"
             )
         })
     }
@@ -60,7 +60,7 @@ impl ResourceLocator {
             return Ok(path);
         }
         bail!(
-            "cannot find '{name}'; release AppImages bundle it, or set WILDBUZZARD_RESOURCE_DIR for a development build"
+            "cannot find '{name}'; portable releases bundle it, or set WILDBUZZARD_RESOURCE_DIR for a development build"
         )
     }
 

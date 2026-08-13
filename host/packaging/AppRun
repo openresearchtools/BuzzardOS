@@ -12,8 +12,9 @@ if [ -z "$appdir" ]; then
 fi
 export PATH="$appdir/usr/bin${PATH:+:$PATH}"
 export LD_LIBRARY_PATH="$appdir/usr/lib:$appdir/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$appdir/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
 # Release media pipelines may load only the audited plugins shipped in this
-# AppImage. In particular, an inherited host plugin path must not substitute a
+# portable application. In particular, an inherited host plugin path must not substitute a
 # lookalike `pulsesrc` or introduce the unbundled direct-ALSA capture plugin.
 unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH GST_REGISTRY GST_PLUGIN_FEATURE_RANK
 export GST_PLUGIN_SYSTEM_PATH_1_0="$appdir/usr/lib/gstreamer-1.0"
@@ -40,7 +41,7 @@ esac
 
 runtime_dir=${XDG_RUNTIME_DIR:-/tmp}
 export GST_REGISTRY_1_0="$runtime_dir/wildbuzzard-gstreamer-registry-$real_uid.bin"
-desktop_file="$appdir/org.openresearchtools.wildbuzzard.desktop"
+desktop_file="$appdir/org.openresearchtools.buzzardos.desktop"
 if [ -f "$desktop_file" ]; then
     export GIO_LAUNCHED_DESKTOP_FILE="$desktop_file"
     export GIO_LAUNCHED_DESKTOP_FILE_PID=$$

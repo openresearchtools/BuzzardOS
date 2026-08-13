@@ -171,8 +171,8 @@ class OciBuildContractTests(unittest.TestCase):
             containerfile,
         )
 
-    def test_appimage_stages_the_same_pinned_xkb_tree_at_a_stable_path(self) -> None:
-        packager = (ROOT / "host/build-appimage.sh").read_text(encoding="utf-8")
+    def test_portable_app_stages_the_same_pinned_xkb_tree_at_a_stable_path(self) -> None:
+        packager = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
         for required in (
             'host_xkb_root="$appdir/usr/share/wildbuzzard/xkb"',
             '"$guest_compositor_runtime/share/X11/xkb/."',

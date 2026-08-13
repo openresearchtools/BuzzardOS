@@ -3,11 +3,12 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::read::GzDecoder;
+use fs2::FileExt;
 use nix::unistd::{Gid, Uid, chown};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -16,9 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wb_core::{
-    AppImageRuntimeLease, DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, IdMap, MachineConfig,
-    MachineState, NetworkMode, ResourceLocator, RuntimeState, WaylandCapabilities, WbPaths,
-    host_control_socket,
+    DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, IdMap, MachineConfig, MachineState, NetworkMode,
+    ResourceLocator, RuntimeState, WaylandCapabilities, WbPaths, host_control_socket,
 };
 
 const ROOTFS_SEED_ARCHIVE: &str = "WildBuzzard-rootfs-linux-x86_64.tar.zst";
@@ -26,7 +26,10 @@ const ROOTFS_SEED_MANIFEST: &str = "WildBuzzard-rootfs-linux-x86_64.json";
 const ROOTFS_SEED_KIND: &str = "wildbuzzard-flat-rootfs";
 const ROOTFS_SEED_MEDIA_TYPE: &str = "application/vnd.wildbuzzard.rootfs.v1.tar+zstd";
 const ROOTFS_SEED_SCHEMA: u32 = 1;
+const DEFAULT_ROOTFS_OCI_ARCHIVE: &str = "default-rootfs.oci.tar.zst";
+const DEFAULT_ROOTFS_OCI_MANIFEST: &str = "default-rootfs.oci.json";
 const MAX_GUEST_ID: u64 = 65_535;
+const MAX_OCI_PAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
 const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
@@ -457,12 +460,12 @@ fn state_desktop_readiness_deadline(state: &RuntimeState) -> Option<DesktopReadi
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "wildbuzzard",
+    name = "BuzzardOS",
     version,
     about = "Persistent, rootless desktop machines in one Wayland window"
 )]
 struct Cli {
-    /// Portable storage folder (default: directory containing the AppImage).
+    /// Portable storage folder (default: directory containing the BuzzardOS launcher).
     #[arg(
         long,
         visible_alias = "home",
@@ -498,6 +501,30 @@ enum Commands {
     },
     /// Ask the running machine to shut down.
     Stop { name: String },
+    /// Import a local OCI layout/archive, a Buzzard OS export, or a remote OCI reference.
+    Import {
+        source: String,
+        #[arg(long)]
+        name: String,
+        /// Select a manifest digest or org.opencontainers.image.ref.name from a multi-image index.
+        #[arg(long)]
+        manifest: Option<String>,
+    },
+    /// Export one stopped machine as a portable standards-compliant OCI archive.
+    Export {
+        name: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Clone one stopped machine and regenerate its machine identity.
+    Clone { source: String, name: String },
+    /// Permanently delete one stopped machine and its persistent rootfs.
+    Delete {
+        name: String,
+        /// Confirm destructive deletion.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Control the native host window from the host launcher.
     Window {
         name: String,
@@ -521,6 +548,29 @@ enum Commands {
         #[arg(long)]
         work_dir: PathBuf,
     },
+    #[command(name = "__export-oci", hide = true)]
+    ExportOci {
+        #[arg(long)]
+        rootfs: PathBuf,
+        #[arg(long)]
+        machine_config: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        work_dir: PathBuf,
+    },
+    #[command(name = "__reset-clone-identity", hide = true)]
+    ResetCloneIdentity {
+        #[arg(long)]
+        rootfs: PathBuf,
+    },
+    #[command(name = "__delete-machine", hide = true)]
+    DeleteMachine {
+        #[arg(long)]
+        machine: PathBuf,
+        #[arg(long)]
+        machines: PathBuf,
+    },
     #[command(name = "__apply-rootfs", hide = true)]
     ApplyRootfs {
         #[arg(long)]
@@ -538,6 +588,13 @@ enum Commands {
         staging: PathBuf,
         #[arg(long)]
         machines: PathBuf,
+    },
+    #[command(name = "__cleanup-export-staging", hide = true)]
+    CleanupExportStaging {
+        #[arg(long)]
+        staging: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
     },
     #[command(name = "__install-guest-assets", hide = true)]
     InstallGuestAssets {
@@ -602,13 +659,12 @@ impl From<NetworkArg> for NetworkMode {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("wildbuzzard: {error:#}");
+        eprintln!("Buzzard OS: {error:#}");
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<()> {
-    let appimage_lease = AppImageRuntimeLease::capture()?;
     let cli = Cli::parse();
     if let Some(Commands::ApplyImage {
         archive,
@@ -622,6 +678,25 @@ fn run() -> Result<()> {
         if !guest_assets_are_current(rootfs)? {
             bail!("new machine guest asset revision was not committed");
         }
+        validate_extracted_rootfs(rootfs)?;
+        return Ok(());
+    }
+    if let Some(Commands::ExportOci {
+        rootfs,
+        machine_config,
+        output,
+        work_dir,
+    }) = &cli.command
+    {
+        export_oci_archive(rootfs, machine_config, output, work_dir)?;
+        return Ok(());
+    }
+    if let Some(Commands::ResetCloneIdentity { rootfs }) = &cli.command {
+        reset_cloned_rootfs_identity(rootfs)?;
+        return Ok(());
+    }
+    if let Some(Commands::DeleteMachine { machine, machines }) = &cli.command {
+        remove_persistent_machine_tree(machine, machines)?;
         return Ok(());
     }
     if let Some(Commands::ApplyRootfs {
@@ -642,6 +717,10 @@ fn run() -> Result<()> {
     }
     if let Some(Commands::CleanupStaging { staging, machines }) = &cli.command {
         remove_machine_staging_tree(staging, machines)?;
+        return Ok(());
+    }
+    if let Some(Commands::CleanupExportStaging { staging, cache }) = &cli.command {
+        remove_export_staging_tree(staging, cache)?;
         return Ok(());
     }
     if let Some(Commands::InstallGuestAssets { rootfs }) = &cli.command {
@@ -691,10 +770,16 @@ fn run() -> Result<()> {
             network,
             gpus,
         }) => create(&paths, &name, image.as_deref(), network.into(), gpus),
-        Some(Commands::Start { name, detach }) => {
-            start(&paths, &name, detach, appimage_lease.as_ref())
-        }
+        Some(Commands::Start { name, detach }) => start(&paths, &name, detach),
         Some(Commands::Stop { name }) => stop(&paths, &name),
+        Some(Commands::Import {
+            source,
+            name,
+            manifest,
+        }) => import_machine(&paths, &source, &name, manifest.as_deref(), true),
+        Some(Commands::Export { name, output }) => export_machine(&paths, &name, &output),
+        Some(Commands::Clone { source, name }) => clone_machine(&paths, &source, &name),
+        Some(Commands::Delete { name, yes }) => delete_machine(&paths, &name, yes),
         Some(Commands::Window { name, action }) => window(&paths, &name, action),
         Some(Commands::Status { name }) => status(&paths, &name),
         Some(Commands::List) => list(&paths),
@@ -702,10 +787,22 @@ fn run() -> Result<()> {
         Some(Commands::ApplyImage { .. }) => {
             unreachable!("handled before portable path discovery")
         }
+        Some(Commands::ExportOci { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::ResetCloneIdentity { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::DeleteMachine { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
         Some(Commands::ApplyRootfs { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         Some(Commands::CleanupStaging { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
+        Some(Commands::CleanupExportStaging { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         Some(Commands::InstallGuestAssets { .. }) => {
@@ -717,14 +814,11 @@ fn run() -> Result<()> {
         Some(Commands::RollbackGuestRuntime { .. }) => {
             unreachable!("handled before portable path discovery")
         }
-        None => open_portable_desktop(&paths, appimage_lease.as_ref()),
+        None => open_portable_desktop(&paths),
     }
 }
 
-fn open_portable_desktop(
-    paths: &WbPaths,
-    appimage_lease: Option<&AppImageRuntimeLease>,
-) -> Result<()> {
+fn open_portable_desktop(paths: &WbPaths) -> Result<()> {
     let mut machines = Vec::new();
     for entry in fs::read_dir(paths.machines()).context("listing portable machines")? {
         let entry = entry.context("reading portable machine directory")?;
@@ -736,22 +830,27 @@ fn open_portable_desktop(
     }
     machines.sort();
 
-    let name = match machines.as_slice() {
-        [] => {
-            let name = "default";
-            println!("Creating persistent desktop machine '{name}' for first launch...");
-            create(paths, name, None, NetworkMode::User, vec!["all".into()])?;
-            name.to_owned()
-        }
-        [name] => name.clone(),
-        _ if machines.iter().any(|name| name == "default") => "default".into(),
-        _ => bail!(
-            "multiple portable machines exist ({}); run `wildbuzzard start NAME` or name one `default`",
-            machines.join(", ")
-        ),
-    };
+    if machines.is_empty() {
+        let name = "default";
+        println!("Creating persistent desktop machine '{name}' for first launch...");
+        create(paths, name, None, NetworkMode::User, vec!["all".into()])?;
+    }
 
-    start(paths, &name, false, appimage_lease)
+    let resources = ResourceLocator::discover()?;
+    let display = resources.helper_or_path("wildbuzzard-display")?;
+    let launcher = std::env::current_exe().context("locating Buzzard OS launcher")?;
+    let status = Command::new(&display)
+        .arg("--machine-manager")
+        .arg("--portable-dir")
+        .arg(paths.base())
+        .arg("--launcher")
+        .arg(&launcher)
+        .status()
+        .with_context(|| format!("starting machine manager with {}", display.display()))?;
+    if !status.success() {
+        bail!("Buzzard OS machine manager exited with {status}");
+    }
+    Ok(())
 }
 
 fn create(
@@ -783,7 +882,7 @@ fn create(
         fs::create_dir(&rootfs).context("creating persistent rootfs")?;
 
         let (source_reference, image_digest) = if let Some(image) = image {
-            // Release AppImages always resolve the bundled copy. PATH fallback only makes
+            // Portable releases always resolve the bundled copy. PATH fallback only makes
             // source-tree development convenient and is never required of end users.
             let crane = resources.helper_or_path("crane")?;
             let platform = oci_platform()?;
@@ -801,7 +900,8 @@ fn create(
             validate_sha256_digest(&image_digest)?;
             let immutable_image = format!("{image}@{image_digest}");
 
-            let image_archive = machine_dir.join("image-layout");
+            let image_archive = machine_dir.join("image.oci.tar");
+            let image_layout_stage = machine_dir.join("image-layout");
             let image_cache = paths.cache().join("oci-blobs");
             fs::create_dir_all(&image_cache).context("creating OCI download cache")?;
             eprintln!("Pulling {image}…");
@@ -818,27 +918,40 @@ fn create(
                 bail!("OCI pull failed with {status}");
             }
 
+            fs::create_dir(&image_layout_stage).context("creating remote OCI layout staging")?;
+            extract_oci_archive(&image_archive, &image_layout_stage)
+                .context("extracting downloaded OCI layout archive")?;
+            let image_layout = canonical_oci_layout(&image_layout_stage)?;
+            let index = read_oci_index(&image_layout)?;
+            find_oci_manifest_descriptor(&image_layout, &index, &image_digest)
+                .context("downloaded OCI layout does not contain the resolved manifest")?;
+
             eprintln!("Applying OCI layers to the persistent root filesystem…");
             apply_image_in_user_namespace(
                 &resources,
-                &image_archive,
+                &image_layout,
                 &image_digest,
                 &rootfs,
                 machine_dir,
             )?;
-            fs::remove_dir_all(&image_archive).context("removing temporary OCI layout")?;
+            fs::remove_file(&image_archive).context("removing downloaded OCI archive")?;
+            fs::remove_dir_all(&image_layout_stage).context("removing temporary OCI layout")?;
             (image.to_owned(), image_digest)
         } else {
-            let seed = bundled_rootfs_seed(paths)?.with_context(|| {
-                format!(
-                    "no bundled rootfs seed was found at runtime/{ROOTFS_SEED_ARCHIVE}; download and extract the full Wild Buzzard portable bundle beside the AppImage, or create from an OCI image explicitly with `wildbuzzard create {name} --image IMAGE_REFERENCE`"
-                )
-            })?;
-            eprintln!("Applying the bundled rootfs seed to the persistent root filesystem…");
-            apply_rootfs_in_user_namespace(&resources, &seed, &rootfs)?;
+            let archive = bundled_rootfs_oci_archive(paths)?;
+            let layout_stage = machine_dir.join("bundled-oci-layout");
+            fs::create_dir(&layout_stage).context("creating bundled OCI staging directory")?;
+            extract_oci_archive(&archive, &layout_stage)?;
+            let layout = canonical_oci_layout(&layout_stage)?;
+            let index = read_oci_index(&layout)?;
+            let descriptor = resolve_oci_manifest_descriptor(&layout, &index, None)?;
+            let digest = descriptor.digest.clone();
+            eprintln!("Applying the bundled OCI rootfs to the persistent root filesystem…");
+            apply_image_in_user_namespace(&resources, &layout, &digest, &rootfs, machine_dir)?;
+            fs::remove_dir_all(&layout_stage).context("removing bundled OCI staging layout")?;
             (
-                format!("bundle:runtime/{ROOTFS_SEED_ARCHIVE}"),
-                format!("sha256:{}", seed.manifest.archive.sha256),
+                format!("bundle:app/runtime/{DEFAULT_ROOTFS_OCI_ARCHIVE}"),
+                digest,
             )
         };
 
@@ -876,6 +989,810 @@ fn create(
     Ok(())
 }
 
+const BUZZARD_OCI_CONFIG_ANNOTATION: &str = "org.openresearchtools.buzzardos.machine-config.v1";
+const OCI_REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
+
+fn import_machine(
+    paths: &WbPaths,
+    source: &str,
+    name: &str,
+    selector: Option<&str>,
+    preserve_identity: bool,
+) -> Result<()> {
+    MachineConfig::validate_name(name)?;
+    let source_path = Path::new(source);
+    if !source_path.exists() {
+        if selector.is_some() {
+            bail!("--manifest is supported only for local OCI layouts and archives");
+        }
+        return create(
+            paths,
+            name,
+            Some(source),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+    }
+
+    let final_dir = paths.machine(name);
+    if final_dir.exists() {
+        bail!("machine '{name}' already exists at {}", final_dir.display());
+    }
+    let resources = ResourceLocator::discover()?;
+    let stage = tempfile::Builder::new()
+        .prefix(&format!(".{name}-importing-"))
+        .tempdir_in(paths.machines())
+        .context("creating machine import staging directory")?;
+    let source_stage = tempfile::Builder::new()
+        .prefix("oci-import-")
+        .tempdir_in(paths.cache())
+        .context("creating OCI import staging directory")?;
+
+    let layout = if source_path.is_dir() {
+        canonical_oci_layout(source_path)?
+    } else {
+        extract_oci_archive(source_path, source_stage.path())?;
+        canonical_oci_layout(source_stage.path())?
+    };
+    let index = read_oci_index(&layout)?;
+    let descriptor = resolve_oci_manifest_descriptor(&layout, &index, selector)?;
+    let digest = descriptor.digest.clone();
+    let imported_config = portable_config_from_manifest(&layout, &descriptor)?;
+    let source_reference = local_oci_source_reference(source_path);
+
+    let result = (|| -> Result<()> {
+        let rootfs = stage.path().join("rootfs");
+        fs::create_dir(&rootfs).context("creating imported machine rootfs")?;
+        apply_image_in_user_namespace(&resources, &layout, &digest, &rootfs, stage.path())?;
+
+        let mut config = imported_config.unwrap_or_else(|| {
+            MachineConfig::new(
+                name.to_owned(),
+                source_reference.clone(),
+                digest.clone(),
+                NetworkMode::User,
+                vec!["all".into()],
+            )
+        });
+        if preserve_identity {
+            reject_duplicate_machine_identity(paths, config.id)?;
+        } else {
+            config.id = uuid::Uuid::new_v4();
+        }
+        config.name = name.to_owned();
+        config.title = name.to_owned();
+        config.image = source_reference.clone();
+        config.image_digest = Some(digest.clone());
+        sanitize_imported_machine_config(&mut config);
+        config.save(stage.path())?;
+        RuntimeState::new(MachineState::Stopped).save(stage.path())?;
+        File::create(stage.path().join("machine.lock")).context("creating machine lock")?;
+        commit_new_machine(stage.path(), &final_dir)?;
+        println!(
+            "Imported '{name}' from {}\nPersistent rootfs: {}\nShared data: {}",
+            source_path.display(),
+            final_dir.join("rootfs").display(),
+            paths.shared().display()
+        );
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if let Err(cleanup_error) =
+            cleanup_failed_machine_stage(&resources, stage.path(), &paths.machines())
+        {
+            return Err(error).context(format!(
+                "machine import also failed to remove staging tree {}: {cleanup_error:#}",
+                stage.path().display()
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn local_oci_source_reference(source: &Path) -> String {
+    let label = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("local-oci");
+    format!("oci-import:{label}")
+}
+
+fn sanitize_imported_machine_config(config: &mut MachineConfig) {
+    config.schema = 3;
+    config.gpus = vec!["all".into()];
+    config.network = NetworkMode::User;
+    for port in &mut config.integrations.ports {
+        port.enabled = false;
+    }
+    config.integrations.media.guest_audio_output = false;
+    config.integrations.media.host_microphone = false;
+    config.integrations.media.host_camera = false;
+    config.integrations.media.audio_target = None;
+    config.integrations.media.microphone_target = None;
+    config.integrations.media.camera_target = None;
+}
+
+fn reject_duplicate_machine_identity(paths: &WbPaths, identity: uuid::Uuid) -> Result<()> {
+    for entry in fs::read_dir(paths.machines()).context("listing machine identities")? {
+        let entry = entry.context("reading machine identity directory")?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if let Ok(existing) = MachineConfig::load(&entry.path())
+            && existing.id == identity
+        {
+            bail!(
+                "the imported machine identity already exists as '{}'; use `BuzzardOS clone {} NEW_NAME` to create an independent copy",
+                existing.name,
+                existing.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_oci_index(layout: &Path) -> Result<OciIndex> {
+    let path = layout.join("index.json");
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let index: OciIndex = serde_json::from_slice(&bytes).context("parsing OCI image index")?;
+    if index.schema_version != 2 {
+        bail!(
+            "unsupported OCI index schema version {}",
+            index.schema_version
+        );
+    }
+    Ok(index)
+}
+
+fn canonical_oci_layout(path: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting OCI source {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("OCI layout {} must be a real directory", path.display());
+    }
+    let mut candidates = Vec::new();
+    if path.join("oci-layout").is_file() && path.join("index.json").is_file() {
+        candidates.push(path.to_path_buf());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("reading {}", path.display()))? {
+        let entry = entry.context("reading OCI archive root")?;
+        if entry.file_type()?.is_dir()
+            && entry.path().join("oci-layout").is_file()
+            && entry.path().join("index.json").is_file()
+        {
+            candidates.push(entry.path());
+        }
+    }
+    if candidates.len() != 1 {
+        bail!(
+            "{} contains {} OCI layouts; exactly one is required",
+            path.display(),
+            candidates.len()
+        );
+    }
+    let layout = candidates.remove(0).canonicalize()?;
+    let layout_record: serde_json::Value =
+        serde_json::from_slice(&fs::read(layout.join("oci-layout")).context("reading oci-layout")?)
+            .context("parsing oci-layout")?;
+    if layout_record
+        .get("imageLayoutVersion")
+        .and_then(|v| v.as_str())
+        != Some("1.0.0")
+    {
+        bail!("unsupported or missing OCI imageLayoutVersion");
+    }
+    Ok(layout)
+}
+
+fn extract_oci_archive(archive_path: &Path, destination: &Path) -> Result<()> {
+    let file = open_regular_nofollow(archive_path, "OCI archive")?;
+    let mut input = BufReader::new(file);
+    let mut magic = [0_u8; 4];
+    let count = input
+        .read(&mut magic)
+        .context("reading OCI archive header")?;
+    input.rewind().context("rewinding OCI archive")?;
+    let reader: Box<dyn Read> = if count >= 2 && magic[..2] == [0x1f, 0x8b] {
+        Box::new(GzDecoder::new(input))
+    } else if count == 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
+        Box::new(zstd::stream::read::Decoder::new(input).context("opening zstd OCI archive")?)
+    } else {
+        Box::new(input)
+    };
+    let mut archive = tar::Archive::new(reader);
+    for item in archive.entries().context("reading OCI archive")? {
+        let mut entry = item.context("reading OCI archive entry")?;
+        let relative = entry
+            .path()
+            .context("reading OCI archive path")?
+            .into_owned();
+        let relative = safe_relative_path(&relative)?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let kind = entry.header().entry_type();
+        if !kind.is_dir() && !kind.is_file() {
+            bail!(
+                "OCI layout archive contains unsupported non-regular entry {}",
+                relative.display()
+            );
+        }
+        entry
+            .unpack_in(destination)
+            .with_context(|| format!("extracting OCI layout entry {}", relative.display()))?;
+    }
+    Ok(())
+}
+
+fn portable_config_from_manifest(
+    layout: &Path,
+    descriptor: &OciDescriptor,
+) -> Result<Option<MachineConfig>> {
+    let bytes = read_verified_blob(layout, descriptor)?;
+    let manifest: OciManifest = serde_json::from_slice(&bytes).context("parsing OCI manifest")?;
+    manifest
+        .annotations
+        .get(BUZZARD_OCI_CONFIG_ANNOTATION)
+        .map(|value| serde_json::from_str(value).context("parsing Buzzard OS machine annotation"))
+        .transpose()
+}
+
+struct DigestingWriter<W> {
+    inner: W,
+    digest: Sha256,
+    bytes: u64,
+}
+
+impl<W> DigestingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+            bytes: 0,
+        }
+    }
+
+    fn finish(self) -> (W, String, u64) {
+        (
+            self.inner,
+            format!("sha256:{:x}", self.digest.finalize()),
+            self.bytes,
+        )
+    }
+}
+
+impl<W: Write> Write for DigestingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.digest.update(&buffer[..written]);
+        self.bytes = self.bytes.saturating_add(written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn export_machine(paths: &WbPaths, name: &str, output: &Path) -> Result<()> {
+    let machine_dir = require_machine(paths, name)?;
+    let _lock = lock_stopped_machine_for_export(&machine_dir)?;
+    let output = std::path::absolute(output)
+        .with_context(|| format!("resolving export destination {}", output.display()))?;
+    if output.exists() {
+        bail!("refusing to replace existing export {}", output.display());
+    }
+    let parent = output
+        .parent()
+        .context("export destination has no parent")?;
+    let parent_metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("inspecting export directory {}", parent.display()))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        bail!("export destination parent must be a real directory");
+    }
+
+    let temporary = tempfile::Builder::new()
+        .prefix(".buzzardos-export-")
+        .tempfile_in(parent)
+        .context("creating atomic export file")?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    let work = tempfile::Builder::new()
+        .prefix("oci-export-")
+        .tempdir_in(paths.cache())
+        .context("creating OCI export work directory")?;
+    let resources = ResourceLocator::discover()?;
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
+    let launcher = std::env::current_exe().context("locating launcher for OCI export")?;
+    let mut command = Command::new(namespace_program);
+    id_map.configure_command(&mut command);
+    let status_result = command
+        .args(id_map.namespace_args())
+        .arg(launcher)
+        .arg("__export-oci")
+        .arg("--rootfs")
+        .arg(machine_dir.join("rootfs"))
+        .arg("--machine-config")
+        .arg(machine_dir.join(MachineConfig::FILE))
+        .arg("--output")
+        .arg(temporary.path())
+        .arg("--work-dir")
+        .arg(work.path())
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| {
+            format!(
+                "starting OCI export namespace with {}",
+                namespace_program.display()
+            )
+        });
+    let cleanup_result = cleanup_export_stage(&resources, work.path(), &paths.cache());
+    let status = match (status_result, cleanup_result) {
+        (Ok(status), Ok(())) => status,
+        (Err(start_error), Ok(())) => return Err(start_error),
+        (Ok(status), Err(cleanup_error)) => {
+            bail!(
+                "OCI export namespace exited with {status}; export staging cleanup failed: {cleanup_error:#}"
+            )
+        }
+        (Err(start_error), Err(cleanup_error)) => {
+            bail!("{start_error:#}; export staging cleanup also failed: {cleanup_error:#}")
+        }
+    };
+    if !status.success() {
+        bail!("OCI export namespace exited with {status}");
+    }
+    temporary
+        .as_file()
+        .sync_all()
+        .context("syncing completed OCI export")?;
+
+    let verification = tempfile::Builder::new()
+        .prefix("oci-export-verify-")
+        .tempdir_in(paths.cache())?;
+    extract_oci_archive(temporary.path(), verification.path())?;
+    let layout = canonical_oci_layout(verification.path())?;
+    let index = read_oci_index(&layout)?;
+    let descriptor = resolve_oci_manifest_descriptor(&layout, &index, None)?;
+    let manifest: OciManifest = serde_json::from_slice(&read_verified_blob(&layout, &descriptor)?)?;
+    verified_blob_path(&layout, &manifest.config)?;
+    for layer in &manifest.layers {
+        verified_blob_path(&layout, layer)?;
+    }
+
+    let persisted = temporary
+        .persist_noclobber(&output)
+        .map_err(|error| error.error)
+        .with_context(|| format!("committing export {}", output.display()))?;
+    persisted.set_permissions(fs::Permissions::from_mode(0o644))?;
+    persisted.sync_all()?;
+    sync_parent_directory(&output)?;
+    println!("Exported '{name}' to {}", output.display());
+    Ok(())
+}
+
+fn lock_stopped_machine_for_export(machine_dir: &Path) -> Result<File> {
+    let state = RuntimeState::load(machine_dir)?.context("machine has no runtime state")?;
+    if !matches!(state.state, MachineState::Stopped | MachineState::Failed)
+        || runtime_is_live(&state, machine_dir)
+    {
+        bail!("machine must be fully stopped before export");
+    }
+    if supervisor_is_live(&state, machine_dir) {
+        send_host_control(machine_dir, "close")
+            .context("closing the stopped machine window before export")?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while RuntimeState::load(machine_dir)?
+            .as_ref()
+            .is_some_and(|latest| supervisor_is_live(latest, machine_dir))
+        {
+            if Instant::now() >= deadline {
+                bail!("the stopped machine window did not close before export");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let path = machine_dir.join("machine.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    if !file.metadata()?.is_file() {
+        bail!("machine lock is not a regular file");
+    }
+    file.try_lock_exclusive()
+        .context("machine is in use by another process")?;
+    Ok(file)
+}
+
+fn export_oci_archive(
+    rootfs: &Path,
+    machine_config_path: &Path,
+    output: &Path,
+    work_dir: &Path,
+) -> Result<()> {
+    validate_guest_rootfs(rootfs)?;
+    reject_rootfs_submounts(rootfs)?;
+    let config = MachineConfig::load(
+        machine_config_path
+            .parent()
+            .context("machine config has no machine directory")?,
+    )?;
+    let resources = ResourceLocator::discover()?;
+    let tar = resources.helper_or_path("tar")?;
+    let layout = work_dir.join("layout");
+    let blob_dir = layout.join("blobs/sha256");
+    fs::create_dir_all(&blob_dir).context("creating OCI layout blob directory")?;
+
+    let layer_temporary = work_dir.join("rootfs-layer.tar.zst");
+    let (diff_digest, layer_digest, layer_size) =
+        write_rootfs_layer(&tar, rootfs, &layer_temporary)?;
+    let layer_hex = validate_sha256_digest(&layer_digest)?;
+    fs::rename(&layer_temporary, blob_dir.join(layer_hex))
+        .context("committing OCI filesystem layer blob")?;
+
+    let created = config.created_at.to_rfc3339();
+    let image_config = serde_json::json!({
+        "created": created,
+        "architecture": host_oci_architecture()?,
+        "os": "linux",
+        "config": {
+            "Env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+            "Entrypoint": ["/lib/systemd/systemd"],
+            "Labels": {
+                "org.opencontainers.image.title": "Buzzard OS persistent machine export",
+                "org.opencontainers.image.source": "https://github.com/openresearchtools/BuzzardOS"
+            }
+        },
+        "rootfs": {"type": "layers", "diff_ids": [diff_digest]},
+        "history": [{"created": created, "created_by": "BuzzardOS export", "comment": "full persistent rootfs snapshot"}]
+    });
+    let config_descriptor = write_json_blob(
+        &blob_dir,
+        "application/vnd.oci.image.config.v1+json",
+        &image_config,
+    )?;
+
+    let mut portable_config = config.clone();
+    sanitize_imported_machine_config(&mut portable_config);
+    let portable_config = serde_json::to_string(&portable_config)?;
+    let mut annotations = BTreeMap::new();
+    annotations.insert(
+        "org.opencontainers.image.title".to_owned(),
+        format!("Buzzard OS machine {}", config.name),
+    );
+    annotations.insert(BUZZARD_OCI_CONFIG_ANNOTATION.to_owned(), portable_config);
+    let manifest = OciManifest {
+        schema_version: 2,
+        config: config_descriptor,
+        layers: vec![OciDescriptor {
+            digest: layer_digest,
+            size: layer_size,
+            media_type: "application/vnd.oci.image.layer.v1.tar+zstd".into(),
+            platform: None,
+            annotations: BTreeMap::new(),
+        }],
+        annotations,
+    };
+    let manifest_descriptor = write_json_blob(
+        &blob_dir,
+        "application/vnd.oci.image.manifest.v1+json",
+        &manifest,
+    )?;
+    let mut index_descriptor = manifest_descriptor;
+    index_descriptor.platform = Some(OciPlatform {
+        os: "linux".into(),
+        architecture: host_oci_architecture()?.into(),
+    });
+    index_descriptor.annotations.insert(
+        OCI_REF_NAME_ANNOTATION.into(),
+        format!("{}-snapshot", config.name),
+    );
+    let index = OciIndex {
+        schema_version: 2,
+        manifests: vec![index_descriptor],
+    };
+    fs::write(layout.join("index.json"), serde_json::to_vec(&index)?)?;
+    fs::write(
+        layout.join("oci-layout"),
+        b"{\"imageLayoutVersion\":\"1.0.0\"}\n",
+    )?;
+    sync_tree_metadata(&layout)?;
+    write_compressed_layout_archive(&tar, &layout, output)?;
+    Ok(())
+}
+
+fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(String, String, u64)> {
+    let mut child = Command::new(tar)
+        .args(["--create", "--file=-", "--directory"])
+        .arg(rootfs)
+        .args([
+            "--format=pax",
+            "--numeric-owner",
+            "--acls",
+            "--selinux",
+            "--xattrs",
+            "--xattrs-include=*",
+            "--sparse",
+            "--one-file-system",
+            "--exclude=./proc/*",
+            "--exclude=./sys/*",
+            "--exclude=./dev/*",
+            "--exclude=./run/*",
+            "--exclude=./tmp/*",
+            "--exclude=./shared/*",
+            "--sort=name",
+            "--pax-option=delete=atime,delete=ctime",
+            ".",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("starting bundled tar {}", tar.display()))?;
+    let mut stdout = child.stdout.take().context("tar stdout was not piped")?;
+    let file = File::create(output).with_context(|| format!("creating {}", output.display()))?;
+    let writer = DigestingWriter::new(file);
+    let mut encoder = zstd::stream::write::Encoder::new(writer, 15)
+        .context("initializing OCI layer zstd encoder")?;
+    encoder
+        .multithread(zstd_worker_count())
+        .context("enabling multithreaded OCI layer compression")?;
+    let mut diff = Sha256::new();
+    let mut buffer = [0_u8; 256 * 1024];
+    loop {
+        let count = stdout
+            .read(&mut buffer)
+            .context("reading rootfs tar stream")?;
+        if count == 0 {
+            break;
+        }
+        diff.update(&buffer[..count]);
+        encoder
+            .write_all(&buffer[..count])
+            .context("compressing rootfs tar stream")?;
+    }
+    let writer = encoder
+        .finish()
+        .context("finishing OCI layer compression")?;
+    let (file, compressed_digest, compressed_size) = writer.finish();
+    file.sync_all().context("syncing OCI layer")?;
+    let status = child.wait().context("waiting for rootfs tar")?;
+    if !status.success() {
+        bail!("bundled tar failed while exporting rootfs with {status}");
+    }
+    Ok((
+        format!("sha256:{:x}", diff.finalize()),
+        compressed_digest,
+        compressed_size,
+    ))
+}
+
+fn write_json_blob<T: Serialize>(
+    blob_dir: &Path,
+    media_type: &str,
+    value: &T,
+) -> Result<OciDescriptor> {
+    let bytes = serde_json::to_vec(value)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let hexadecimal = validate_sha256_digest(&digest)?;
+    let path = blob_dir.join(hexadecimal);
+    fs::write(&path, &bytes).with_context(|| format!("writing OCI blob {}", path.display()))?;
+    File::open(&path)?.sync_all()?;
+    Ok(OciDescriptor {
+        digest,
+        size: bytes.len() as u64,
+        media_type: media_type.into(),
+        platform: None,
+        annotations: BTreeMap::new(),
+    })
+}
+
+fn write_compressed_layout_archive(tar: &Path, layout: &Path, output: &Path) -> Result<()> {
+    let file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(output)
+        .with_context(|| format!("opening export output {}", output.display()))?;
+    if !file.metadata()?.is_file() {
+        bail!("export output must be a regular file");
+    }
+    let mut child = Command::new(tar)
+        .args(["--create", "--file=-", "--directory"])
+        .arg(layout)
+        .args(["--format=posix", "--sort=name", "."])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("starting OCI layout archiver")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("layout tar stdout was not piped")?;
+    let mut encoder = zstd::stream::write::Encoder::new(file, 19)
+        .context("initializing OCI archive compressor")?;
+    encoder
+        .multithread(zstd_worker_count())
+        .context("enabling multithreaded OCI archive compression")?;
+    std::io::copy(&mut BufReader::new(stdout), &mut encoder)
+        .context("compressing OCI layout archive")?;
+    let file = encoder
+        .finish()
+        .context("finishing OCI archive compression")?;
+    file.sync_all().context("syncing OCI archive")?;
+    let status = child.wait().context("waiting for OCI layout tar")?;
+    if !status.success() {
+        bail!("bundled tar failed while archiving OCI layout with {status}");
+    }
+    Ok(())
+}
+
+fn zstd_worker_count() -> u32 {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(8) as u32
+}
+
+fn reject_rootfs_submounts(rootfs: &Path) -> Result<()> {
+    let canonical = rootfs.canonicalize()?;
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").context("reading mountinfo")?;
+    for line in mountinfo.lines() {
+        let Some(field) = line.split_whitespace().nth(4) else {
+            continue;
+        };
+        let decoded = field
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        let mount = Path::new(&decoded);
+        if mount != canonical && mount.starts_with(&canonical) {
+            bail!(
+                "rootfs contains active mount {}; stop and fully detach the machine before export",
+                mount.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn sync_tree_metadata(root: &Path) -> Result<()> {
+    for directory in [
+        root.join("blobs/sha256"),
+        root.join("blobs"),
+        root.to_path_buf(),
+    ] {
+        File::open(&directory)
+            .with_context(|| format!("opening {} for sync", directory.display()))?
+            .sync_all()
+            .with_context(|| format!("syncing {}", directory.display()))?;
+    }
+    Ok(())
+}
+
+fn sync_parent_directory(path: &Path) -> Result<()> {
+    File::open(path.parent().context("path has no parent")?)?
+        .sync_all()
+        .context("syncing parent directory")
+}
+
+fn clone_machine(paths: &WbPaths, source: &str, name: &str) -> Result<()> {
+    MachineConfig::validate_name(name)?;
+    let temporary = tempfile::Builder::new()
+        .prefix("clone-")
+        .suffix(".oci.tar.zst")
+        .tempfile_in(paths.cache())?;
+    let archive_path = temporary.path().to_path_buf();
+    // `export_machine` deliberately refuses replacement. Close removes only
+    // this private placeholder before handing its randomized name to the
+    // exporter; an intervening collision is then rejected rather than
+    // replaced.
+    temporary
+        .close()
+        .context("releasing the clone export placeholder")?;
+    export_machine(paths, source, &archive_path)?;
+    let result = import_machine(
+        paths,
+        archive_path
+            .to_str()
+            .context("clone archive path is not UTF-8")?,
+        name,
+        None,
+        false,
+    );
+    let _ = fs::remove_file(&archive_path);
+    result?;
+    let clone_dir = paths.machine(name);
+    let mut clone_config = MachineConfig::load(&clone_dir)?;
+    clone_config.image = format!("clone:{source}");
+    clone_config.save(&clone_dir)?;
+    reset_cloned_machine_identity(paths, name)
+}
+
+fn reset_cloned_machine_identity(paths: &WbPaths, name: &str) -> Result<()> {
+    let machine_dir = require_machine(paths, name)?;
+    let resources = ResourceLocator::discover()?;
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
+    let rootfs = machine_dir.join("rootfs");
+    let launcher = std::env::current_exe()?;
+    let mut command = Command::new(namespace_program);
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.namespace_args())
+        .arg(launcher)
+        .arg("__reset-clone-identity")
+        .arg("--rootfs")
+        .arg(&rootfs)
+        .stdin(Stdio::null())
+        .status()?;
+    if !status.success() {
+        bail!("clone identity reset failed with {status}");
+    }
+    println!("Cloned '{name}' with a new machine identity");
+    Ok(())
+}
+
+fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
+    validate_guest_rootfs(rootfs)?;
+    let rootfs = rootfs.canonicalize()?;
+    let machine_id = rootfs.join("etc/machine-id");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&machine_id)
+        .with_context(|| format!("resetting {}", machine_id.display()))?;
+    file.flush()?;
+    file.sync_all()?;
+
+    for relative in ["var/lib/systemd/random-seed", "var/lib/dbus/machine-id"] {
+        let path = rootfs.join(relative);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                // Preserve the normal /var/lib/dbus/machine-id -> /etc/machine-id
+                // link; the target was reset above. Other identity material is
+                // removed only when it is a regular file.
+                if relative != "var/lib/dbus/machine-id" {
+                    fs::remove_file(&path)?;
+                }
+            }
+            Ok(metadata) if metadata.is_file() => fs::remove_file(&path)?,
+            Ok(_) => bail!("clone identity path {} has an unsafe type", path.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let ssh = rootfs.join("etc/ssh");
+    if ssh.is_dir() {
+        for entry in fs::read_dir(&ssh)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name.as_bytes().starts_with(b"ssh_host_") {
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if metadata.is_file() || metadata.file_type().is_symlink() {
+                    fs::remove_file(entry.path())?;
+                } else {
+                    bail!("SSH host identity entry has an unsafe type");
+                }
+            }
+        }
+    }
+    sync_parent_directory(&machine_id)?;
+    Ok(())
+}
+
 fn cleanup_failed_machine_stage(
     resources: &ResourceLocator,
     staging: &Path,
@@ -889,11 +1806,12 @@ fn cleanup_failed_machine_stage(
 
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
     let launcher = std::env::current_exe().context("locating launcher for staging cleanup")?;
-    let mut command = Command::new(&unshare);
+    let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     let status = command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg(launcher)
         .arg("__cleanup-staging")
         .arg("--staging")
@@ -902,7 +1820,12 @@ fn cleanup_failed_machine_stage(
         .arg(machines)
         .stdin(Stdio::null())
         .status()
-        .with_context(|| format!("starting cleanup namespace with {}", unshare.display()))?;
+        .with_context(|| {
+            format!(
+                "starting cleanup namespace with {}",
+                namespace_program.display()
+            )
+        })?;
     if !status.success() {
         bail!("staging cleanup namespace exited with {status}");
     }
@@ -911,6 +1834,108 @@ fn cleanup_failed_machine_stage(
         Ok(_) => bail!("staging cleanup reported success but the tree still exists"),
         Err(error) => Err(error).context("verifying staging cleanup"),
     }
+}
+
+fn cleanup_export_stage(resources: &ResourceLocator, staging: &Path, cache: &Path) -> Result<()> {
+    match fs::remove_dir_all(staging) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {}
+    }
+
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
+    let launcher = std::env::current_exe().context("locating launcher for export cleanup")?;
+    let mut command = Command::new(namespace_program);
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.namespace_args())
+        .arg(launcher)
+        .arg("__cleanup-export-staging")
+        .arg("--staging")
+        .arg(staging)
+        .arg("--cache")
+        .arg(cache)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| {
+            format!(
+                "starting export cleanup namespace with {}",
+                namespace_program.display()
+            )
+        })?;
+    if !status.success() {
+        bail!("export staging cleanup namespace exited with {status}");
+    }
+    match fs::symlink_metadata(staging) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => bail!("export staging cleanup reported success but the tree still exists"),
+        Err(error) => Err(error).context("verifying export staging cleanup"),
+    }
+}
+
+fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
+    if !confirmed {
+        bail!(
+            "deleting a machine permanently removes its rootfs; rerun with `./BuzzardOS delete {name} --yes`"
+        );
+    }
+    let machine_dir = require_machine(paths, name)?;
+    let lock = lock_stopped_machine_for_export(&machine_dir)?;
+    let resources = ResourceLocator::discover()?;
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
+    let launcher = std::env::current_exe()?;
+    let mut command = Command::new(namespace_program);
+    id_map.configure_command(&mut command);
+    let status = command
+        .args(id_map.namespace_args())
+        .arg(launcher)
+        .arg("__delete-machine")
+        .arg("--machine")
+        .arg(&machine_dir)
+        .arg("--machines")
+        .arg(paths.machines())
+        .stdin(Stdio::null())
+        .status()?;
+    drop(lock);
+    if !status.success() {
+        bail!("machine deletion namespace exited with {status}");
+    }
+    println!("Deleted machine '{name}' and its persistent rootfs");
+    Ok(())
+}
+
+fn remove_persistent_machine_tree(machine: &Path, machines: &Path) -> Result<()> {
+    let machines = machines
+        .canonicalize()
+        .with_context(|| format!("resolving {}", machines.display()))?;
+    let parent = machine
+        .parent()
+        .context("machine has no parent")?
+        .canonicalize()?;
+    if parent != machines {
+        bail!("machine deletion target is outside the portable Machines directory");
+    }
+    let name = machine
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("machine directory name is not UTF-8")?;
+    MachineConfig::validate_name(name)?;
+    let metadata = fs::symlink_metadata(machine)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("machine deletion target must be a real directory");
+    }
+    let config = MachineConfig::load(machine)?;
+    if config.name != name {
+        bail!("machine metadata name does not match the deletion target");
+    }
+    fs::remove_dir_all(machine)
+        .with_context(|| format!("removing machine tree {}", machine.display()))?;
+    File::open(&machines)?.sync_all()?;
+    Ok(())
 }
 
 fn remove_machine_staging_tree(staging: &Path, machines: &Path) -> Result<()> {
@@ -928,8 +1953,8 @@ fn remove_machine_staging_tree(staging: &Path, machines: &Path) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("machine staging directory name is not UTF-8")?;
-    if !name.starts_with('.') || !name.contains("-creating-") {
-        bail!("refusing to remove a path that is not a machine creation staging directory");
+    if !is_machine_staging_name(name) {
+        bail!("refusing to remove a path that is not a machine create/import staging directory");
     }
     let expected_parent = machines
         .canonicalize()
@@ -944,6 +1969,55 @@ fn remove_machine_staging_tree(staging: &Path, machines: &Path) -> Result<()> {
     }
     fs::remove_dir_all(staging)
         .with_context(|| format!("removing failed machine staging tree {}", staging.display()))
+}
+
+fn remove_export_staging_tree(staging: &Path, cache: &Path) -> Result<()> {
+    let cache_metadata = fs::symlink_metadata(cache)
+        .with_context(|| format!("inspecting export cache directory {}", cache.display()))?;
+    if cache_metadata.file_type().is_symlink() || !cache_metadata.is_dir() {
+        bail!("export cache directory must be a real directory");
+    }
+    let staging_metadata = fs::symlink_metadata(staging)
+        .with_context(|| format!("inspecting export staging directory {}", staging.display()))?;
+    if staging_metadata.file_type().is_symlink() || !staging_metadata.is_dir() {
+        bail!("export staging path must be a real directory");
+    }
+    let name = staging
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("export staging directory name is not UTF-8")?;
+    let nonce = name
+        .strip_prefix("oci-export-")
+        .filter(|nonce| !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .context("refusing to remove a path that is not an OCI export staging directory")?;
+    debug_assert!(!nonce.is_empty());
+    let expected_parent = cache
+        .canonicalize()
+        .with_context(|| format!("resolving export cache directory {}", cache.display()))?;
+    let actual_parent = staging
+        .parent()
+        .context("export staging path has no parent")?
+        .canonicalize()
+        .context("resolving export staging parent")?;
+    if actual_parent != expected_parent {
+        bail!("export staging directory is outside the expected cache directory");
+    }
+    fs::remove_dir_all(staging)
+        .with_context(|| format!("removing OCI export staging tree {}", staging.display()))
+}
+
+fn is_machine_staging_name(name: &str) -> bool {
+    let Some(name) = name.strip_prefix('.') else {
+        return false;
+    };
+    ["-creating-", "-importing-"].iter().any(|marker| {
+        let Some((machine, nonce)) = name.rsplit_once(marker) else {
+            return false;
+        };
+        !nonce.is_empty()
+            && nonce.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            && MachineConfig::validate_name(machine).is_ok()
+    })
 }
 
 fn commit_new_machine(staging: &Path, destination: &Path) -> Result<()> {
@@ -998,44 +2072,82 @@ struct RootfsSeedArchive {
     uncompressed_sha256: String,
 }
 
-#[derive(Debug)]
-struct BundledRootfsSeed {
-    archive: PathBuf,
-    manifest_path: PathBuf,
-    manifest: RootfsSeedManifest,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundledOciSeedManifest {
+    schema: u32,
+    kind: String,
+    platform: RootfsSeedPlatform,
+    archive: BundledOciSeedArchive,
+    manifest_digest: String,
+    source_commit: String,
 }
 
-fn bundled_rootfs_seed(paths: &WbPaths) -> Result<Option<BundledRootfsSeed>> {
-    let runtime = paths.base().join("runtime");
-    let archive = runtime.join(ROOTFS_SEED_ARCHIVE);
-    let manifest_path = runtime.join(ROOTFS_SEED_MANIFEST);
-    let archive_exists = fs::symlink_metadata(&archive).is_ok();
-    let manifest_exists = fs::symlink_metadata(&manifest_path).is_ok();
-    if !archive_exists && !manifest_exists {
-        return Ok(None);
-    }
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundledOciSeedArchive {
+    name: String,
+    size: u64,
+    sha256: String,
+}
 
-    let runtime_metadata = fs::symlink_metadata(&runtime)
-        .with_context(|| format!("inspecting bundled runtime directory {}", runtime.display()))?;
+fn bundled_rootfs_oci_archive(paths: &WbPaths) -> Result<PathBuf> {
+    let runtime = paths.base().join("app/runtime");
+    let runtime_metadata = fs::symlink_metadata(&runtime).with_context(|| {
+        format!(
+            "portable bundle is incomplete: app/runtime/{DEFAULT_ROOTFS_OCI_ARCHIVE} is missing"
+        )
+    })?;
     if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
-        bail!(
-            "bundled runtime path {} must be a real directory, not a symlink",
-            runtime.display()
-        );
+        bail!("portable app/runtime must be a real directory");
     }
-    if !archive_exists || !manifest_exists {
-        bail!(
-            "portable bundle is incomplete: runtime/{ROOTFS_SEED_ARCHIVE} and runtime/{ROOTFS_SEED_MANIFEST} must both be present"
-        );
+    let archive = runtime.join(DEFAULT_ROOTFS_OCI_ARCHIVE);
+    let metadata = fs::symlink_metadata(&archive).with_context(|| {
+        format!(
+            "portable bundle is incomplete: app/runtime/{DEFAULT_ROOTFS_OCI_ARCHIVE} is missing"
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() < 1024 {
+        bail!("bundled OCI rootfs must be a non-empty regular file");
     }
-
-    let manifest = read_rootfs_seed_manifest(&manifest_path)?;
-    validate_rootfs_seed_archive_header(&archive, &manifest.archive)?;
-    Ok(Some(BundledRootfsSeed {
-        archive,
-        manifest_path,
-        manifest,
-    }))
+    let manifest_path = runtime.join(DEFAULT_ROOTFS_OCI_MANIFEST);
+    let mut manifest_file = open_regular_nofollow(&manifest_path, "bundled OCI manifest")?;
+    let manifest_size = manifest_file.metadata()?.len();
+    if manifest_size == 0 || manifest_size > MAX_ROOTFS_MANIFEST_BYTES {
+        bail!("bundled OCI manifest has an invalid size");
+    }
+    let mut manifest_bytes = Vec::with_capacity(manifest_size as usize);
+    manifest_file
+        .read_to_end(&mut manifest_bytes)
+        .context("reading bundled OCI manifest")?;
+    let manifest: BundledOciSeedManifest =
+        serde_json::from_slice(&manifest_bytes).context("parsing bundled OCI manifest")?;
+    if manifest.schema != 1 || manifest.kind != "buzzardos-oci-seed" {
+        bail!("bundled OCI manifest has an unsupported schema or kind");
+    }
+    if manifest.platform.os != "linux" || manifest.platform.architecture != "amd64" {
+        bail!("bundled OCI seed is not for linux/amd64");
+    }
+    if manifest.archive.name != DEFAULT_ROOTFS_OCI_ARCHIVE {
+        bail!("bundled OCI manifest names the wrong archive");
+    }
+    validate_sha256_hex(&manifest.archive.sha256, "bundled OCI archive")?;
+    validate_sha256_digest(&manifest.manifest_digest)?;
+    if !matches!(manifest.source_commit.len(), 40 | 64)
+        || !manifest
+            .source_commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("bundled OCI source commit is not a lowercase Git object ID");
+    }
+    if metadata.len() != manifest.archive.size {
+        bail!("bundled OCI archive size differs from its manifest");
+    }
+    if sha256_regular_file(&archive)? != manifest.archive.sha256 {
+        bail!("bundled OCI archive digest differs from its manifest");
+    }
+    Ok(archive)
 }
 
 fn open_regular_nofollow(path: &Path, description: &str) -> Result<File> {
@@ -1129,61 +2241,6 @@ fn validate_sha256_hex(value: &str, description: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         bail!("{description} sha256 is not 64 lowercase hexadecimal characters");
-    }
-    Ok(())
-}
-
-fn validate_rootfs_seed_archive_header(path: &Path, archive: &RootfsSeedArchive) -> Result<()> {
-    if path.file_name() != Some(std::ffi::OsStr::new(ROOTFS_SEED_ARCHIVE)) {
-        bail!("bundled rootfs archive must be named {ROOTFS_SEED_ARCHIVE}");
-    }
-    let mut file = open_regular_nofollow(path, "bundled rootfs archive")?;
-    let actual_size = file.metadata()?.len();
-    if actual_size != archive.size {
-        bail!(
-            "bundled rootfs archive size mismatch: manifest says {}, file has {actual_size}",
-            archive.size
-        );
-    }
-    let mut magic = [0_u8; 4];
-    file.read_exact(&mut magic)
-        .context("reading bundled rootfs archive header")?;
-    if magic != [0x28, 0xb5, 0x2f, 0xfd] {
-        bail!("bundled rootfs archive is not a Zstandard frame");
-    }
-    Ok(())
-}
-
-fn apply_rootfs_in_user_namespace(
-    resources: &ResourceLocator,
-    seed: &BundledRootfsSeed,
-    rootfs: &Path,
-) -> Result<()> {
-    let unshare = resources.helper_or_path("unshare")?;
-    let id_map = IdMap::discover()?;
-    let launcher = std::env::current_exe().context("locating launcher for rootfs extraction")?;
-    let expected_digest = format!("sha256:{}", seed.manifest.archive.sha256);
-    let mut command = Command::new(&unshare);
-    id_map.configure_command(&mut command);
-    let status = command
-        .args(id_map.unshare_args())
-        .arg(launcher)
-        .arg("__apply-rootfs")
-        .arg("--archive")
-        .arg(&seed.archive)
-        .arg("--manifest")
-        .arg(&seed.manifest_path)
-        .arg("--expected-digest")
-        .arg(expected_digest)
-        .arg("--rootfs")
-        .arg(rootfs)
-        .stdin(Stdio::null())
-        .status()
-        .with_context(|| format!("starting full-ID namespace with {}", unshare.display()))?;
-    if !status.success() {
-        bail!(
-            "bundled rootfs namespace/extraction helper exited with {status}; the preceding child diagnostic identifies whether subordinate-ID setup, archive validation, storage, or metadata restoration failed"
-        );
     }
     Ok(())
 }
@@ -1625,11 +2682,12 @@ fn apply_image_in_user_namespace(
 ) -> Result<()> {
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
     let launcher = std::env::current_exe().context("locating launcher for OCI extraction")?;
-    let mut command = Command::new(&unshare);
+    let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     let status = command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg(launcher)
         .arg("__apply-image")
         .arg("--archive")
@@ -1642,7 +2700,12 @@ fn apply_image_in_user_namespace(
         .arg(work_dir)
         .stdin(Stdio::null())
         .status()
-        .with_context(|| format!("starting full-ID namespace with {}", unshare.display()))?;
+        .with_context(|| {
+            format!(
+                "starting full-ID namespace with {}",
+                namespace_program.display()
+            )
+        })?;
     if !status.success() {
         bail!(
             "applying the OCI image requires a configured subordinate UID/GID range; namespace helper exited with {status}"
@@ -1651,34 +2714,46 @@ fn apply_image_in_user_namespace(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OciIndex {
     schema_version: u32,
     manifests: Vec<OciDescriptor>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OciManifest {
     schema_version: u32,
     config: OciDescriptor,
     layers: Vec<OciDescriptor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    annotations: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OciDescriptor {
     digest: String,
     size: u64,
     media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    platform: Option<OciPlatform>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    annotations: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+struct OciPlatform {
+    os: String,
+    architecture: String,
 }
 
 fn oci_platform() -> Result<&'static str> {
     match std::env::consts::ARCH {
         "x86_64" => Ok("linux/amd64"),
         "aarch64" => Ok("linux/arm64"),
-        architecture => bail!("unsupported AppImage architecture '{architecture}'"),
+        architecture => bail!("unsupported Buzzard OS architecture '{architecture}'"),
     }
 }
 
@@ -1728,12 +2803,202 @@ fn read_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<Vec<u
     fs::read(&path).with_context(|| format!("reading {}", path.display()))
 }
 
+fn host_oci_architecture() -> Result<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Ok("amd64"),
+        "aarch64" => Ok("arm64"),
+        architecture => bail!("unsupported host architecture '{architecture}'"),
+    }
+}
+
+fn descriptor_matches_host(descriptor: &OciDescriptor) -> Result<bool> {
+    Ok(descriptor.platform.as_ref().is_none_or(|platform| {
+        platform.os == "linux" && platform.architecture == host_oci_architecture().unwrap_or("")
+    }))
+}
+
+fn select_oci_descriptor(
+    descriptors: &[OciDescriptor],
+    selector: Option<&str>,
+) -> Result<OciDescriptor> {
+    if descriptors.is_empty() {
+        bail!("OCI image index contains no manifests");
+    }
+    let mut candidates = descriptors
+        .iter()
+        .filter(|descriptor| {
+            selector.is_none_or(|selector| {
+                descriptor.digest == selector
+                    || descriptor
+                        .annotations
+                        .get("org.opencontainers.image.ref.name")
+                        .is_some_and(|name| name == selector)
+            })
+        })
+        .filter(|descriptor| descriptor_matches_host(descriptor).unwrap_or(false))
+        .cloned()
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        let requested = selector
+            .map(|value| format!(" matching '{value}'"))
+            .unwrap_or_default();
+        bail!(
+            "OCI index has {} linux/{} manifests{requested}; select exactly one with --manifest DIGEST_OR_REF",
+            candidates.len(),
+            host_oci_architecture()?
+        );
+    }
+    Ok(candidates.remove(0))
+}
+
+fn resolve_oci_manifest_descriptor(
+    layout: &Path,
+    index: &OciIndex,
+    selector: Option<&str>,
+) -> Result<OciDescriptor> {
+    let descriptor = if let Some(selector) = selector {
+        let mut matches = Vec::new();
+        find_selected_oci_descriptors(layout, &index.manifests, selector, 0, &mut matches)?;
+        if matches.len() != 1 {
+            bail!(
+                "OCI layout contains {} descriptors matching '{selector}'; select one unique digest or reference",
+                matches.len()
+            );
+        }
+        let descriptor = matches.remove(0);
+        if !descriptor_matches_host(&descriptor)? {
+            bail!(
+                "selected OCI descriptor is not for linux/{}",
+                host_oci_architecture()?
+            );
+        }
+        descriptor
+    } else {
+        select_oci_descriptor(&index.manifests, None)?
+    };
+    if descriptor.media_type == "application/vnd.oci.image.index.v1+json"
+        || descriptor.media_type == "application/vnd.docker.distribution.manifest.list.v2+json"
+    {
+        let bytes = read_verified_blob(layout, &descriptor)?;
+        let nested: OciIndex =
+            serde_json::from_slice(&bytes).context("parsing nested OCI image index")?;
+        if nested.schema_version != 2 {
+            bail!(
+                "unsupported nested OCI index schema version {}",
+                nested.schema_version
+            );
+        }
+        return resolve_oci_manifest_descriptor(layout, &nested, None);
+    }
+    if descriptor.media_type != "application/vnd.oci.image.manifest.v1+json"
+        && descriptor.media_type != "application/vnd.docker.distribution.manifest.v2+json"
+    {
+        bail!(
+            "unsupported OCI descriptor media type {}",
+            descriptor.media_type
+        );
+    }
+    Ok(descriptor)
+}
+
+fn find_selected_oci_descriptors(
+    layout: &Path,
+    descriptors: &[OciDescriptor],
+    selector: &str,
+    depth: usize,
+    matches: &mut Vec<OciDescriptor>,
+) -> Result<()> {
+    if depth > 8 {
+        bail!("OCI index nesting exceeds the supported depth");
+    }
+    for descriptor in descriptors {
+        if descriptor.digest == selector
+            || descriptor
+                .annotations
+                .get(OCI_REF_NAME_ANNOTATION)
+                .is_some_and(|name| name == selector)
+        {
+            matches.push(descriptor.clone());
+        }
+        if matches!(
+            descriptor.media_type.as_str(),
+            "application/vnd.oci.image.index.v1+json"
+                | "application/vnd.docker.distribution.manifest.list.v2+json"
+        ) {
+            let bytes = read_verified_blob(layout, descriptor)?;
+            let nested: OciIndex =
+                serde_json::from_slice(&bytes).context("parsing nested OCI image index")?;
+            if nested.schema_version != 2 {
+                bail!(
+                    "unsupported nested OCI index schema version {}",
+                    nested.schema_version
+                );
+            }
+            find_selected_oci_descriptors(layout, &nested.manifests, selector, depth + 1, matches)?;
+        }
+    }
+    Ok(())
+}
+
+fn find_oci_manifest_descriptor(
+    layout: &Path,
+    index: &OciIndex,
+    expected_digest: &str,
+) -> Result<OciDescriptor> {
+    fn visit(
+        layout: &Path,
+        descriptors: &[OciDescriptor],
+        expected: &str,
+        depth: usize,
+    ) -> Result<Option<OciDescriptor>> {
+        if depth > 8 {
+            bail!("OCI index nesting exceeds the supported depth");
+        }
+        for descriptor in descriptors {
+            if descriptor.digest == expected
+                && matches!(
+                    descriptor.media_type.as_str(),
+                    "application/vnd.oci.image.manifest.v1+json"
+                        | "application/vnd.docker.distribution.manifest.v2+json"
+                )
+            {
+                return Ok(Some(descriptor.clone()));
+            }
+            if matches!(
+                descriptor.media_type.as_str(),
+                "application/vnd.oci.image.index.v1+json"
+                    | "application/vnd.docker.distribution.manifest.list.v2+json"
+            ) {
+                let bytes = read_verified_blob(layout, descriptor)?;
+                let nested: OciIndex =
+                    serde_json::from_slice(&bytes).context("parsing nested OCI image index")?;
+                if let Some(found) = visit(layout, &nested.manifests, expected, depth + 1)? {
+                    return Ok(Some(found));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    visit(layout, &index.manifests, expected_digest, 0)?.with_context(|| {
+        format!("OCI manifest digest {expected_digest} is not present in the image index")
+    })
+}
+
 fn apply_image_archive(
     layout: &Path,
     expected_digest: &str,
     rootfs: &Path,
     work_dir: &Path,
 ) -> Result<()> {
+    validate_guest_rootfs(rootfs)?;
+    if fs::read_dir(rootfs)
+        .context("inspecting new OCI rootfs")?
+        .next()
+        .is_some()
+    {
+        bail!("OCI image may only be applied to an empty new rootfs");
+    }
     chown(rootfs, Some(Uid::from_raw(0)), Some(Gid::from_raw(0)))
         .with_context(|| format!("setting root ownership on {}", rootfs.display()))?;
 
@@ -1748,19 +3013,7 @@ fn apply_image_archive(
             index.schema_version
         );
     }
-    let descriptor = index
-        .manifests
-        .first()
-        .context("OCI image index contains no manifest")?;
-    if index.manifests.len() != 1 {
-        bail!("platform-specific OCI pull returned multiple manifests");
-    }
-    if descriptor.digest != expected_digest {
-        bail!(
-            "OCI manifest digest mismatch: resolved {expected_digest}, layout contains {}",
-            descriptor.digest
-        );
-    }
+    let descriptor = find_oci_manifest_descriptor(layout, &index, expected_digest)?;
     if descriptor.media_type != "application/vnd.oci.image.manifest.v1+json"
         && descriptor.media_type != "application/vnd.docker.distribution.manifest.v2+json"
     {
@@ -1770,7 +3023,7 @@ fn apply_image_archive(
         );
     }
 
-    let manifest_bytes = read_verified_blob(layout, descriptor)?;
+    let manifest_bytes = read_verified_blob(layout, &descriptor)?;
     let manifest: OciManifest =
         serde_json::from_slice(&manifest_bytes).context("parsing OCI image manifest")?;
     if manifest.schema_version != 2 {
@@ -1841,6 +3094,94 @@ fn decompress_layer(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+type PaxRecords = BTreeMap<Vec<u8>, Vec<u8>>;
+
+fn parse_raw_pax_records(contents: &[u8]) -> Result<PaxRecords> {
+    let mut records = BTreeMap::new();
+    let mut position = 0_usize;
+    while position < contents.len() {
+        let relative_space = contents[position..]
+            .iter()
+            .position(|byte| *byte == b' ')
+            .context("PAX record has no length separator")?;
+        let space = position + relative_space;
+        let length_bytes = &contents[position..space];
+        if length_bytes.is_empty() || !length_bytes.iter().all(u8::is_ascii_digit) {
+            bail!("PAX record has an invalid decimal length");
+        }
+        let length_text = std::str::from_utf8(length_bytes).context("PAX length is not ASCII")?;
+        let length: usize = length_text.parse().context("PAX record length overflow")?;
+        let end = position
+            .checked_add(length)
+            .context("PAX record length overflow")?;
+        if end > contents.len() || end <= space + 2 || contents[end - 1] != b'\n' {
+            bail!("PAX record length does not match its payload");
+        }
+        let record = &contents[space + 1..end - 1];
+        let equals = record
+            .iter()
+            .position(|byte| *byte == b'=')
+            .context("PAX record has no key/value separator")?;
+        let key = &record[..equals];
+        if key.is_empty() || key.contains(&0) {
+            bail!("PAX record has an invalid key");
+        }
+        records.insert(key.to_vec(), record[equals + 1..].to_vec());
+        position = end;
+    }
+    Ok(records)
+}
+
+fn read_layer_pax_records(layer_tar: &Path) -> Result<BTreeMap<u64, PaxRecords>> {
+    let file = File::open(layer_tar).context("opening OCI layer for raw PAX scan")?;
+    let mut archive = tar::Archive::new(BufReader::new(file));
+    let mut entries = archive
+        .entries()
+        .context("reading raw OCI layer entries")?
+        .raw(true);
+    let mut global = PaxRecords::new();
+    let mut local: Option<PaxRecords> = None;
+    let mut records = BTreeMap::new();
+    for item in &mut entries {
+        let mut entry = item.context("reading raw OCI layer entry")?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_pax_global_extensions() || entry_type.is_pax_local_extensions() {
+            let size = entry.header().size().context("reading PAX entry size")?;
+            if size > MAX_OCI_PAX_BYTES {
+                bail!("OCI PAX metadata exceeds {MAX_OCI_PAX_BYTES} bytes");
+            }
+            let mut contents = Vec::with_capacity(size as usize);
+            entry
+                .read_to_end(&mut contents)
+                .context("reading OCI PAX metadata")?;
+            if contents.len() as u64 != size {
+                bail!("OCI PAX metadata ended before its declared size");
+            }
+            let parsed = parse_raw_pax_records(&contents)?;
+            if entry_type.is_pax_global_extensions() {
+                global.extend(parsed);
+            } else if local.replace(parsed).is_some() {
+                bail!("two local PAX headers describe one OCI layer entry");
+            }
+            continue;
+        }
+        if entry_type.is_gnu_longname() || entry_type.is_gnu_longlink() {
+            continue;
+        }
+        if !global.is_empty() || local.is_some() {
+            let mut combined = global.clone();
+            if let Some(local) = local.take() {
+                combined.extend(local);
+            }
+            records.insert(entry.raw_header_position(), combined);
+        }
+    }
+    if local.is_some() {
+        bail!("OCI layer ends with an unconsumed local PAX header");
+    }
+    Ok(records)
+}
+
 fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
     // OCI whiteouts affect content inherited from lower layers. Apply them
     // before unpacking this layer so archive entry ordering cannot change
@@ -1862,40 +3203,125 @@ fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
         }
     }
 
+    let pax_records = read_layer_pax_records(layer_tar)?;
     let file = File::open(layer_tar).context("opening OCI layer for extraction")?;
     let mut archive = tar::Archive::new(BufReader::new(file));
     archive.set_preserve_permissions(true);
     archive.set_preserve_mtime(true);
     archive.set_preserve_ownerships(true);
+    archive.set_unpack_xattrs(false);
+    let mut directories = Vec::new();
     for item in archive.entries().context("reading OCI layer")? {
         let mut entry = item.context("reading OCI layer entry")?;
-        let entry_path = entry.path().context("reading OCI layer path")?.into_owned();
+        let pax = pax_records
+            .get(&entry.raw_header_position())
+            .cloned()
+            .unwrap_or_default();
+        let entry_path = if let Some(path) = pax.get(b"path".as_slice()) {
+            PathBuf::from(OsStr::from_bytes(path))
+        } else {
+            entry.path().context("reading OCI layer path")?.into_owned()
+        };
         let path = safe_relative_path(&entry_path)?;
-        if path.as_os_str().is_empty() || whiteout_action(path).is_some() {
+        if whiteout_action(path).is_some() {
             continue;
         }
-        let extended_attributes = entry
-            .pax_extensions()
-            .context("reading OCI layer extended attributes")?
-            .map(|extensions| {
-                extensions
-                    .filter_map(|extension| {
-                        let extension = extension.ok()?;
-                        let name = extension
-                            .key_bytes()
-                            .strip_prefix(b"SCHILY.xattr.")?
-                            .to_vec();
-                        Some((name, extension.value_bytes().to_vec()))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        entry
-            .unpack_in(rootfs)
-            .with_context(|| format!("extracting {}", path.display()))?;
-        for (name, value) in extended_attributes {
-            set_link_xattr(&rootfs.join(path), &name, &value)?;
+
+        let entry_type = entry.header().entry_type();
+        if !matches!(
+            entry_type,
+            tar::EntryType::Regular
+                | tar::EntryType::Continuous
+                | tar::EntryType::GNUSparse
+                | tar::EntryType::Directory
+                | tar::EntryType::Symlink
+                | tar::EntryType::Link
+        ) {
+            bail!(
+                "OCI layer contains unsupported special entry {} ({entry_type:?})",
+                path.display()
+            );
         }
+        let uid = entry.header().uid().context("reading OCI layer UID")?;
+        let gid = entry.header().gid().context("reading OCI layer GID")?;
+        if uid > MAX_GUEST_ID || gid > MAX_GUEST_ID {
+            bail!(
+                "OCI layer entry {} uses unsupported guest ownership {uid}:{gid}; maximum is {MAX_GUEST_ID}",
+                path.display()
+            );
+        }
+        if entry_type == tar::EntryType::Link {
+            let target = if let Some(target) = pax.get(b"linkpath".as_slice()) {
+                PathBuf::from(OsStr::from_bytes(target))
+            } else {
+                entry
+                    .link_name()
+                    .context("reading OCI hardlink target")?
+                    .context("OCI hardlink has no target")?
+                    .into_owned()
+            };
+            let target = safe_relative_path(&target)?;
+            if target.as_os_str().is_empty() {
+                bail!("OCI hardlink target cannot be empty");
+            }
+        }
+
+        let mode = entry.header().mode().context("reading OCI layer mode")?;
+        let mut mtime = (
+            i64::try_from(entry.header().mtime().context("reading OCI layer mtime")?)
+                .context("OCI layer mtime is outside the supported range")?,
+            0_i64,
+        );
+        let mut extended_attributes = Vec::new();
+        for (key, value) in &pax {
+            if key == b"mtime" {
+                mtime = parse_pax_timestamp(value)?;
+            } else if let Some(name) = key.strip_prefix(b"SCHILY.xattr.") {
+                if name.is_empty() {
+                    bail!("OCI layer contains an empty xattr name");
+                }
+                extended_attributes.push((name.to_vec(), value.clone()));
+            }
+        }
+
+        if entry_type == tar::EntryType::Directory {
+            if !path.as_os_str().is_empty()
+                && !entry
+                    .unpack_in(rootfs)
+                    .with_context(|| format!("extracting {}", path.display()))?
+            {
+                bail!("OCI layer entry {} escaped the destination", path.display());
+            }
+            directories.push(DeferredRootfsDirectory {
+                relative: path.to_path_buf(),
+                uid: uid as u32,
+                gid: gid as u32,
+                mode,
+                mtime,
+                xattrs: extended_attributes,
+            });
+            continue;
+        }
+        if path.as_os_str().is_empty() {
+            bail!("OCI layer contains a non-directory root entry");
+        }
+        if !entry
+            .unpack_in(rootfs)
+            .with_context(|| format!("extracting {}", path.display()))?
+        {
+            bail!("OCI layer entry {} escaped the destination", path.display());
+        }
+        if entry_type != tar::EntryType::Link {
+            let destination = rootfs.join(path);
+            for (name, value) in extended_attributes {
+                set_link_xattr(&destination, &name, &value)?;
+            }
+            set_link_mtime(&destination, mtime)?;
+        }
+    }
+    directories.sort_by_key(|directory| std::cmp::Reverse(directory.relative.components().count()));
+    for directory in directories {
+        apply_deferred_rootfs_directory(rootfs, directory)?;
     }
     Ok(())
 }
@@ -3263,12 +4689,7 @@ fn install_guest_asset(rootfs: &Path, relative: &Path, contents: &[u8], mode: u3
         .with_context(|| format!("syncing guest asset {}", destination.display()))
 }
 
-fn start(
-    paths: &WbPaths,
-    name: &str,
-    detach: bool,
-    appimage_lease: Option<&AppImageRuntimeLease>,
-) -> Result<()> {
+fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
     let machine_dir = require_machine(paths, name)?;
     let _config = MachineConfig::load(&machine_dir)?;
 
@@ -3345,9 +4766,6 @@ fn start(
         .arg(&machine_dir)
         .arg("--shared")
         .arg(paths.shared());
-    if let Some(lease) = appimage_lease {
-        lease.pass_to(&mut command);
-    }
     if detach {
         command
             .arg("--detach")
@@ -3505,12 +4923,13 @@ fn run_guest_asset_helper(
     let id_map = IdMap::discover()?;
     let resources = ResourceLocator::discover()?;
     let unshare = resources.helper_or_path("unshare")?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
     let launcher = std::env::current_exe().context("locating guest asset helper")?;
-    let mut command = Command::new(&unshare);
+    let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
     command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg(&launcher)
         .arg(internal_command)
         .arg("--rootfs")
@@ -3519,7 +4938,7 @@ fn run_guest_asset_helper(
     command.status().with_context(|| {
         format!(
             "starting rootless guest asset helper through {}",
-            unshare.display()
+            namespace_program.display()
         )
     })
 }
@@ -3531,12 +4950,13 @@ fn run_guest_runtime_rollback_helper(
     let id_map = IdMap::discover()?;
     let resources = ResourceLocator::discover()?;
     let unshare = resources.helper_or_path("unshare")?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
     let launcher = std::env::current_exe().context("locating guest runtime rollback helper")?;
-    let mut command = Command::new(&unshare);
+    let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
     let status = command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg(&launcher)
         .arg("__rollback-guest-runtime")
         .arg("--rootfs")
@@ -3550,7 +4970,7 @@ fn run_guest_runtime_rollback_helper(
         .with_context(|| {
             format!(
                 "starting rootless guest runtime rollback through {}",
-                unshare.display()
+                namespace_program.display()
             )
         })?;
     if !status.success() {
@@ -4194,7 +5614,7 @@ fn doctor() -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "unsupported host: required Wild Buzzard facilities are unavailable: {}",
+            "unsupported host: required Buzzard OS facilities are unavailable: {}",
             missing_required.join(", ")
         )
     }
@@ -4223,10 +5643,13 @@ fn subordinate_mapping_available(resources: &ResourceLocator) -> bool {
     let Ok(id_map) = IdMap::discover() else {
         return false;
     };
-    let mut command = Command::new(unshare);
+    let Ok(namespace_program) = id_map.namespace_program(&unshare) else {
+        return false;
+    };
+    let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     command
-        .args(id_map.unshare_args())
+        .args(id_map.namespace_args())
         .arg("/bin/true")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -5079,8 +6502,7 @@ mod layer_tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("download and extract the full Wild Buzzard portable bundle"));
-        assert!(error.contains("--image IMAGE_REFERENCE"));
+        assert!(error.contains("app/runtime/default-rootfs.oci.tar.zst is missing"));
         assert!(!paths.machine("seedless").exists());
     }
 
@@ -5764,6 +7186,37 @@ mod layer_tests {
     }
 
     #[test]
+    fn failed_machine_import_staging_cleanup_is_confined_to_the_machine_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let machines = temp.path().join("Machines");
+        let staging = machines.join(".roundtrip-importing-EMwCQb");
+        fs::create_dir(&machines).unwrap();
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("partial"), b"partial import").unwrap();
+
+        remove_machine_staging_tree(&staging, &machines).unwrap();
+
+        assert!(!staging.exists());
+        assert!(machines.is_dir());
+    }
+
+    #[test]
+    fn local_oci_source_reference_never_persists_its_absolute_directory() {
+        assert_eq!(
+            local_oci_source_reference(Path::new("/host/Downloads/machine.oci.tar.zst")),
+            "oci-import:machine.oci.tar.zst"
+        );
+        assert_eq!(
+            local_oci_source_reference(Path::new("machine-layout")),
+            "oci-import:machine-layout"
+        );
+        assert_eq!(
+            local_oci_source_reference(Path::new("/")),
+            "oci-import:local-oci"
+        );
+    }
+
+    #[test]
     fn failed_machine_staging_cleanup_rejects_unrelated_paths() {
         let temp = tempfile::tempdir().unwrap();
         let machines = temp.path().join("vm");
@@ -5773,7 +7226,293 @@ mod layer_tests {
 
         let error = remove_machine_staging_tree(&unrelated, &machines).unwrap_err();
 
-        assert!(error.to_string().contains("not a machine creation staging"));
+        assert!(
+            error
+                .to_string()
+                .contains("not a machine create/import staging")
+        );
         assert!(unrelated.is_dir());
+    }
+
+    #[test]
+    fn export_staging_cleanup_is_confined_to_the_portable_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let staging = cache.join("oci-export-Ab19zQ");
+        fs::create_dir_all(staging.join("layout/blobs/sha256")).unwrap();
+        fs::write(staging.join("layout/index.json"), b"partial export").unwrap();
+
+        remove_export_staging_tree(&staging, &cache).unwrap();
+
+        assert!(!staging.exists());
+        assert!(cache.is_dir());
+    }
+
+    #[test]
+    fn export_staging_cleanup_rejects_unrelated_cache_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let unrelated = cache.join("important-data");
+        fs::create_dir_all(&unrelated).unwrap();
+
+        let error = remove_export_staging_tree(&unrelated, &cache).unwrap_err();
+
+        assert!(error.to_string().contains("not an OCI export staging"));
+        assert!(unrelated.is_dir());
+    }
+
+    #[test]
+    fn export_staging_cleanup_rejects_valid_name_outside_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let outside = temp.path().join("outside");
+        let staging = outside.join("oci-export-Ab19zQ");
+        fs::create_dir(&cache).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(&staging).unwrap();
+
+        let error = remove_export_staging_tree(&staging, &cache).unwrap_err();
+
+        assert!(error.to_string().contains("outside the expected cache"));
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn oci_export_round_trip_preserves_files_links_xattrs_and_machine_annotation() {
+        let temp = tempfile::tempdir().unwrap();
+        let machine = temp.path().join("machine");
+        let rootfs = machine.join("rootfs");
+        let work = temp.path().join("work");
+        fs::create_dir_all(rootfs.join("opt/data")).unwrap();
+        for ephemeral in ["proc", "sys", "dev", "run", "tmp", "shared"] {
+            fs::create_dir_all(rootfs.join(ephemeral)).unwrap();
+            fs::write(rootfs.join(ephemeral).join("must-not-export"), ephemeral).unwrap();
+        }
+        fs::create_dir(&work).unwrap();
+        fs::write(rootfs.join("opt/data/original"), b"portable state").unwrap();
+        fs::hard_link(
+            rootfs.join("opt/data/original"),
+            rootfs.join("opt/data/hardlink"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("original", rootfs.join("opt/data/symlink")).unwrap();
+        fs::set_permissions(rootfs.join("opt/data"), fs::Permissions::from_mode(0o2750)).unwrap();
+        set_link_mtime(
+            &rootfs.join("opt/data/original"),
+            (1_700_000_001, 234_567_890),
+        )
+        .unwrap();
+        set_link_mtime(&rootfs.join("opt/data"), (1_700_000_000, 123_456_789)).unwrap();
+        let xattr_name = c"user.buzzardos";
+        let xattr_value = b"kept";
+        let xattr_path =
+            CString::new(rootfs.join("opt/data/original").as_os_str().as_bytes()).unwrap();
+        let result = unsafe {
+            libc::setxattr(
+                xattr_path.as_ptr(),
+                xattr_name.as_ptr(),
+                xattr_value.as_ptr().cast(),
+                xattr_value.len(),
+                0,
+            )
+        };
+        if result != 0 {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENOTSUP)
+            );
+        }
+        let acl_name = c"system.posix_acl_access";
+        let mut acl_value = Vec::new();
+        acl_value.extend_from_slice(&2_u32.to_ne_bytes());
+        for (tag, permissions, id) in [
+            (0x01_u16, 0x07_u16, u32::MAX),
+            (0x02_u16, 0x05_u16, 1234_u32),
+            (0x04_u16, 0x05_u16, u32::MAX),
+            (0x10_u16, 0x05_u16, u32::MAX),
+            (0x20_u16, 0x00_u16, u32::MAX),
+        ] {
+            acl_value.extend_from_slice(&tag.to_ne_bytes());
+            acl_value.extend_from_slice(&permissions.to_ne_bytes());
+            acl_value.extend_from_slice(&id.to_ne_bytes());
+        }
+        let acl_path = CString::new(rootfs.join("opt/data").as_os_str().as_bytes()).unwrap();
+        let acl_result = unsafe {
+            libc::setxattr(
+                acl_path.as_ptr(),
+                acl_name.as_ptr(),
+                acl_value.as_ptr().cast(),
+                acl_value.len(),
+                0,
+            )
+        };
+        if acl_result != 0 {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENOTSUP)
+            );
+        }
+        let config = MachineConfig::new(
+            "source".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(&machine).unwrap();
+        let output = temp.path().join("machine.oci.tar.zst");
+        File::create(&output).unwrap();
+        export_oci_archive(&rootfs, &machine.join(MachineConfig::FILE), &output, &work).unwrap();
+
+        let extracted = temp.path().join("layout");
+        fs::create_dir(&extracted).unwrap();
+        extract_oci_archive(&output, &extracted).unwrap();
+        let layout = canonical_oci_layout(&extracted).unwrap();
+        let index = read_oci_index(&layout).unwrap();
+        let descriptor = resolve_oci_manifest_descriptor(&layout, &index, None).unwrap();
+        let portable = portable_config_from_manifest(&layout, &descriptor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(portable.id, config.id);
+        assert_eq!(portable.name, config.name);
+
+        let manifest: OciManifest =
+            serde_json::from_slice(&read_verified_blob(&layout, &descriptor).unwrap()).unwrap();
+        let expanded_layer = temp.path().join("layer.tar");
+        decompress_layer(
+            &verified_blob_path(&layout, &manifest.layers[0]).unwrap(),
+            &expanded_layer,
+        )
+        .unwrap();
+        let restored = temp.path().join("restored");
+        fs::create_dir(&restored).unwrap();
+        apply_layer(&expanded_layer, &restored).unwrap();
+        assert_eq!(
+            fs::read(restored.join("opt/data/original")).unwrap(),
+            b"portable state"
+        );
+        assert_eq!(
+            fs::metadata(restored.join("opt/data/original"))
+                .unwrap()
+                .ino(),
+            fs::metadata(restored.join("opt/data/hardlink"))
+                .unwrap()
+                .ino()
+        );
+        assert_eq!(
+            fs::read_link(restored.join("opt/data/symlink")).unwrap(),
+            Path::new("original")
+        );
+        let restored_file = fs::symlink_metadata(restored.join("opt/data/original")).unwrap();
+        assert_eq!(restored_file.mtime(), 1_700_000_001);
+        assert_eq!(restored_file.mtime_nsec(), 234_567_890);
+        let restored_directory = fs::symlink_metadata(restored.join("opt/data")).unwrap();
+        assert_eq!(restored_directory.mtime(), 1_700_000_000);
+        assert_eq!(restored_directory.mtime_nsec(), 123_456_789);
+        assert_eq!(restored_directory.permissions().mode() & 0o7000, 0o2000);
+        for ephemeral in ["proc", "sys", "dev", "run", "tmp", "shared"] {
+            assert!(restored.join(ephemeral).is_dir());
+            assert!(!restored.join(ephemeral).join("must-not-export").exists());
+        }
+        if result == 0 {
+            let restored_path =
+                CString::new(restored.join("opt/data/original").as_os_str().as_bytes()).unwrap();
+            let mut buffer = [0_u8; 16];
+            let length = unsafe {
+                libc::getxattr(
+                    restored_path.as_ptr(),
+                    xattr_name.as_ptr(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                )
+            };
+            assert_eq!(&buffer[..length as usize], xattr_value);
+        }
+        if acl_result == 0 {
+            let restored_path =
+                CString::new(restored.join("opt/data").as_os_str().as_bytes()).unwrap();
+            let mut buffer = [0_u8; 128];
+            let length = unsafe {
+                libc::getxattr(
+                    restored_path.as_ptr(),
+                    acl_name.as_ptr(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                )
+            };
+            assert_eq!(&buffer[..length as usize], acl_value.as_slice());
+        }
+    }
+
+    #[test]
+    fn oci_index_requires_explicit_selection_when_multiple_host_images_match() {
+        let descriptor = |digest: &str, name: &str| OciDescriptor {
+            digest: digest.into(),
+            size: 1,
+            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            platform: Some(OciPlatform {
+                os: "linux".into(),
+                architecture: host_oci_architecture().unwrap().into(),
+            }),
+            annotations: BTreeMap::from([(OCI_REF_NAME_ANNOTATION.into(), name.into())]),
+        };
+        let descriptors = vec![
+            descriptor(&format!("sha256:{}", "1".repeat(64)), "one"),
+            descriptor(&format!("sha256:{}", "2".repeat(64)), "two"),
+        ];
+        assert!(select_oci_descriptor(&descriptors, None).is_err());
+        assert_eq!(
+            select_oci_descriptor(&descriptors, Some("two"))
+                .unwrap()
+                .annotations[OCI_REF_NAME_ANNOTATION],
+            "two"
+        );
+    }
+
+    #[test]
+    fn nested_oci_selector_can_name_outer_reference_or_inner_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let blob_dir = temp.path().join("blobs/sha256");
+        fs::create_dir_all(&blob_dir).unwrap();
+        let manifest = OciDescriptor {
+            digest: format!("sha256:{}", "3".repeat(64)),
+            size: 123,
+            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            platform: Some(OciPlatform {
+                os: "linux".into(),
+                architecture: host_oci_architecture().unwrap().into(),
+            }),
+            annotations: BTreeMap::new(),
+        };
+        let nested = OciIndex {
+            schema_version: 2,
+            manifests: vec![manifest.clone()],
+        };
+        let mut nested_descriptor = write_json_blob(
+            &blob_dir,
+            "application/vnd.oci.image.index.v1+json",
+            &nested,
+        )
+        .unwrap();
+        nested_descriptor
+            .annotations
+            .insert(OCI_REF_NAME_ANNOTATION.into(), "portable-reference".into());
+        let outer = OciIndex {
+            schema_version: 2,
+            manifests: vec![nested_descriptor],
+        };
+
+        assert_eq!(
+            resolve_oci_manifest_descriptor(temp.path(), &outer, Some("portable-reference"))
+                .unwrap()
+                .digest,
+            manifest.digest
+        );
+        assert_eq!(
+            resolve_oci_manifest_descriptor(temp.path(), &outer, Some(&manifest.digest))
+                .unwrap()
+                .digest,
+            manifest.digest
+        );
     }
 }

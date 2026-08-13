@@ -234,7 +234,7 @@ fn default_height() -> u32 {
 }
 
 fn default_title() -> String {
-    "Wild Buzzard".into()
+    "Buzzard OS".into()
 }
 
 fn default_gpus() -> Vec<String> {

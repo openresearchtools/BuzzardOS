@@ -7,7 +7,8 @@ project_dir=$(CDPATH= cd -- "$oci_dir/.." && pwd)
 task_uid=$(id -u)
 build_root=${WILDBUZZARD_BUILD_ROOT:-"${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid"}
 output_dir=${WILDBUZZARD_OCI_OUTPUT_DIR:-"$build_root/oci"}
-image=${WILDBUZZARD_OCI_TAG:-wildbuzzard-desktop:local}
+image=${WILDBUZZARD_OCI_TAG:-buzzardos-desktop:local}
+container_engine=${BUZZARDOS_CONTAINER_ENGINE:-auto}
 output_dir=$(realpath -m -- "$output_dir")
 case "$output_dir/" in
     "$project_dir/"*)
@@ -16,23 +17,42 @@ case "$output_dir/" in
         ;;
 esac
 
-for command_name in docker gzip id realpath sha256sum; do
+if [[ "$container_engine" == auto ]]; then
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        container_engine=docker
+    elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+        container_engine=podman
+    else
+        echo 'no usable local Docker or Podman build engine is available' >&2
+        exit 1
+    fi
+fi
+case "$container_engine" in
+    docker|podman) ;;
+    *) echo "BUZZARDOS_CONTAINER_ENGINE must be auto, docker, or podman" >&2; exit 2 ;;
+esac
+for command_name in "$container_engine" id realpath sha256sum; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "local OCI build dependency missing: $command_name" >&2
         exit 1
     }
 done
-docker info >/dev/null
+"$container_engine" info >/dev/null
 mkdir -p "$output_dir"
 
-export WILDBUZZARD_OCI_TAG=$image
-docker compose --project-directory "$project_dir" \
-    -f "$oci_dir/compose.yaml" \
-    build desktop
-"$oci_dir/verify-image.sh" "$image"
+if [[ "$container_engine" == docker ]]; then
+    export WILDBUZZARD_OCI_TAG=$image
+    docker compose --project-directory "$project_dir" \
+        -f "$oci_dir/compose.yaml" \
+        build desktop
+else
+    podman build --tag "$image" \
+        --file "$oci_dir/desktop/Containerfile" "$project_dir"
+fi
+BUZZARDOS_CONTAINER_ENGINE="$container_engine" "$oci_dir/verify-image.sh" "$image"
 
-unpacked_size=$(docker image inspect --format '{{.Size}}' "$image")
-image_id=$(docker image inspect --format '{{.Id}}' "$image")
+unpacked_size=$("$container_engine" image inspect --format '{{.Size}}' "$image")
+image_id=$("$container_engine" image inspect --format '{{.Id}}' "$image")
 printf '%s\n' "$unpacked_size" >"$output_dir/image-size.bytes"
 printf '%s\n' "$image_id" >"$output_dir/image-id.txt"
 
@@ -41,7 +61,7 @@ cleanup_inventory() {
     rm -f -- "$package_inventory"
 }
 trap cleanup_inventory EXIT
-docker run --rm --entrypoint /usr/bin/dpkg-query "$image" \
+"$container_engine" run --rm --entrypoint /usr/bin/dpkg-query "$image" \
     --show \
     '--showformat=${binary:Package}\t${Version}\n' |
     LC_ALL=C sort >"$package_inventory"
@@ -54,10 +74,18 @@ printf 'Recorded image identity and installed package inventory under %s\n' \
     "$output_dir"
 
 if [[ ${WILDBUZZARD_EXPORT_ARCHIVE:-0} == 1 ]]; then
-    archive="$output_dir/wildbuzzard-desktop-amd64.docker.tar.gz"
+    archive="$output_dir/buzzardos-desktop-amd64.oci.tar"
     temporary="$archive.tmp"
     trap 'rm -f -- "$temporary"' EXIT
-    docker save "$image" | gzip -n -9 >"$temporary"
+    if [[ "$container_engine" == podman ]]; then
+        podman save --quiet --format oci-archive --output "$temporary" "$image"
+    else
+        command -v skopeo >/dev/null 2>&1 || {
+            echo 'OCI archive export with Docker requires skopeo' >&2
+            exit 1
+        }
+        skopeo copy "docker-daemon:$image" "oci-archive:$temporary:buzzardos-desktop"
+    fi
     mv -f -- "$temporary" "$archive"
     sha256sum "$archive" >"$archive.sha256"
     stat -c '%s' "$archive" >"$output_dir/archive-size.bytes"

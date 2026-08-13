@@ -1,15 +1,15 @@
 # Guest rootfs notices and provenance
 
 This directory is the guest/container distribution surface. It is deliberately
-separate from the native AppImage notice group.
+separate from the extracted host-application notice group.
 
 - `usr-share-doc/` is copied from the exact audited rootfs and contains the
-  Debian/NVIDIA package copyright and license files plus Wild Buzzard, Sway,
+  Debian/NVIDIA package copyright and license files plus Buzzard OS, Sway,
   wlroots, Rust, TryCua, MPL, and other bundled notices/source evidence.
 - `usr-share-common-licenses/` materializes Debian's common license texts
   referenced by package copyright records.
 - `project-source/` contains a checksum-addressed archive of the exact clean
-  Wild Buzzard Git commit used for the build.
+  Buzzard OS Git commit used for the build.
 - `../../provenance/guest-rootfs/` records base-image, Sway/wlroots, TryCua,
   package-inventory, source-OCI, and flattened-rootfs identities.
 

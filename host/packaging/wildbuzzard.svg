@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect x="24" y="24" width="208" height="208" rx="38" fill="#ff7139"/>
-  <rect x="58" y="67" width="140" height="105" rx="12" fill="#202225"/>
-  <rect x="70" y="79" width="116" height="81" rx="5" fill="#f4f1ec"/>
-  <path d="M103 185h50l9 18H94z" fill="#202225"/>
-</svg>

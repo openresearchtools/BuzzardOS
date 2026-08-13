@@ -71,11 +71,11 @@ pub(crate) struct Launch {
     pub(crate) sync_drm_device: Option<PathBuf>,
 
     /// Native host window title.
-    #[arg(long, default_value = "Wild Buzzard")]
+    #[arg(long, default_value = "Buzzard OS")]
     pub(crate) title: String,
 
     /// Native host application identifier.
-    #[arg(long, default_value = "org.openresearchtools.wildbuzzard")]
+    #[arg(long, default_value = "org.openresearchtools.buzzardos")]
     pub(crate) app_id: String,
 
     /// Test-only fractional scale override, in units of 1/120.

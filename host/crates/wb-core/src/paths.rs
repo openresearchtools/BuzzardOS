@@ -31,11 +31,11 @@ impl WbPaths {
     }
 
     pub fn machines(&self) -> PathBuf {
-        self.base.join("vm")
+        self.base.join("Machines")
     }
 
     pub fn cache(&self) -> PathBuf {
-        self.base.join("cache")
+        self.machines().join(".cache")
     }
 
     pub fn shared(&self) -> PathBuf {
@@ -64,18 +64,22 @@ impl WbPaths {
 }
 
 fn portable_base() -> Result<PathBuf> {
-    // APPIMAGE is the path the user launched. current_exe() points inside the
-    // transient /tmp/.mount_* filesystem and must not be used for persistence.
-    if let Some(appimage) = env::var_os("APPIMAGE") {
-        let path = PathBuf::from(appimage);
-        return path
-            .parent()
-            .map(Path::to_path_buf)
-            .context("APPIMAGE path has no parent directory");
+    // The top-level BuzzardOS executable pins the portable root explicitly.
+    // This avoids deriving durable state from the caller's current directory
+    // or from the dependency payload under app/.
+    if let Some(portable) = env::var_os("BUZZARDOS_PORTABLE_DIR") {
+        let path = PathBuf::from(portable);
+        if !path.is_absolute() {
+            bail!(
+                "BUZZARDOS_PORTABLE_DIR must be absolute: {}",
+                path.display()
+            );
+        }
+        return Ok(path);
     }
 
     // Development builds behave predictably from the directory in which they
-    // are launched. Packaged builds always take the APPIMAGE branch above.
+    // are launched. Packaged builds always take the explicit branch above.
     env::current_dir().context("determining portable storage directory")
 }
 
@@ -93,6 +97,13 @@ pub fn host_control_socket(machine_dir: &Path) -> Result<PathBuf> {
         bail!("XDG_RUNTIME_DIR must be absolute: {}", runtime.display());
     }
 
+    host_control_socket_in(&runtime, machine_dir)
+}
+
+fn host_control_socket_in(runtime: &Path, machine_dir: &Path) -> Result<PathBuf> {
+    if !runtime.is_absolute() {
+        bail!("runtime directory must be absolute: {}", runtime.display());
+    }
     let digest = Sha256::digest(machine_dir.as_os_str().as_bytes());
     let key = format!("{digest:x}");
     Ok(runtime
@@ -109,7 +120,7 @@ mod tests {
     fn portable_directories_cannot_be_symlinked_elsewhere() {
         let temp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        symlink(outside.path(), temp.path().join("vm")).unwrap();
+        symlink(outside.path(), temp.path().join("Machines")).unwrap();
         let paths = WbPaths {
             base: temp.path().to_path_buf(),
         };
@@ -144,16 +155,18 @@ mod tests {
 
     #[test]
     fn host_control_socket_stays_short_for_long_portable_paths() {
+        let runtime = Path::new("/tmp/buzzardos-test-runtime");
         let machine = PathBuf::from("/tmp")
             .join("very-long-portable-folder-name".repeat(12))
-            .join("vm/demo");
-        let socket = host_control_socket(&machine).unwrap();
+            .join("Machines/demo");
+        let socket = host_control_socket_in(runtime, &machine).unwrap();
 
         assert!(socket.as_os_str().as_bytes().len() < 108);
-        assert!(socket.starts_with(std::env::var_os("XDG_RUNTIME_DIR").unwrap()));
+        assert!(socket.starts_with(runtime));
         assert_ne!(
             socket,
-            host_control_socket(&PathBuf::from("/tmp/elsewhere/vm/demo")).unwrap()
+            host_control_socket_in(runtime, &PathBuf::from("/tmp/elsewhere/Machines/demo"))
+                .unwrap()
         );
     }
 
@@ -165,9 +178,10 @@ mod tests {
 
         assert!(relative.base().is_absolute());
         assert_eq!(relative.base(), absolute.base());
+        let runtime = Path::new("/tmp/buzzardos-test-runtime");
         assert_eq!(
-            host_control_socket(&relative.machine("demo")).unwrap(),
-            host_control_socket(&absolute.machine("demo")).unwrap()
+            host_control_socket_in(runtime, &relative.machine("demo")).unwrap(),
+            host_control_socket_in(runtime, &absolute.machine("demo")).unwrap()
         );
     }
 }

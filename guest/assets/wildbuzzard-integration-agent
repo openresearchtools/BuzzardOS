@@ -432,7 +432,7 @@ class IntegrationAgent:
         if name == "guest_audio_output":
             arguments = [
                 "pipewiresrc",
-                "client-name=Wild Buzzard Guest Audio",
+                "client-name=Buzzard OS Guest Audio",
                 "do-timestamp=true",
                 "stream-properties=props,stream.capture.sink=true,stream.monitor=true",
                 "!", "audioconvert", "!", "audioresample", "!",
@@ -445,7 +445,7 @@ class IntegrationAgent:
                 "tcpserversrc", "host=0.0.0.0", f"port={MICROPHONE_PORT}", "!",
                 "gdpdepay", "!", "pipewiresink", "mode=provide",
                 "async=false",
-                "client-name=Wild Buzzard Host Microphone",
+                "client-name=Buzzard OS Host Microphone",
                 "stream-properties=props,media.class=Audio/Source,node.name=wildbuzzard_host_microphone,node.description=Host_Microphone,node.virtual=true",
             ]
         else:
@@ -453,7 +453,7 @@ class IntegrationAgent:
                 "tcpserversrc", "host=0.0.0.0", f"port={CAMERA_PORT}", "!",
                 "gdpdepay", "!", "pipewiresink", "mode=provide",
                 "async=false",
-                "client-name=Wild Buzzard Host Camera",
+                "client-name=Buzzard OS Host Camera",
                 "stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=wildbuzzard_host_camera,node.description=Host_Camera,node.virtual=true",
             ]
         self.media_processes[name] = gst_process(arguments, name)

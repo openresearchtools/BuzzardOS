@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-mod appimage_lease;
 mod idmap;
 mod machine;
 mod media;
@@ -8,7 +7,6 @@ mod paths;
 mod resources;
 mod wayland;
 
-pub use appimage_lease::{APPIMAGE_LEASE_FD_ENV, AppImageRuntimeLease};
 pub use idmap::IdMap;
 pub use machine::{
     DisplayDiagnostics, IntegrationDiagnostics, IntegrationSettings, MachineConfig, MachineState,

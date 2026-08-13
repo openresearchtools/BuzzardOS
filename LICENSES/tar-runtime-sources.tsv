@@ -1,0 +1,14 @@
+# package	filename	url	sha256
+tar	tar_1.34+dfsg-1+deb11u1.dsc	https://deb.debian.org/debian/pool/main/t/tar/tar_1.34+dfsg-1+deb11u1.dsc	9df5361d93936b77e7a51383ed369ad709cb12c6a4615ce9252360fb431804bc
+tar	tar_1.34+dfsg.orig.tar.xz	https://deb.debian.org/debian/pool/main/t/tar/tar_1.34+dfsg.orig.tar.xz	7d57029540cb928394defb3b377b3531237c947e795b51aa8acac0c5ba0e4844
+tar	tar_1.34+dfsg-1+deb11u1.debian.tar.xz	https://deb.debian.org/debian/pool/main/t/tar/tar_1.34+dfsg-1+deb11u1.debian.tar.xz	61ff8974dadd7dba4e6a09e6db193a77f0a0a17b681b4d188d4f1569bcf48449
+libacl1	acl_2.2.53-10.dsc	https://deb.debian.org/debian/pool/main/a/acl/acl_2.2.53-10.dsc	09204a89156b17a3603b2ce34b3c7b1a9fd7345086c787962188d95347918c59
+libacl1	acl_2.2.53.orig.tar.gz	https://deb.debian.org/debian/pool/main/a/acl/acl_2.2.53.orig.tar.gz	06be9865c6f418d851ff4494e12406568353b891ffe1f596b34693c387af26c7
+libacl1	acl_2.2.53.orig.tar.gz.asc	https://deb.debian.org/debian/pool/main/a/acl/acl_2.2.53.orig.tar.gz.asc	06849bece0b56a6a7269173abe101cff223bb9346d74027a3cd5ff80914abf4b
+libacl1	acl_2.2.53-10.debian.tar.xz	https://deb.debian.org/debian/pool/main/a/acl/acl_2.2.53-10.debian.tar.xz	6b83a626aa383334b64666181642c7c13e44a6fe65486d0aaa34bd8de6d58b20
+libselinux1	libselinux_3.1-3.dsc	https://deb.debian.org/debian/pool/main/libs/libselinux/libselinux_3.1-3.dsc	42810484f3776af09a2e0ab726e3be877fc8a54d6bf51702e46c22f945ab5177
+libselinux1	libselinux_3.1.orig.tar.gz	https://deb.debian.org/debian/pool/main/libs/libselinux/libselinux_3.1.orig.tar.gz	ea5dcbb4d859e3f999c26a13c630da2f16dff9462e3cc8cb7b458ac157d112e7
+libselinux1	libselinux_3.1-3.debian.tar.xz	https://deb.debian.org/debian/pool/main/libs/libselinux/libselinux_3.1-3.debian.tar.xz	7170ab6914f0d2e93de169da312df961f799f5d58cc0a4c552e3f8a7882f3c81
+libpcre2-8-0	pcre2_10.36-2+deb11u1.dsc	https://deb.debian.org/debian/pool/main/p/pcre2/pcre2_10.36-2+deb11u1.dsc	9a1b7f2d20d539f4be97d07c92a980e339ae36087ca1cd51177345b37a2ec3a9
+libpcre2-8-0	pcre2_10.36.orig.tar.gz	https://deb.debian.org/debian/pool/main/p/pcre2/pcre2_10.36.orig.tar.gz	b95ddb9414f91a967a887d69617059fb672b914f56fa3d613812c1ee8e8a1a37
+libpcre2-8-0	pcre2_10.36-2+deb11u1.diff.gz	https://deb.debian.org/debian/pool/main/p/pcre2/pcre2_10.36-2+deb11u1.diff.gz	1172d8b80fa7c13c3eb571a1163babe5052f6b4586329e817ccba9759046da01

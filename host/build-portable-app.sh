@@ -6,11 +6,11 @@ host_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(CDPATH= cd -- "$host_dir/.." && pwd)
 task_uid=$(id -u)
 build_root=${WILDBUZZARD_BUILD_ROOT:-"${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid"}
-build_dir=${WILDBUZZARD_BUILD_DIR:-"$build_root/appimage"}
-appdir="$build_dir/WildBuzzard.AppDir"
+build_dir=${WILDBUZZARD_BUILD_DIR:-"$build_root/portable-app"}
+appdir="$build_dir/BuzzardOS.app"
 tools_dir="$build_dir/tools"
 output_dir=${WILDBUZZARD_OUTPUT_DIR:-"$build_root/out"}
-final_output="$output_dir/WildBuzzard-x86_64.AppImage"
+final_output="$output_dir/app"
 gtk_sdk=${WILDBUZZARD_GTK_SDK:-"$build_root/gtk-sdk"}
 gtk_sdk_pkgconfig="$gtk_sdk/usr/lib/x86_64-linux-gnu/pkgconfig"
 gtk_sdk_lib="$gtk_sdk/usr/lib/x86_64-linux-gnu"
@@ -24,11 +24,20 @@ crane_sha256=59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67
 slirp_package_version=1.3.3-1
 slirp_deb_sha256=dda3ca5101c58e9585bfd6e7b9d26831090327120cfb5092172ead355f968dd4
 slirp_binary_sha256=20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325
+tar_package_version=1.34+dfsg-1+deb11u1
+tar_deb_sha256=41c9c31f67a76b3532036f09ceac1f40a9224f1680395d120a8b24eae60dd54a
+tar_binary_sha256=8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38
+tar_libacl_version=2.2.53-10
+tar_libacl_deb_sha256=aa18d721be8aea50fbdb32cd9a319cb18a3f111ea6ad17399aa4ba9324c8e26a
+tar_libacl_sha256=f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee
+tar_libselinux_version=3.1-3
+tar_libselinux_deb_sha256=339f5ede10500c16dd7192d73169c31c4b27ab12130347275f23044ec8c7d897
+tar_libselinux_sha256=1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16
+tar_libpcre2_version=10.36-2+deb11u1
+tar_libpcre2_deb_sha256=ee192c8d22624eb9d0a2ae95056bad7fb371e5abc17e23e16b1de3ddb17a1064
+tar_libpcre2_sha256=bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e
 linuxdeploy_version=1-alpha-20251107-1
 linuxdeploy_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
-appimage_runtime_sha256=a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6
-appimage_runtime_relink_manifest_sha256=a956b20085c7ff0b0019a531e51db3dfdf174f6fa9c0c4183baba2c93a0dd772
-appimage_runtime_metadata_sha256=b2182090c84f5cab0b6345d447d54bc39cb31dd348d32b24b90eb8b2c7de55db
 zig_version=0.14.1
 zig_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c
 cargo_zigbuild_version=0.21.8
@@ -41,7 +50,7 @@ nvidia_container_library_sha256=d73bb582af893135198ef81cb22135c790a75d2ad7291044
 case "$(uname -m)" in
     x86_64) ;;
     *)
-        echo "AppImage packaging currently supports x86_64" >&2
+        echo "Buzzard OS portable packaging currently supports x86_64" >&2
         exit 1
         ;;
 esac
@@ -69,9 +78,9 @@ output_dir=$(realpath -m -- "$output_dir")
 gtk_sdk=$(realpath -m -- "$gtk_sdk")
 gtk_sdk_pkgconfig="$gtk_sdk/usr/lib/x86_64-linux-gnu/pkgconfig"
 gtk_sdk_lib="$gtk_sdk/usr/lib/x86_64-linux-gnu"
-appdir="$build_dir/WildBuzzard.AppDir"
+appdir="$build_dir/BuzzardOS.app"
 tools_dir="$build_dir/tools"
-final_output="$output_dir/WildBuzzard-x86_64.AppImage"
+final_output="$output_dir/app"
 host_target_dir="$build_dir/cargo-host"
 guest_target_dir="$build_dir/cargo-guest"
 cua_target_dir="$build_dir/cargo-cua"
@@ -320,7 +329,6 @@ stage_release_license_payload() {
     local mpl_destination="$appdir/usr/share/doc/wildbuzzard/sources/mpl"
     local go_destination="$appdir/usr/share/doc/wildbuzzard/sources/go"
     local slirp_destination="$appdir/usr/share/doc/wildbuzzard/sources/slirp4netns"
-    local runtime_destination="$appdir/usr/share/doc/wildbuzzard/sources/appimage-runtime"
     local project_destination="$appdir/usr/share/doc/wildbuzzard/sources/project"
 
     # Snapshot licensing inputs only after linuxdeploy has finished mutating the
@@ -331,7 +339,6 @@ stage_release_license_payload() {
         "$mpl_destination" \
         "$go_destination" \
         "$slirp_destination" \
-        "$runtime_destination" \
         "$project_destination"
     install -d -m755 \
         "$appdir/usr/share/doc/wildbuzzard" \
@@ -341,8 +348,6 @@ stage_release_license_payload() {
         "$mpl_destination" \
         "$go_destination" \
         "$slirp_destination" \
-        "$runtime_destination" \
-        "$runtime_destination/relink-kit" \
         "$project_destination"
     install -m644 "$project_dir/LICENSE" \
         "$appdir/usr/share/doc/wildbuzzard/LICENSE"
@@ -367,10 +372,6 @@ stage_release_license_payload() {
     WILDBUZZARD_SLIRP_SOURCE_MANIFEST="$license_destination/slirp4netns-sources.tsv" \
     WILDBUZZARD_SLIRP_SOURCE_CACHE="$tools_dir/slirp-source-cache" \
         "$project_dir/tools/fetch-slirp4netns-sources.sh" "$slirp_destination"
-
-    cp -a "$appimage_runtime_relink_kit/." "$runtime_destination/relink-kit/"
-    install -m644 "$appimage_runtime_metadata" \
-        "$runtime_destination/runtime-metadata.toml"
 
     rm -rf -- "$build_dir/project-source"
     "$project_dir/tools/create-project-source-archive.sh" \
@@ -402,12 +403,6 @@ mkdir -p \
     "$appdir/usr/libexec/wildbuzzard" \
     "$tools_dir" \
     "$output_dir"
-staged_output=$(mktemp "$output_dir/.WildBuzzard-x86_64.AppImage.XXXXXX")
-cleanup_staged_output() {
-    rm -f -- "$staged_output"
-}
-trap cleanup_staged_output EXIT
-
 PKG_CONFIG_PATH="$cargo_pkg_config_path" \
 RUSTFLAGS="$cargo_rustflags" \
 CARGO_TARGET_DIR="$host_target_dir" \
@@ -433,30 +428,6 @@ if [[ ! -x "$zig_dir/zig" ]]; then
     mv "$zig_extract/zig-x86_64-linux-$zig_version" "$zig_dir"
     rmdir "$zig_extract"
 fi
-
-# Build the Type-2 runtime from the exact audited source set. The resulting
-# static PIE and its LGPL relink kit are deterministic and independent of the
-# build host's libc, GCC, and mutable distribution package repository.
-appimage_runtime_output="$build_dir/appimage-runtime-output"
-appimage_runtime_build="$build_dir/appimage-runtime-build"
-appimage_runtime_source_cache="$tools_dir/appimage-runtime-sources"
-"$project_dir/tools/build-appimage-runtime.sh" \
-    --zig "$zig_dir/zig" \
-    --zig-archive "$zig_archive" \
-    --source-cache "$appimage_runtime_source_cache" \
-    --build-dir "$appimage_runtime_build" \
-    --output-dir "$appimage_runtime_output" \
-    --self-test
-appimage_runtime="$appimage_runtime_output/runtime-x86_64"
-appimage_runtime_relink_kit="$appimage_runtime_output/relink-kit"
-appimage_runtime_metadata="$appimage_runtime_output/runtime-metadata.toml"
-printf '%s  %s\n' "$appimage_runtime_sha256" "$appimage_runtime" | sha256sum --check -
-printf '%s  %s\n' \
-    "$appimage_runtime_relink_manifest_sha256" \
-    "$appimage_runtime_relink_kit/BUILD-INPUTS.sha256" | sha256sum --check -
-printf '%s  %s\n' \
-    "$appimage_runtime_metadata_sha256" \
-    "$appimage_runtime_metadata" | sha256sum --check -
 
 cargo_zigbuild_root="$tools_dir/cargo-zigbuild-$cargo_zigbuild_version"
 if [[ ! -x "$cargo_zigbuild_root/bin/cargo-zigbuild" ]]; then
@@ -566,7 +537,7 @@ if [[ -n "$maximum_glibc" ]] &&
 fi
 
 # The patched in-guest CUA driver is a managed guest asset. Building it into
-# the AppImage makes fixes available to both newly extracted and existing
+# the portable host application makes fixes available to both newly created and existing
 # persistent machines without downloading an unpinned binary at startup.
 PATH="$zig_dir:$cargo_zigbuild_root/bin:$PATH" \
 CARGO_TARGET_DIR="$cua_target_dir" \
@@ -595,6 +566,75 @@ install -m755 "$host_target_dir/release/wildbuzzard-broker" "$appdir/usr/bin/wil
 install -m755 "$host_target_dir/release/wildbuzzard-display" "$appdir/usr/bin/wildbuzzard-display"
 install -m755 "$(command -v bwrap)" "$appdir/usr/libexec/wildbuzzard/bwrap"
 install -m755 "$(command -v unshare)" "$appdir/usr/libexec/wildbuzzard/unshare"
+
+# Export must work on the oldest supported glibc rather than inheriting the
+# disposable builder's GNU tar ABI.  Keep tar and its three libraries in a
+# private closure so linuxdeploy cannot replace them with newer host copies.
+tar_packages="$tools_dir/tar-$tar_package_version"
+mkdir -p "$tar_packages"
+tar_deb="$tar_packages/tar_${tar_package_version}_amd64.deb"
+tar_libacl_deb="$tar_packages/libacl1_${tar_libacl_version}_amd64.deb"
+tar_libselinux_deb="$tar_packages/libselinux1_${tar_libselinux_version}_amd64.deb"
+tar_libpcre2_deb="$tar_packages/libpcre2-8-0_${tar_libpcre2_version}_amd64.deb"
+download_verified \
+    "https://deb.debian.org/debian/pool/main/t/tar/$(basename "$tar_deb")" \
+    "$tar_deb" \
+    "$tar_deb_sha256"
+download_verified \
+    "https://deb.debian.org/debian/pool/main/a/acl/$(basename "$tar_libacl_deb")" \
+    "$tar_libacl_deb" \
+    "$tar_libacl_deb_sha256"
+download_verified \
+    "https://deb.debian.org/debian/pool/main/libs/libselinux/$(basename "$tar_libselinux_deb")" \
+    "$tar_libselinux_deb" \
+    "$tar_libselinux_deb_sha256"
+download_verified \
+    "https://deb.debian.org/debian/pool/main/p/pcre2/$(basename "$tar_libpcre2_deb")" \
+    "$tar_libpcre2_deb" \
+    "$tar_libpcre2_deb_sha256"
+tar_extract=$(mktemp -d "$build_dir/tar-runtime-extract.XXXXXX")
+for tar_component in tar libacl1 libselinux1 libpcre2-8-0; do
+    dpkg-deb --extract "$tar_packages/$tar_component"*.deb "$tar_extract/$tar_component"
+done
+tar_runtime_dir="$appdir/usr/libexec/wildbuzzard"
+tar_library_dir="$tar_runtime_dir/tar-libs"
+install -d -m755 "$tar_library_dir"
+install -m755 "$tar_extract/tar/bin/tar" "$tar_runtime_dir/tar.real"
+install -m755 "$host_dir/packaging/buzzardos-tar" "$tar_runtime_dir/tar"
+install -m755 \
+    "$(readlink -f "$tar_extract/libacl1/usr/lib/x86_64-linux-gnu/libacl.so.1")" \
+    "$tar_library_dir/libacl.so.1"
+install -m755 \
+    "$(readlink -f "$tar_extract/libselinux1/lib/x86_64-linux-gnu/libselinux.so.1")" \
+    "$tar_library_dir/libselinux.so.1"
+install -m755 \
+    "$(readlink -f "$tar_extract/libpcre2-8-0/usr/lib/x86_64-linux-gnu/libpcre2-8.so.0")" \
+    "$tar_library_dir/libpcre2-8.so.0"
+printf '%s  %s\n' "$tar_binary_sha256" "$tar_runtime_dir/tar.real" | sha256sum --check --status
+printf '%s  %s\n' "$tar_libacl_sha256" "$tar_library_dir/libacl.so.1" | sha256sum --check --status
+printf '%s  %s\n' "$tar_libselinux_sha256" "$tar_library_dir/libselinux.so.1" | sha256sum --check --status
+printf '%s  %s\n' "$tar_libpcre2_sha256" "$tar_library_dir/libpcre2-8.so.0" | sha256sum --check --status
+for tar_component in tar libacl1 libselinux1 libpcre2-8-0; do
+    install -d -m755 "$appdir/usr/share/doc/wildbuzzard/tar-runtime/$tar_component"
+    install -m644 "$tar_extract/$tar_component/usr/share/doc/$tar_component/copyright" \
+        "$appdir/usr/share/doc/wildbuzzard/tar-runtime/$tar_component/copyright"
+done
+tar_source_cache="$tar_packages/sources"
+tar_source_destination="$appdir/usr/share/doc/wildbuzzard/sources/tar-runtime"
+install -d -m755 "$tar_source_cache" "$tar_source_destination"
+while IFS=$'\t' read -r source_package filename url checksum; do
+    [[ -n "$source_package" && "${source_package:0:1}" != '#' ]] || continue
+    [[ "$filename" != */* && "$filename" != .* ]] || {
+        echo "unsafe tar runtime source filename: $filename" >&2
+        exit 1
+    }
+    download_verified "$url" "$tar_source_cache/$filename" "$checksum"
+    install -m644 "$tar_source_cache/$filename" "$tar_source_destination/$filename"
+done < "$project_dir/LICENSES/tar-runtime-sources.tsv"
+awk -F '\t' '!/^#/ && NF == 4 {print $4 "  " $2}' \
+    "$project_dir/LICENSES/tar-runtime-sources.tsv" \
+    > "$tar_source_destination/SHA256SUMS"
+rm -rf -- "$tar_extract"
 install -m755 "$(command -v gst-launch-1.0)" \
     "$appdir/usr/libexec/wildbuzzard/gst-launch-1.0"
 install -m755 "$(command -v pw-dump)" \
@@ -673,7 +713,6 @@ for package in \
     mkdir -p "$appdir/usr/share/doc/$package"
     install -m644 "$copyright" "$appdir/usr/share/doc/$package/copyright"
 done
-
 crane_archive="$tools_dir/crane-$crane_version.tar.gz"
 download_verified \
     "https://github.com/google/go-containerregistry/releases/download/$crane_version/go-containerregistry_Linux_x86_64.tar.gz" \
@@ -754,16 +793,22 @@ rm -rf -- "$nvidia_extract"
 
 install -m755 "$host_dir/packaging/AppRun" "$appdir/AppRun"
 install -m644 \
-    "$host_dir/packaging/WildBuzzard.desktop" \
-    "$appdir/org.openresearchtools.wildbuzzard.desktop"
-install -m644 "$host_dir/packaging/wildbuzzard.svg" "$appdir/wildbuzzard.svg"
-mkdir -p "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/scalable/apps"
+    "$host_dir/packaging/BuzzardOS.desktop" \
+    "$appdir/org.openresearchtools.buzzardos.desktop"
+install -m644 "$host_dir/packaging/icons/buzzardos-512.png" "$appdir/buzzardos.png"
+mkdir -p "$appdir/usr/share/applications"
 mkdir -p "$appdir/usr/share/metainfo"
-cp "$appdir/org.openresearchtools.wildbuzzard.desktop" "$appdir/usr/share/applications/"
-cp "$appdir/wildbuzzard.svg" "$appdir/usr/share/icons/hicolor/scalable/apps/"
+cp "$appdir/org.openresearchtools.buzzardos.desktop" "$appdir/usr/share/applications/"
+for icon_size in 512 256 128 64 48 32; do
+    icon_dir="$appdir/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps"
+    mkdir -p "$icon_dir"
+    install -m644 \
+        "$host_dir/packaging/icons/buzzardos-${icon_size}.png" \
+        "$icon_dir/buzzardos.png"
+done
 install -m644 \
-    "$host_dir/packaging/org.openresearchtools.WildBuzzard.metainfo.xml" \
-    "$appdir/usr/share/metainfo/org.openresearchtools.wildbuzzard.appdata.xml"
+    "$host_dir/packaging/org.openresearchtools.BuzzardOS.metainfo.xml" \
+    "$appdir/usr/share/metainfo/org.openresearchtools.buzzardos.appdata.xml"
 linuxdeploy="$tools_dir/linuxdeploy-x86_64.AppImage"
 download_verified \
     "https://github.com/linuxdeploy/linuxdeploy/releases/download/$linuxdeploy_version/linuxdeploy-x86_64.AppImage" \
@@ -786,8 +831,8 @@ linuxdeploy_args=(
     --executable "$appdir/usr/libexec/wildbuzzard/nvidia-ctk" \
     --executable "$appdir/usr/libexec/wildbuzzard/nvidia-cdi-hook" \
     --executable "$appdir/usr/libexec/wildbuzzard/nvidia-container-cli" \
-    --desktop-file "$appdir/org.openresearchtools.wildbuzzard.desktop" \
-    --icon-file "$appdir/wildbuzzard.svg"
+    --desktop-file "$appdir/org.openresearchtools.buzzardos.desktop" \
+    --icon-file "$appdir/buzzardos.png"
 )
 for library in "${gst_plugin_sources[@]}" "${spa_plugin_sources[@]}"; do
     linuxdeploy_args+=(--library "$library")
@@ -816,7 +861,7 @@ fi
 
 # linuxdeploy intentionally treats libpipewire as a host integration library
 # and refuses to deploy it. Wild Buzzard's release contract is stricter: the
-# AppImage carries the client ABI while still connecting to the user's running
+# portable application carries the client ABI while still connecting to the user's running
 # host service. Install the pinned build-environment client library explicitly.
 install -m755 /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0 \
     "$appdir/usr/lib/libpipewire-0.3.so.0"
@@ -957,28 +1002,9 @@ python3 "$project_dir/tools/license_audit.py" \
     --stage-appdir-host-notices "$appdir"
 "$project_dir/tools/check-licenses.sh" --appdir "$appdir" --structural
 
-linuxdeploy_extract=$(mktemp -d "$build_dir/linuxdeploy-extract.XXXXXX")
-cleanup_linuxdeploy_extract() {
-    rm -rf -- "$linuxdeploy_extract"
-}
-trap 'cleanup_linuxdeploy_extract; cleanup_staged_output' EXIT
-(
-    cd "$linuxdeploy_extract"
-    "$linuxdeploy" --appimage-extract >/dev/null
-)
-appimagetool="$linuxdeploy_extract/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool"
-[[ -x "$appimagetool" ]] || {
-    echo "verified linuxdeploy bundle does not contain appimagetool" >&2
-    exit 1
-}
-ARCH=x86_64 "$appimagetool" \
-    --runtime-file "$appimage_runtime" \
-    "$appdir" \
-    "$staged_output"
-
-chmod 755 "$staged_output"
-mv -f -- "$staged_output" "$final_output"
-cleanup_linuxdeploy_extract
-trap - EXIT
-(cd "$output_dir" && sha256sum "$(basename "$final_output")") > "$final_output.sha256"
-printf 'Built %s\n' "$final_output"
+rm -rf -- "$final_output"
+mv -- "$appdir" "$final_output"
+find "$final_output" -type d -exec chmod 0755 {} +
+test -x "$final_output/AppRun"
+test -x "$final_output/usr/bin/wildbuzzard"
+printf 'Built dependency-complete portable application directory: %s\n' "$final_output"

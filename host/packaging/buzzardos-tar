@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+case $0 in
+    */*) helper_parent=${0%/*} ;;
+    *) helper_parent=. ;;
+esac
+helper_parent=$(CDPATH= cd -- "$helper_parent" && pwd)
+
+# Do not let the application's broader library path substitute newer build-host
+# libacl/libselinux copies into the pinned export helper.
+export LD_LIBRARY_PATH="$helper_parent/tar-libs"
+exec "$helper_parent/tar.real" "$@"

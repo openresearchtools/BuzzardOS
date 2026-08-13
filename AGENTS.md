@@ -1,4 +1,4 @@
-# Wild Buzzard: Authoritative Product Specification
+# Buzzard OS: Authoritative Product Specification
 
 This file is the source of truth for every contributor and coding agent working
 in this repository. Implementations, tests, documentation, packaging, and
@@ -11,8 +11,11 @@ those features must update that plan and this specification together.
 
 ## Product
 
-Wild Buzzard is a rootless, persistent Linux desktop-machine launcher
-distributed as one native AppImage.
+Buzzard OS is a rootless, persistent Linux desktop-machine launcher
+distributed as one extracted, relocatable application folder. The top-level
+`BuzzardOS` executable behaves like Blender's portable launcher: it resolves
+all bundled code from sibling `app/` and all durable data from sibling
+`Machines/` and `shared/`. It is not an AppImage and does not require FUSE.
 
 The complete portable download carries a digest-verified, already-flattened
 rootfs seed. First machine creation materializes that seed once into a flat
@@ -23,7 +26,7 @@ guest runs systemd as PID 1 and a complete desktop session. Stock Sway, using
 wlroots' nested Wayland backend, composites the entire guest desktop into
 exactly one native host Wayland window.
 
-Wild Buzzard is not an ephemeral application container:
+Buzzard OS is not an ephemeral application container:
 
 - The rootfs is a durable machine disk, not a disposable container layer.
 - Normal operation uses no overlay filesystem.
@@ -40,7 +43,7 @@ The source tree mirrors the three independently understandable deployment
 parts:
 
 ```text
-host/                 native host application and AppImage packaging
+host/                 native host application and portable-folder packaging
 guest/                guest shell, managed rootfs assets, and pinned CUA fork
 oci/                  local Debian OCI assembly consuming guest outputs
 tests/acceptance/     hardware/session/CUA journeys and fixtures
@@ -49,7 +52,7 @@ LICENSES/             machine-readable dependency and asset evidence
 ```
 
 - `host/` and `guest/` are separate locked Cargo workspaces. Host crates do not
-  belong to the OCI build context. The AppImage packager may build guest
+  belong to the OCI build context. The portable app builder may build guest
   outputs only because it carries them as managed migration assets for
   persistent rootfses.
 - `guest/asset-manifest.tsv` is the authoritative mapping of guest source files
@@ -73,32 +76,30 @@ LICENSES/             machine-readable dependency and asset evidence
 
 ## Distribution artifacts and future publication
 
-The checked-in artifact workflow emits exactly two primary files:
+The checked-in artifact workflow emits exactly one primary file:
 
 ```text
-WildBuzzard-x86_64.AppImage
-WildBuzzard-portable-x86_64.tar.zst
+BuzzardOS-portable-linux-x86_64.tar.xz
 ```
 
-- The standalone AppImage is independently downloadable and replaceable so an
-  existing portable folder can update the host application without replacing
-  a persistent machine.
-- The complete portable archive contains that same AppImage, a verified
-  high-compression flat-rootfs seed, initial `vm/`, `shared/`, and `cache/`
-  directories, checksums, provenance, and licenses. On first machine creation
-  the seed is materialized into the normal mutable `vm/<name>/rootfs/`; the
-  compressed seed is not the running rootfs and no overlay is introduced.
+- The archive root is exactly `BuzzardOS/`. It contains the executable
+  launcher, dependency installer, dependency-complete `app/`, a verified OCI
+  seed, empty `Machines/`, and `shared/`. First launch atomically creates the
+  `default` machine from the seed.
+- On first launch the OCI seed is materialized through that host's subordinate
+  ID mapping into `Machines/default/rootfs/`. The OCI archive is install media,
+  not the running rootfs; normal operation introduces no overlay.
 
-The bundle keeps licensing evidence in two explicit groups: host/AppImage
+The bundle keeps licensing evidence in two explicit groups: host/application
 payload evidence and guest/rootfs payload evidence. Each group contains the
 notices and corresponding-source/provenance records for the exact payload it
-describes. The runner-generated manifest binds the AppImage, flat-rootfs
+describes. The runner-generated manifest binds the portable application, OCI rootfs
 archive, source commit, OCI source descriptors, package inventory, and hashes.
 
 `.github/workflows/build-release-assets.yml` is manually dispatched and
 artifact-only. It has no push or pull-request trigger, no release/prerelease
 mode, no publisher job, and no write permission. A successful run uploads
-exactly two short-lived Actions artifacts named for the two files above. It
+exactly one short-lived Actions artifact named for the file above. It
 must never create or modify a GitHub Release, tag, environment, package, or
 registry object.
 
@@ -107,74 +108,120 @@ separately reviewed explicit change. That future change must add its own strict
 final licensing gate, tag/commit validation, approval boundary, and
 least-privilege publication design; none of those future capabilities may be
 inferred from the current artifact workflow. Artifact assembly currently
-retains the under-2-GiB per-file guard so both outputs remain eligible for such
+retains the under-2-GiB file guard so the output remains eligible for such
 a future review.
 
 ## Portable on-disk layout
 
-All Wild Buzzard files live beside the AppImage by default:
+All Buzzard OS files live inside one relocatable directory:
 
 ```text
-portable-folder/
-├── WildBuzzard-x86_64.AppImage
-├── runtime/                         # present in the complete first-install bundle
-│   ├── WildBuzzard-rootfs-linux-x86_64.tar.zst
-│   └── WildBuzzard-rootfs-linux-x86_64.json
-├── vm/
+BuzzardOS/
+├── BuzzardOS                        # executable user entry point
+├── Install-Dependencies             # Debian/Ubuntu uidmap setup and verification
+├── app/
+│   ├── usr/bin/
+│   ├── usr/lib/
+│   ├── usr/libexec/
+│   ├── runtime/default-rootfs.oci.tar.zst
+│   ├── licenses/{host,guest}/
+│   └── provenance/
+├── Machines/
 │   └── <machine-name>/
 │       ├── machine.json
 │       ├── runtime.json
 │       ├── machine.lock
 │       └── rootfs/
-├── shared/
-└── cache/
+└── shared/
 ```
 
-- `vm/<machine-name>/rootfs/` is the complete, flat, directly writable guest
+- `Machines/<machine-name>/rootfs/` is the complete, flat, directly writable guest
   operating system.
-- `runtime/` contains the verified canonical-ID seed used to create new
+- `app/runtime/` contains the verified canonical-ID OCI seed used to create new
   machines offline. It is install media, never the mounted or running rootfs,
-  and is absent when only the independently replaceable AppImage is supplied.
+  and is always present in the complete portable artifact.
 - `shared/` is user-managed host/guest storage mounted read/write at `/shared`
   in every guest.
-- `cache/` contains only disposable downloads and OCI intermediates.
+- Disposable download and OCI work files live under `Machines/.cache/` and
+  are never part of a machine export.
 - Machine metadata stores portable relative references and never embeds the
   portable folder's original absolute path.
 
-When running as an AppImage, derive `portable-folder/` from the original
-`$APPIMAGE` path. Never derive it from `/tmp/.mount_*`. `--storage-dir` may
-explicitly select another portable folder.
+The top-level launcher derives the portable root from its own real directory,
+exports `BUZZARDOS_PORTABLE_DIR`, and executes the private binary under
+`app/usr/bin/`. `--storage-dir` may explicitly select another portable root.
 
 Do not use `~/.wb`, XDG data directories, Docker/Podman storage, hidden host
 state, or system-wide machine directories. Copying the portable folder must
-move the AppImage, machines, shared files, and cache together without rewriting
+move the application, machines, shared files, and cache together without rewriting
 metadata.
 
-## Self-contained AppImage and rootless host contract
+## Self-contained portable application and rootless host contract
 
-The release AppImage is the complete user-facing application. End users must
-not install Wild Buzzard's pull, extraction, namespace, network, GPU-injection,
+The extracted `BuzzardOS/` directory is the complete user-facing application. End users must
+not install Buzzard OS's pull, extraction, namespace, network, GPU-injection,
 or packaging helpers themselves. Release helpers are bundled and resolved
-relative to the mounted AppDir, never from host `PATH`.
+relative to `app/`, never from host `PATH`.
 
 Normal host prerequisites are limited to:
 
 - Linux kernel support for the required unprivileged namespaces and mounts.
 - Configured subordinate UID/GID ranges and trusted host
   `newuidmap`/`newgidmap` authorization gates.
+- On Ubuntu hosts enforcing AppArmor's unprivileged-user-namespace
+  restriction, the root-owned distro `lxc-usernsexec` entry point and its
+  distro AppArmor profile. `Install-Dependencies` installs it from Ubuntu's
+  `lxc` package. Buzzard OS uses no LXC daemon, storage, network, machine
+  configuration, or lifecycle service; this executable only establishes the
+  same explicit three-part UID/GID map that bundled `unshare` establishes on
+  other hosts. The global AppArmor restriction must never be disabled.
 - A host Wayland session.
 - A working host GPU kernel driver and permission to selected devices.
 - For optional audio, microphone, and camera integration, a working host
   PipeWire session, its standard PulseAudio-compatible recording service, and
-  permission to the explicitly enabled device. Wild Buzzard bundles its
+  permission to the explicitly enabled device. Buzzard OS bundles its
   PipeWire/GStreamer/PulseAudio client stack; users do not install or configure
-  Wild Buzzard-specific host services or helpers.
-- Standard facilities required to execute an AppImage, with extract-and-run
-  support when FUSE is unavailable.
+  Buzzard OS-specific host services or helpers.
+- No host FUSE or AppImage runtime is required for Buzzard OS itself. Guest
+  AppImages remain supported inside the isolated guest.
+- Machine export uses the bundled, checksum-pinned Debian bullseye GNU tar and
+  its private libacl/libselinux/libpcre2 closure. It must remain compatible
+  with the declared GLIBC 2.31 host floor and must never copy the disposable
+  build host's newer tar or libraries into the artifact.
 
-The product remains rootless. It does not install a setuid helper, daemon,
-package, or system service. Unsupported host security policy must produce a
-precise diagnostic instead of weakening isolation.
+The product remains rootless. It does not install a Buzzard OS setuid
+helper, daemon, package, or system service. Host packages installed by the
+explicit dependency script remain distro-owned authorization gates; they do
+not run Buzzard OS or own its portable state. Unsupported host security
+policy must produce a precise diagnostic instead of weakening isolation.
+
+## Machine portability and OCI exchange
+
+- `BuzzardOS import SOURCE --name NAME` accepts a local OCI image-layout
+  directory, an OCI tar/gzip/zstd archive, a Buzzard OS export, or a remote OCI
+  reference. Multi-image indexes require an unambiguous native Linux manifest
+  or explicit `--manifest` digest/reference selection.
+- Import verifies index, manifest, config, and every layer digest; applies
+  layers in order with OCI whiteouts; and materializes ownership through the
+  destination host's subordinate-ID map. No source host UID is persisted as a
+  portability requirement.
+- `BuzzardOS export NAME --output FILE` requires the machine to be fully
+  stopped and exclusively locked. It enters the exact machine ID namespace,
+  snapshots the flat rootfs as one canonical OCI layer, preserves numeric
+  guest IDs, hardlinks, symlinks, modes, timestamps, xattrs, ACLs, capabilities
+  and sparse files, excludes runtime mounts and `shared/`, writes all OCI blobs
+  content-addressed, verifies the completed archive, and commits it atomically
+  without replacing an existing file.
+- Restore/import preserves the guest machine identity and rejects a duplicate
+  identity in the same portable root. `BuzzardOS clone SOURCE NEW_NAME`
+  deliberately regenerates the host metadata UUID, `/etc/machine-id`, random
+  seed, and SSH host keys.
+- Portable annotations retain machine intent but never pin destination-host
+  GPU nodes, PipeWire node names, camera nodes, monitor details, runtime
+  sockets, or active capture. Imported port rules start disabled and imported
+  device sharing starts off until the destination user enables it.
+- The implementation owns this OCI behavior and never requires Docker,
+  Podman, containerd, or another container runtime on the end-user host.
 
 ## Components
 
@@ -218,7 +265,7 @@ The broker:
   input, and host camera input. It never mounts the host PipeWire socket into
   the guest.
 - Opens microphones only as named recording streams in the host desktop audio
-  session, with Wild Buzzard's application identity. It must never bypass host
+  session, with Buzzard OS's application identity. It must never bypass host
   recording/privacy accounting by opening an ALSA capture endpoint directly.
 - Injects every explicitly selected DRM/NVIDIA device plus matching host driver
   userspace, including multi-GPU selection and `all`.
@@ -449,7 +496,7 @@ The reference image is a Debian-family desktop with:
 - One normalized `xkb-data` tree resolved from the same immutable Debian
   snapshot as the pinned Sway build. The guest uses only
   `/opt/wildbuzzard/runtime/current/share/X11/xkb`; the host display uses only
-  the byte-identical AppImage tree at `usr/share/wildbuzzard/xkb`. Both copies
+  the byte-identical extracted-app tree at `usr/share/wildbuzzard/xkb`. Both copies
   use the same sway-builder `libxkbcommon.so.0`, are bound to canonical file
   manifests and package versions, contain no symlinks or special files, carry
   the Debian package copyrights, and must never silently fall back to a host
@@ -471,7 +518,7 @@ The reference image is a Debian-family desktop with:
   supervisor reconcile Prepare/Commit response loss and process crashes
   through typed Status requests before physical input resumes.
 - Xwayland for legacy X11 applications.
-- Wild Buzzard's native Rust desktop shell.
+- Buzzard OS's native Rust desktop shell.
 - TryCua Cua Driver running as the interactive user.
 - GTK, Qt/KDE, Electron, Chromium, Vulkan, and OpenGL application support.
 - Exactly four preinstalled, user-facing general applications: Firefox ESR,
@@ -487,7 +534,7 @@ The reference image is a Debian-family desktop with:
 The reference image contains no Plasma shell, KWin, XFCE shell, Wayfire, labwc,
 Waybar, Fuzzel, patched compositor, compiler toolchain, Blender, Chromium,
 Dolphin, Pavucontrol, `x11-apps`, XTerm/UXTerm, Mesa/Vulkan diagnostic tools,
-Wild Buzzard Electron demo, or private wlroots fork. Removing `x11-apps` and
+Buzzard OS Electron demo, or private wlroots fork. Removing `x11-apps` and
 XTerm/UXTerm does not remove Xwayland support. Removing Mesa/Vulkan diagnostic
 tools does not remove the graphics runtime or drivers. Users may install or
 replace desktop software inside their persistent machine. That cannot alter
@@ -574,7 +621,7 @@ remains aligned and clickable.
 No compositor root context menu is configured in the reference session.
 Clicking or right-clicking empty guest desktop space must never expose
 `Terminal`, `Reconfigure`, or compositor `Exit` actions. Applications are
-opened through the Wild Buzzard Applications menu, desktop shortcuts, an
+opened through the Buzzard OS Applications menu, desktop shortcuts, an
 agent/CUA request, or a terminal intentionally opened by the user.
 
 ## Accessibility and in-guest computer use
@@ -584,7 +631,7 @@ The guest owns its complete computer-use environment:
 ```text
 private guest D-Bus session
 └── at-spi2-registryd
-    ├── Wild Buzzard desktop shell
+    ├── Buzzard OS desktop shell
     ├── GTK applications
     ├── Qt/KDE applications
     ├── Electron/Chromium applications
@@ -626,7 +673,7 @@ private guest D-Bus session
   entry. It does not add an SSH server or expose a guest control port to the
   host network.
 - Keyboard-coexistence hardware acceptance must inject the human half through
-  the host compositor, native Wild Buzzard monitor, display gateway, and
+  the host compositor, native Buzzard OS monitor, display gateway, and
   nested parent keyboard while the CUA session remains open. A guest-local
   `wtype` process is another synthetic guest keyboard and is never accepted as
   evidence of human-input coexistence. The host monitor must be deterministically
@@ -634,7 +681,7 @@ private guest D-Bus session
   hook or clearly labelled interactive human step; the test fails rather than
   silently substituting guest input.
 
-### Wild Buzzard CUA Driver fork
+### Buzzard OS CUA Driver fork
 
 The repository carries the required Linux driver sources as an auditable fork
 of [`trycua/cua`](https://github.com/trycua/cua), pinned to an exact upstream
@@ -642,7 +689,7 @@ commit. It is not downloaded unpinned during a release build.
 
 - Preserve the upstream MIT license, copyright notices, source attribution,
   and a machine-readable record of the upstream repository and commit.
-- Keep Wild Buzzard modifications identifiable in source and changelog files.
+- Keep Buzzard OS modifications identifiable in source and changelog files.
   Do not claim upstream endorsement and do not remove third-party notices.
 - Vendor only the packages and transitive source/assets actually required by
   the in-guest Cua Driver and MCP/CLI contract. Record and comply with every
@@ -652,7 +699,7 @@ commit. It is not downloaded unpinned during a release build.
   endpoint/key, identity/config, sender, lifecycle/tool observer, or telemetry
   CLI. Vendor update checks, self-update, and remote skill downloads are also
   removed. Starting or using the bundled driver must not make automatic or
-  user-invoked requests to CUA/trycua services; Wild Buzzard owns updates.
+  user-invoked requests to CUA/trycua services; Buzzard OS owns updates.
 - The supported execution target is the normal interactive guest session:
   stock Sway/wlroots plus Xwayland. No host automation socket, VNC/RDP
   indirection, host cursor injection, SSH daemon, or direct host compositor
@@ -753,17 +800,17 @@ timing must all be measured. Any fallback is clearly reported.
 NVIDIA support includes selected `/dev/nvidia*` nodes, capability devices, DRM
 render nodes, matching host EGL/GLX/Vulkan/OpenGL metadata and libraries, CUDA,
 NVENC/NVDEC, and multiple GPU selection. The host kernel driver is a
-prerequisite and is never installed by Wild Buzzard.
+prerequisite and is never installed by Buzzard OS.
 
 NVIDIA injection is implemented through a pinned, bundled NVIDIA Container
 Toolkit/libnvidia-container CDI integration:
 
 - Bundle the release-compatible `nvidia-ctk`, `nvidia-container-cli`, and
-  required `libnvidia-container` userspace in the AppImage with their upstream
+  required `libnvidia-container` userspace in the extracted `app/` payload with their upstream
   licenses and exact versions/checksums. End users must not install NVIDIA
   Container Toolkit, Docker, Podman, or a system CDI service.
 - At every start, use the bundled toolkit against the current host driver to
-  generate an ephemeral CDI description in Wild Buzzard's private runtime
+  generate an ephemeral CDI description in Buzzard OS's private runtime
   directory. Never depend on `/var/run/cdi/nvidia.yaml`, a host
   `nvidia-cdi-refresh` service, or host `nvidia-ctk`/`nvidia-container-cli`
   binaries.
@@ -807,14 +854,14 @@ Media sharing is default-deny and independently revocable:
   enabled interval; the host UI states this explicitly and never presents the
   switch as dormant per-application permission.
 - Microphone capture uses the host PipeWire-Pulse source-output path with a
-  stable Wild Buzzard application identity. The broker verifies a running,
+  stable Buzzard OS application identity. The broker verifies a running,
   correctly targeted `Stream/Input/Audio` node before reporting the bridge
   active, allowing the host shell to expose its standard recording indicator.
 - Disabling either input first terminates host capture, then removes the
   internal mapping and guest source. When disabled, the guest has no host
   device node, host PipeWire socket, capture process, reusable stream endpoint,
   or other route to that input.
-- The AppImage bundles the client libraries, GStreamer launcher, plugins, and
+- The extracted application bundles the client libraries, GStreamer launcher, plugins, and
   bridge code. It uses the already-running desktop PipeWire service in the
   same way as a native application; it never asks the user to install global
   bridge packages.
@@ -839,12 +886,12 @@ Docker/Podman sockets, or the real host Wayland socket.
 Creation:
 
 1. Validate the machine name and portable paths.
-2. Select the verified bundled flat-rootfs seed by default, or resolve, pull,
-   and digest-verify an explicitly requested OCI image.
-3. Materialize the seed or apply the OCI layers on the same filesystem into a
+2. Select the verified bundled OCI seed by default, or resolve, pull,
+   and digest-verify an explicitly requested OCI image/layout/archive.
+3. Apply the OCI layers on the same filesystem into a
    staging directory, using the recipient host's full subordinate-ID mapping.
 4. Install versioned guest boot/session assets.
-5. Atomically rename into `vm/<name>/`.
+5. Atomically rename into `Machines/<name>/`.
 6. Never replace an existing machine implicitly.
 
 Start:
@@ -881,7 +928,7 @@ captured artifacts demonstrate every requirement below. A coding agent must
 not stop after compilation, unit tests, process-start checks, or API exit
 status while any safe in-scope acceptance scenario remains untested.
 
-- The AppImage runs without separately installed Wild Buzzard helpers.
+- The extracted portable application runs without separately installed Buzzard OS helpers.
 - The final OCI already contains every managed guest asset and both compiled
   guest executables before the launcher performs any persistent-rootfs
   migration. Its installed manifest, paths, modes, Sway/wlroots pins, CUA
@@ -904,15 +951,15 @@ status while any safe in-scope acceptance scenario remains untested.
   samples/frames, and disappear after toggling off. Synthetic PipeWire sources
   are permitted only in unit/CI coverage and never satisfy hardware or release
   acceptance. While the microphone is enabled, the host graph must contain a
-  running PipeWire-Pulse recording source-output with Wild Buzzard's application
+  running PipeWire-Pulse recording source-output with Buzzard OS's application
   ID, selected target, and capture-process PID; this must drive the standard
   host desktop recording/privacy indication and disappear on disable. After
   disablement, attempts from the guest to reconnect to the old endpoint fail
   and no host capture process remains.
-- The release AppImage passes the same media tests with host PATH stripped;
+- The released extracted application passes the same media tests with host PATH stripped;
   its GStreamer/PipeWire executables, plugins, libraries, and licenses resolve
   only from the mounted AppDir.
-- All machine state is beside the AppImage, including `shared/`, never
+- All machine state is beside the top-level `BuzzardOS` executable, including `shared/`, never
   `~/.wb`.
 - Copying the portable folder needs no metadata rewrite.
 - A guest file and installed package survive full stop/start.
@@ -964,7 +1011,7 @@ status while any safe in-scope acceptance scenario remains untested.
   including move/click/double-click/drag/scroll, key/chord/type, application
   launch, task focus, minimize/maximize/restore/close, full screenshot, window
   screenshot, and window enumeration.
-- Exercise those operations against the Wild Buzzard shell and real GTK,
+- Exercise those operations against the Buzzard OS shell and real GTK,
   Qt/KDE, Electron/Chromium, native Wayland, and Xwayland applications. Assert
   visible post-action state and inspect screenshots, rather than accepting
   command exit status alone. Applications absent from the reference image are
@@ -1010,7 +1057,7 @@ status while any safe in-scope acceptance scenario remains untested.
   work when selected.
 - NVIDIA acceptance is performed on a host that does not provide
   `nvidia-ctk`, `nvidia-container-cli`, or libnvidia-container through `PATH`
-  or runtime linker search paths. The AppImage's pinned bundled toolkit must
+  or runtime linker search paths. The extracted app's pinned bundled toolkit must
   generate and apply its private CDI result successfully.
 - Run `nvidia-smi -L` and a compiled CUDA compute probe inside the guest, then
   run the architecture-matching CUDA artifact from
@@ -1020,7 +1067,7 @@ status while any safe in-scope acceptance scenario remains untested.
   `4747dd212618ed5eecef318a3538b9e9ee4c3fb2808b226420aa8152a2fe0724`;
   on ARM64 use the corresponding ARM64 CUDA artifact and its published digest.
   Download it once into portable `cache/` for the hardware test only; do not
-  bundle llama.cpp or a model in the release AppImage/reference image.
+  bundle llama.cpp or a model in the released app/reference image.
 - With a small test GGUF in the dedicated acceptance machine, require
   llama.cpp device enumeration to report the selected NVIDIA GPU, run a real
   `llama-bench` or short inference with all model layers requested on CUDA,

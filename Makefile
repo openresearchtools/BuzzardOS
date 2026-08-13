@@ -1,10 +1,10 @@
-.PHONY: test appimage oci
+.PHONY: test portable-app oci
 
 test:
 	./tools/test-local.sh
 
-appimage:
-	./host/build-appimage.sh
+portable-app:
+	./host/build-portable-app.sh
 
 oci:
 	./oci/build-local.sh

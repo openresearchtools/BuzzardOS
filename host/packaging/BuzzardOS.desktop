@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Wild Buzzard
+Name=Buzzard OS
 Comment=Persistent rootless desktop machine
-Exec=wildbuzzard
-Icon=wildbuzzard
-StartupWMClass=org.openresearchtools.wildbuzzard
+Exec=BuzzardOS
+Icon=buzzardos
+StartupWMClass=org.openresearchtools.buzzardos
 Terminal=false
 Categories=System;Emulator;
 Keywords=container;desktop;wayland;vm;

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.openresearchtools.wildbuzzard</id>
-  <name>Wild Buzzard</name>
+  <id>org.openresearchtools.buzzardos</id>
+  <name>Buzzard OS</name>
   <summary>Persistent rootless Linux desktop machines</summary>
   <developer id="org.openresearchtools">
     <name>Open Research Tools</name>
@@ -15,10 +15,10 @@
       Wayland window.
     </p>
   </description>
-  <launchable type="desktop-id">org.openresearchtools.wildbuzzard.desktop</launchable>
+  <launchable type="desktop-id">org.openresearchtools.buzzardos.desktop</launchable>
   <url type="homepage">https://github.com/openresearchtools/BuzzardOS</url>
   <provides>
-    <binary>wildbuzzard</binary>
+    <binary>BuzzardOS</binary>
   </provides>
   <content_rating type="oars-1.1" />
   <releases>

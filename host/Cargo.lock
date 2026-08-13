@@ -1458,6 +1458,7 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
+ "fs2",
  "libc",
  "nix",
  "serde",
@@ -1465,6 +1466,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "uuid",
  "wb-core",
  "zstd",
 ]

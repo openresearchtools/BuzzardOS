@@ -7,7 +7,7 @@ usage() {
 Usage: tools/create-project-source-archive.sh OUTPUT_DIRECTORY
 
 Create a deterministic, checksum-addressed archive of the exact clean Git
-commit used to build Wild Buzzard. The archive is corresponding-source and
+commit used to build Buzzard OS. The archive is corresponding-source and
 provenance evidence for binary artifacts; generated files and Git history are
 not included.
 EOF
@@ -45,9 +45,15 @@ fi
 
 dirty=$(git -C "$project_dir" status --porcelain=v1 --untracked-files=all)
 if [[ -n "$dirty" ]]; then
-    echo "refusing to package binary artifacts from a dirty source tree" >&2
-    printf '%s\n' "$dirty" >&2
-    exit 1
+    if [[ "${BUZZARDOS_LOCAL_TEST_ALLOW_DIRTY_SOURCE:-0}" != 1 ]]; then
+        echo "refusing to package binary artifacts from a dirty source tree" >&2
+        printf '%s\n' "$dirty" >&2
+        exit 1
+    fi
+    echo "WARNING: local test build uses clean-HEAD source evidence while the working tree is dirty" >&2
+    local_test_dirty=true
+else
+    local_test_dirty=false
 fi
 
 mkdir -p "$output_dir"
@@ -96,6 +102,7 @@ printf '%s  %s\n' "$archive_sha256" "$archive_name" >"$checksums"
 SOURCE_COMMIT=$source_commit \
 SOURCE_DATE_EPOCH=$source_date_epoch \
 SOURCE_REPOSITORY=$source_repository \
+LOCAL_TEST_DIRTY=$local_test_dirty \
 ARCHIVE_NAME=$archive_name \
 ARCHIVE_SHA256=$archive_sha256 \
 ARCHIVE_SIZE=$archive_size \
@@ -113,6 +120,7 @@ record = {
     "repository": os.environ["SOURCE_REPOSITORY"],
     "commit": os.environ["SOURCE_COMMIT"],
     "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
+    "local_test_dirty_worktree": os.environ["LOCAL_TEST_DIRTY"] == "true",
     "archive": {
         "name": os.environ["ARCHIVE_NAME"],
         "sha256": os.environ["ARCHIVE_SHA256"],
@@ -122,7 +130,9 @@ record = {
         "uncompressed_size": int(os.environ["UNCOMPRESSED_SIZE"]),
     },
     "build_recipes": [
-        "host/build-appimage.sh",
+        "host/build-portable-app.sh",
+        "host/packaging/BuzzardOS",
+        "host/packaging/Install-Dependencies",
         "oci/desktop/Containerfile",
         "tools/build-release-rootfs.sh",
         "tools/assemble-release-assets.sh",

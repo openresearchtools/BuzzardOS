@@ -1,13 +1,13 @@
 # Release licensing records
 
-This directory is the release-compliance source of truth for Wild Buzzard.
+This directory is the release-compliance source of truth for Buzzard OS.
 It complements, and does not replace, the project-level `LICENSE` file or any
 license/copyright notice embedded in a third-party source or binary package.
 
 The records distinguish three different evidence surfaces:
 
 1. the source repository, including the audited TryCua fork and guest assets;
-2. the native AppImage, including Rust dependencies, downloaded helpers, and
+2. the extracted native host application, including Rust dependencies, downloaded helpers, and
    the shared-library closure copied from the build host; and
 3. the distributed flat guest-rootfs seed, including Debian/NVIDIA packages
    and the source-built Sway/wlroots and Cua Driver binaries. The OCI image is
@@ -15,9 +15,9 @@ The records distinguish three different evidence surfaces:
    not published to GHCR, another registry, or GitHub Packages.
 
 The complete portable archive preserves the binary boundary as two separate
-license groups. `licenses/appimage/` contains the exact AppImage documentation,
-notices, source archives, relink material, and provenance. The independent
-`licenses/guest-rootfs/` group contains the exact guest `/usr/share/doc`
+license groups. `app/licenses/host/` contains the exact host-application
+notices, source archives, and provenance. The independent
+`app/licenses/guest/` group contains the exact guest `/usr/share/doc`
 closure, project source archive, pinned-upstream records, package inventory,
 and flat-rootfs manifest. Evidence from one group must never be treated as a
 substitute for missing evidence in the other.
@@ -28,10 +28,9 @@ recorded separately because a release-asset checksum alone is not a
 corresponding-source record.
 
 `package-inputs.toml` mirrors every ordered apt-install block in the OCI
-Containerfile and records the AppImage's build-host payload owners.
+Containerfile and records the portable host application's build-host payload owners.
 `crane-dependencies.toml`, `nvidia-go-dependencies.toml`,
-`go-runtime.toml`, and `appimage-runtime-dependencies.toml` expose dependency
-closures that would
+and `go-runtime.toml` expose dependency closures that would
 otherwise be hidden inside downloaded ELF binaries.  In particular, a
 top-level helper license is not evidence for statically linked or Go-module
 dependencies.  The Go record preserves the exact root license and patent grant
@@ -57,7 +56,7 @@ commit-pinned fallback record.
 For Debian-family payloads, the authoritative per-binary-package notice is the
 package's `/usr/share/doc/<package>/copyright` file (including a valid Debian
 doc-directory symlink).  A release audit must enumerate the *built* AppDir and
-flattened rootfs; the Containerfile and AppImage script alone cannot describe
+flattened rootfs; the Containerfile and portable-app build script alone cannot describe
 the transitive package closure.
 
 `generated/oci-packages.tsv` is the exact, sorted binary-package/version
@@ -91,8 +90,7 @@ exact outputs that will be distributed, on the build host while its dpkg
 ownership database still matches the copied ELF closure:
 
 ```sh
-tools/check-licenses.sh --appdir /path/to/WildBuzzard.AppDir
-tools/check-licenses.sh --appimage /path/to/WildBuzzard-x86_64.AppImage
+tools/check-licenses.sh --appdir /path/to/BuzzardOS/app
 tools/check-licenses.sh --guest-rootfs /path/to/extracted/rootfs
 ```
 
@@ -101,8 +99,8 @@ blockers; it never suppresses stale generated evidence, a checksum mismatch,
 an unclassified asset, or an artifact missing a required notice.
 
 The manually dispatched GitHub workflow performs structural artifact checks
-and uploads exactly the standalone AppImage and complete portable archive as
-short-lived Actions artifacts. It is artifact-only: it has no publisher job or
+and uploads exactly one complete portable `.tar.xz` archive as a short-lived
+Actions artifact. It is artifact-only: it has no publisher job or
 write permission and cannot create a GitHub Release, prerelease, OCI package,
 or container package.
 

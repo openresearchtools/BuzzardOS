@@ -63,9 +63,12 @@ for script in \
     sh -n "$script"
 done
 for script in \
-    "$project_dir/host/build-appimage.sh" \
+    "$project_dir/host/build-portable-app.sh" \
+    "$project_dir/host/packaging/generate-icons.sh" \
     "$project_dir/oci/build-local.sh" \
     "$project_dir/oci/verify-image.sh" \
+    "$project_dir/tools/build-release-rootfs.sh" \
+    "$project_dir/tools/assemble-release-assets.sh" \
     "$project_dir/tests/acceptance/hardware-acceptance.sh"; do
     bash -n "$script"
 done

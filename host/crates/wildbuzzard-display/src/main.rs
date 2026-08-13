@@ -8,6 +8,7 @@ mod guest_display;
 mod host_app;
 mod keyboard;
 mod launch;
+mod machine_manager;
 mod offload_verifier;
 
 use std::os::unix::process::CommandExt;
@@ -31,6 +32,9 @@ fn run() -> Result<()> {
         return result;
     }
     reexec_with_display_desktop_identity()?;
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--machine-manager")) {
+        return machine_manager::run_from_args();
+    }
     let launch = Launch::parse().validate()?;
     launch.configure_native_backend();
     let (gateway, connection) = GatewaySockets::bind(&launch)?;

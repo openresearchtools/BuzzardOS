@@ -3,8 +3,17 @@
 set -euo pipefail
 
 image=${1:?usage: verify-image.sh IMAGE}
+container_engine=${BUZZARDOS_CONTAINER_ENGINE:-docker}
+case "$container_engine" in
+    docker|podman) ;;
+    *) echo "unsupported container engine: $container_engine" >&2; exit 2 ;;
+esac
+command -v "$container_engine" >/dev/null 2>&1 || {
+    echo "container engine is unavailable: $container_engine" >&2
+    exit 1
+}
 
-docker run --rm --entrypoint /bin/sh "$image" -ec '
+"$container_engine" run --rm --entrypoint /bin/sh "$image" -ec '
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard)" = "1000:1000:700"
     test "$(stat -c "%u:%g:%a" /home/wildbuzzard/.config)" = "1000:1000:700"
     for command in \

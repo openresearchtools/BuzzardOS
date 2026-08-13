@@ -1,9 +1,9 @@
 # Third-party notices and release obligations
 
-Wild Buzzard is Copyright (C) 2026 Open Research Tools contributors and is
+Buzzard OS is Copyright (C) 2026 Open Research Tools contributors and is
 licensed under AGPL-3.0-or-later. Third-party components keep
 their own licenses and copyright notices; no third-party author or project
-endorses Wild Buzzard.  The machine-readable component and asset records are
+endorses Buzzard OS. The machine-readable component and asset records are
 in `LICENSES/`. The project copyright declaration is also preserved in
 `NOTICE`.
 
@@ -32,7 +32,7 @@ in `LICENSES/`. The project copyright declaration is also preserved in
 - Cargo inventories do not cover the **Rust standard library** or compiler
   runtime linked into each executable. Rust 1.96.0 is pinned by
   `rust-toolchain.toml`; `LICENSES/rust-runtime.toml` records the exact
-  `COPYRIGHT-library.html` size and checksum. AppImage and OCI builds install
+  `COPYRIGHT-library.html` size and checksum. Host-app and OCI builds install
   that verified notice bundle and their artifact audits require it.
 
 ## Reference OCI image
@@ -52,9 +52,9 @@ in `LICENSES/`. The project copyright declaration is also preserved in
   plus bundled third-party notices.  Their complete package copyright/EULA
   files must remain in the guest.  Inclusion of the libraries in NVIDIA's
   redistributable-file list does not replace a project-level review that Wild
-  Buzzard's method of redistribution satisfies all SDK distribution terms.
+  OS's method of redistribution satisfies all SDK distribution terms.
 
-## Native AppImage
+## Native portable host application
 
 - **crane 0.21.8**, from go-containerregistry commit
   `2ea098f4b13456cd628460632760b0a74b7488e9`, is Apache-2.0 licensed.  Its Go
@@ -71,29 +71,17 @@ in `LICENSES/`. The project copyright declaration is also preserved in
 - **slirp4netns 1.3.3-1** is the checksum-pinned Ubuntu dynamic package built
   from upstream commit `944fa94090e1fd1312232cbc0e6b43585553d824`. Its exact
   package copyright file, signed source descriptor, upstream source archive,
-  and Debian packaging archive are bundled in every AppImage. Dynamic linking
+  and Debian packaging archive are bundled in every portable archive. Dynamic linking
   replaces the former static helper, so modified LGPL libraries can be used
-  without relinking Wild Buzzard; the exact shared-library closure remains
-  covered by the AppImage artifact gate.
+  without relinking Buzzard OS; the exact shared-library closure remains
+  covered by the host-application artifact gate.
 - **NVIDIA Container Toolkit/libnvidia-container 1.19.1-1** is extracted from
   three checksum-pinned upstream Debian packages. Their Apache-2.0,
   BSD-3-Clause, MIT, and conditional LGPL notices are copied under
-  `/usr/share/doc/` in the AppImage. Go build information in `nvidia-ctk` and
+  `/usr/share/doc/` in the extracted host application. Go build information in `nvidia-ctk` and
   `nvidia-cdi-hook` identifies 23 dependency modules; their exact versions,
   source archives, license expressions, and notices are recorded and shipped
   as specified by `LICENSES/nvidia-go-dependencies.toml`.
-- The **AppImage type-2 runtime** is built locally from commit
-  `75849dce7cc37e4319b633df1f116ca895c71a12` and checksum-pinned libfuse
-  3.15.0 (LGPL-2.1-only), squashfuse 0.5.2, zstd 1.5.6, zlib 1.3.2, and
-  mimalloc 2.1.7 sources. Zig 0.14.1 supplies the exact musl and compiler-rt
-  snapshot for the `x86_64-linux-musl` static PIE; no Alpine package or host
-  GCC object enters the runtime. Wild Buzzard's C changes emitted by the build
-  script are additionally granted under MIT in
-  `LICENSES/wildbuzzard-appimage-runtime-patch-MIT`. Exact notices are preserved in
-  `LICENSES/upstream/appimage-runtime-dependencies/`. The AppImage carries the
-  complete source archives, non-LGPL link objects, linker script, and relink
-  command needed to replace the statically linked libfuse. Two clean external
-  builds must produce the recorded byte-identical runtime and relink kit.
 - `bubblewrap`, `unshare`, GStreamer, PipeWire/PulseAudio clients and plugins,
   and linuxdeploy's transitive shared libraries come from the build host.
   Their exact binary package versions and Debian copyright files must be
@@ -106,7 +94,7 @@ authoritative. Resolved historical findings are not repeated here as current
 blockers. In particular, the project notice and asset authorship records, MPL
 Source Code Form delivery, pinned Rust notice bundle, Go source-and-notice
 delivery, dynamic slirp4netns source obligations, NVIDIA Go dependency
-evidence, and reproducible AppImage runtime relink kit are now recorded and
+evidence, and the portable host dependency closure are recorded and
 structurally audited.
 
 The following gates remain and must not be inferred away:
@@ -115,12 +103,12 @@ The following gates remain and must not be inferred away:
    requires a project-level review against the NVIDIA CUDA EULA. Their pinned
    package checksums, installed EULA files, and appearance in NVIDIA's
    redistributable-file lists are necessary evidence, but do not by themselves
-   establish that Wild Buzzard's general-purpose persistent guest satisfies
+   establish that Buzzard OS's general-purpose persistent guest satisfies
    every SDK distribution condition.
 2. Every candidate OCI archive must record and audit its exact manifest digest,
    compressed size, installed package/version inventory, and package copyright
-   closure. Every candidate AppImage must likewise pass the final AppDir and
-   SquashFS artifact audit, including the exact build-ID-to-package mapping and
+   closure. Every candidate portable host app must likewise pass the final
+   extracted-app audit, including the exact build-ID-to-package mapping and
    copyright file for its host-derived ELF closure. A successful earlier local
    build is not evidence for a later artifact.
 

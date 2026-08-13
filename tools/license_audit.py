@@ -39,7 +39,7 @@ TARGET = "x86_64-unknown-linux-gnu"
 OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
 HOST_CLOSURE_MANIFEST = "usr/share/doc/wildbuzzard/host-package-closure.tsv"
 HOST_CLOSURE_HEADER = (
-    "# Wild Buzzard AppImage build-host package copyright closure v2",
+    "# Buzzard OS portable host package copyright closure v3",
     "# appdir_path\tpayload_sha256\tpackage\tversion\tcopyright_sha256",
 )
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -63,7 +63,10 @@ NON_DPKG_APPDIR_ELFS = {
     "usr/libexec/wildbuzzard/nvidia-container-cli",
     "usr/libexec/wildbuzzard/nvidia-ctk",
     "usr/libexec/wildbuzzard/slirp4netns",
-    "usr/share/doc/wildbuzzard/sources/appimage-runtime/relink-kit/objects/runtime.o",
+    "usr/libexec/wildbuzzard/tar.real",
+    "usr/libexec/wildbuzzard/tar-libs/libacl.so.1",
+    "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1",
+    "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0",
 }
 NON_DPKG_APPDIR_MIRRORS = {
     "usr/bin/nvidia-cdi-hook": "usr/libexec/wildbuzzard/nvidia-cdi-hook",
@@ -490,7 +493,6 @@ def validate_provenance() -> None:
         LICENSES / "go-runtime.toml",
         LICENSES / "go-source-archives.tsv",
         LICENSES / "slirp4netns-sources.tsv",
-        LICENSES / "appimage-runtime-dependencies.toml",
         LICENSES / "rust-runtime.toml",
         CUA_ROOT / "LICENSE.md",
         CUA_ROOT / "CITATION.cff",
@@ -674,7 +676,7 @@ def require_literals(path: Path, literals: Iterable[str]) -> None:
 
 def validate_build_pins() -> None:
     require_literals(
-        ROOT / "host/build-appimage.sh",
+        ROOT / "host/build-portable-app.sh",
         [
             "crane_version=v0.21.8",
             "crane_sha256=59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67",
@@ -683,9 +685,6 @@ def validate_build_pins() -> None:
             "slirp_binary_sha256=20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
             "linuxdeploy_version=1-alpha-20251107-1",
             "linuxdeploy_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d",
-            "appimage_runtime_sha256=a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6",
-            "appimage_runtime_relink_manifest_sha256=a956b20085c7ff0b0019a531e51db3dfdf174f6fa9c0c4183baba2c93a0dd772",
-            "appimage_runtime_metadata_sha256=b2182090c84f5cab0b6345d447d54bc39cb31dd348d32b24b90eb8b2c7de55db",
             "zig_version=0.14.1",
             "zig_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
             "cargo_zigbuild_version=0.21.8",
@@ -693,27 +692,6 @@ def validate_build_pins() -> None:
             "nvidia_toolkit_base_sha256=b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132",
             "nvidia_container_tools_sha256=5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268",
             "nvidia_container_library_sha256=d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b",
-        ],
-    )
-    require_literals(
-        ROOT / "tools/build-appimage-runtime.sh",
-        [
-            "runtime_commit=75849dce7cc37e4319b633df1f116ca895c71a12",
-            "runtime_epoch=1782256868",
-            "zig_version=0.14.1",
-            "zig_archive_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
-            "runtime_archive_sha256=b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443",
-            "fuse_archive_sha256=70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0",
-            "squashfuse_archive_sha256=db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3",
-            "zstd_download_sha256=8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1",
-            "zstd_archive_sha256=30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7",
-            "zlib_archive_url=https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz",
-            "zlib_archive_sha256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1",
-            "mimalloc_archive_sha256=0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d",
-            "meson_wheel_sha256=82c6818dc81743c96de3a458f06175776ebfde4081195ea31ea6971838f25e38",
-            "-target x86_64-linux-musl",
-            "-Wl,--build-id=none -Wl,--strip-debug",
-            "BUILD-INPUTS.sha256",
         ],
     )
     require_literals(
@@ -742,8 +720,8 @@ def containerfile_apt_blocks() -> list[list[str]]:
     return [shlex.split(match) for match in pattern.findall(normalized)]
 
 
-def appimage_notice_loop_packages() -> list[str]:
-    contents = (ROOT / "host/build-appimage.sh").read_text(encoding="utf-8")
+def portable_app_notice_loop_packages() -> list[str]:
+    contents = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
     normalized = re.sub(r"\\\r?\n", " ", contents)
     match = re.search(
         r"for package in\s+(.*?)\s*;\s*do\s+"
@@ -752,7 +730,7 @@ def appimage_notice_loop_packages() -> list[str]:
         re.DOTALL,
     )
     if match is None:
-        raise AuditError("cannot locate the AppImage host-package notice loop")
+        raise AuditError("cannot locate the portable-app host-package notice loop")
     return shlex.split(match.group(1))
 
 
@@ -822,10 +800,10 @@ def validate_package_inputs() -> None:
             "Containerfile base images changed without updating LICENSES/package-inputs.toml"
         )
 
-    configured = data.get("appimage_host_payload", {}).get("notice_loop_packages", [])
-    if appimage_notice_loop_packages() != configured:
+    configured = data.get("portable_host_payload", {}).get("notice_loop_packages", [])
+    if portable_app_notice_loop_packages() != configured:
         raise AuditError(
-            "host/build-appimage.sh notice packages changed without updating "
+            "host/build-portable-app.sh notice packages changed without updating "
             "LICENSES/package-inputs.toml"
         )
 
@@ -875,92 +853,6 @@ def validate_embedded_dependency_records() -> None:
                     f"crane module notice is not preserved: {module.get('path', '?')} {notice}"
                 )
 
-    runtime = read_toml(LICENSES / "appimage-runtime-dependencies.toml")
-    expected_runtime = {
-        "runtime_source_commit": "75849dce7cc37e4319b633df1f116ca895c71a12",
-        "runtime_source_archive_sha256": "b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443",
-        "runtime_target": "x86_64-linux-musl",
-        "runtime_binary_sha256": "a861c1b4c90ea8a3968753db768c647b068f563929992dc97ffdbce90247a7e6",
-        "runtime_binary_size": 455096,
-        "appimage_marker_offset": 1024,
-        "static_marker_offset": 2048,
-        "appimage_mutable_region_offset": 442480,
-        "appimage_mutable_region_size": 16,
-        "toolchain_sha256": "24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
-        "relink_manifest_sha256": "a956b20085c7ff0b0019a531e51db3dfdf174f6fa9c0c4183baba2c93a0dd772",
-        "runtime_metadata_sha256": "b2182090c84f5cab0b6345d447d54bc39cb31dd348d32b24b90eb8b2c7de55db",
-    }
-    if any(runtime.get(key) != value for key, value in expected_runtime.items()):
-        raise AuditError("AppImage runtime dependency record changed without updating its pin")
-    if runtime.get("runtime_static_pie") is not True:
-        raise AuditError("AppImage runtime record does not require a static PIE")
-    expected_runtime_inputs = {
-        "type2-runtime-75849dce.tar.gz": "b7af4960da4b90364e935a3281d04fad6560da4813c012414fa2f738291ad443",
-        "fuse-3.15.0.tar.xz": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0",
-        "squashfuse-0.5.2.tar.gz": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3",
-        "zstd-1.5.6.tar.gz": "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7",
-        "zlib-1.3.2.tar.gz": "b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1",
-        "mimalloc-2.1.7.tar.gz": "0eed39319f139afde8515010ff59baf24de9e47ea316a315398e8027d198202d",
-        "meson-1.7.2-py3-none-any.whl": "82c6818dc81743c96de3a458f06175776ebfde4081195ea31ea6971838f25e38",
-    }
-    recorded_runtime_inputs = {
-        dependency.get("archive", ""): dependency.get("source_sha256", "")
-        for dependency in runtime.get("dependency", [])
-        if dependency.get("relink_kit_input") is True
-    }
-    if recorded_runtime_inputs != expected_runtime_inputs:
-        raise AuditError("AppImage runtime source/relink input set differs from its pin")
-    zstd_record = next(
-        (
-            item
-            for item in runtime.get("dependency", [])
-            if item.get("name") == "zstd"
-        ),
-        None,
-    )
-    if zstd_record is None or zstd_record.get("download_sha256") != (
-        "8c29e06cf42aacc1eafc4077ae2ec6c6fcb96a626157e0593d5e82a34fd403c1"
-    ) or "gzip -n" not in zstd_record.get("normalization", ""):
-        raise AuditError(
-            "zstd upstream download and deterministic normalization are not recorded"
-        )
-    libfuse = next(
-        (item for item in runtime.get("dependency", []) if item.get("name") == "libfuse"),
-        None,
-    )
-    if libfuse is None or libfuse.get("license") != "LGPL-2.1-only" or (
-        libfuse.get("relinkable") is not True
-    ):
-        raise AuditError("AppImage runtime libfuse relinkability record is incomplete")
-    release_components = read_toml(LICENSES / "release-components.toml")
-    release_runtime = next(
-        (
-            item
-            for item in release_components.get("component", [])
-            if item.get("id") == "appimage-type2-runtime"
-        ),
-        None,
-    )
-    if release_runtime is None or any(
-        release_runtime.get(component_key) != runtime.get(runtime_key)
-        for component_key, runtime_key in {
-            "source_commit": "runtime_source_commit",
-            "source_archive_sha256": "runtime_source_archive_sha256",
-            "sha256": "runtime_binary_sha256",
-            "runtime_size": "runtime_binary_size",
-            "digest_patch_offset": "appimage_mutable_region_offset",
-            "digest_patch_size": "appimage_mutable_region_size",
-            "relink_manifest_sha256": "relink_manifest_sha256",
-            "runtime_metadata_sha256": "runtime_metadata_sha256",
-        }.items()
-    ):
-        raise AuditError("AppImage runtime release component differs from its dependency record")
-    for dependency in runtime.get("dependency", []):
-        for evidence in dependency.get("evidence", []):
-            evidence_path = ROOT / evidence
-            if not evidence_path.is_file():
-                raise AuditError(f"AppImage runtime evidence missing: {evidence}")
-
     nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     if set(nvidia) != {"nvidia-ctk", "nvidia-cdi-hook"}:
         raise AuditError("NVIDIA Go dependency inventory has an unexpected binary set")
@@ -1000,7 +892,11 @@ def asset_files() -> list[str]:
             "host/packaging",
         ]
     )
-    return sorted(path for path in output.splitlines() if path)
+    return sorted(
+        path
+        for path in output.splitlines()
+        if path and (ROOT / path).is_file()
+    )
 
 
 def asset_matches(path: str, record: dict) -> bool:
@@ -1062,7 +958,7 @@ def component_blockers() -> list[str]:
                     surface, separator, artifact_path = evidence.partition(":")
                     if (
                         separator != ":"
-                        or surface not in {"appimage", "oci"}
+                        or surface not in {"host-app", "oci"}
                         or not artifact_path.startswith("/")
                         or artifact_path.endswith("/")
                         or "//" in artifact_path
@@ -1837,111 +1733,6 @@ def audit_appdir_go_sources(appdir: Path) -> list[str]:
     return issues
 
 
-def audit_appdir_runtime_kit(appdir: Path) -> list[str]:
-    issues: list[str] = []
-    runtime = read_toml(LICENSES / "appimage-runtime-dependencies.toml")
-    root = appdir / "usr/share/doc/wildbuzzard/sources/appimage-runtime"
-    metadata_path = root / "runtime-metadata.toml"
-    kit = root / "relink-kit"
-    manifest_path = kit / "BUILD-INPUTS.sha256"
-
-    if not metadata_path.is_file():
-        issues.append("AppDir AppImage runtime metadata is missing")
-    else:
-        if sha256_file(metadata_path) != runtime["runtime_metadata_sha256"]:
-            issues.append("AppDir AppImage runtime metadata checksum mismatch")
-        else:
-            metadata = read_toml(metadata_path)
-            expected_metadata = {
-                "schema": 1,
-                "target": runtime["runtime_target"],
-                "elf_type": runtime["runtime_elf_type"],
-                "static_pie": True,
-                "runtime_source_commit": runtime["runtime_source_commit"],
-                "source_date_epoch": runtime["runtime_source_date_epoch"],
-                "zig_version": "0.14.1",
-                "zig_archive_sha256": runtime["toolchain_sha256"],
-                "runtime_sha256": runtime["runtime_binary_sha256"],
-                "runtime_size": runtime["runtime_binary_size"],
-                "appimage_marker_offset": runtime["appimage_marker_offset"],
-                "static_marker_offset": runtime["static_marker_offset"],
-                "digest_patch_offset": runtime["appimage_mutable_region_offset"],
-                "digest_patch_size": runtime["appimage_mutable_region_size"],
-                "relink_manifest_sha256": runtime["relink_manifest_sha256"],
-            }
-            if metadata != expected_metadata:
-                issues.append("AppDir AppImage runtime metadata fields differ from the audit")
-
-    if not manifest_path.is_file():
-        issues.append("AppDir AppImage runtime relink manifest is missing")
-        return issues
-    if sha256_file(manifest_path) != runtime["relink_manifest_sha256"]:
-        issues.append("AppDir AppImage runtime relink manifest checksum mismatch")
-        return issues
-
-    recorded: dict[str, str] = {}
-    for line in manifest_path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"([0-9a-f]{64})  \./([A-Za-z0-9._+@/-]+)", line)
-        if match is None:
-            issues.append("AppDir AppImage runtime relink manifest has an invalid row")
-            return issues
-        checksum, relative = match.groups()
-        parts = relative.split("/")
-        if any(part in {"", ".", ".."} for part in parts) or relative in recorded:
-            issues.append("AppDir AppImage runtime relink manifest has an unsafe path")
-            return issues
-        recorded[relative] = checksum
-
-    actual: set[str] = set()
-    if kit.is_dir():
-        for path in kit.rglob("*"):
-            if path == manifest_path:
-                continue
-            relative = path.relative_to(kit).as_posix()
-            if path.is_symlink():
-                issues.append(f"AppDir AppImage runtime relink kit contains symlink: {relative}")
-            elif path.is_file():
-                actual.add(relative)
-    if actual != set(recorded):
-        issues.append("AppDir AppImage runtime relink kit file set differs from its manifest")
-        return issues
-    for relative, expected in recorded.items():
-        if sha256_file(kit / relative) != expected:
-            issues.append(f"AppDir AppImage runtime relink file checksum mismatch: {relative}")
-
-    expected_inputs = {
-        dependency["archive"]: dependency["source_sha256"]
-        for dependency in runtime.get("dependency", [])
-        if dependency.get("relink_kit_input") is True
-    }
-    actual_inputs = {
-        relative.removeprefix("inputs/"): checksum
-        for relative, checksum in recorded.items()
-        if relative.startswith("inputs/")
-    }
-    if actual_inputs != expected_inputs:
-        issues.append("AppDir AppImage runtime source archive set differs from the audit")
-    required_relink_files = {
-        "README.md",
-        "build-appimage-runtime.sh",
-        "relink.sh",
-        "objects/data-sections-zig.ld",
-        "objects/libmimalloc.a",
-        "objects/libsquashfuse.a",
-        "objects/libsquashfuse_ll.a",
-        "objects/libz.a",
-        "objects/libzstd.a",
-        "objects/runtime.o",
-    }
-    if not required_relink_files.issubset(recorded):
-        issues.append("AppDir AppImage runtime relink object set is incomplete")
-    for command in ["build-appimage-runtime.sh", "relink.sh"]:
-        command_path = kit / command
-        if command_path.is_file() and not os.access(command_path, os.X_OK):
-            issues.append(f"AppDir AppImage runtime command is not executable: {command}")
-    return issues
-
-
 def audit_appdir(appdir: Path) -> list[str]:
     if not appdir.is_dir():
         raise AuditError(f"AppDir does not exist: {appdir}")
@@ -1957,6 +1748,7 @@ def audit_appdir(appdir: Path) -> list[str]:
         "usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md": CUA_ROOT / "CHANGES.WILDBUZZARD.md",
         "usr/share/doc/wildbuzzard-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
         "usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
+        "usr/libexec/wildbuzzard/tar": ROOT / "host/packaging/buzzardos-tar",
     }
     for source in sorted(path for path in LICENSES.rglob("*") if path.is_file()):
         relative = source.relative_to(LICENSES).as_posix()
@@ -1967,12 +1759,44 @@ def audit_appdir(appdir: Path) -> list[str]:
     expected_hashes = {
         "usr/libexec/wildbuzzard/crane": "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7",
         "usr/libexec/wildbuzzard/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
+        "usr/libexec/wildbuzzard/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
+        "usr/libexec/wildbuzzard/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
+        "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1": "1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16",
+        "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0": "bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e",
     }
     nvidia_data = read_toml(LICENSES / "nvidia-go-dependencies.toml")
     for binary in nvidia_data.get("binary", []):
         expected_hashes[f"usr/libexec/wildbuzzard/{binary['name']}"] = binary["sha256"]
     for destination, expected in expected_hashes.items():
         verify_hash(appdir, destination, expected, issues, "AppDir")
+    for package in ("tar", "libacl1", "libselinux1", "libpcre2-8-0"):
+        notice = appdir / f"usr/share/doc/wildbuzzard/tar-runtime/{package}/copyright"
+        if not notice.is_file() or not notice.read_bytes():
+            issues.append(f"AppDir pinned tar runtime notice is missing: {package}")
+    source_records = []
+    with (LICENSES / "tar-runtime-sources.tsv").open(encoding="utf-8") as source_manifest:
+        for line in source_manifest:
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 4 or SHA256_PATTERN.fullmatch(fields[3]) is None:
+                raise AuditError("invalid tar runtime source manifest row")
+            source_records.append((fields[1], fields[3]))
+    tar_source_root = appdir / "usr/share/doc/wildbuzzard/sources/tar-runtime"
+    for filename, checksum in source_records:
+        verify_hash(
+            appdir,
+            f"usr/share/doc/wildbuzzard/sources/tar-runtime/{filename}",
+            checksum,
+            issues,
+            "AppDir",
+        )
+    expected_tar_sums = "".join(
+        f"{checksum}  {filename}\n" for filename, checksum in source_records
+    ).encode("utf-8")
+    tar_sums = tar_source_root / "SHA256SUMS"
+    if not tar_sums.is_file() or tar_sums.read_bytes() != expected_tar_sums:
+        issues.append("AppDir tar runtime source SHA256SUMS differs from the audited manifest")
     for mirror, canonical in NON_DPKG_APPDIR_MIRRORS.items():
         mirror_path = appdir / mirror
         canonical_path = appdir / canonical
@@ -2040,7 +1864,6 @@ def audit_appdir(appdir: Path) -> list[str]:
     )
     if actual_mpl_archives != expected_mpl_archives:
         issues.append("AppDir MPL source archive set differs from the locked graph")
-    issues.extend(audit_appdir_runtime_kit(appdir))
     issues.extend(audit_appdir_go_sources(appdir))
 
     crane_path = appdir / "usr/libexec/wildbuzzard/crane"
@@ -2071,59 +1894,6 @@ def audit_appdir(appdir: Path) -> list[str]:
     host_notice_issues, mapped_payloads = verify_appdir_host_notices(appdir)
     issues.extend(host_notice_issues)
     print(f"inspected AppDir: {mapped_payloads} mapped ELF payloads")
-    return issues
-
-
-def audit_appimage(appimage: Path) -> list[str]:
-    if not appimage.is_file():
-        raise AuditError(f"AppImage does not exist: {appimage}")
-    runtime = read_toml(LICENSES / "appimage-runtime-dependencies.toml")
-    runtime_size = int(runtime["runtime_binary_size"])
-    patch_offset = int(runtime["appimage_mutable_region_offset"])
-    patch_size = int(runtime["appimage_mutable_region_size"])
-    with appimage.open("rb") as source:
-        prefix = bytearray(source.read(runtime_size))
-    if len(prefix) != runtime_size:
-        raise AuditError("AppImage is shorter than its recorded type-2 runtime")
-    if prefix[8:11] != b"AI\x02":
-        raise AuditError("AppImage does not carry the type-2 AppImage magic")
-    marker_offset = int(runtime["appimage_marker_offset"])
-    static_offset = int(runtime["static_marker_offset"])
-    if prefix[marker_offset : marker_offset + 3] != b"AI\x02":
-        raise AuditError("AppImage runtime has no canonical .appimage marker")
-    if prefix[static_offset : static_offset + 6] != b"static":
-        raise AuditError("AppImage runtime has no canonical .static marker")
-    if patch_offset < 0 or patch_size <= 0 or patch_offset + patch_size > runtime_size:
-        raise AuditError("AppImage runtime mutable digest region is out of range")
-    prefix[patch_offset : patch_offset + patch_size] = b"\0" * patch_size
-    issues: list[str] = []
-    if sha256_bytes(bytes(prefix)) != runtime["runtime_binary_sha256"]:
-        issues.append("AppImage runtime differs from the checksum-pinned runtime outside .digest_md5")
-
-    unsquashfs = shutil.which("unsquashfs")
-    if unsquashfs is None:
-        raise AuditError("unsquashfs is required to audit a final AppImage")
-    with tempfile.TemporaryDirectory(prefix="wildbuzzard-license-appimage-") as temporary:
-        extracted = Path(temporary) / "AppDir"
-        completed = subprocess.run(
-            [
-                unsquashfs,
-                "-no-progress",
-                "-offset",
-                str(runtime_size),
-                "-dest",
-                str(extracted),
-                str(appimage),
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if completed.returncode != 0:
-            raise AuditError(f"cannot extract AppImage for license audit: {completed.stderr.strip()}")
-        issues.extend(audit_appdir(extracted))
-    print(f"inspected final AppImage: {appimage}")
     return issues
 
 
@@ -2239,11 +2009,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="copy and record the exact build-host package notices after linuxdeploy",
     )
-    parser.add_argument(
-        "--appimage",
-        type=Path,
-        help="audit the pinned runtime and extracted contents of a final AppImage",
-    )
     parser.add_argument("--guest-rootfs", type=Path, help="also audit an extracted OCI rootfs")
     return parser.parse_args()
 
@@ -2256,7 +2021,6 @@ def main() -> int:
                 args.generate,
                 args.structural,
                 args.appdir is not None,
-                args.appimage is not None,
                 args.guest_rootfs is not None,
             ]
         ):
@@ -2280,8 +2044,6 @@ def main() -> int:
         artifact_issues: list[str] = []
         if args.appdir is not None:
             artifact_issues.extend(audit_appdir(args.appdir.resolve()))
-        if args.appimage is not None:
-            artifact_issues.extend(audit_appimage(args.appimage.resolve()))
         if args.guest_rootfs is not None:
             artifact_issues.extend(audit_guest_rootfs(args.guest_rootfs.resolve()))
     except (AuditError, OSError, ValueError, json.JSONDecodeError) as error:

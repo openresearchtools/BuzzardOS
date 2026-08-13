@@ -142,7 +142,7 @@ impl SlirpRuntime {
                 if libc::getppid() != parent_pid {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
-                        "Wild Buzzard broker exited during network-helper startup",
+                        "Buzzard OS broker exited during network-helper startup",
                     ));
                 }
                 Ok(())
@@ -1083,7 +1083,7 @@ impl IntegrationRuntime {
                     "leaky=downstream",
                     "!",
                     "pipewiresink",
-                    "client-name=Wild Buzzard Guest Audio",
+                    "client-name=Buzzard OS Guest Audio",
                 ]);
                 if let Some(device) = &device {
                     command.arg(format!("target-object={}", device.serial));
@@ -1112,7 +1112,7 @@ impl IntegrationRuntime {
                 let device = device
                     .as_ref()
                     .context("host camera selection resolved to no device")?;
-                append_camera_capture_source(&mut command, device, "Wild Buzzard Host Camera")?;
+                append_camera_capture_source(&mut command, device, "Buzzard OS Host Camera")?;
                 let prefer_mjpeg = match &device.backend {
                     HostMediaBackend::V4l2 { device } => v4l2_supports_mjpeg(device)?,
                     _ => false,
@@ -1143,7 +1143,7 @@ impl IntegrationRuntime {
                 if libc::getppid() != broker_pid {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
-                        "Wild Buzzard broker exited during media-helper startup",
+                        "Buzzard OS broker exited during media-helper startup",
                     ));
                 }
                 Ok(())
@@ -1535,7 +1535,7 @@ fn append_microphone_capture_source(
     // Never bypass that accounting path with direct ALSA capture.
     command.args([
         "pulsesrc",
-        "client-name=Wild Buzzard Microphone",
+        "client-name=Buzzard OS Microphone",
         &format!("server={pulse_server}"),
         &format!("device={}", device.node_name),
         "do-timestamp=true",
@@ -1997,7 +1997,7 @@ mod tests {
             is_default: true,
         };
         let mut command = Command::new("gst-launch-1.0");
-        append_camera_capture_source(&mut command, &device, "Wild Buzzard Capture").unwrap();
+        append_camera_capture_source(&mut command, &device, "Buzzard OS Capture").unwrap();
         let arguments: Vec<_> = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())

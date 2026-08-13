@@ -562,19 +562,28 @@ class IdMapTests(unittest.TestCase):
 
 
 class ReleaseScriptPrivilegeTests(unittest.TestCase):
-    def test_guest_license_audit_never_mutates_user_cargo_cache_as_root(self) -> None:
+    def test_release_seed_verification_and_notices_need_no_host_root(self) -> None:
         script = (ROOT / "tools/build-release-rootfs.sh").read_text(encoding="utf-8")
         invocation = (
-            'env \\\n'
-            '    PATH="$PATH" \\\n'
-            '    CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \\\n'
+            'env PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \\\n'
             '    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \\\n'
             '    python3 "$project_dir/tools/license_audit.py" \\\n'
-            '    --guest-rootfs "$rootfs" \\\n'
-            '    --structural'
+            '    --guest-rootfs "$mapped_rootfs" --structural'
         )
         self.assertIn(invocation, script)
-        self.assertNotIn("sudo " + invocation, script)
+        self.assertNotRegex(script, r"(?m)^\s*sudo\b")
+        self.assertIn('"$launcher" --storage-dir "$roundtrip_root" import', script)
+        self.assertIn('"$launcher" --storage-dir "$roundtrip_root" delete', script)
+        self.assertIn('stat -c %u "$mapped_rootfs/etc/passwd"', script)
+        self.assertIn('stat -c %u "$mapped_rootfs/home/wildbuzzard"', script)
+        self.assertIn('"$guest_licenses/usr-share-doc"', script)
+        self.assertIn('"$guest_licenses/usr-share-common-licenses"', script)
+        self.assertLess(
+            script.index('"$guest_licenses/usr-share-doc"'),
+            script.index(
+                'python3 "$project_dir/tools/release_metadata.py" materialize'
+            ),
+        )
 
 
 if __name__ == "__main__":

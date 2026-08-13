@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+portable_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+app_dir="$portable_dir/app"
+launcher="$app_dir/AppRun"
+
+if [ ! -x "$launcher" ]; then
+    printf '%s\n' "Buzzard OS is incomplete: $launcher is missing or not executable" >&2
+    exit 126
+fi
+
+# Machine state is always resolved from this wrapper's directory, never the
+# caller's current directory and never a hidden home-directory location. AppRun
+# owns the dependency environment for the extracted application payload.
+export BUZZARDOS_PORTABLE_DIR="$portable_dir"
+export APPDIR="$app_dir"
+
+exec "$launcher" "$@"

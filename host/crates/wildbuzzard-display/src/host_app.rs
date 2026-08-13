@@ -3246,7 +3246,7 @@ impl NativeWindow {
         content.set_margin_start(18);
         content.set_margin_end(18);
         let explanation = gtk::Label::new(Some(
-            "Each switch is independent and applies live. Microphone and Camera authorize continuous capture while enabled, and the native Wild Buzzard header labels each active input. Microphone activation completes only after the host PipeWire-Pulse session reports Wild Buzzard as a running, uncorked recording stream, which drives GNOME and compatible desktop privacy indicators. Turning either switch off terminates capture, removes its private mapping, and removes the guest source. The host PipeWire socket is never mounted into the machine.",
+            "Each switch is independent and applies live. Microphone and Camera authorize continuous capture while enabled, and the native Buzzard OS header labels each active input. Microphone activation completes only after the host PipeWire-Pulse session reports Buzzard OS as a running, uncorked recording stream, which drives GNOME and compatible desktop privacy indicators. Turning either switch off terminates capture, removes its private mapping, and removes the guest source. The host PipeWire socket is never mounted into the machine.",
         ));
         explanation.set_wrap(true);
         explanation.set_xalign(0.0);

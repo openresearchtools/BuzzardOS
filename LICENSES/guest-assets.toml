@@ -3,7 +3,7 @@ audited_at = "2026-08-10"
 
 [[asset]]
 id = "wildbuzzard-project-assets"
-paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/WildBuzzard.desktop"]
+paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/BuzzardOS", "host/packaging/Install-Dependencies", "host/packaging/BuzzardOS.desktop", "host/packaging/buzzardos-tar", "host/packaging/generate-icons.sh"]
 exclude = ["guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**", "guest/assets/icons/WildBuzzard/**"]
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE"]
@@ -11,21 +11,21 @@ status = "covered-by-repository-license"
 
 [[asset]]
 id = "wildbuzzard-metainfo"
-paths = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml"]
+paths = ["host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml"]
 license = "CC0-1.0"
-evidence = ["host/packaging/org.openresearchtools.WildBuzzard.metainfo.xml:metadata_license"]
+evidence = ["host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml:metadata_license"]
 status = "declared-inline"
 
 [[asset]]
 id = "wildbuzzard-application-icons"
 paths = [
-  "host/packaging/wildbuzzard.svg",
+  "host/packaging/icons/**",
   "guest/assets/icons/WildBuzzard/scalable/apps/**",
   "guest/assets/icons/WildBuzzard/symbolic/apps/**",
 ]
 license = "AGPL-3.0-or-later"
-evidence = ["LICENSE", "NOTICE", "host/packaging/wildbuzzard.svg"]
-provenance = "Project-authored generic monitor and settings glyphs. They contain no bird, mascot, traced reference, or company logo geometry."
+evidence = ["LICENSE", "NOTICE", "host/packaging/icons/README.md"]
+provenance = "The native application icon uses the user-approved original Low Glide project artwork, digest-bound in host/packaging/icons/README.md. Guest monitor and settings glyphs remain independently authored project assets."
 status = "project-authored-and-licensed"
 
 [[asset]]
