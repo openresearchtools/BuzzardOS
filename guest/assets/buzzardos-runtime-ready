@@ -28,11 +28,13 @@ HOST_RUNTIME_UID = 1000
 HOST_RUNTIME_GID = 1000
 HOST_RUNTIME_MODE = 0o700
 REQUIRED_RUNTIME_FILES = {
-    "libexec/buzzardos-shell",
-    "libexec/buzzardos-settings",
-    "libexec/buzzardos-shortcut-helper",
     "libexec/buzzardos-clipboard-agent",
-    "libexec/buzzardos-updater",
+    "libexec/buzzardos-init",
+    "libexec/buzzardos-session",
+    "libexec/buzzardos-sway-session",
+    "libexec/buzzardos-output-sync",
+    "libexec/buzzardos-desktop-services",
+    "libexec/buzzardos-integration-agent",
 }
 
 

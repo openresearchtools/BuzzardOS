@@ -42,9 +42,19 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
     def test_guest_json_is_parsed_by_host_jq(self) -> None:
         self.assertNotRegex(self.script, r"\bguest\s+jq\b")
 
-    def test_portable_relocation_waits_for_both_broker_processes(self) -> None:
+    def test_acceptance_targets_installed_package_and_exact_machine_directory(self) -> None:
+        self.assertIn("default_launcher=/usr/bin/buzzardos", self.script)
+        self.assertIn('runtime="$machine_dir/runtime.json"', self.script)
+        self.assertIn(
+            '"$launcher" --machine-dir "$machine_dir" "$@"', self.script
+        )
+        self.assertIn('--share "$shared_dir"', self.script)
+        self.assertNotIn("Machines/", self.script)
+        self.assertNotIn("portable_dir", self.script)
+
+    def test_machine_directory_relocation_waits_for_both_brokers(self) -> None:
         relocation = self.script.split(
-            "# Move the complete stopped portable folder", maxsplit=1
+            "# Move the complete stopped machine directory", maxsplit=1
         )[1].split(
             "# `stop` must not return while its detached broker", maxsplit=1
         )[0]
@@ -72,12 +82,15 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         return_move = relocation.index('mv -- "$relocation_target" "$relocation_original"')
         self.assertLess(return_close, return_wait)
         self.assertLess(return_wait, return_move)
+        self.assertIn("machine_dir=$relocation_target", relocation)
+        self.assertIn("machine_dir=$relocation_original", relocation)
+        self.assertNotIn("portable_dir", relocation)
 
     def test_fractional_scale_override_uses_fresh_display_lifecycles(self) -> None:
         fractional = self.script.split(
             "# Exercise the native fractional-scale bridge", maxsplit=1
         )[1].split(
-            'rm -f -- "$portable_dir/shared/.buzzardos-acceptance"', maxsplit=1
+            'rm -f -- "$shared_dir/.buzzardos-acceptance"', maxsplit=1
         )[0]
         self.assertNotIn('wb stop "$machine"', fractional)
         self.assertEqual(fractional.count('wb window "$machine" close'), 2)

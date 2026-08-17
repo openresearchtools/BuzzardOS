@@ -5,90 +5,138 @@ set -euo pipefail
 oci_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(CDPATH= cd -- "$oci_dir/.." && pwd)
 task_uid=$(id -u)
-build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-build-$task_uid"}
-output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/oci"}
+build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-oci-build-$task_uid"}
+output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/output"}
+deb_dir=${BUZZARDOS_GUEST_DEB_DIR:-"$build_root/debs"}
 image=${BUZZARDOS_OCI_TAG:-buzzardos-desktop:local}
-container_engine=${BUZZARDOS_CONTAINER_ENGINE:-auto}
-output_dir=$(realpath -m -- "$output_dir")
-case "$output_dir/" in
-    "$project_dir/"*)
-        echo "refusing to place OCI output inside the source repository: $output_dir" >&2
-        exit 1
-        ;;
-esac
 
-if [[ "$container_engine" == auto ]]; then
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-        container_engine=docker
-    elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
-        container_engine=podman
-    else
-        echo 'no usable local Docker or Podman build engine is available' >&2
-        exit 1
-    fi
-fi
-case "$container_engine" in
-    docker|podman) ;;
-    *) echo "BUZZARDOS_CONTAINER_ENGINE must be auto, docker, or podman" >&2; exit 2 ;;
-esac
-for command_name in "$container_engine" id realpath sha256sum; do
+for command_name in buildah dpkg-deb id install mktemp realpath sha256sum; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "local OCI build dependency missing: $command_name" >&2
         exit 1
     }
 done
-"$container_engine" info >/dev/null
-mkdir -p "$output_dir"
 
-if [[ "$container_engine" == docker ]]; then
-    export BUZZARDOS_OCI_TAG=$image
-    docker compose --project-directory "$project_dir" \
-        -f "$oci_dir/compose.yaml" \
-        build desktop
-else
-    podman build --tag "$image" \
-        --file "$oci_dir/desktop/Containerfile" "$project_dir"
+build_root=$(realpath -m -- "$build_root")
+output_dir=$(realpath -m -- "$output_dir")
+deb_dir=$(realpath -m -- "$deb_dir")
+for generated_dir in "$build_root" "$output_dir"; do
+    case "$generated_dir/" in
+        "$project_dir/"*)
+            echo "refusing to place generated OCI data inside the source repository: $generated_dir" >&2
+            exit 1
+            ;;
+    esac
+done
+mkdir -p "$build_root" "$output_dir" "$deb_dir"
+
+guest_version=$(tr -d '\n' <"$project_dir/guest/GUEST_VERSION")
+desktop_version=$(tr -d '\n' <"$project_dir/guest/DESKTOP_VERSION")
+cua_version=$(tr -d '\n' <"$project_dir/guest/BUZZARDOSCUA_VERSION")
+guest_deb="$deb_dir/buzzardos-guest_${guest_version}_amd64.deb"
+desktop_deb="$deb_dir/buzzardos-desktop_${desktop_version}_amd64.deb"
+cua_deb="$deb_dir/buzzardoscua_${cua_version}_amd64.deb"
+
+if [[ ! -s "$guest_deb" || ! -s "$desktop_deb" || ! -s "$cua_deb" ]]; then
+    if [[ -n ${BUZZARDOS_GUEST_DEB_DIR:-} ]]; then
+        echo "BUZZARDOS_GUEST_DEB_DIR does not contain all three expected guest packages" >&2
+        exit 1
+    fi
+    BUZZARDOS_DEB_BUILD_ROOT="$build_root/deb-build" \
+    BUZZARDOS_DEB_OUTPUT_DIR="$deb_dir" \
+        "$project_dir/packaging/build-debs.sh" guest desktop cua
 fi
-BUZZARDOS_CONTAINER_ENGINE="$container_engine" "$oci_dir/verify-image.sh" "$image"
+for package in "$guest_deb" "$desktop_deb" "$cua_deb"; do
+    test -s "$package"
+    dpkg-deb --info "$package" >/dev/null
+done
 
-unpacked_size=$("$container_engine" image inspect --format '{{.Size}}' "$image")
-image_id=$("$container_engine" image inspect --format '{{.Id}}' "$image")
-printf '%s\n' "$unpacked_size" >"$output_dir/image-size.bytes"
-printf '%s\n' "$image_id" >"$output_dir/image-id.txt"
+context=$(mktemp -d "$build_root/.oci-context.XXXXXX")
+work=$(mktemp -d "$build_root/.buildah.XXXXXX")
+storage="$work/storage"
+runroot="$work/runroot"
+container=
+mkdir -m 0700 "$storage" "$runroot"
 
-package_inventory=$(mktemp "$output_dir/.dpkg-packages.tsv.XXXXXX")
-cleanup_inventory() {
-    rm -f -- "$package_inventory"
+buildah_local() {
+    buildah \
+        --root "$storage" \
+        --runroot "$runroot" \
+        --storage-driver vfs \
+        "$@"
 }
-trap cleanup_inventory EXIT
-"$container_engine" run --rm --entrypoint /usr/bin/dpkg-query "$image" \
-    --show \
-    '--showformat=${binary:Package}\t${Version}\n' |
-    LC_ALL=C sort >"$package_inventory"
-test -s "$package_inventory"
-mv -f -- "$package_inventory" "$output_dir/dpkg-packages.tsv"
-trap - EXIT
+cleanup() {
+    if [[ -n "$container" ]]; then
+        buildah_local rm "$container" >/dev/null 2>&1 || true
+    fi
+    buildah_local rm --all >/dev/null 2>&1 || true
+    buildah_local rmi --all --force >/dev/null 2>&1 || true
+    rm -rf -- "$context" "$work"
+}
+cleanup_on_exit() {
+    status=$?
+    if [[ $status -ne 0 && ${BUZZARDOS_KEEP_FAILED_BUILD:-0} == 1 ]]; then
+        printf 'Preserving failed Buildah work directory for diagnosis: %s\n' "$work" >&2
+        return
+    fi
+    cleanup
+}
+trap cleanup_on_exit EXIT HUP INT TERM
 
-printf 'Verified %s (unpacked image bytes: %s)\n' "$image" "$unpacked_size"
-printf 'Recorded image identity and installed package inventory under %s\n' \
-    "$output_dir"
+install -D -m 0644 "$oci_dir/desktop/Containerfile" "$context/Containerfile"
+install -D -m 0755 "$oci_dir/desktop/provision-image.sh" "$context/provision-image.sh"
+install -d -m 0755 "$context/apt" "$context/debs"
+install -m 0644 "$oci_dir/desktop/apt/debian-sid-snapshot.sources" \
+    "$oci_dir/desktop/apt/debian-sid-live.sources" \
+    "$oci_dir/desktop/apt/99buzzardos-snapshot" \
+    "$context/apt/"
+install -m 0644 "$guest_deb" "$desktop_deb" "$cua_deb" "$context/debs/"
+
+started_at=$(date +%s)
+iidfile="$work/image.id"
+buildah_local build \
+    --format oci \
+    --no-cache \
+    --pull=always \
+    --force-rm \
+    --iidfile "$iidfile" \
+    --tag "$image" \
+    --file "$context/Containerfile" \
+    "$context"
+finished_at=$(date +%s)
+build_seconds=$((finished_at - started_at))
+image_id=$(tr -d '\n' <"$iidfile")
+test -n "$image_id"
+
+container=$(buildah_local from "$image_id")
+BUZZARDOS_CONTAINER_ENGINE=buildah \
+BUZZARDOS_BUILDAH_ROOT="$storage" \
+BUZZARDOS_BUILDAH_RUNROOT="$runroot" \
+    "$oci_dir/verify-image.sh" "$container"
+
+inventory_tmp=$(mktemp "$output_dir/.dpkg-packages.tsv.XXXXXX")
+buildah_local run "$container" -- \
+    /usr/bin/dpkg-query --show '--showformat=${binary:Package}\t${Version}\n' |
+    LC_ALL=C sort >"$inventory_tmp"
+test -s "$inventory_tmp"
+mv -f -- "$inventory_tmp" "$output_dir/dpkg-packages.tsv"
+printf '%s\n' "$image_id" >"$output_dir/image-id.txt"
+printf '%s\n' "$build_seconds" >"$output_dir/build-seconds.txt"
 
 if [[ ${BUZZARDOS_EXPORT_ARCHIVE:-0} == 1 ]]; then
     archive="$output_dir/buzzardos-desktop-amd64.oci.tar"
     temporary="$archive.tmp"
-    trap 'rm -f -- "$temporary"' EXIT
-    if [[ "$container_engine" == podman ]]; then
-        podman save --quiet --format oci-archive --output "$temporary" "$image"
-    else
-        command -v skopeo >/dev/null 2>&1 || {
-            echo 'OCI archive export with Docker requires skopeo' >&2
-            exit 1
-        }
-        skopeo copy "docker-daemon:$image" "oci-archive:$temporary:buzzardos-desktop"
-    fi
+    rm -f -- "$temporary"
+    buildah_local push --format oci "$image_id" \
+        "oci-archive:$temporary:buzzardos-desktop"
     mv -f -- "$temporary" "$archive"
     sha256sum "$archive" >"$archive.sha256"
     stat -c '%s' "$archive" >"$output_dir/archive-size.bytes"
-    trap - EXIT
-    printf 'Exported %s (%s bytes)\n' "$archive" "$(cat "$output_dir/archive-size.bytes")"
+    printf 'Exported %s (%s bytes)\n' \
+        "$archive" "$(cat "$output_dir/archive-size.bytes")"
 fi
+
+printf 'Verified %s; uncached Buildah assembly took %s seconds.\n' \
+    "$image" "$build_seconds"
+printf 'All temporary Buildah images and storage will now be discarded from %s.\n' \
+    "$work"

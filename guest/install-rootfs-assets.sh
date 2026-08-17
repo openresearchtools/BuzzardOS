@@ -2,21 +2,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
-usage='usage: install-rootfs-assets.sh ROOTFS SHELL_BINARY SETTINGS_BINARY SHORTCUT_HELPER_BINARY CLIPBOARD_AGENT_BINARY'
+usage='usage: install-rootfs-assets.sh ROOTFS CLIPBOARD_AGENT_BINARY'
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 target_root=${1:?$usage}
-shell_binary=${2:?$usage}
-settings_binary=${3:?$usage}
-shortcut_helper_binary=${4:?$usage}
-clipboard_agent_binary=${5:?$usage}
-asset_manifest="$script_dir/asset-manifest.tsv"
+clipboard_agent_binary=${2:?$usage}
+asset_manifest="$script_dir/runtime-asset-manifest.tsv"
 revision=$(tr -d '\n' <"$script_dir/ASSET_REVISION")
 
 test -d "$target_root"
 test ! -L "$target_root"
-test -x "$shell_binary"
-test -x "$settings_binary"
-test -x "$shortcut_helper_binary"
 test -x "$clipboard_agent_binary"
 
 case "$revision" in
@@ -85,18 +79,16 @@ while IFS="$tab" read -r mode source destination; do
     esac
 done <"$asset_manifest"
 
-install -D -m 0755 "$shell_binary" "$stage/libexec/buzzardos-shell"
-install -D -m 0755 "$settings_binary" "$stage/libexec/buzzardos-settings"
-install -D -m 0755 "$shortcut_helper_binary" \
-    "$stage/libexec/buzzardos-shortcut-helper"
 install -D -m 0755 "$clipboard_agent_binary" \
     "$stage/libexec/buzzardos-clipboard-agent"
 for required in \
-    libexec/buzzardos-shell \
-    libexec/buzzardos-settings \
-    libexec/buzzardos-shortcut-helper \
     libexec/buzzardos-clipboard-agent \
-    libexec/buzzardos-updater; do
+    libexec/buzzardos-init \
+    libexec/buzzardos-session \
+    libexec/buzzardos-sway-session \
+    libexec/buzzardos-output-sync \
+    libexec/buzzardos-desktop-services \
+    libexec/buzzardos-integration-agent; do
     test -f "$stage/$required"
     test ! -L "$stage/$required"
 done

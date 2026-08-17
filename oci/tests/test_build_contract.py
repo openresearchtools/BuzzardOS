@@ -29,7 +29,7 @@ class OciBuildContractTests(unittest.TestCase):
             for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
             if match.group(1) != "scratch"
         ]
-        self.assertEqual(len(from_references), 2)
+        self.assertEqual(len(from_references), 1)
         for reference in from_references:
             name, separator, digest = reference.partition("@")
             self.assertEqual(separator, "@", reference)
@@ -60,80 +60,36 @@ class OciBuildContractTests(unittest.TestCase):
         sid = (ROOT / "oci/desktop/apt/debian-sid-snapshot.sources").read_text(
             encoding="utf-8"
         )
-        trixie = (
-            ROOT / "oci/desktop/apt/debian-trixie-snapshot.sources"
-        ).read_text(encoding="utf-8")
         self.assertIn(snapshots["docker.io/library/debian:sid"], sid)
-        self.assertIn(snapshots["docker.io/library/rust:1.96-slim"], trixie)
-        for sources in (sid, trixie):
-            self.assertIn("snapshot.debian.org", sources)
-            self.assertNotIn("deb.debian.org", sources)
-            self.assertIn("Check-Valid-Until: no", sources)
+        self.assertIn("snapshot.debian.org", sid)
+        self.assertNotIn("deb.debian.org", sid)
+        self.assertIn("Check-Valid-Until: no", sid)
         live = (ROOT / "oci/desktop/apt/debian-sid-live.sources").read_text(
             encoding="utf-8"
         )
         self.assertIn("http://deb.debian.org/debian", live)
 
-    def test_docker_context_contains_every_repository_copy_input(self) -> None:
-        rules = {
-            line.strip()
-            for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        self.assertIn("**", rules)
-        for file_name in (
-            ".dockerignore",
-            "LICENSE",
-            "NOTICE",
-            "THIRD_PARTY_NOTICES.md",
-            "VERSION",
+    def test_buildah_uses_a_minimal_context_and_discards_its_private_store(self) -> None:
+        builder = (ROOT / "oci/build-local.sh").read_text(encoding="utf-8")
+        for required in (
+            "buildah_local build",
+            "--storage-driver vfs",
+            "--no-cache",
+            "--pull=always",
+            'install -m 0644 "$guest_deb" "$desktop_deb" "$cua_deb"',
+            'rm -rf -- "$context" "$work"',
         ):
-            self.assertIn(f"!{file_name}", rules)
-        for directory in ("oci", "LICENSES", "packaging"):
-            self.assertIn(f"!{directory}/", rules)
-            self.assertIn(f"!{directory}/**", rules)
-        self.assertIn("!guest/", rules)
-        for guest_input in (
-            "Cargo.toml",
-            "Cargo.lock",
-            "ASSET_REVISION",
-            "BUZZARDCUA_VERSION",
-            "asset-manifest.tsv",
-            "install-rootfs-assets.sh",
-        ):
-            self.assertIn(f"!guest/{guest_input}", rules)
-        for guest_directory in (
-            "clipboard-agent",
-            "desktop-core",
-            "settings",
-            "shell",
-            "shortcut-helper",
-            "assets",
-            "updater",
-            "third_party/trycua-cua",
-        ):
-            self.assertIn(f"!guest/{guest_directory}/", rules)
-            self.assertIn(f"!guest/{guest_directory}/**", rules)
-        self.assertIn("!clipboard-protocol/", rules)
-        self.assertIn("!clipboard-protocol/**", rules)
-        self.assertIn("!tools/", rules)
-        self.assertIn("!tools/fetch-mpl-sources.sh", rules)
-        self.assertFalse(any(rule.startswith("!host/") for rule in rules))
-
-    def test_compose_uses_only_the_local_reference_image_target(self) -> None:
-        compose = (ROOT / "oci/compose.yaml").read_text(encoding="utf-8")
-        self.assertIn("context: ..", compose)
-        self.assertIn("dockerfile: oci/desktop/Containerfile", compose)
-        self.assertIn("linux/amd64", compose)
-        for publishing_key in ("push:", "registry:", "pull_policy: always"):
-            self.assertNotIn(publishing_key, compose)
+            self.assertIn(required, builder)
+        for redundant in ("docker ", "podman ", "skopeo", "crane"):
+            self.assertNotIn(redundant, builder)
 
     def test_reference_image_uses_only_distribution_sway_and_wlroots(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
-        self.assertRegex(containerfile, r"(?m)^\s+sway \\$")
-        self.assertRegex(containerfile, r"(?m)^\s+xkb-data \\$")
+        packages = (ROOT / "packaging/build-debs.sh").read_text(encoding="utf-8")
+        self.assertIn("sway (>= 1.9)", packages)
+        self.assertIn("xkb-data", packages)
         for forbidden in (
             "AS sway-builder",
             "AS sway-runtime-artifact",
@@ -152,7 +108,7 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("/usr/bin/swaymsg", session)
 
     def test_guest_defaults_do_not_overwrite_distribution_gtk_configuration(self) -> None:
-        manifest = (ROOT / "guest/asset-manifest.tsv").read_text(encoding="utf-8")
+        manifest = (ROOT / "guest/desktop-asset-manifest.tsv").read_text(encoding="utf-8")
         for forbidden in (
             "etc/gtk-3.0/settings.ini",
             "etc/gtk-4.0/settings.ini",
@@ -170,6 +126,7 @@ class OciBuildContractTests(unittest.TestCase):
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
+        packages = (ROOT / "packaging/build-debs.sh").read_text(encoding="utf-8")
         for package in (
             "ffmpeg",
             "firefox-esr",
@@ -190,10 +147,7 @@ class OciBuildContractTests(unittest.TestCase):
             "xkb-data",
             "xwayland",
         ):
-            self.assertRegex(
-                containerfile,
-                rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
-            )
+            self.assertIn(package, packages)
         for package in (
             "chromium",
             "dolphin",
@@ -203,10 +157,7 @@ class OciBuildContractTests(unittest.TestCase):
             "x11-apps",
             "xterm",
         ):
-            self.assertNotRegex(
-                containerfile,
-                rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
-            )
+            self.assertNotRegex(packages, rf"(?:^|, ){re.escape(package)}(?:,|')")
         verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
         self.assertRegex(verifier, r"(?m)^\s+gsettings(?:\s|\\)")
         self.assertIn("dconf-gsettings-backend", verifier)
@@ -214,18 +165,26 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("gsettings list-keys org.gnome.desktop.interface", verifier)
         self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
         self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
-        self.assertIn("AS deb-builder", containerfile)
-        self.assertRegex(containerfile, r"(?m)^\s+libglib2\.0-dev \\")
-        self.assertRegex(containerfile, r"(?m)^\s+libpulse-dev \\")
-        self.assertIn("packaging/build-debs.sh guest cua", containerfile)
-        self.assertIn("buzzardos-guest-desktop_*_amd64.deb", containerfile)
-        self.assertIn("buzzardcua_*_amd64.deb", containerfile)
+        self.assertIn("buzzardos-guest_*_amd64.deb", containerfile)
+        self.assertIn("buzzardos-desktop_*_amd64.deb", containerfile)
+        self.assertIn("buzzardoscua_*_amd64.deb", containerfile)
+        self.assertNotIn("AS deb-builder", containerfile)
+        self.assertNotIn("cargo build", containerfile)
+        self.assertNotIn("packaging/build-debs.sh", containerfile)
+        self.assertNotIn("COPY . .", containerfile)
         self.assertIn("/usr/libexec/buzzardos-shortcut-helper", verifier)
         self.assertIn("/libexec/buzzardos-clipboard-agent", verifier)
         self.assertIn("unsquashfs", verifier)
         self.assertNotIn("AS shell-builder", containerfile)
         self.assertNotIn("AS settings-builder", containerfile)
         self.assertIn("libpulse.so.0", verifier)
+        provisioning = (ROOT / "oci/desktop/provision-image.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("20auto-upgrades", provisioning)
+        self.assertIn("unattended-upgrades", packages)
+        self.assertNotIn("openssh-client", containerfile)
+        self.assertNotIn("buzzardos-updater.service", containerfile)
         for forbidden in (
             "blender",
             "build-essential",
@@ -341,7 +300,7 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertNotIn("cuda-keyring", containerfile)
         cuda_section = containerfile.split(
             "# The reference machine carries only the CUDA runtime", 1
-        )[1].split("COPY --from=deb-builder", 1)[0]
+        )[1].split("COPY apt/debian-sid-live.sources", 1)[0]
         self.assertNotIn("apt-get", cuda_section)
 
 

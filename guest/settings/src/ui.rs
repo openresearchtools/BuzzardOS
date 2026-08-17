@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::model::{
-    PageId, SettingsStore, UPDATE_STATE_PATH, display_scale_socket_path,
-    keyboard_settings_socket_path, load_runtime_geometry, load_update_view, set_guest_keyboard,
-    set_guest_scale, validate_display_scale_socket, validate_keyboard_settings_socket,
+    PageId, SettingsStore, display_scale_socket_path, keyboard_settings_socket_path,
+    load_runtime_geometry, set_guest_keyboard, set_guest_scale, validate_display_scale_socket,
+    validate_keyboard_settings_socket,
 };
 use crate::sound::{SoundConnection, SoundController, SoundService, UserVolumePercent};
-use crate::updater::{self as updater_client, UpdateRequest};
 use crate::{ChangeBus, ChangeSection};
 use buzzardos_desktop_core::{
-    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode, UpdateProgress,
-    UpdateProgressPhase, UpdateProgressUnit, UpdateState, UpdateStatus,
+    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode,
 };
 use gtk::gdk;
 use gtk::prelude::*;
@@ -20,7 +18,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const COMPACT_BREAKPOINT: i32 = 720;
 const PAGE_MARGIN: i32 = 24;
@@ -49,10 +47,7 @@ const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
     "Light theme",
     "Dark theme",
     "Desktop background colour",
-    "Check for updates",
-    "Update progress",
-    "Available updates",
-    "Install now",
+    "Automatic software updates",
 ];
 
 pub(crate) fn build_fatal_window(
@@ -1074,6 +1069,28 @@ fn build_appearance_page(
     page("Appearance", &contents)
 }
 
+fn build_updates_page(_window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
+    let contents = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let heading = gtk::Label::new(Some("Automatic software updates"));
+    heading.set_xalign(0.0);
+    heading.add_css_class("heading");
+    accessible(
+        &heading,
+        "Automatic software updates",
+        "Buzzard OS uses the guest distribution's standard APT update system.",
+    );
+    contents.append(&heading);
+
+    let explanation = wrapped_label(
+        "This machine uses Debian's standard APT and unattended-upgrades configuration. \
+         There is no Buzzard OS updater service. Package updates are applied by the normal \
+         guest operating-system update mechanism; use apt in Foot when manual control is needed.",
+    );
+    contents.append(&explanation);
+    page("Updates", &contents)
+}
+
+#[cfg(any())]
 #[derive(Clone)]
 struct UpdateWidgets {
     status: gtk::Label,
@@ -1085,12 +1102,14 @@ struct UpdateWidgets {
     download_rate: Rc<RefCell<DownloadRate>>,
 }
 
+#[cfg(any())]
 #[derive(Debug, Default)]
 struct DownloadRate {
     previous: Option<(u64, Instant)>,
     bytes_per_second: Option<f64>,
 }
 
+#[cfg(any())]
 impl DownloadRate {
     fn observe(&mut self, progress: Option<&UpdateProgress>, now: Instant) -> Option<f64> {
         let Some(progress) = progress.filter(|value| {
@@ -1120,7 +1139,8 @@ impl DownloadRate {
     }
 }
 
-fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
+#[cfg(any())]
+fn build_legacy_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 16);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let check = gtk::Button::with_label("Check for updates");
@@ -1257,6 +1277,7 @@ fn build_updates_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
     page("Updates", &contents)
 }
 
+#[cfg(any())]
 fn poll_updates(state: Rc<RefCell<UpdateState>>, widgets: UpdateWidgets, baseline: u64) {
     let attempts = Rc::new(Cell::new(0_u16));
     glib::timeout_add_local(Duration::from_millis(350), move || {
@@ -1277,6 +1298,7 @@ fn poll_updates(state: Rc<RefCell<UpdateState>>, widgets: UpdateWidgets, baselin
     });
 }
 
+#[cfg(any())]
 fn render_updates(widgets: &UpdateWidgets, state: &UpdateState) {
     let status = match state.status {
         UpdateStatus::NeverChecked => "Not checked".to_owned(),
@@ -1385,6 +1407,7 @@ fn render_updates(widgets: &UpdateWidgets, state: &UpdateState) {
     );
 }
 
+#[cfg(any())]
 fn progress_description(progress: &UpdateProgress, speed: Option<f64>) -> String {
     let detail = progress.detail.as_deref().unwrap_or_default();
     let suffix = if detail.is_empty() {
@@ -1527,6 +1550,7 @@ fn rgba_to_solid(color: gdk::RGBA) -> SolidColor {
     )
 }
 
+#[cfg(any())]
 fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
@@ -1572,7 +1596,7 @@ mod tests {
         assert_eq!(names.len(), ACCESSIBLE_CONTROL_NAMES.len());
         assert!(names.contains("Desktop background colour"));
         assert!(names.contains("Microphone mute"));
-        assert!(names.contains("Available updates"));
+        assert!(names.contains("Automatic software updates"));
     }
 
     #[test]
@@ -1586,12 +1610,14 @@ mod tests {
         }
     }
 
+    #[cfg(any())]
     #[test]
     fn byte_format_is_human_readable() {
         assert_eq!(format_bytes(1024), "1.0 KiB");
         assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
     }
 
+    #[cfg(any())]
     #[test]
     fn update_progress_is_phase_specific_and_human_readable() {
         let progress = UpdateProgress {
@@ -1621,6 +1647,7 @@ mod tests {
         );
     }
 
+    #[cfg(any())]
     #[test]
     fn download_rate_uses_progress_deltas_and_resets_between_phases() {
         let start = Instant::now();

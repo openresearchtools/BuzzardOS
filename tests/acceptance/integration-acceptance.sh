@@ -4,17 +4,17 @@ set -Eeuo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 task_uid=$(id -u)
-default_launcher="${TMPDIR:-/tmp}/buzzardos-build-$task_uid/out/BuzzardOS/BuzzardOS"
+default_launcher=/usr/bin/buzzardos
 launcher=${1:-${BUZZARDOS_LAUNCHER:-$default_launcher}}
 machine=${2:-machine1}
-portable_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
-launcher="$portable_dir/$(basename -- "$launcher")"
-machine_dir="$portable_dir/Machines/$machine"
+machine_dir=${3:-${BUZZARDOS_ACCEPT_MACHINE_DIR:-"${TMPDIR:-/tmp}/buzzardos-acceptance-$task_uid/$machine"}}
+machine_dir=$(readlink -m -- "$machine_dir")
+launcher=$(readlink -f -- "$launcher")
 config="$machine_dir/machine.json"
 runtime="$machine_dir/runtime.json"
-shared="$portable_dir/shared"
+shared=$(jq -er '.shares[0].host_path' "$config")
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-artifact_dir=${3:-"$portable_dir/acceptance/integrations-$stamp"}
+artifact_dir=${4:-"$machine_dir/cache/acceptance/integrations-$stamp"}
 fixture="$project_dir/tests/acceptance/integration-echo-fixture.py"
 gnome_microphone_probe="$project_dir/tests/acceptance/gnome-microphone-indicator-probe.js"
 guest_fixture="/shared/.buzzardos-integration-acceptance-$stamp-$$.py"
@@ -163,7 +163,7 @@ for command_name in awk cp date gst-launch-1.0 id install jq mktemp nsenter pw-d
     command -v "$command_name" >/dev/null 2>&1 ||
         fail "host dependency is missing: $command_name"
 done
-[[ -x "$launcher" ]] || fail "portable Buzzard OS launcher is missing or not executable: $launcher"
+[[ -x "$launcher" ]] || fail "installed Buzzard OS launcher is missing or not executable: $launcher"
 [[ -f "$fixture" ]] || fail "echo fixture is missing: $fixture"
 [[ -f "$gnome_microphone_probe" ]] || fail "GNOME microphone probe is missing: $gnome_microphone_probe"
 [[ -f "$config" && -f "$runtime" ]] || fail "machine '$machine' does not exist"
@@ -202,7 +202,7 @@ install -m 0755 -- "$fixture" "$host_fixture"
 container_pid=$(jq -er '.container_pid' "$runtime")
 initial_container_pid=$container_pid
 
-"$launcher" doctor >"$artifact_dir/doctor.txt"
+"$launcher" --machine-dir "$machine_dir" doctor >"$artifact_dir/doctor.txt"
 
 wait_runtime() {
     local expression=$1

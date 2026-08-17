@@ -79,7 +79,9 @@ trap cleanup EXIT
 mkdir "$asset_root/rootfs"
 "$project_dir/guest/install-rootfs-assets.sh" \
     "$asset_root/rootfs" \
-    /bin/true \
+    /bin/true
+"$project_dir/guest/install-desktop-assets.sh" \
+    "$asset_root/rootfs" \
     /bin/true \
     /bin/true \
     /bin/true
@@ -102,13 +104,15 @@ runtime = root / "opt/buzzardos/runtime" / revision
 runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
 assert runtime_manifest["revision"] == str(revision)
 for required in (
-    "libexec/buzzardos-shell",
-    "libexec/buzzardos-settings",
-    "libexec/buzzardos-shortcut-helper",
     "libexec/buzzardos-clipboard-agent",
-    "libexec/buzzardos-updater",
 ):
     assert (runtime / required).is_file(), required
+for required in (
+    "usr/bin/buzzardos-desktop",
+    "usr/bin/buzzardos-settings",
+    "usr/libexec/buzzardos-desktop/buzzardos-shortcut-helper",
+):
+    assert (root / required).is_file(), required
 PY
 trap - EXIT
 cleanup
@@ -118,10 +122,5 @@ cleanup
 # public binary releases fail-closed. Artifact builds are audited separately,
 # and the release gate intentionally runs without --structural.
 "$project_dir/tools/check-licenses.sh" --structural
-if command -v docker >/dev/null 2>&1; then
-    docker compose --project-directory "$project_dir" \
-        -f "$project_dir/oci/compose.yaml" \
-        config --quiet
-fi
 
 printf 'All local source tests passed; outputs are under %s\n' "$test_root"

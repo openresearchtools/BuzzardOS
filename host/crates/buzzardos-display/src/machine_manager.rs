@@ -92,12 +92,15 @@ impl ManagerUi {
             .title_widget(&gtk::Label::new(Some("Buzzard OS Machines")))
             .show_title_buttons(true)
             .build();
-        let create = gtk::Button::with_label("Create");
-        create.set_tooltip_text(Some("Create a machine from the bundled OCI image"));
+        let create = gtk::Button::with_label("Pull OCI");
+        create.set_tooltip_text(Some("Pull an OCI image with Buildah and create a machine"));
+        let build = gtk::Button::with_label("Build");
+        build.set_tooltip_text(Some("Build a Containerfile with rootless Buildah"));
         let import = gtk::Button::with_label("Import OCI");
         let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh.set_tooltip_text(Some("Refresh machines"));
         header.pack_start(&create);
+        header.pack_start(&build);
         header.pack_start(&import);
         header.pack_end(&refresh);
         window.set_titlebar(Some(&header));
@@ -144,6 +147,12 @@ impl ManagerUi {
         import.connect_clicked(move |_| {
             if let Some(manager) = weak.upgrade() {
                 manager.show_import_dialog();
+            }
+        });
+        let weak = Rc::downgrade(&manager);
+        build.connect_clicked(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                manager.show_build_dialog();
             }
         });
         let weak = Rc::downgrade(&manager);
@@ -342,7 +351,7 @@ impl ManagerUi {
             grid.attach(&mode_label, 0, 2, 1, 1);
             grid.attach(&mode, 1, 2, 1, 1);
         }
-        let destination_label = gtk::Label::new(Some("Machine parent folder"));
+        let destination_label = gtk::Label::new(Some("Exact machine folder"));
         destination_label.set_xalign(0.0);
         let destination_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let destination = gtk::Entry::new();
@@ -354,8 +363,13 @@ impl ManagerUi {
         grid.attach(&destination_row, 1, 3, 1, 1);
         root.append(&grid);
 
+        let keep_archive =
+            gtk::CheckButton::with_label("Keep verified OCI archive in this machine’s cache");
+        keep_archive.set_active(false);
+        root.append(&keep_archive);
+
         let explanation = gtk::Label::new(Some(
-            "The machine folder is created below the selected parent. Shared files and folders are optional and appear as separate entries below /shared in the guest.",
+            "Choose the exact folder that will contain machine.json, cache, and rootfs. Shared files and folders are optional and appear as separate entries below /shared in the guest.",
         ));
         explanation.set_wrap(true);
         explanation.set_xalign(0.0);
@@ -390,18 +404,26 @@ impl ManagerUi {
 
         let chooser_parent = dialog.clone();
         let destination_for_picker = destination.clone();
+        let name_for_picker = name.clone();
         browse_destination.connect_clicked(move |_| {
             let chooser = gtk::FileDialog::builder()
-                .title("Choose machine parent folder")
+                .title("Choose where to create the machine folder")
                 .modal(true)
                 .build();
             let chooser_parent = chooser_parent.clone();
             let destination = destination_for_picker.clone();
+            let name = name_for_picker.clone();
             glib::spawn_future_local(async move {
                 if let Ok(file) = chooser.select_folder_future(Some(&chooser_parent)).await
                     && let Some(path) = file.path()
                 {
-                    destination.set_text(&path.to_string_lossy());
+                    let machine_name = name.text().trim().to_owned();
+                    let selected = if machine_name.is_empty() {
+                        path
+                    } else {
+                        path.join(machine_name)
+                    };
+                    destination.set_text(&selected.to_string_lossy());
                 }
             });
         });
@@ -416,8 +438,7 @@ impl ManagerUi {
         accept.connect_clicked(move |_| {
             if let Some(manager) = weak.upgrade() {
                 let machine_name = name.text().trim().to_owned();
-                let parent = PathBuf::from(destination.text().trim());
-                let machine_dir = parent.join(&machine_name);
+                let machine_dir = PathBuf::from(destination.text().trim());
                 let mut arguments = if importing {
                     vec![
                         "import".into(),
@@ -432,16 +453,192 @@ impl ManagerUi {
                         },
                     ]
                 } else {
-                    vec![
-                        "create".into(),
-                        machine_name,
-                        "--image".into(),
-                        source.text().trim().to_owned(),
-                    ]
+                    vec!["pull".into(), machine_name, source.text().trim().to_owned()]
                 };
                 for share in shares.borrow().iter() {
                     arguments.push("--share".into());
                     arguments.push(share.to_string_lossy().into_owned());
+                }
+                if keep_archive.is_active() {
+                    arguments.push("--keep-oci-archive".into());
+                }
+                manager.run_command(Some(machine_dir), arguments);
+            }
+            close.close();
+        });
+        dialog.present();
+    }
+
+    fn show_build_dialog(self: &Rc<Self>) {
+        let dialog = gtk::Window::builder()
+            .transient_for(&self.window)
+            .modal(true)
+            .title("Build Containerfile machine")
+            .default_width(720)
+            .build();
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.set_margin_start(16);
+        root.set_margin_end(16);
+        root.set_margin_top(16);
+        root.set_margin_bottom(16);
+        let grid = gtk::Grid::builder()
+            .column_spacing(10)
+            .row_spacing(8)
+            .build();
+        let name = gtk::Entry::new();
+        let context = gtk::Entry::new();
+        let containerfile = gtk::Entry::new();
+        let destination = gtk::Entry::new();
+        for entry in [&name, &context, &containerfile, &destination] {
+            entry.set_hexpand(true);
+        }
+        let context_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let context_browse = gtk::Button::with_label("Browse…");
+        context_row.append(&context);
+        context_row.append(&context_browse);
+        let file_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let file_browse = gtk::Button::with_label("Browse…");
+        file_row.append(&containerfile);
+        file_row.append(&file_browse);
+        let destination_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let destination_browse = gtk::Button::with_label("Browse…");
+        destination_row.append(&destination);
+        destination_row.append(&destination_browse);
+        for (row, (label, widget)) in [
+            ("Machine name", name.clone().upcast::<gtk::Widget>()),
+            ("Build context", context_row.clone().upcast::<gtk::Widget>()),
+            (
+                "Containerfile (optional)",
+                file_row.clone().upcast::<gtk::Widget>(),
+            ),
+            (
+                "Exact machine folder",
+                destination_row.clone().upcast::<gtk::Widget>(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let field_label = gtk::Label::new(Some(label));
+            field_label.set_xalign(0.0);
+            grid.attach(&field_label, 0, row as i32, 1, 1);
+            grid.attach(&widget, 1, row as i32, 1, 1);
+        }
+        root.append(&grid);
+
+        let keep_archive =
+            gtk::CheckButton::with_label("Keep verified OCI archive in this machine’s cache");
+        root.append(&keep_archive);
+        let note = gtk::Label::new(Some(
+            "Buildah runs rootlessly with its normal layer cache and no CPU or memory limit. Buzzard OS verifies and imports the result; Buildah does not run the machine.",
+        ));
+        note.set_wrap(true);
+        note.set_xalign(0.0);
+        note.add_css_class("dim-label");
+        root.append(&note);
+
+        let shares_title = gtk::Label::new(Some("Optional shared files and folders"));
+        shares_title.set_xalign(0.0);
+        shares_title.add_css_class("heading");
+        root.append(&shares_title);
+        let shares_list = gtk::ListBox::new();
+        shares_list.add_css_class("boxed-list");
+        shares_list.set_selection_mode(gtk::SelectionMode::None);
+        root.append(&shares_list);
+        let shares = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+        let share_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let add_file = gtk::Button::with_label("Add File…");
+        let add_folder = gtk::Button::with_label("Add Folder…");
+        share_actions.append(&add_file);
+        share_actions.append(&add_folder);
+        root.append(&share_actions);
+
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        let accept = gtk::Button::with_label("Build and create");
+        accept.add_css_class("suggested-action");
+        actions.append(&cancel);
+        actions.append(&accept);
+        root.append(&actions);
+        dialog.set_child(Some(&root));
+
+        connect_folder_entry_picker(
+            &context_browse,
+            &dialog,
+            &context,
+            "Choose Buildah context folder",
+        );
+        let chooser_parent = dialog.clone();
+        let containerfile_for_picker = containerfile.clone();
+        file_browse.connect_clicked(move |_| {
+            let chooser = gtk::FileDialog::builder()
+                .title("Choose Containerfile")
+                .modal(true)
+                .build();
+            let parent = chooser_parent.clone();
+            let entry = containerfile_for_picker.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(file) = chooser.open_future(Some(&parent)).await
+                    && let Some(path) = file.path()
+                {
+                    entry.set_text(&path.to_string_lossy());
+                }
+            });
+        });
+        let chooser_parent = dialog.clone();
+        let destination_for_picker = destination.clone();
+        let name_for_picker = name.clone();
+        destination_browse.connect_clicked(move |_| {
+            let chooser = gtk::FileDialog::builder()
+                .title("Choose where to create the machine folder")
+                .modal(true)
+                .build();
+            let parent = chooser_parent.clone();
+            let destination = destination_for_picker.clone();
+            let name = name_for_picker.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(file) = chooser.select_folder_future(Some(&parent)).await
+                    && let Some(path) = file.path()
+                {
+                    let machine_name = name.text().trim().to_owned();
+                    let selected = if machine_name.is_empty() {
+                        path
+                    } else {
+                        path.join(machine_name)
+                    };
+                    destination.set_text(&selected.to_string_lossy());
+                }
+            });
+        });
+        connect_share_picker(&add_file, &dialog, &shares_list, &shares, false);
+        connect_share_picker(&add_folder, &dialog, &shares_list, &shares, true);
+
+        let close = dialog.clone();
+        cancel.connect_clicked(move |_| close.close());
+        let close = dialog.clone();
+        let weak = Rc::downgrade(self);
+        accept.connect_clicked(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                let machine_name = name.text().trim().to_owned();
+                let machine_dir = PathBuf::from(destination.text().trim());
+                let mut arguments = vec![
+                    "build".into(),
+                    machine_name,
+                    "--context".into(),
+                    context.text().trim().to_owned(),
+                ];
+                let selected_file = containerfile.text().trim().to_owned();
+                if !selected_file.is_empty() {
+                    arguments.push("--file".into());
+                    arguments.push(selected_file);
+                }
+                for share in shares.borrow().iter() {
+                    arguments.push("--share".into());
+                    arguments.push(share.to_string_lossy().into_owned());
+                }
+                if keep_archive.is_active() {
+                    arguments.push("--keep-oci-archive".into());
                 }
                 manager.run_command(Some(machine_dir), arguments);
             }
@@ -494,7 +691,7 @@ impl ManagerUi {
         root.append(&name);
         let destination_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let destination = gtk::Entry::builder()
-            .placeholder_text("Machine parent folder")
+            .placeholder_text("Exact machine folder")
             .hexpand(true)
             .build();
         let browse = gtk::Button::with_label("Browse…");
@@ -513,18 +710,26 @@ impl ManagerUi {
 
         let chooser_parent = dialog.clone();
         let destination_for_picker = destination.clone();
+        let name_for_picker = name.clone();
         browse.connect_clicked(move |_| {
             let chooser = gtk::FileDialog::builder()
-                .title("Choose machine parent folder")
+                .title("Choose where to create the machine folder")
                 .modal(true)
                 .build();
             let chooser_parent = chooser_parent.clone();
             let destination = destination_for_picker.clone();
+            let name = name_for_picker.clone();
             glib::spawn_future_local(async move {
                 if let Ok(file) = chooser.select_folder_future(Some(&chooser_parent)).await
                     && let Some(path) = file.path()
                 {
-                    destination.set_text(&path.to_string_lossy());
+                    let new_name = name.text().trim().to_owned();
+                    let selected = if new_name.is_empty() {
+                        path
+                    } else {
+                        path.join(new_name)
+                    };
+                    destination.set_text(&selected.to_string_lossy());
                 }
             });
         });
@@ -536,7 +741,7 @@ impl ManagerUi {
         accept.connect_clicked(move |_| {
             if let Some(manager) = weak.upgrade() {
                 let new_name = name.text().trim().to_owned();
-                let machine_dir = PathBuf::from(destination.text().trim()).join(&new_name);
+                let machine_dir = PathBuf::from(destination.text().trim());
                 manager.run_command(
                     Some(machine_dir),
                     vec!["clone".into(), source.clone(), new_name],
@@ -574,6 +779,28 @@ impl ManagerUi {
             },
         );
     }
+}
+
+fn connect_folder_entry_picker(
+    button: &gtk::Button,
+    parent: &gtk::Window,
+    entry: &gtk::Entry,
+    title: &'static str,
+) {
+    let parent = parent.clone();
+    let entry = entry.clone();
+    button.connect_clicked(move |_| {
+        let chooser = gtk::FileDialog::builder().title(title).modal(true).build();
+        let parent = parent.clone();
+        let entry = entry.clone();
+        glib::spawn_future_local(async move {
+            if let Ok(file) = chooser.select_folder_future(Some(&parent)).await
+                && let Some(path) = file.path()
+            {
+                entry.set_text(&path.to_string_lossy());
+            }
+        });
+    });
 }
 
 fn connect_share_picker(

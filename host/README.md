@@ -17,7 +17,7 @@ The host and guest are separate Cargo workspaces. The host package never
 builds, embeds, migrates, or overwrites the guest package payload. A created or
 imported OCI rootfs must already satisfy the Buzzard OS guest contract.
 
-Build all three Debian packages with:
+Build all four Debian packages with:
 
 ```sh
 BUZZARDOS_DEB_OUTPUT_DIR=/path/on/data-disk/debs \

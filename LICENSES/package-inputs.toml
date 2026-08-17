@@ -1,14 +1,7 @@
 schema = 1
 audited_at = "2026-08-11"
 containerfile = "oci/desktop/Containerfile"
-notes = "Ordered direct package inputs are mirrored exactly from the Containerfile. They do not describe the transitive dpkg closure; only an audit of the built rootfs can do that. Debian package resolution is frozen by the dated snapshot sources recorded below. CUDA runtime packages use exact filenames and verified payload hashes. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
-
-[[base_image]]
-reference = "docker.io/library/rust:1.96-slim"
-used_by = ["deb-builder"]
-digest = "sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4"
-index_digest = "sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523"
-apt_snapshot = "20260623T000000Z"
+notes = "The Containerfile installs three already-built Buzzard OS guest packages; their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source. CUDA runtime packages use exact filenames and verified payload hashes. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
 
 [[base_image]]
 reference = "docker.io/library/debian:sid"
@@ -19,19 +12,13 @@ apt_snapshot = "20260803T000000Z"
 
 [[apt_block]]
 order = 1
-stage = "deb-builder"
-surface = "build-only"
-packages = ["binutils", "dpkg-dev", "libglib2.0-dev", "libgtk-4-dev", "libpulse-dev", "libx11-dev", "libxfixes-dev", "libxi-dev", "libxkbcommon-dev", "libxrandr-dev", "libxtst-dev", "pkg-config"]
-notes = "This stage builds the two local guest Debian packages. Rust dependencies remain recorded by the locked guest and Buzzard CUA Cargo graphs."
-
-[[apt_block]]
-order = 2
 stage = "runtime"
 surface = "oci"
-packages = ["at-spi2-core", "ca-certificates", "curl", "dbus", "dbus-user-session", "dbus-x11", "dconf-gsettings-backend", "ffmpeg", "firefox-esr", "fonts-dejavu-core", "fonts-noto-color-emoji", "fonts-noto-core", "fonts-noto-cjk", "foot", "fuse3", "gsettings-desktop-schemas", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-bad", "gstreamer1.0-plugins-good", "gstreamer1.0-tools", "grim", "libgl1", "libgl1-mesa-dri", "libasound2t64", "libatk-bridge2.0-0t64", "libatk1.0-0t64", "libcairo2", "libcups2t64", "libdbus-1-3", "libdrm2", "libexpat1", "libfuse2t64", "libgbm1", "libglib2.0-0t64", "libglib2.0-bin", "libgtk-3-0t64", "libgtk-4-1", "libnotify-bin", "libnspr4", "libnss3", "libpango-1.0-0", "libpulse0", "libx11-6", "libxcb1", "libxcomposite1", "libxdamage1", "libxext6", "libxfixes3", "libxi6", "libxkbcommon0", "libxrandr2", "mako-notifier", "mesa-vulkan-drivers", "mousepad", "openssh-client", "pipewire", "pipewire-alsa", "pipewire-pulse", "pkexec", "polkitd", "python3", "python3-apt", "python3-gi", "python3-pyatspi", "qt6-wayland", "qt6-gtk-platformtheme", "qt6-svg-plugins", "slurp", "squashfs-tools", "sudo", "sway", "wlr-randr", "systemd", "systemd-sysv", "thunar", "util-linux", "wireplumber", "wtype", "xdg-desktop-portal", "xdg-desktop-portal-gtk", "xdg-desktop-portal-wlr", "xdg-utils", "xkb-data", "xwayland"]
+packages = ["ca-certificates", "curl", "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb"]
+notes = "The three local packages are compiled before OCI assembly. APT resolves their declared distro dependencies from the immutable snapshot."
 
 [[direct_package_block]]
-order = 3
+order = 2
 stage = "runtime-cuda"
 surface = "oci"
 resolution = "direct NVIDIA repository filenames with sha256 verification; no repository-index resolution"

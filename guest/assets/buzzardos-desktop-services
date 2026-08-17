@@ -155,19 +155,27 @@ start_service integration "$runtime/libexec/buzzardos-integration-agent"
 start_optional_service /usr/libexec/xdg-desktop-portal-wlr xdg-desktop-portal-wlr
 start_optional_service /usr/libexec/xdg-desktop-portal xdg-desktop-portal
 
-start_service mako mako
-start_service shell "$runtime/libexec/buzzardos-shell"
-shell_pid=$last_service_pid
+start_optional_service mako mako
+desktop_required=0
+shell_pid=
+if [ -x /usr/bin/buzzardos-desktop ]; then
+    start_service desktop /usr/bin/buzzardos-desktop
+    shell_pid=$last_service_pid
+    desktop_required=1
+else
+    echo "buzzardos-desktop is not installed; running the stock Sway session without the optional Buzzard OS desktop" \
+        >"$status_dir/desktop.log"
+fi
 start_output_sync_supervisor
 output_sync_pid=$last_service_pid
 
-if [ -x /usr/bin/buzzardcua ]; then
-    start_service buzzardcua /usr/bin/buzzardcua serve \
+if [ -x /usr/bin/buzzardoscua ]; then
+    start_service buzzardoscua /usr/bin/buzzardoscua serve \
         --dangerously-bypass-approvals \
         --no-overlay
     cua_pid=$last_service_pid
 else
-    echo "required Buzzard CUA is not installed" >"$status_dir/buzzardcua.log"
+    echo "required Buzzard CUA is not installed" >"$status_dir/buzzardoscua.log"
     exit 1
 fi
 
@@ -179,8 +187,8 @@ fi
 cua_socket=$HOME/.cache/cua-driver/cua-driver.sock
 attempt=0
 while [ "$attempt" -lt 450 ]; do
-    if ! kill -0 "$shell_pid" 2>/dev/null; then
-        echo "Buzzard OS shell exited before becoming ready" >&2
+    if [ "$desktop_required" -eq 1 ] && ! kill -0 "$shell_pid" 2>/dev/null; then
+        echo "Buzzard OS Desktop exited before becoming ready" >&2
         exit 1
     fi
     if ! kill -0 "$cua_pid" 2>/dev/null; then
@@ -199,24 +207,24 @@ while [ "$attempt" -lt 450 ]; do
         echo "guest output/keyboard Settings service exited before readiness" >&2
         exit 1
     fi
-    if [ -f "$status_dir/shell-ready" ] && \
+    if { [ "$desktop_required" -eq 0 ] || [ -f "$status_dir/shell-ready" ]; } && \
         [ -f "$status_dir/clipboard-ready" ] && \
         [ -S "$status_dir/clipboard-agent.sock" ] && \
         [ -S "$XDG_RUNTIME_DIR/buzzardos-display-scale.sock" ] && \
         [ -S "$XDG_RUNTIME_DIR/buzzardos-keyboard-settings.sock" ] && \
         [ -f "$XDG_RUNTIME_DIR/buzzardos-output-sync-ready.json" ] && \
         [ -S "$cua_socket" ]; then
-        if timeout 5 /usr/bin/buzzardcua health_report '{}' \
-            >"$status_dir/cua-health.json.tmp" 2>>"$status_dir/buzzardcua.log" &&
+        if timeout 5 /usr/bin/buzzardoscua health_report '{}' \
+            >"$status_dir/cua-health.json.tmp" 2>>"$status_dir/buzzardoscua.log" &&
             grep -Eq '"overall"[[:space:]]*:[[:space:]]*"ok"' \
                 "$status_dir/cua-health.json.tmp" &&
-            timeout 10 /usr/bin/buzzardcua get_desktop_state \
+            timeout 10 /usr/bin/buzzardoscua get_desktop_state \
                 "{\"screenshot_out_file\":\"$status_dir/cua-ready.png.tmp\"}" \
                 >"$status_dir/cua-desktop-state.json.tmp" \
-                2>>"$status_dir/buzzardcua.log" &&
+                2>>"$status_dir/buzzardoscua.log" &&
             python3 - "$status_dir/cua-desktop-state.json.tmp" \
                 "$status_dir/cua-ready.png.tmp" \
-                2>>"$status_dir/buzzardcua.log" <<'PY'
+                2>>"$status_dir/buzzardoscua.log" <<'PY'
 import json
 import struct
 import sys

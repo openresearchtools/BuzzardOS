@@ -3415,11 +3415,11 @@ mod tests {
         assert!(missing.contains("10:229"));
     }
 
-    fn portable_machine() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, MachineConfig) {
-        let portable = tempfile::tempdir().unwrap();
-        let machine = portable.path().join("Machines/demo");
+    fn test_machine() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, MachineConfig) {
+        let workspace = tempfile::tempdir().unwrap();
+        let machine = workspace.path().join("demo");
         let rootfs = machine.join("rootfs");
-        let data = portable.path().join("shared");
+        let data = workspace.path().join("shared");
         fs::create_dir_all(&rootfs).unwrap();
         fs::create_dir(&data).unwrap();
         let config = MachineConfig::new(
@@ -3434,7 +3434,7 @@ mod tests {
             .save(&machine)
             .unwrap();
         (
-            portable,
+            workspace,
             machine.canonicalize().unwrap(),
             rootfs.canonicalize().unwrap(),
             data.canonicalize().unwrap(),
@@ -3444,17 +3444,17 @@ mod tests {
 
     #[test]
     fn validates_user_selected_machine_layout() {
-        let (_portable, machine, rootfs, _data, _config) = portable_machine();
+        let (_workspace, machine, rootfs, _data, _config) = test_machine();
         validate_machine_layout(&machine, &rootfs).unwrap();
     }
 
     #[test]
     fn arbitrary_folder_name_is_valid_but_symlink_lock_is_rejected() {
-        let (portable, machine, rootfs, _data, mut config) = portable_machine();
+        let (workspace, machine, rootfs, _data, mut config) = test_machine();
         config.name = "logical-name-can-differ".into();
         config.save(&machine).unwrap();
         validate_machine_layout(&machine, &rootfs).unwrap();
-        let outside = portable.path().join("outside-lock");
+        let outside = workspace.path().join("outside-lock");
         File::create(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, machine.join("machine.lock")).unwrap();
         assert!(lock_machine(&machine).is_err());
@@ -3498,7 +3498,7 @@ mod tests {
 
     #[test]
     fn diagnostics_refresh_cannot_erase_an_external_stop_request() {
-        let (_portable, machine, _rootfs, _data, _config) = portable_machine();
+        let (_workspace, machine, _rootfs, _data, _config) = test_machine();
         let mut requested = RuntimeState::new(MachineState::Stopping);
         requested.detail = Some("orderly shutdown requested".into());
         requested.save(&machine).unwrap();

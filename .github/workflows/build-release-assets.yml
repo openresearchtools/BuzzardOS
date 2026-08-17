@@ -38,13 +38,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            binutils build-essential dpkg-dev libglib2.0-dev libgtk-4-dev \
+            binutils build-essential buildah curl dpkg-dev libglib2.0-dev libgtk-4-dev \
             libpulse-dev libx11-dev libxfixes-dev libxi-dev libxkbcommon-dev \
             libxrandr-dev libxtst-dev pkg-config python3
           rustup toolchain install 1.96.0 --profile minimal
           rustup default 1.96.0
 
-      - name: Build the three versioned Debian packages
+      - name: Build the four versioned Debian packages
         shell: bash
         run: |
           set -euo pipefail
@@ -54,11 +54,14 @@ jobs:
           BUZZARDOS_DEB_OUTPUT_DIR="$output" \
             packaging/build-debs.sh all
           version=$(tr -d '\n' <VERSION)
-          cua_version=$(tr -d '\n' <guest/BUZZARDCUA_VERSION)
+          guest_version=$(tr -d '\n' <guest/GUEST_VERSION)
+          desktop_version=$(tr -d '\n' <guest/DESKTOP_VERSION)
+          cua_version=$(tr -d '\n' <guest/BUZZARDOSCUA_VERSION)
           for package in \
             "$output/buzzardos_${version}_amd64.deb" \
-            "$output/buzzardos-guest-desktop_${version}_amd64.deb" \
-            "$output/buzzardcua_${cua_version}_amd64.deb"; do
+            "$output/buzzardos-guest_${guest_version}_amd64.deb" \
+            "$output/buzzardos-desktop_${desktop_version}_amd64.deb" \
+            "$output/buzzardoscua_${cua_version}_amd64.deb"; do
             test -s "$package"
             dpkg-deb --info "$package" >/dev/null
             dpkg-deb --contents "$package" >/dev/null
@@ -72,7 +75,7 @@ jobs:
           version=$(tr -d '\n' <VERSION)
           sudo apt-get install --yes \
             "$RUNNER_TEMP/buzzardos-debs/buzzardos_${version}_amd64.deb"
-          test "$(buzzardos --version)" = "BuzzardOS $version"
+          test "$(buzzardos --version)" = "Buzzard OS $version"
           test -s /usr/share/applications/org.openresearchtools.buzzardos.desktop
           test -s /usr/share/metainfo/org.openresearchtools.buzzardos.metainfo.xml
 
@@ -80,18 +83,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BUZZARDOS_CONTAINER_ENGINE=docker \
           BUZZARDOS_BUILD_ROOT="$RUNNER_TEMP/buzzardos-oci-build" \
+          BUZZARDOS_GUEST_DEB_DIR="$RUNNER_TEMP/buzzardos-debs" \
           BUZZARDOS_OCI_TAG="buzzardos-desktop:actions-${GITHUB_RUN_ID}" \
             ./oci/build-local.sh
-
-      - name: Remove disposable local OCI state
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          docker image rm --force \
-            "buzzardos-desktop:actions-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
-          docker builder prune --all --force >/dev/null 2>&1 || true
 
       - name: Upload the Debian package artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

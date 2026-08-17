@@ -5,16 +5,18 @@
 Buzzard OS is a new Debian-packaged application. There is no released portable
 folder, AppImage, old registry, or rootfs migration contract to preserve.
 
-The deployment boundary is three binary packages:
+The deployment boundary is four binary packages:
 
 - `buzzardos`: host manager, broker, native display, helpers, icons, desktop
   entry, and AppStream metadata;
-- `buzzardos-guest-desktop`: guest shell, Settings, services, session assets,
-  themes, clipboard agent, and desktop integration; and
-- `buzzardcua`: the separately versioned in-guest computer-use service.
+- `buzzardos-guest`: guest session, integration agents, systemd assets, and
+  stock Sway/wlroots mechanics;
+- `buzzardos-desktop`: optional shell, Settings, themes, icons, applications,
+  and Thunar integration; and
+- `buzzardoscua`: the separately versioned in-guest computer-use service.
 
-`VERSION` versions the first two packages.
-`guest/BUZZARDCUA_VERSION` versions Buzzard CUA. Package updates will
+The four version files are `VERSION`, `guest/GUEST_VERSION`,
+`guest/DESKTOP_VERSION`, and `guest/BUZZARDOSCUA_VERSION`. Package updates will
 eventually be served from a separately designed signed APT repository. The
 current workflow does not publish packages or an OCI image.
 
@@ -36,8 +38,9 @@ and Remove controls; the CLI has repeatable `--share PATH` flags.
 
 ## Reference guest
 
-`oci/desktop/Containerfile` builds the two guest packages and installs them
-into a pinned Debian-snapshot rootfs. Sway and wlroots come exclusively from
+`oci/desktop/Containerfile` installs three prebuilt guest packages into a
+pinned Debian-snapshot rootfs. Package compilation is a separate step outside
+the OCI context. Sway and wlroots come exclusively from
 the Debian package set. No Sway/wlroots source checkout, Meson build, private
 fork, or compositor toolchain is present.
 
@@ -67,11 +70,12 @@ Before a package revision is handed off:
 
 1. run Rust format, Clippy, unit, Python contract, shell syntax, and structural
    licensing checks;
-2. build and inspect all three `.deb` files;
+2. build and inspect all four `.deb` files;
 3. time a cold reference OCI build and run `oci/verify-image.sh`; and
-4. install all three packages and verify versions, stock Sway, desktop files,
-   and package ownership on the existing Ubuntu 24.04, Debian 13, and Ubuntu
-   26.04 amd64 VMs.
+4. install the host package on each supported host and all three guest packages
+   in the reference guest; verify versions, stock Sway, desktop files, and
+   package ownership on the existing Ubuntu 24.04, Debian 13, and Ubuntu 26.04
+   amd64 VMs.
 
 ## Next publication work
 

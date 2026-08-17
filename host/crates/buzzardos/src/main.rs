@@ -13,395 +13,21 @@ use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use wb_core::{
     DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX, IdMap, MachineConfig, MachineRegistry, MachineState,
-    NetworkMode, OciImageMetadata, ResourceLocator, RuntimeState, SharedPath, WaylandCapabilities,
-    WbPaths, host_control_socket,
+    NetworkMode, OciImageMetadata, ResourceLocator, RetainedOciArchive, RuntimeState, SharedPath,
+    WaylandCapabilities, WbPaths, host_control_socket,
 };
 
-const ROOTFS_SEED_ARCHIVE: &str = "BuzzardOS-rootfs-linux-x86_64.tar.zst";
-const ROOTFS_SEED_MANIFEST: &str = "BuzzardOS-rootfs-linux-x86_64.json";
-const ROOTFS_SEED_KIND: &str = "buzzardos-flat-rootfs";
-const ROOTFS_SEED_MEDIA_TYPE: &str = "application/vnd.buzzardos.rootfs.v1.tar+zstd";
-const ROOTFS_SEED_SCHEMA: u32 = 1;
 const MAX_GUEST_ID: u64 = 65_535;
 const MAX_OCI_PAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OCI_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OCI_SPARSE_EXTENTS: u64 = 1_000_000;
-const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
-const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
-const GUEST_ASSETS_MANIFEST: &str = "usr/lib/buzzardos/guest-assets.manifest.json";
-const GUEST_RUNTIME_ROOT: &str = "opt/buzzardos/runtime";
-const BUNDLED_GUEST_RUNTIME: &str = "buzzardos-guest-runtime";
-const MAX_GUEST_RUNTIME_MANIFEST_BYTES: u64 = 1024 * 1024;
-const REQUIRED_GUEST_RUNTIME_FILES: &[&str] = &[
-    "libexec/buzzardos-shell",
-    "libexec/buzzardos-settings",
-    "libexec/buzzardos-shortcut-helper",
-    "libexec/buzzardos-clipboard-agent",
-    "libexec/buzzardos-updater",
-    "libexec/updater_core.py",
-    "libexec/buzzardos-init",
-    "libexec/buzzardos-session",
-    "libexec/buzzardos-sway-session",
-    "libexec/buzzardos-output-sync",
-    "libexec/buzzardos-desktop-stopped",
-    "libexec/buzzardos-desktop-services",
-    "libexec/buzzardos-integration-agent",
-    "libexec/buzzardos-appimage-ready",
-    "libexec/buzzardos-fusermount",
-    "libexec/buzzardos-fusermount-exec",
-    "libexec/buzzardos-runtime-ready",
-    "libexec/buzzardos-sudo-exec",
-];
-const LEGACY_REFERENCE_CUA_SHA256: &str =
-    "1f7abdd51e6239d3069caec92d73fca4a71c037321518c73036700012b30f029";
-const LEGACY_TILED_SWAY_CONFIG_SHA256: &str =
-    "eb974c1c489d4ca7f37043be1eca969d38042007eecb1d22e5d418dd7bcf23d3";
-const GUEST_ASSETS: &[(&str, &[u8], u32)] = &[
-    (
-        "usr/lib/systemd/system-generators/buzzardos-generator",
-        include_bytes!("../../../../guest/assets/buzzardos-generator"),
-        0o755,
-    ),
-    (
-        "usr/lib/systemd/system/buzzardos-desktop.service",
-        include_bytes!("../../../../guest/assets/buzzardos-desktop.service"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/sway-config",
-        include_bytes!("../../../../guest/assets/sway-config"),
-        0o644,
-    ),
-    (
-        "etc/fonts/conf.d/10-buzzardos-rendering.conf",
-        include_bytes!("../../../../guest/assets/fontconfig-rendering.conf"),
-        0o644,
-    ),
-    (
-        "etc/sudoers.d/90-buzzardos",
-        include_bytes!("../../../../guest/assets/90-buzzardos-sudoers"),
-        0o440,
-    ),
-    (
-        "usr/local/bin/sudo",
-        include_bytes!("../../../../guest/assets/buzzardos-sudo"),
-        0o755,
-    ),
-    (
-        "usr/lib/systemd/system/buzzardos-runtime-ready.service",
-        include_bytes!("../../../../guest/assets/buzzardos-runtime-ready.service"),
-        0o644,
-    ),
-    (
-        "usr/lib/systemd/system/buzzardos-updater.service",
-        include_bytes!("../../../../guest/assets/buzzardos-updater.service"),
-        0o644,
-    ),
-    (
-        "usr/lib/systemd/system/buzzardos-updater-check.service",
-        include_bytes!("../../../../guest/assets/buzzardos-updater-check.service"),
-        0o644,
-    ),
-    (
-        "usr/lib/systemd/system/buzzardos-updater.timer",
-        include_bytes!("../../../../guest/assets/buzzardos-updater.timer"),
-        0o644,
-    ),
-    (
-        "usr/share/dbus-1/system.d/org.openresearchtools.BuzzardOS.Updater1.conf",
-        include_bytes!("../../../../guest/assets/org.openresearchtools.BuzzardOS.Updater1.conf"),
-        0o644,
-    ),
-    (
-        "usr/libexec/buzzardos-shortcut-helper",
-        include_bytes!("../../../../guest/assets/buzzardos-shortcut-helper-compat"),
-        0o755,
-    ),
-    (
-        "etc/polkit-1/rules.d/49-buzzardos-root.rules",
-        include_bytes!("../../../../guest/assets/49-buzzardos-root.rules"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/kwalletrc",
-        include_bytes!("../../../../guest/assets/kwalletrc"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/gtk-3.0/settings.ini",
-        include_bytes!("../../../../guest/assets/gtk-3.0-settings.ini"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/gtk-4.0/settings.ini",
-        include_bytes!("../../../../guest/assets/gtk-4.0-settings.ini"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Dark/index.theme",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Dark/index.theme"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Dark/gtk-3.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Dark/gtk-3.0/gtk.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Dark/gtk-3.0/palette.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Dark/gtk-3.0/palette.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Dark/gtk-4.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Dark/gtk-4.0/gtk.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Dark/gtk-4.0/palette.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Dark/gtk-4.0/palette.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Light/index.theme",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Light/index.theme"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Light/gtk-3.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Light/gtk-3.0/gtk.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Light/gtk-3.0/palette.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Light/gtk-3.0/palette.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Light/gtk-4.0/gtk.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Light/gtk-4.0/gtk.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Light/gtk-4.0/palette.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Light/gtk-4.0/palette.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Shared/gtk-3.0/geometry.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css"),
-        0o644,
-    ),
-    (
-        "usr/share/themes/BuzzardOS-Shared/gtk-4.0/geometry.css",
-        include_bytes!("../../../../guest/assets/themes/BuzzardOS-Shared/gtk-4.0/geometry.css"),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/index.theme",
-        include_bytes!("../../../../guest/assets/icons/BuzzardOS/index.theme"),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/apps/buzzardos.svg",
-        include_bytes!("../../../../guest/assets/icons/BuzzardOS/scalable/apps/buzzardos.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/apps/buzzardos-settings.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/scalable/apps/buzzardos-settings.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/places/folder.svg",
-        include_bytes!("../../../../guest/assets/icons/BuzzardOS/scalable/places/folder.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/places/folder-open.svg",
-        include_bytes!("../../../../guest/assets/icons/BuzzardOS/scalable/places/folder-open.svg"),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/places/folder-publicshare.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/scalable/places/folder-publicshare.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/scalable/mimetypes/inode-directory.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/scalable/mimetypes/inode-directory.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/places/folder-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/places/folder-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/places/folder-open-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/places/folder-open-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/places/folder-publicshare-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/places/folder-publicshare-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/mimetypes/inode-directory-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/mimetypes/inode-directory-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/apps/buzzardos-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/apps/buzzardos-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/icons/BuzzardOS/symbolic/apps/buzzardos-settings-symbolic.svg",
-        include_bytes!(
-            "../../../../guest/assets/icons/BuzzardOS/symbolic/apps/buzzardos-settings-symbolic.svg"
-        ),
-        0o644,
-    ),
-    (
-        "usr/share/color-schemes/BuzzardOS-Dark.colors",
-        include_bytes!("../../../../guest/assets/BuzzardOS.colors"),
-        0o644,
-    ),
-    (
-        "usr/share/color-schemes/BuzzardOS-Light.colors",
-        include_bytes!("../../../../guest/assets/BuzzardOS-Light.colors"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/kdeglobals",
-        include_bytes!("../../../../guest/assets/kdeglobals"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/foot/foot.ini",
-        include_bytes!("../../../../guest/assets/foot.ini"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/mako/config",
-        include_bytes!("../../../../guest/assets/mako-config"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/xdg-desktop-portal/portals.conf",
-        include_bytes!("../../../../guest/assets/portals.conf"),
-        0o644,
-    ),
-    (
-        "etc/buzzardos/xdg/Thunar/uca.xml",
-        include_bytes!("../../../../guest/assets/thunar-uca.xml"),
-        0o644,
-    ),
-    (
-        "usr/share/buzzardos/applications/foot-server.desktop",
-        include_bytes!("../../../../guest/assets/applications/foot-server.desktop"),
-        0o644,
-    ),
-    (
-        "usr/share/buzzardos/applications/footclient.desktop",
-        include_bytes!("../../../../guest/assets/applications/footclient.desktop"),
-        0o644,
-    ),
-    (
-        "usr/share/buzzardos/applications/thunar-bulk-rename.desktop",
-        include_bytes!("../../../../guest/assets/applications/thunar-bulk-rename.desktop"),
-        0o644,
-    ),
-    (
-        "usr/share/buzzardos/applications/thunar-settings.desktop",
-        include_bytes!("../../../../guest/assets/applications/thunar-settings.desktop"),
-        0o644,
-    ),
-    (
-        "usr/share/applications/org.openresearchtools.BuzzardOS.Settings1.desktop",
-        include_bytes!(
-            "../../../../guest/assets/applications/org.openresearchtools.BuzzardOS.Settings1.desktop"
-        ),
-        0o644,
-    ),
-];
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
-struct GuestAssetRecord {
-    sha256: String,
-    mode: u32,
-}
-
-#[derive(Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-struct GuestAssetManifest {
-    schema: u32,
-    assets: BTreeMap<String, GuestAssetRecord>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GuestRuntimeFileRecord {
-    sha256: String,
-    mode: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GuestRuntimeManifest {
-    schema_version: u32,
-    revision: String,
-    files: BTreeMap<String, GuestRuntimeFileRecord>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GuestRuntimeReadiness {
-    schema_version: u32,
-    revision: String,
-    manifest_sha256: String,
-    ready: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GuestRuntimeActivationFailure {
-    schema_version: u32,
-    failed_revision: String,
-    fallback_revision: String,
-    reason: String,
-    observed_at_unix_seconds: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GuestRuntimeActivation {
-    revision: String,
-    previous: String,
-}
-
+const MAX_OCI_LAYOUT_BYTES: u64 = 1024 * 1024;
 #[derive(Debug)]
 struct DesktopReadinessDeadline {
     seconds: u64,
@@ -442,7 +68,7 @@ fn state_desktop_readiness_deadline(state: &RuntimeState) -> Option<DesktopReadi
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "BuzzardOS",
+    name = "Buzzard OS",
     version,
     about = "Persistent, rootless desktop machines in one Wayland window"
 )]
@@ -473,6 +99,41 @@ enum Commands {
         /// NVIDIA GPU index/UUID to expose; repeat for multiple GPUs.
         #[arg(long = "gpu", value_delimiter = ',', default_value = "all")]
         gpus: Vec<String>,
+        /// Retain verified OCI install media as cache/source.oci.tar.
+        #[arg(long)]
+        keep_oci_archive: bool,
+    },
+    /// Pull an OCI image with rootless Buildah and create a persistent machine.
+    Pull {
+        name: String,
+        /// Fully qualified OCI image reference.
+        image: String,
+        #[arg(long = "share")]
+        shares: Vec<PathBuf>,
+        #[arg(long, value_enum, default_value_t = NetworkArg::User)]
+        network: NetworkArg,
+        #[arg(long = "gpu", value_delimiter = ',', default_value = "all")]
+        gpus: Vec<String>,
+        #[arg(long)]
+        keep_oci_archive: bool,
+    },
+    /// Build a Containerfile with rootless Buildah and create a persistent machine.
+    Build {
+        name: String,
+        /// Build context directory.
+        #[arg(long)]
+        context: PathBuf,
+        /// Containerfile path; defaults to CONTEXT/Containerfile.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long = "share")]
+        shares: Vec<PathBuf>,
+        #[arg(long, value_enum, default_value_t = NetworkArg::User)]
+        network: NetworkArg,
+        #[arg(long = "gpu", value_delimiter = ',', default_value = "all")]
+        gpus: Vec<String>,
+        #[arg(long)]
+        keep_oci_archive: bool,
     },
     /// Boot systemd and the nested desktop compositor.
     Start {
@@ -497,6 +158,9 @@ enum Commands {
         /// Host file or directory to expose below /shared; repeat as needed.
         #[arg(long = "share")]
         shares: Vec<PathBuf>,
+        /// Retain verified OCI install media as cache/source.oci.tar.
+        #[arg(long)]
+        keep_oci_archive: bool,
     },
     /// Export one stopped machine as a portable standards-compliant OCI archive.
     Export {
@@ -582,17 +246,6 @@ enum Commands {
         #[arg(long)]
         machines: PathBuf,
     },
-    #[command(name = "__apply-rootfs", hide = true)]
-    ApplyRootfs {
-        #[arg(long)]
-        archive: PathBuf,
-        #[arg(long)]
-        manifest: PathBuf,
-        #[arg(long)]
-        expected_digest: String,
-        #[arg(long)]
-        rootfs: PathBuf,
-    },
     #[command(name = "__cleanup-staging", hide = true)]
     CleanupStaging {
         #[arg(long)]
@@ -606,25 +259,6 @@ enum Commands {
         staging: PathBuf,
         #[arg(long)]
         cache: PathBuf,
-    },
-    #[command(name = "__install-guest-assets", hide = true)]
-    InstallGuestAssets {
-        #[arg(long)]
-        rootfs: PathBuf,
-    },
-    #[command(name = "__verify-guest-assets", hide = true)]
-    VerifyGuestAssets {
-        #[arg(long)]
-        rootfs: PathBuf,
-    },
-    #[command(name = "__rollback-guest-runtime", hide = true)]
-    RollbackGuestRuntime {
-        #[arg(long)]
-        rootfs: PathBuf,
-        #[arg(long)]
-        expected_current: String,
-        #[arg(long)]
-        expected_previous: String,
     },
 }
 
@@ -717,60 +351,12 @@ fn run() -> Result<()> {
         remove_persistent_machine_tree(machine, machines)?;
         return Ok(());
     }
-    if let Some(Commands::ApplyRootfs {
-        archive,
-        manifest,
-        expected_digest,
-        rootfs,
-    }) = &cli.command
-    {
-        apply_rootfs_seed(archive, manifest, expected_digest, rootfs)?;
-        validate_extracted_rootfs(rootfs)?;
-        return Ok(());
-    }
     if let Some(Commands::CleanupStaging { staging, machines }) = &cli.command {
         remove_machine_staging_tree(staging, machines)?;
         return Ok(());
     }
     if let Some(Commands::CleanupExportStaging { staging, cache }) = &cli.command {
         remove_export_staging_tree(staging, cache)?;
-        return Ok(());
-    }
-    if let Some(Commands::InstallGuestAssets { rootfs }) = &cli.command {
-        let rootfs = rootfs
-            .canonicalize()
-            .with_context(|| format!("resolving guest rootfs {}", rootfs.display()))?;
-        migrate_guest_assets(&rootfs)?;
-        if !guest_assets_are_current(&rootfs)? {
-            bail!("guest asset migration revision was not committed");
-        }
-        return Ok(());
-    }
-    if let Some(Commands::VerifyGuestAssets { rootfs }) = &cli.command {
-        let rootfs = rootfs
-            .canonicalize()
-            .with_context(|| format!("resolving guest rootfs {}", rootfs.display()))?;
-        if guest_assets_are_current(&rootfs)? {
-            return Ok(());
-        }
-        std::process::exit(3);
-    }
-    if let Some(Commands::RollbackGuestRuntime {
-        rootfs,
-        expected_current,
-        expected_previous,
-    }) = &cli.command
-    {
-        let rootfs = rootfs
-            .canonicalize()
-            .with_context(|| format!("resolving guest rootfs {}", rootfs.display()))?;
-        rollback_guest_runtime(
-            &rootfs,
-            expected_current,
-            expected_previous,
-            "desktop readiness deadline expired",
-            0,
-        )?;
         return Ok(());
     }
     let mut registry = MachineRegistry::discover()?;
@@ -781,6 +367,7 @@ fn run() -> Result<()> {
             shares,
             network,
             gpus,
+            keep_oci_archive,
         }) => {
             let paths = creation_paths(cli.machine_dir.as_deref(), "create")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
@@ -791,6 +378,53 @@ fn run() -> Result<()> {
                 network.into(),
                 gpus,
                 shared_paths(shares)?,
+                keep_oci_archive,
+            )?;
+            registry.register(&paths.machine(&name))
+        }
+        Some(Commands::Pull {
+            name,
+            image,
+            shares,
+            network,
+            gpus,
+            keep_oci_archive,
+        }) => {
+            let paths = creation_paths(cli.machine_dir.as_deref(), "pull")?;
+            ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
+            create(
+                &paths,
+                &name,
+                &image,
+                network.into(),
+                gpus,
+                shared_paths(shares)?,
+                keep_oci_archive,
+            )?;
+            registry.register(&paths.machine(&name))
+        }
+        Some(Commands::Build {
+            name,
+            context,
+            file,
+            shares,
+            network,
+            gpus,
+            keep_oci_archive,
+        }) => {
+            let paths = creation_paths(cli.machine_dir.as_deref(), "build")?;
+            ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
+            build_machine(
+                &paths,
+                &name,
+                BuildMachineRequest {
+                    context: &context,
+                    containerfile: file.as_deref(),
+                    network: network.into(),
+                    gpus,
+                    shares: shared_paths(shares)?,
+                    keep_oci_archive,
+                },
             )?;
             registry.register(&paths.machine(&name))
         }
@@ -808,17 +442,23 @@ fn run() -> Result<()> {
             mode,
             manifest,
             shares,
+            keep_oci_archive,
         }) => {
             let paths = creation_paths(cli.machine_dir.as_deref(), "import")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
             import_machine(
                 &paths,
-                &source,
                 &name,
-                manifest.as_deref(),
-                mode,
-                None,
-                shared_paths(shares)?,
+                ImportMachineRequest {
+                    source: &source,
+                    selector: manifest.as_deref(),
+                    mode,
+                    source_reference_override: None,
+                    shares: shared_paths(shares)?,
+                    keep_oci_archive,
+                    network_override: None,
+                    gpus_override: None,
+                },
             )?;
             registry.register(&paths.machine(&name))
         }
@@ -886,22 +526,10 @@ fn run() -> Result<()> {
         Some(Commands::DeleteMachine { .. }) => {
             unreachable!("handled before portable path discovery")
         }
-        Some(Commands::ApplyRootfs { .. }) => {
-            unreachable!("handled before portable path discovery")
-        }
         Some(Commands::CleanupStaging { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         Some(Commands::CleanupExportStaging { .. }) => {
-            unreachable!("handled before portable path discovery")
-        }
-        Some(Commands::InstallGuestAssets { .. }) => {
-            unreachable!("handled before portable path discovery")
-        }
-        Some(Commands::VerifyGuestAssets { .. }) => {
-            unreachable!("handled before portable path discovery")
-        }
-        Some(Commands::RollbackGuestRuntime { .. }) => {
             unreachable!("handled before portable path discovery")
         }
         None => open_machine_manager(),
@@ -1000,6 +628,7 @@ fn create(
     network: NetworkMode,
     gpus: Vec<String>,
     shares: Vec<SharedPath>,
+    keep_oci_archive: bool,
 ) -> Result<()> {
     MachineConfig::validate_name(name)?;
     MachineConfig::validate_gpus(&gpus)?;
@@ -1022,48 +651,20 @@ fn create(
         let rootfs = machine_dir.join("rootfs");
         fs::create_dir(&rootfs).context("creating persistent rootfs")?;
 
-        let (source_reference, image_digest, oci_metadata) = {
-            let crane = resources.helper_or_path("crane")?;
+        let (source_reference, image_digest, oci_metadata, retained_oci_archive) = {
             let platform = oci_platform()?;
-            let digest_output = Command::new(&crane)
-                .args(["digest", "--platform", platform, image])
-                .stdin(Stdio::null())
-                .output()
-                .with_context(|| format!("resolving image digest with {}", crane.display()))?;
-            if !digest_output.status.success() {
-                bail!("OCI digest resolution failed with {}", digest_output.status);
-            }
-            let image_digest =
-                String::from_utf8(digest_output.stdout).context("OCI digest is not UTF-8")?;
-            let image_digest = image_digest.trim().to_owned();
-            validate_sha256_digest(&image_digest)?;
-            let immutable_image = format!("{image}@{image_digest}");
-
             let image_archive = machine_dir.join("image.oci.tar");
             let image_layout_stage = machine_dir.join("image-layout");
-            let image_cache = machine_dir.join("cache/oci-blobs");
-            fs::create_dir_all(&image_cache).context("creating OCI download cache")?;
             eprintln!("Pulling {image}…");
-            let status = Command::new(&crane)
-                .args(["pull", "--platform", platform, "--format", "oci"])
-                .arg("--cache_path")
-                .arg(&image_cache)
-                .arg(&immutable_image)
-                .arg(&image_archive)
-                .stdin(Stdio::null())
-                .status()
-                .with_context(|| format!("starting {}", crane.display()))?;
-            if !status.success() {
-                bail!("OCI pull failed with {status}");
-            }
+            pull_oci_archive(&resources, image, platform, &image_archive, machine_dir)?;
 
             fs::create_dir(&image_layout_stage).context("creating remote OCI layout staging")?;
             extract_oci_archive(&image_archive, &image_layout_stage)
                 .context("extracting downloaded OCI layout archive")?;
             let image_layout = canonical_oci_layout(&image_layout_stage)?;
             let index = read_oci_index(&image_layout)?;
-            let descriptor = find_oci_manifest_descriptor(&image_layout, &index, &image_digest)
-                .context("downloaded OCI layout does not contain the resolved manifest")?;
+            let descriptor = resolve_oci_manifest_descriptor(&image_layout, &index, None)?;
+            let image_digest = descriptor.digest.clone();
             let oci_metadata = oci_metadata_from_manifest(&image_layout, &descriptor)?;
 
             eprintln!("Applying OCI layers to the persistent root filesystem…");
@@ -1074,9 +675,12 @@ fn create(
                 &rootfs,
                 machine_dir,
             )?;
+            let retained = keep_oci_archive
+                .then(|| retain_oci_layout(&image_layout, machine_dir))
+                .transpose()?;
             fs::remove_file(&image_archive).context("removing downloaded OCI archive")?;
             fs::remove_dir_all(&image_layout_stage).context("removing temporary OCI layout")?;
-            (image.to_owned(), image_digest, oci_metadata)
+            (image.to_owned(), image_digest, oci_metadata, retained)
         };
 
         let mut config = MachineConfig::new(
@@ -1088,6 +692,7 @@ fn create(
         );
         config.oci = oci_metadata;
         config.shares = shares;
+        config.retained_oci_archive = retained_oci_archive;
         config.save(machine_dir)?;
         RuntimeState::new(MachineState::Stopped).save(machine_dir)?;
         File::create(machine_dir.join("machine.lock")).context("creating machine lock")?;
@@ -1118,15 +723,263 @@ fn create(
 const BUZZARD_OCI_CONFIG_ANNOTATION: &str = "org.openresearchtools.buzzardos.machine-config.v1";
 const OCI_REF_NAME_ANNOTATION: &str = "org.opencontainers.image.ref.name";
 
-fn import_machine(
-    paths: &WbPaths,
-    source: &str,
-    name: &str,
-    selector: Option<&str>,
-    mode: ImportModeArg,
-    source_reference_override: Option<&str>,
-    shares: Vec<SharedPath>,
+fn pull_oci_archive(
+    resources: &ResourceLocator,
+    image: &str,
+    platform: &str,
+    archive: &Path,
+    work_parent: &Path,
 ) -> Result<()> {
+    let (os, arch) = platform
+        .split_once('/')
+        .filter(|(os, arch)| !os.is_empty() && !arch.is_empty())
+        .context("OCI platform must have the form OS/ARCH")?;
+    let buildah = resources.helper_or_path("buildah")?;
+    let work = tempfile::Builder::new()
+        .prefix(".buildah-pull-")
+        .tempdir_in(work_parent)
+        .context("creating isolated Buildah pull storage")?;
+    let storage = work.path().join("storage");
+    let runroot = work.path().join("runroot");
+    fs::create_dir(&storage).context("creating isolated Buildah pull storage")?;
+    fs::create_dir(&runroot).context("creating isolated Buildah pull runroot")?;
+
+    let pull = Command::new(&buildah)
+        .arg("--root")
+        .arg(&storage)
+        .arg("--runroot")
+        .arg(&runroot)
+        .args([
+            "--storage-driver",
+            "vfs",
+            "pull",
+            "--quiet",
+            "--policy=always",
+        ])
+        .arg("--os")
+        .arg(os)
+        .arg("--arch")
+        .arg(arch)
+        .arg(image)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("starting rootless Buildah pull with {}", buildah.display()))?;
+    if !pull.status.success() {
+        bail!(
+            "Buildah OCI pull failed with {}: {}",
+            pull.status,
+            String::from_utf8_lossy(&pull.stderr).trim()
+        );
+    }
+    let image_id = String::from_utf8(pull.stdout)
+        .context("Buildah returned a non-UTF-8 image ID")?
+        .trim()
+        .to_owned();
+    if image_id.is_empty() {
+        bail!("Buildah returned an empty image ID");
+    }
+
+    let destination = format!("oci-archive:{}", archive.display());
+    let push = Command::new(&buildah)
+        .arg("--root")
+        .arg(&storage)
+        .arg("--runroot")
+        .arg(&runroot)
+        .args(["--storage-driver", "vfs", "push", "--format", "oci"])
+        .arg(&image_id)
+        .arg(&destination)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| format!("exporting OCI archive with {}", buildah.display()))?;
+    if !push.success() {
+        bail!("Buildah OCI export failed with {push}");
+    }
+
+    cleanup_buildah_store(&buildah, &storage, &runroot);
+    Ok(())
+}
+
+fn cleanup_buildah_store(buildah: &Path, storage: &Path, runroot: &Path) {
+    for arguments in [["rm", "--all", ""], ["rmi", "--all", "--force"]] {
+        let mut command = Command::new(buildah);
+        command
+            .arg("--root")
+            .arg(storage)
+            .arg("--runroot")
+            .arg(runroot)
+            .args(["--storage-driver", "vfs"]);
+        for argument in arguments
+            .into_iter()
+            .filter(|argument| !argument.is_empty())
+        {
+            command.arg(argument);
+        }
+        let _ = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+struct BuildMachineRequest<'a> {
+    context: &'a Path,
+    containerfile: Option<&'a Path>,
+    network: NetworkMode,
+    gpus: Vec<String>,
+    shares: Vec<SharedPath>,
+    keep_oci_archive: bool,
+}
+
+fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) -> Result<()> {
+    let BuildMachineRequest {
+        context,
+        containerfile,
+        network,
+        gpus,
+        shares,
+        keep_oci_archive,
+    } = request;
+    MachineConfig::validate_name(name)?;
+    MachineConfig::validate_gpus(&gpus)?;
+    let context = context
+        .canonicalize()
+        .with_context(|| format!("resolving Buildah context {}", context.display()))?;
+    let metadata = fs::symlink_metadata(&context)
+        .with_context(|| format!("inspecting Buildah context {}", context.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("Buildah context must be a real directory");
+    }
+    let requested_file = containerfile
+        .map(PathBuf::from)
+        .unwrap_or_else(|| context.join("Containerfile"));
+    let requested_file = if requested_file.is_absolute() {
+        requested_file
+    } else {
+        context.join(requested_file)
+    };
+    let containerfile = requested_file.canonicalize().with_context(|| {
+        format!(
+            "resolving selected Containerfile {}",
+            requested_file.display()
+        )
+    })?;
+    if !containerfile.is_file() {
+        bail!("selected Containerfile is not a regular file");
+    }
+
+    let resources = ResourceLocator::discover()?;
+    let buildah = resources.helper_or_path("buildah")?;
+    let work = tempfile::Builder::new()
+        .prefix(&format!(".{name}-buildah-"))
+        .tempdir_in(paths.machines())
+        .context("creating Buildah output staging directory")?;
+    let iidfile = work.path().join("image.id");
+    let archive = work.path().join("image.oci.tar");
+    let storage = work.path().join("buildah-storage");
+    let runroot = work.path().join("buildah-runroot");
+    fs::create_dir(&storage).context("creating isolated Buildah storage")?;
+    fs::create_dir(&runroot).context("creating isolated Buildah runroot")?;
+    eprintln!(
+        "Building {} with rootless Buildah…",
+        containerfile.display()
+    );
+    let status = Command::new(&buildah)
+        .arg("--root")
+        .arg(&storage)
+        .arg("--runroot")
+        .arg(&runroot)
+        .args(["--storage-driver", "vfs"])
+        .args([
+            "build",
+            "--format",
+            "oci",
+            "--no-cache",
+            "--pull=always",
+            "--force-rm",
+        ])
+        .arg("--iidfile")
+        .arg(&iidfile)
+        .arg("--file")
+        .arg(&containerfile)
+        .arg(&context)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| format!("starting {} build", buildah.display()))?;
+    if !status.success() {
+        bail!("Buildah build failed with {status}");
+    }
+    let image_id = fs::read_to_string(&iidfile)
+        .context("reading Buildah image ID")?
+        .trim()
+        .to_owned();
+    if image_id.is_empty()
+        || !image_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
+    {
+        bail!("Buildah returned an invalid image ID");
+    }
+    let destination = format!("oci-archive:{}", archive.display());
+    let push_status = Command::new(&buildah)
+        .arg("--root")
+        .arg(&storage)
+        .arg("--runroot")
+        .arg(&runroot)
+        .args(["--storage-driver", "vfs", "push", "--format", "oci"])
+        .arg(&image_id)
+        .arg(&destination)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| format!("exporting Buildah image with {}", buildah.display()))?;
+    if !push_status.success() {
+        bail!("Buildah OCI export failed with {push_status}");
+    }
+
+    let source = archive
+        .to_str()
+        .context("Buildah OCI staging path is not UTF-8")?;
+    let source_reference = format!("buildah:{}", containerfile.display());
+    let result = import_machine(
+        paths,
+        name,
+        ImportMachineRequest {
+            source,
+            selector: None,
+            mode: ImportModeArg::Clone,
+            source_reference_override: Some(&source_reference),
+            shares,
+            keep_oci_archive,
+            network_override: Some(network),
+            gpus_override: Some(gpus),
+        },
+    );
+    cleanup_buildah_store(&buildah, &storage, &runroot);
+    result
+}
+
+struct ImportMachineRequest<'a> {
+    source: &'a str,
+    selector: Option<&'a str>,
+    mode: ImportModeArg,
+    source_reference_override: Option<&'a str>,
+    shares: Vec<SharedPath>,
+    keep_oci_archive: bool,
+    network_override: Option<NetworkMode>,
+    gpus_override: Option<Vec<String>>,
+}
+
+fn import_machine(paths: &WbPaths, name: &str, request: ImportMachineRequest<'_>) -> Result<()> {
+    let ImportMachineRequest {
+        source,
+        selector,
+        mode,
+        source_reference_override,
+        shares,
+        keep_oci_archive,
+        network_override,
+        gpus_override,
+    } = request;
     MachineConfig::validate_name(name)?;
     if source.trim().is_empty() {
         bail!("OCI import source cannot be empty");
@@ -1142,11 +995,11 @@ fn import_machine(
         .tempdir_in(paths.machines())
         .context("creating machine import staging directory")?;
     let source_stage = tempfile::Builder::new()
-        .prefix("oci-import-")
-        .tempdir_in(stage.path())
+        .prefix(&format!(".{name}-oci-import-"))
+        .tempdir_in(paths.machines())
         .context("creating OCI import staging directory")?;
 
-    let (layout, source_reference, expected_digest) = if source_path.exists() {
+    let (layout, source_reference) = if source_path.exists() {
         let layout = if source_path.is_dir() {
             canonical_oci_layout(source_path)?
         } else {
@@ -1155,63 +1008,22 @@ fn import_machine(
             extract_oci_archive(source_path, &extracted)?;
             canonical_oci_layout(&extracted)?
         };
-        (layout, local_oci_source_reference(source_path), None)
+        (layout, local_oci_source_reference(source_path))
     } else {
         if selector.is_some() {
             bail!("--manifest is supported only for local OCI layouts and archives");
         }
-        let crane = resources.helper_or_path("crane")?;
         let platform = oci_platform()?;
-        let digest_output = Command::new(&crane)
-            .args(["digest", "--platform", platform, source])
-            .stdin(Stdio::null())
-            .output()
-            .with_context(|| format!("resolving OCI reference with {}", crane.display()))?;
-        if !digest_output.status.success() {
-            bail!("OCI digest resolution failed with {}", digest_output.status);
-        }
-        let digest = String::from_utf8(digest_output.stdout)
-            .context("OCI digest is not UTF-8")?
-            .trim()
-            .to_owned();
-        validate_sha256_digest(&digest)?;
-        let immutable_source = if source.contains("@sha256:") {
-            source.to_owned()
-        } else {
-            format!("{source}@{digest}")
-        };
         let archive = source_stage.path().join("remote.oci.tar");
-        let cache = stage.path().join("cache/oci-blobs");
-        fs::create_dir_all(&cache).context("creating OCI download cache")?;
         eprintln!("Pulling {source}…");
-        let status = Command::new(&crane)
-            .args(["pull", "--platform", platform, "--format", "oci"])
-            .arg("--cache_path")
-            .arg(&cache)
-            .arg(&immutable_source)
-            .arg(&archive)
-            .stdin(Stdio::null())
-            .status()
-            .with_context(|| format!("starting {}", crane.display()))?;
-        if !status.success() {
-            bail!("OCI pull failed with {status}");
-        }
+        pull_oci_archive(&resources, source, platform, &archive, source_stage.path())?;
         let extracted = source_stage.path().join("layout");
         fs::create_dir(&extracted).context("creating remote OCI extraction directory")?;
         extract_oci_archive(&archive, &extracted)?;
-        (
-            canonical_oci_layout(&extracted)?,
-            format!("oci:{source}"),
-            Some(digest),
-        )
+        (canonical_oci_layout(&extracted)?, format!("oci:{source}"))
     };
     let index = read_oci_index(&layout)?;
-    let descriptor = if let Some(digest) = expected_digest.as_deref() {
-        find_oci_manifest_descriptor(&layout, &index, digest)
-            .context("downloaded OCI layout does not contain the resolved manifest")?
-    } else {
-        resolve_oci_manifest_descriptor(&layout, &index, selector)?
-    };
+    let descriptor = resolve_oci_manifest_descriptor(&layout, &index, selector)?;
     let digest = descriptor.digest.clone();
     let imported_config = portable_config_from_manifest(&layout, &descriptor)?;
     let imported_oci_metadata = oci_metadata_from_manifest(&layout, &descriptor)?;
@@ -1223,6 +1035,9 @@ fn import_machine(
         let rootfs = stage.path().join("rootfs");
         fs::create_dir(&rootfs).context("creating imported machine rootfs")?;
         apply_image_in_user_namespace(&resources, &layout, &digest, &rootfs, stage.path())?;
+        let retained_oci_archive = keep_oci_archive
+            .then(|| retain_oci_layout(&layout, stage.path()))
+            .transpose()?;
 
         let carries_portable_identity = imported_config.is_some();
         let mut config = imported_config.unwrap_or_else(|| {
@@ -1246,7 +1061,15 @@ fn import_machine(
         config.image = source_reference.clone();
         config.image_digest = Some(digest.clone());
         sanitize_imported_machine_config(&mut config);
+        if let Some(network) = network_override {
+            config.network = network;
+        }
+        if let Some(gpus) = gpus_override.clone() {
+            MachineConfig::validate_gpus(&gpus)?;
+            config.gpus = gpus;
+        }
         config.shares = shares;
+        config.retained_oci_archive = retained_oci_archive;
         config.save(stage.path())?;
         RuntimeState::new(MachineState::Stopped).save(stage.path())?;
         File::create(stage.path().join("machine.lock")).context("creating machine lock")?;
@@ -1285,8 +1108,50 @@ fn local_oci_source_reference(source: &Path) -> String {
     format!("oci-import:{label}")
 }
 
+fn retain_oci_layout(layout: &Path, machine_stage: &Path) -> Result<RetainedOciArchive> {
+    let cache = machine_stage.join("cache");
+    fs::create_dir_all(&cache).context("creating machine OCI cache")?;
+    let archive_path = cache.join("source.oci.tar");
+    let archive_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&archive_path)
+        .with_context(|| format!("creating retained OCI archive {}", archive_path.display()))?;
+    let mut archive = tar::Builder::new(archive_file);
+    archive
+        .append_dir_all(".", layout)
+        .context("archiving verified OCI layout")?;
+    let archive_file = archive
+        .into_inner()
+        .context("finishing retained OCI archive")?;
+    archive_file
+        .sync_all()
+        .context("syncing retained OCI archive")?;
+
+    let size = archive_file.metadata()?.len();
+    drop(archive_file);
+    let mut source = open_regular_nofollow(&archive_path, "retained OCI archive")?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    let retained = RetainedOciArchive {
+        relative_path: "cache/source.oci.tar".into(),
+        sha256: format!("{:x}", hash.finalize()),
+        size,
+    };
+    retained.validate()?;
+    Ok(retained)
+}
+
 fn sanitize_imported_machine_config(config: &mut MachineConfig) {
-    config.schema = 4;
+    config.schema = 5;
     config.gpus = vec!["all".into()];
     config.network = NetworkMode::User;
     for port in &mut config.integrations.ports {
@@ -1299,6 +1164,7 @@ fn sanitize_imported_machine_config(config: &mut MachineConfig) {
     config.integrations.media.microphone_target = None;
     config.integrations.media.camera_target = None;
     config.shares.clear();
+    config.retained_oci_archive = None;
 }
 
 fn reject_duplicate_machine_identity(identity: uuid::Uuid) -> Result<()> {
@@ -1367,11 +1233,11 @@ fn canonical_oci_layout(path: &Path) -> Result<PathBuf> {
     let mut layout_file = open_regular_nofollow(&layout.join("oci-layout"), "oci-layout")?;
     let mut layout_bytes = Vec::new();
     Read::by_ref(&mut layout_file)
-        .take(MAX_ROOTFS_MANIFEST_BYTES + 1)
+        .take(MAX_OCI_LAYOUT_BYTES + 1)
         .read_to_end(&mut layout_bytes)
         .context("reading oci-layout")?;
-    if layout_bytes.len() as u64 > MAX_ROOTFS_MANIFEST_BYTES {
-        bail!("oci-layout exceeds {MAX_ROOTFS_MANIFEST_BYTES} bytes");
+    if layout_bytes.len() as u64 > MAX_OCI_LAYOUT_BYTES {
+        bail!("oci-layout exceeds {MAX_OCI_LAYOUT_BYTES} bytes");
     }
     let layout_record: serde_json::Value =
         serde_json::from_slice(&layout_bytes).context("parsing oci-layout")?;
@@ -2209,14 +2075,19 @@ fn clone_machine(
     export_machine(source_paths, source, &archive_path, None)?;
     let result = import_machine(
         destination_paths,
-        archive_path
-            .to_str()
-            .context("clone archive path is not UTF-8")?,
         name,
-        None,
-        ImportModeArg::Clone,
-        Some(&format!("clone:{source}")),
-        shares,
+        ImportMachineRequest {
+            source: archive_path
+                .to_str()
+                .context("clone archive path is not UTF-8")?,
+            selector: None,
+            mode: ImportModeArg::Clone,
+            source_reference_override: Some(&format!("clone:{source}")),
+            shares,
+            keep_oci_archive: false,
+            network_override: None,
+            gpus_override: None,
+        },
     );
     let _ = fs::remove_file(&archive_path);
     result
@@ -2578,30 +2449,6 @@ fn commit_new_machine(staging: &Path, destination: &Path) -> Result<()> {
     Err(error).context("atomically renaming the completed machine")
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct RootfsSeedManifest {
-    schema: u32,
-    kind: String,
-    platform: RootfsSeedPlatform,
-    archive: RootfsSeedArchive,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RootfsSeedPlatform {
-    os: String,
-    architecture: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RootfsSeedArchive {
-    name: String,
-    media_type: String,
-    size: u64,
-    sha256: String,
-    uncompressed_size: u64,
-    uncompressed_sha256: String,
-}
-
 fn open_regular_nofollow(path: &Path, description: &str) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -2615,86 +2462,6 @@ fn open_regular_nofollow(path: &Path, description: &str) -> Result<File> {
         bail!("{description} {} is not a regular file", path.display());
     }
     Ok(file)
-}
-
-fn read_rootfs_seed_manifest(path: &Path) -> Result<RootfsSeedManifest> {
-    if path.file_name() != Some(std::ffi::OsStr::new(ROOTFS_SEED_MANIFEST)) {
-        bail!("bundled rootfs manifest must be named {ROOTFS_SEED_MANIFEST}");
-    }
-    let mut file = open_regular_nofollow(path, "bundled rootfs manifest")?;
-    let size = file.metadata()?.len();
-    if size == 0 || size > MAX_ROOTFS_MANIFEST_BYTES {
-        bail!(
-            "bundled rootfs manifest has invalid size {size}; maximum is {MAX_ROOTFS_MANIFEST_BYTES} bytes"
-        );
-    }
-    let mut bytes = Vec::with_capacity(size as usize);
-    file.read_to_end(&mut bytes)
-        .context("reading bundled rootfs manifest")?;
-    let manifest: RootfsSeedManifest =
-        serde_json::from_slice(&bytes).context("parsing bundled rootfs manifest")?;
-    validate_rootfs_seed_manifest(&manifest)?;
-    Ok(manifest)
-}
-
-fn validate_rootfs_seed_manifest(manifest: &RootfsSeedManifest) -> Result<()> {
-    if manifest.schema != ROOTFS_SEED_SCHEMA {
-        bail!(
-            "unsupported bundled rootfs manifest schema {}",
-            manifest.schema
-        );
-    }
-    if manifest.kind != ROOTFS_SEED_KIND {
-        bail!(
-            "bundled rootfs manifest has unexpected kind '{}'",
-            manifest.kind
-        );
-    }
-    if manifest.platform.os != "linux" || manifest.platform.architecture != "amd64" {
-        bail!(
-            "bundled rootfs platform must be linux/amd64, not {}/{}",
-            manifest.platform.os,
-            manifest.platform.architecture
-        );
-    }
-    if std::env::consts::ARCH != "x86_64" {
-        bail!(
-            "the bundled linux/amd64 rootfs cannot run on host architecture '{}'",
-            std::env::consts::ARCH
-        );
-    }
-    if manifest.archive.name != ROOTFS_SEED_ARCHIVE {
-        bail!(
-            "bundled rootfs archive name must be {ROOTFS_SEED_ARCHIVE}, not {}",
-            manifest.archive.name
-        );
-    }
-    if manifest.archive.media_type != ROOTFS_SEED_MEDIA_TYPE {
-        bail!(
-            "unsupported bundled rootfs media type {}",
-            manifest.archive.media_type
-        );
-    }
-    validate_sha256_hex(&manifest.archive.sha256, "rootfs archive")?;
-    validate_sha256_hex(
-        &manifest.archive.uncompressed_sha256,
-        "uncompressed rootfs archive",
-    )?;
-    if manifest.archive.size < 4 || manifest.archive.uncompressed_size < 1024 {
-        bail!("bundled rootfs archive sizes are invalid");
-    }
-    Ok(())
-}
-
-fn validate_sha256_hex(value: &str, description: &str) -> Result<()> {
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!("{description} sha256 is not 64 lowercase hexadecimal characters");
-    }
-    Ok(())
 }
 
 struct HashingReader<R> {
@@ -2738,261 +2505,6 @@ struct DeferredRootfsDirectory {
     mode: u32,
     mtime: (i64, i64),
     xattrs: Vec<(Vec<u8>, Vec<u8>)>,
-}
-
-fn apply_rootfs_seed(
-    archive_path: &Path,
-    manifest_path: &Path,
-    expected_digest: &str,
-    rootfs: &Path,
-) -> Result<()> {
-    if archive_path.parent() != manifest_path.parent() {
-        bail!("bundled rootfs archive and manifest must share one runtime directory");
-    }
-    let runtime = archive_path
-        .parent()
-        .context("bundled rootfs archive has no runtime directory")?;
-    let runtime_metadata = fs::symlink_metadata(runtime)
-        .with_context(|| format!("inspecting bundled runtime directory {}", runtime.display()))?;
-    if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
-        bail!("bundled rootfs runtime directory must be a real directory");
-    }
-
-    let manifest = read_rootfs_seed_manifest(manifest_path)?;
-    let expected_hex = expected_digest
-        .strip_prefix("sha256:")
-        .context("bundled rootfs expected digest does not use sha256")?;
-    validate_sha256_hex(expected_hex, "expected rootfs archive")?;
-    if expected_hex != manifest.archive.sha256 {
-        bail!(
-            "bundled rootfs manifest digest changed: expected {expected_hex}, manifest says {}",
-            manifest.archive.sha256
-        );
-    }
-
-    let rootfs_metadata = fs::symlink_metadata(rootfs)
-        .with_context(|| format!("inspecting persistent rootfs {}", rootfs.display()))?;
-    if rootfs_metadata.file_type().is_symlink() || !rootfs_metadata.is_dir() {
-        bail!("persistent rootfs must be a real directory, not a symlink");
-    }
-    if fs::read_dir(rootfs)
-        .context("inspecting new persistent rootfs")?
-        .next()
-        .is_some()
-    {
-        bail!("bundled rootfs seed may only be applied to an empty new rootfs");
-    }
-    #[cfg(not(test))]
-    chown(rootfs, Some(Uid::from_raw(0)), Some(Gid::from_raw(0)))
-        .with_context(|| format!("setting root ownership on {}", rootfs.display()))?;
-
-    let mut file = open_regular_nofollow(archive_path, "bundled rootfs archive")?;
-    let actual_size = file.metadata()?.len();
-    if actual_size != manifest.archive.size {
-        bail!(
-            "bundled rootfs archive size mismatch: manifest says {}, file has {actual_size}",
-            manifest.archive.size
-        );
-    }
-    let mut preflight_hash = Sha256::new();
-    std::io::copy(&mut file, &mut preflight_hash).context("hashing bundled rootfs archive")?;
-    let preflight_hash = format!("{:x}", preflight_hash.finalize());
-    if preflight_hash != manifest.archive.sha256 {
-        bail!(
-            "bundled rootfs archive digest mismatch: expected {}, got {preflight_hash}",
-            manifest.archive.sha256
-        );
-    }
-    file.rewind().context("rewinding bundled rootfs archive")?;
-    let mut magic = [0_u8; 4];
-    file.read_exact(&mut magic)
-        .context("reading bundled rootfs archive header")?;
-    if magic != [0x28, 0xb5, 0x2f, 0xfd] {
-        bail!("bundled rootfs archive is not a Zstandard frame");
-    }
-    file.rewind().context("rewinding bundled rootfs archive")?;
-
-    let compressed = HashingReader::new(file);
-    let decoder = zstd::stream::read::Decoder::new(compressed)
-        .context("initializing bundled rootfs Zstandard decoder")?;
-    let uncompressed = HashingReader::new(decoder);
-    let mut tar_archive = tar::Archive::new(uncompressed);
-    tar_archive.set_preserve_permissions(true);
-    tar_archive.set_preserve_mtime(true);
-    tar_archive.set_preserve_ownerships(true);
-    tar_archive.set_unpack_xattrs(false);
-
-    let mut directories = Vec::new();
-    let mut entry_count = 0_u64;
-    {
-        let entries = tar_archive
-            .entries()
-            .context("reading bundled rootfs tar archive")?;
-        for item in entries {
-            let mut entry = item.context("reading bundled rootfs tar entry")?;
-            entry_count = entry_count.saturating_add(1);
-            let raw_path = entry
-                .path()
-                .context("reading bundled rootfs entry path")?
-                .into_owned();
-            let relative = safe_relative_path(&raw_path)?.to_path_buf();
-            if rootfs_path_contains_whiteout(&relative) {
-                bail!(
-                    "flat rootfs archive contains forbidden OCI whiteout {}",
-                    relative.display()
-                );
-            }
-
-            let entry_type = entry.header().entry_type();
-            if !matches!(
-                entry_type,
-                tar::EntryType::Regular
-                    | tar::EntryType::Continuous
-                    | tar::EntryType::GNUSparse
-                    | tar::EntryType::Directory
-                    | tar::EntryType::Symlink
-                    | tar::EntryType::Link
-            ) {
-                bail!(
-                    "flat rootfs archive contains unsupported special entry {} ({entry_type:?})",
-                    relative.display()
-                );
-            }
-            let uid = entry
-                .header()
-                .uid()
-                .context("reading bundled rootfs entry UID")?;
-            let gid = entry
-                .header()
-                .gid()
-                .context("reading bundled rootfs entry GID")?;
-            if uid > MAX_GUEST_ID || gid > MAX_GUEST_ID {
-                bail!(
-                    "flat rootfs entry {} uses unsupported guest ownership {uid}:{gid}; maximum is {MAX_GUEST_ID}",
-                    relative.display()
-                );
-            }
-            if entry_type == tar::EntryType::Link {
-                let target = entry
-                    .link_name()
-                    .context("reading bundled rootfs hardlink target")?
-                    .context("bundled rootfs hardlink has no target")?
-                    .into_owned();
-                let target = safe_relative_path(&target)?;
-                if target.as_os_str().is_empty() {
-                    bail!("bundled rootfs hardlink target cannot be empty");
-                }
-            }
-
-            let mode = entry
-                .header()
-                .mode()
-                .context("reading bundled rootfs entry mode")?;
-            let mut mtime = (
-                i64::try_from(
-                    entry
-                        .header()
-                        .mtime()
-                        .context("reading bundled rootfs entry mtime")?,
-                )
-                .context("bundled rootfs entry mtime is outside the supported range")?,
-                0_i64,
-            );
-            let mut xattrs = Vec::new();
-            if let Some(extensions) = entry
-                .pax_extensions()
-                .context("reading bundled rootfs PAX metadata")?
-            {
-                for extension in extensions {
-                    let extension = extension.context("reading bundled rootfs PAX record")?;
-                    if extension.key_bytes() == b"mtime" {
-                        mtime = parse_pax_timestamp(extension.value_bytes())?;
-                    } else if let Some(name) = extension.key_bytes().strip_prefix(b"SCHILY.xattr.")
-                    {
-                        if name.is_empty() {
-                            bail!("bundled rootfs archive contains an empty xattr name");
-                        }
-                        xattrs.push((name.to_vec(), extension.value_bytes().to_vec()));
-                    }
-                }
-            }
-
-            if entry_type == tar::EntryType::Directory {
-                if !relative.as_os_str().is_empty()
-                    && !entry
-                        .unpack_in(rootfs)
-                        .with_context(|| format!("extracting {}", relative.display()))?
-                {
-                    bail!(
-                        "bundled rootfs entry {} escaped the destination",
-                        relative.display()
-                    );
-                }
-                directories.push(DeferredRootfsDirectory {
-                    relative,
-                    uid: uid as u32,
-                    gid: gid as u32,
-                    mode,
-                    mtime,
-                    xattrs,
-                });
-                continue;
-            }
-            if relative.as_os_str().is_empty() {
-                bail!("bundled rootfs archive contains a non-directory root entry");
-            }
-            if !entry
-                .unpack_in(rootfs)
-                .with_context(|| format!("extracting {}", relative.display()))?
-            {
-                bail!(
-                    "bundled rootfs entry {} escaped the destination",
-                    relative.display()
-                );
-            }
-            let destination = rootfs.join(&relative);
-            // A hardlink is another name for metadata already applied to its
-            // target. Its tar header's placeholder mode/mtime must not mutate
-            // the shared inode after the target was restored.
-            if entry_type != tar::EntryType::Link {
-                for (name, value) in xattrs {
-                    set_link_xattr(&destination, &name, &value)?;
-                }
-                set_link_mtime(&destination, mtime)?;
-            }
-        }
-    }
-
-    let mut uncompressed = tar_archive.into_inner();
-    std::io::copy(&mut uncompressed, &mut std::io::sink())
-        .context("finishing bundled rootfs decompression")?;
-    let (decoder, uncompressed_size, uncompressed_hash) = uncompressed.finish();
-    let compressed_buffer = decoder.finish();
-    let (_file, compressed_size, compressed_hash) = compressed_buffer.into_inner().finish();
-    if compressed_size != manifest.archive.size || compressed_hash != manifest.archive.sha256 {
-        bail!("bundled rootfs archive changed while it was being extracted");
-    }
-    if uncompressed_size != manifest.archive.uncompressed_size
-        || uncompressed_hash != manifest.archive.uncompressed_sha256
-    {
-        bail!("uncompressed bundled rootfs digest or size does not match its provenance manifest");
-    }
-    if entry_count == 0 {
-        bail!("bundled rootfs archive is empty");
-    }
-
-    directories.sort_by_key(|directory| std::cmp::Reverse(directory.relative.components().count()));
-    for directory in directories {
-        apply_deferred_rootfs_directory(rootfs, directory)?;
-    }
-    validate_extracted_rootfs(rootfs)
-}
-
-fn rootfs_path_contains_whiteout(path: &Path) -> bool {
-    path.components().any(|component| match component {
-        std::path::Component::Normal(name) => name.as_bytes().starts_with(b".wh."),
-        _ => false,
-    })
 }
 
 fn parse_pax_timestamp(value: &[u8]) -> Result<(i64, i64)> {
@@ -3102,10 +2614,10 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
         "lib/systemd/systemd",
         "usr/bin/sway",
         "usr/bin/swaymsg",
-        "usr/bin/buzzardcua",
+        "usr/bin/buzzardoscua",
         "opt/buzzardos/runtime/current/libexec/buzzardos-clipboard-agent",
-        "opt/buzzardos/runtime/current/libexec/buzzardos-settings",
-        "opt/buzzardos/runtime/current/libexec/buzzardos-shell",
+        "usr/bin/buzzardos-settings",
+        "usr/bin/buzzardos-desktop",
         "usr/libexec/buzzardos-shortcut-helper",
         "var/lib/dpkg/status",
     ] {
@@ -3118,7 +2630,7 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
         }
         // Access through the caller-supplied path rather than the absolute
         // canonical result. Namespace helpers deliberately inherit a working
-        // directory inside the portable folder so a subordinate guest-root
+        // directory inside the selected machine so a subordinate guest-root
         // identity never has to retraverse a private host ancestor such as a
         // mode-0700 home directory.
         let metadata = fs::metadata(&path)
@@ -4375,40 +3887,6 @@ fn clear_directory(path: &Path) -> Result<()> {
     }
 }
 
-#[allow(dead_code)]
-fn install_guest_assets(rootfs: &Path) -> Result<()> {
-    validate_guest_rootfs(rootfs)?;
-    remove_empty_nvidia_mount_placeholders(rootfs)?;
-    install_bundled_guest_runtime_for_new_rootfs(rootfs)?;
-    for (relative, contents, mode) in GUEST_ASSETS {
-        install_guest_asset(rootfs, Path::new(relative), contents, *mode)?;
-    }
-    remove_kde_wallet_activation(rootfs)?;
-    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest())?;
-    install_guest_asset(
-        rootfs,
-        Path::new("usr/lib/buzzardos/guest-assets.version"),
-        GUEST_ASSETS_REVISION.as_bytes(),
-        0o644,
-    )
-}
-
-#[cfg(test)]
-fn install_guest_assets_without_shell(rootfs: &Path) -> Result<()> {
-    validate_guest_rootfs(rootfs)?;
-    remove_empty_nvidia_mount_placeholders(rootfs)?;
-    for (relative, contents, mode) in GUEST_ASSETS {
-        install_guest_asset(rootfs, Path::new(relative), contents, *mode)?;
-    }
-    remove_kde_wallet_activation(rootfs)?;
-    install_guest_asset(
-        rootfs,
-        Path::new("usr/lib/buzzardos/guest-assets.version"),
-        GUEST_ASSETS_REVISION.as_bytes(),
-        0o644,
-    )
-}
-
 fn validate_guest_rootfs(rootfs: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(rootfs)
         .with_context(|| format!("inspecting guest rootfs {}", rootfs.display()))?;
@@ -4416,1200 +3894,6 @@ fn validate_guest_rootfs(rootfs: &Path) -> Result<()> {
         bail!("guest rootfs must be a real directory");
     }
     Ok(())
-}
-
-fn guest_runtime_revision() -> Result<String> {
-    let revision = GUEST_ASSETS_REVISION.trim();
-    if !valid_runtime_revision(revision) {
-        bail!("invalid protected guest runtime revision {revision:?}");
-    }
-    Ok(revision.to_owned())
-}
-
-fn valid_runtime_revision(revision: &str) -> bool {
-    let mut characters = revision.chars();
-    !revision.is_empty()
-        && revision.len() <= 128
-        && characters
-            .next()
-            .is_some_and(|character| character.is_ascii_alphanumeric())
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '~' | '-')
-        })
-}
-
-fn bundled_guest_runtime_dir(revision: &str) -> Result<PathBuf> {
-    let launcher = std::env::current_exe().context("locating bundled guest runtime")?;
-    Ok(launcher
-        .parent()
-        .context("launcher path has no parent")?
-        .join(BUNDLED_GUEST_RUNTIME)
-        .join(revision))
-}
-
-fn protected_runtime_metadata(
-    path: &Path,
-    expected_uid: Option<u32>,
-    kind: &str,
-) -> Result<fs::Metadata> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("inspecting {kind} {}", path.display()))?;
-    if let Some(expected_uid) = expected_uid {
-        let expected_gid = if expected_uid == 0 {
-            0
-        } else {
-            unsafe { libc::getegid() }
-        };
-        if metadata.uid() != expected_uid || metadata.gid() != expected_gid {
-            bail!(
-                "{kind} {} is owned by {}:{}, expected {expected_uid}:{expected_gid}",
-                path.display(),
-                metadata.uid(),
-                metadata.gid()
-            );
-        }
-    }
-    if !metadata.file_type().is_symlink() && metadata.permissions().mode() & 0o022 != 0 {
-        bail!("{kind} {} is group/world writable", path.display());
-    }
-    Ok(metadata)
-}
-
-fn valid_runtime_relative_path(relative: &str) -> bool {
-    !relative.is_empty()
-        && !relative.starts_with('/')
-        && relative.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'.' | b'_' | b'+' | b'/' | b'@' | b'~' | b'-')
-        })
-        && Path::new(relative)
-            .components()
-            .all(|component| matches!(component, std::path::Component::Normal(_)))
-}
-
-fn read_guest_runtime_manifest(
-    revision_dir: &Path,
-    expected_uid: Option<u32>,
-    expected_revision: &str,
-) -> Result<(GuestRuntimeManifest, Vec<u8>)> {
-    let manifest_path = revision_dir.join("runtime.manifest.json");
-    let metadata = protected_runtime_metadata(&manifest_path, expected_uid, "runtime manifest")?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!(
-            "protected runtime manifest {} is not a regular file",
-            manifest_path.display()
-        );
-    }
-    if metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES {
-        bail!("protected runtime manifest exceeds its size limit");
-    }
-    let bytes = fs::read(&manifest_path)
-        .with_context(|| format!("reading runtime manifest {}", manifest_path.display()))?;
-    let manifest: GuestRuntimeManifest =
-        serde_json::from_slice(&bytes).context("parsing protected runtime manifest")?;
-    if manifest.schema_version != 1 {
-        bail!("unsupported protected runtime manifest schema");
-    }
-    if manifest.revision != expected_revision {
-        bail!("protected runtime manifest revision does not match its directory");
-    }
-    if manifest.files.is_empty() || manifest.files.len() > 4096 {
-        bail!("protected runtime manifest has an invalid file inventory");
-    }
-    for required in REQUIRED_GUEST_RUNTIME_FILES {
-        if !manifest.files.contains_key(*required) {
-            bail!("protected runtime is missing required file {required}");
-        }
-    }
-    for (relative, record) in &manifest.files {
-        if !valid_runtime_relative_path(relative)
-            || record.mode > 0o777
-            || record.mode & 0o022 != 0
-            || record.sha256.len() != 64
-            || !record
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            bail!("protected runtime manifest contains an unsafe record");
-        }
-    }
-    Ok((manifest, bytes))
-}
-
-fn sha256_regular_file(path: &Path) -> Result<String> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .with_context(|| format!("opening protected runtime file {}", path.display()))?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .with_context(|| format!("reading protected runtime file {}", path.display()))?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
-
-fn validate_guest_runtime_tree(
-    revision_dir: &Path,
-    manifest: &GuestRuntimeManifest,
-    expected_uid: Option<u32>,
-    allow_readiness: bool,
-) -> Result<()> {
-    let revision_metadata =
-        protected_runtime_metadata(revision_dir, expected_uid, "runtime revision")?;
-    if revision_metadata.file_type().is_symlink() || !revision_metadata.is_dir() {
-        bail!("protected runtime revision must be a real directory");
-    }
-    let canonical_revision = revision_dir
-        .canonicalize()
-        .with_context(|| format!("resolving runtime revision {}", revision_dir.display()))?;
-    let mut seen = BTreeMap::new();
-    let mut directories = vec![(revision_dir.to_path_buf(), PathBuf::new())];
-    while let Some((directory, relative_directory)) = directories.pop() {
-        for entry in fs::read_dir(&directory)
-            .with_context(|| format!("reading runtime directory {}", directory.display()))?
-        {
-            let entry = entry.context("reading protected runtime entry")?;
-            let file_name = entry.file_name();
-            let relative = relative_directory.join(&file_name);
-            let path = entry.path();
-            let relative_text = relative
-                .to_str()
-                .context("protected runtime path is not UTF-8")?
-                .to_owned();
-            let metadata =
-                protected_runtime_metadata(&path, expected_uid, "runtime path component")?;
-            if metadata.file_type().is_symlink() {
-                bail!("protected runtime contains a symbolic link: {relative_text}");
-            }
-            if metadata.is_dir() {
-                directories.push((path, relative));
-                continue;
-            }
-            if !metadata.is_file() {
-                bail!("protected runtime contains a special file: {relative_text}");
-            }
-            if relative_text == "runtime.manifest.json"
-                || (allow_readiness && relative_text == "readiness.json")
-            {
-                continue;
-            }
-            let record = manifest.files.get(&relative_text).with_context(|| {
-                format!("protected runtime contains unmanifested file {relative_text}")
-            })?;
-            if metadata.permissions().mode() & 0o777 != record.mode {
-                bail!("protected runtime mode differs for {relative_text}");
-            }
-            if sha256_regular_file(&path)? != record.sha256 {
-                bail!("protected runtime digest differs for {relative_text}");
-            }
-            let resolved = path
-                .canonicalize()
-                .with_context(|| format!("resolving runtime file {}", path.display()))?;
-            if !resolved.starts_with(&canonical_revision) {
-                bail!("protected runtime file escaped its revision: {relative_text}");
-            }
-            seen.insert(relative_text, ());
-        }
-    }
-    if seen.len() != manifest.files.len()
-        || manifest
-            .files
-            .keys()
-            .any(|relative| !seen.contains_key(relative))
-    {
-        bail!("protected runtime manifest names missing files");
-    }
-    Ok(())
-}
-
-fn read_revision_link(
-    runtime_root: &Path,
-    name: &str,
-    expected_uid: u32,
-) -> Result<Option<String>> {
-    let path = runtime_root.join(name);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspecting runtime link {}", path.display()));
-        }
-    };
-    let expected_gid = if expected_uid == 0 {
-        0
-    } else {
-        unsafe { libc::getegid() }
-    };
-    if !metadata.file_type().is_symlink()
-        || metadata.uid() != expected_uid
-        || metadata.gid() != expected_gid
-    {
-        bail!("protected runtime {name} is not an owner-controlled symbolic link");
-    }
-    let target = fs::read_link(&path)
-        .with_context(|| format!("reading protected runtime link {}", path.display()))?;
-    let target = target
-        .to_str()
-        .context("protected runtime link target is not UTF-8")?;
-    if !valid_runtime_revision(target) {
-        bail!("protected runtime {name} has an unsafe target");
-    }
-    let revision = runtime_root.join(target);
-    let revision_metadata =
-        protected_runtime_metadata(&revision, Some(expected_uid), "runtime revision")?;
-    if revision_metadata.file_type().is_symlink() || !revision_metadata.is_dir() {
-        bail!("protected runtime {name} target is not a real revision directory");
-    }
-    Ok(Some(target.to_owned()))
-}
-
-fn create_runtime_stage(runtime_root: &Path, revision: &str) -> Result<PathBuf> {
-    for counter in 0..128_u32 {
-        let stage = runtime_root.join(format!(
-            ".{revision}.staging.{}.{}",
-            std::process::id(),
-            counter
-        ));
-        match fs::create_dir(&stage) {
-            Ok(()) => {
-                fs::set_permissions(&stage, fs::Permissions::from_mode(0o755))
-                    .with_context(|| format!("protecting runtime stage {}", stage.display()))?;
-                return Ok(stage);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("creating runtime stage {}", stage.display()));
-            }
-        }
-    }
-    bail!("could not allocate a protected runtime staging directory")
-}
-
-fn clean_stale_runtime_intermediates(
-    runtime_root: &Path,
-    revision: &str,
-    expected_uid: u32,
-) -> Result<()> {
-    let staging_prefix = format!(".{revision}.staging.");
-    let incomplete_prefix = format!(".{revision}.incomplete.");
-    for entry in fs::read_dir(runtime_root)
-        .with_context(|| format!("reading protected runtime root {}", runtime_root.display()))?
-    {
-        let entry = entry.context("reading protected runtime intermediate")?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !name.starts_with(&staging_prefix) && !name.starts_with(&incomplete_prefix) {
-            continue;
-        }
-        let path = entry.path();
-        let metadata = protected_runtime_metadata(
-            &path,
-            Some(expected_uid),
-            "runtime migration intermediate",
-        )?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            bail!(
-                "runtime migration intermediate {} is not a real directory",
-                path.display()
-            );
-        }
-        safely_remove_runtime_directory(&path)?;
-    }
-    Ok(())
-}
-
-fn copy_guest_runtime_revision(
-    source: &Path,
-    stage: &Path,
-    manifest: &GuestRuntimeManifest,
-    manifest_bytes: &[u8],
-) -> Result<()> {
-    for (relative, record) in &manifest.files {
-        let source_file = source.join(relative);
-        let destination = prepare_guest_asset_destination(stage, Path::new(relative))?;
-        let mut input = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&source_file)
-            .with_context(|| format!("opening bundled runtime file {}", source_file.display()))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(record.mode)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&destination)
-            .with_context(|| format!("creating runtime file {}", destination.display()))?;
-        std::io::copy(&mut input, &mut output)
-            .with_context(|| format!("copying protected runtime file {relative}"))?;
-        output
-            .set_permissions(fs::Permissions::from_mode(record.mode))
-            .with_context(|| format!("setting runtime mode for {relative}"))?;
-        output
-            .sync_all()
-            .with_context(|| format!("syncing runtime file {relative}"))?;
-    }
-    install_guest_asset(
-        stage,
-        Path::new("runtime.manifest.json"),
-        manifest_bytes,
-        0o644,
-    )
-}
-
-fn rename_noreplace(source: &Path, destination: &Path) -> Result<()> {
-    let source = CString::new(source.as_os_str().as_bytes())
-        .context("runtime source path contains an embedded NUL")?;
-    let destination = CString::new(destination.as_os_str().as_bytes())
-        .context("runtime destination path contains an embedded NUL")?;
-    // Linux is the only supported host. RENAME_NOREPLACE prevents a raced or
-    // hostile path from being replaced during the revision commit.
-    let result = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error()).with_context(|| {
-            format!(
-                "atomically moving {} to {}",
-                source.to_string_lossy(),
-                destination.to_string_lossy()
-            )
-        })
-    }
-}
-
-fn vacant_runtime_path(runtime_root: &Path, stem: &str) -> Result<PathBuf> {
-    for counter in 0..128_u32 {
-        let candidate = runtime_root.join(format!(".{stem}.{}.{}", std::process::id(), counter));
-        match fs::symlink_metadata(&candidate) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspecting runtime path {}", candidate.display()));
-            }
-            Ok(_) => continue,
-        }
-    }
-    bail!("could not allocate an atomic protected runtime path")
-}
-
-fn atomic_revision_link(
-    runtime_root: &Path,
-    name: &str,
-    revision: &str,
-    expected_uid: u32,
-) -> Result<()> {
-    let expected_gid = if expected_uid == 0 {
-        0
-    } else {
-        unsafe { libc::getegid() }
-    };
-    if let Ok(metadata) = fs::symlink_metadata(runtime_root.join(name))
-        && (!metadata.file_type().is_symlink()
-            || metadata.uid() != expected_uid
-            || metadata.gid() != expected_gid)
-    {
-        bail!("protected runtime {name} cannot be replaced safely");
-    }
-    for counter in 0..128_u32 {
-        let temporary =
-            runtime_root.join(format!(".{name}.link.{}.{}", std::process::id(), counter));
-        match symlink(revision, &temporary) {
-            Ok(()) => {
-                fs::rename(&temporary, runtime_root.join(name)).with_context(|| {
-                    format!("activating protected runtime {name} revision {revision}")
-                })?;
-                return Ok(());
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("creating protected runtime {name} revision link"));
-            }
-        }
-    }
-    bail!("could not allocate a protected runtime activation link")
-}
-
-fn safely_remove_runtime_directory(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("inspecting {}", path.display())),
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
-        }
-        Ok(_) => bail!(
-            "refusing to remove non-directory runtime path {}",
-            path.display()
-        ),
-    }
-}
-
-fn install_protected_guest_runtime(
-    rootfs: &Path,
-    source: &Path,
-    revision: &str,
-    expected_uid: u32,
-) -> Result<()> {
-    let (manifest, manifest_bytes) = read_guest_runtime_manifest(source, None, revision)?;
-    if manifest.revision != revision {
-        bail!("bundled runtime revision differs from ASSET_REVISION");
-    }
-    validate_guest_runtime_tree(source, &manifest, None, false)?;
-
-    let current_path =
-        prepare_guest_asset_destination(rootfs, &Path::new(GUEST_RUNTIME_ROOT).join("current"))?;
-    let runtime_root = current_path
-        .parent()
-        .context("protected runtime current path has no parent")?;
-    for protected in [
-        rootfs.join("opt"),
-        rootfs.join("opt/buzzardos"),
-        runtime_root.to_path_buf(),
-    ] {
-        let metadata =
-            protected_runtime_metadata(&protected, Some(expected_uid), "runtime directory")?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            bail!(
-                "protected runtime path {} is not a real directory",
-                protected.display()
-            );
-        }
-        fs::set_permissions(&protected, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("protecting runtime directory {}", protected.display()))?;
-    }
-    let current = read_revision_link(runtime_root, "current", expected_uid)?;
-    if fs::symlink_metadata(runtime_root.join("previous")).is_ok() {
-        let _ = read_revision_link(runtime_root, "previous", expected_uid)?;
-    }
-
-    clean_stale_runtime_intermediates(runtime_root, revision, expected_uid)?;
-    let stage = create_runtime_stage(runtime_root, revision)?;
-    let install_result = (|| -> Result<()> {
-        copy_guest_runtime_revision(source, &stage, &manifest, &manifest_bytes)?;
-        validate_guest_runtime_tree(&stage, &manifest, Some(expected_uid), false)?;
-        let destination = runtime_root.join(revision);
-        match fs::symlink_metadata(&destination) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                rename_noreplace(&stage, &destination)?;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "inspecting installed runtime revision {}",
-                        destination.display()
-                    )
-                });
-            }
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                let existing =
-                    read_guest_runtime_manifest(&destination, Some(expected_uid), revision)
-                        .and_then(|(existing, _)| {
-                            if existing != manifest {
-                                bail!("installed protected runtime manifest differs")
-                            }
-                            validate_guest_runtime_tree(
-                                &destination,
-                                &existing,
-                                Some(expected_uid),
-                                true,
-                            )
-                        });
-                if let Err(existing_error) = existing {
-                    if current.as_deref() == Some(revision) {
-                        return Err(existing_error).context(
-                            "active protected runtime is incomplete; bump ASSET_REVISION",
-                        );
-                    }
-                    let incomplete =
-                        vacant_runtime_path(runtime_root, &format!("{revision}.incomplete"))?;
-                    rename_noreplace(&destination, &incomplete)?;
-                    if let Err(error) = rename_noreplace(&stage, &destination) {
-                        let _ = rename_noreplace(&incomplete, &destination);
-                        return Err(error);
-                    }
-                    safely_remove_runtime_directory(&incomplete)?;
-                } else {
-                    safely_remove_runtime_directory(&stage)?;
-                }
-            }
-            Ok(_) => bail!("installed protected runtime revision is not a real directory"),
-        }
-
-        if current.as_deref() != Some(revision) {
-            if let Some(previous) = current.as_deref() {
-                atomic_revision_link(runtime_root, "previous", previous, expected_uid)?;
-            }
-            atomic_revision_link(runtime_root, "current", revision, expected_uid)?;
-        }
-        File::open(runtime_root)
-            .and_then(|directory| directory.sync_all())
-            .with_context(|| {
-                format!("syncing protected runtime root {}", runtime_root.display())
-            })?;
-        Ok(())
-    })();
-    if install_result.is_err() {
-        let _ = safely_remove_runtime_directory(&stage);
-    }
-    install_result
-}
-
-fn install_bundled_guest_runtime(rootfs: &Path) -> Result<()> {
-    let revision = guest_runtime_revision()?;
-    let source = bundled_guest_runtime_dir(&revision)?;
-    install_protected_guest_runtime(rootfs, &source, &revision, 0)
-}
-
-#[allow(dead_code)]
-fn install_protected_guest_runtime_for_new_rootfs(
-    rootfs: &Path,
-    source: &Path,
-    revision: &str,
-    expected_uid: u32,
-) -> Result<()> {
-    let (bundled, _) = read_guest_runtime_manifest(source, None, revision)?;
-    validate_guest_runtime_tree(source, &bundled, None, false)?;
-
-    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-    let current = read_revision_link(&runtime_root, "current", expected_uid)?;
-    let destination = runtime_root.join(revision);
-    let replace_staged_revision = current.as_deref() == Some(revision)
-        && read_guest_runtime_manifest(&destination, Some(expected_uid), revision)
-            .and_then(|(installed, _)| {
-                if installed != bundled {
-                    bail!("staged protected runtime manifest differs")
-                }
-                validate_guest_runtime_tree(&destination, &installed, Some(expected_uid), true)
-            })
-            .is_err();
-
-    if !replace_staged_revision {
-        return install_protected_guest_runtime(rootfs, source, revision, expected_uid);
-    }
-
-    // This path is used only while creating a new, uncommitted machine rootfs.
-    // The OCI and AppImage builders may produce byte-distinct executables from
-    // the same source/toolchain contract. Preserve the strict no-replacement
-    // rule for an existing machine, but reconcile the disposable staging tree
-    // to the exact runtime carried by the AppImage before it becomes visible.
-    let original_revision = (0..128_u32)
-        .map(|counter| format!("seed~{}~{counter}", std::process::id()))
-        .find(|candidate| fs::symlink_metadata(runtime_root.join(candidate)).is_err())
-        .context("allocating a staged OCI runtime revision name")?;
-    let original = runtime_root.join(&original_revision);
-    rename_noreplace(&destination, &original)
-        .context("preserving the staged OCI runtime before seed reconciliation")?;
-    atomic_revision_link(&runtime_root, "current", &original_revision, expected_uid)?;
-    match install_protected_guest_runtime(rootfs, source, revision, expected_uid) {
-        Ok(()) => {
-            if fs::read_link(runtime_root.join("previous")).ok().as_deref()
-                == Some(Path::new(&original_revision))
-            {
-                fs::remove_file(runtime_root.join("previous"))
-                    .context("removing transient seed runtime history")?;
-            }
-            safely_remove_runtime_directory(&original)?;
-            File::open(&runtime_root)
-                .and_then(|directory| directory.sync_all())
-                .context("syncing reconciled new-machine runtime")?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = safely_remove_runtime_directory(&destination);
-            let restore = rename_noreplace(&original, &destination);
-            let current_restore =
-                atomic_revision_link(&runtime_root, "current", revision, expected_uid);
-            if fs::read_link(runtime_root.join("previous")).ok().as_deref()
-                == Some(Path::new(&original_revision))
-            {
-                let _ = fs::remove_file(runtime_root.join("previous"));
-            }
-            match restore {
-                Ok(()) if current_restore.is_ok() => Err(error).context(
-                    "installing the AppImage runtime into the new-machine staging rootfs",
-                ),
-                Ok(()) => Err(error).context(format!(
-                    "installing the AppImage runtime into the new-machine staging rootfs; restoring its active revision link also failed: {:#}",
-                    current_restore.unwrap_err()
-                )),
-                Err(restore_error) => Err(error).context(format!(
-                    "installing the AppImage runtime into the new-machine staging rootfs; restoring the OCI runtime also failed: {restore_error:#}"
-                )),
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn install_bundled_guest_runtime_for_new_rootfs(rootfs: &Path) -> Result<()> {
-    let revision = guest_runtime_revision()?;
-    let source = bundled_guest_runtime_dir(&revision)?;
-    install_protected_guest_runtime_for_new_rootfs(rootfs, &source, &revision, 0)
-}
-
-fn canonical_runtime_manifest_digest(manifest_bytes: &[u8]) -> Result<String> {
-    let value: serde_json::Value =
-        serde_json::from_slice(manifest_bytes).context("parsing runtime manifest for readiness")?;
-    let canonical = serde_json::to_vec(&value).context("canonicalizing runtime manifest")?;
-    Ok(format!("{:x}", Sha256::digest(&canonical)))
-}
-
-fn validate_runtime_readiness(
-    revision_dir: &Path,
-    revision: &str,
-    manifest_bytes: &[u8],
-    expected_uid: u32,
-) -> Result<()> {
-    let path = revision_dir.join("readiness.json");
-    let metadata = protected_runtime_metadata(&path, Some(expected_uid), "runtime readiness")?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES
-    {
-        bail!("protected runtime readiness is not a bounded regular file");
-    }
-    let bytes =
-        fs::read(&path).with_context(|| format!("reading runtime readiness {}", path.display()))?;
-    let readiness: GuestRuntimeReadiness =
-        serde_json::from_slice(&bytes).context("parsing protected runtime readiness")?;
-    if readiness.schema_version != 1
-        || readiness.revision != revision
-        || !readiness.ready
-        || readiness.manifest_sha256 != canonical_runtime_manifest_digest(manifest_bytes)?
-    {
-        bail!("protected runtime readiness does not bind the complete revision");
-    }
-    Ok(())
-}
-
-fn runtime_failure_marker_relative(revision: &str) -> PathBuf {
-    Path::new(GUEST_RUNTIME_ROOT).join(format!("activation-failure.{revision}.json"))
-}
-
-fn read_runtime_activation_failure(
-    rootfs: &Path,
-    failed_revision: &str,
-    expected_uid: u32,
-) -> Result<Option<GuestRuntimeActivationFailure>> {
-    let path = rootfs.join(runtime_failure_marker_relative(failed_revision));
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("inspecting runtime failure evidence {}", path.display())
-            });
-        }
-    };
-    let expected_gid = if expected_uid == 0 {
-        0
-    } else {
-        unsafe { libc::getegid() }
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.uid() != expected_uid
-        || metadata.gid() != expected_gid
-        || metadata.permissions().mode() & 0o022 != 0
-        || metadata.len() > MAX_GUEST_RUNTIME_MANIFEST_BYTES
-    {
-        bail!("protected runtime failure evidence is unsafe");
-    }
-    let evidence: GuestRuntimeActivationFailure = serde_json::from_slice(
-        &fs::read(&path)
-            .with_context(|| format!("reading runtime failure evidence {}", path.display()))?,
-    )
-    .context("parsing protected runtime failure evidence")?;
-    if evidence.schema_version != 1
-        || evidence.failed_revision != failed_revision
-        || !valid_runtime_revision(&evidence.fallback_revision)
-        || evidence.fallback_revision == failed_revision
-        || evidence.reason != "desktop readiness deadline expired"
-        || evidence.observed_at_unix_seconds == 0
-    {
-        bail!("protected runtime failure evidence is invalid");
-    }
-    Ok(Some(evidence))
-}
-
-fn rollback_guest_runtime(
-    rootfs: &Path,
-    expected_current: &str,
-    expected_previous: &str,
-    reason: &str,
-    expected_uid: u32,
-) -> Result<()> {
-    if !valid_runtime_revision(expected_current)
-        || !valid_runtime_revision(expected_previous)
-        || expected_current == expected_previous
-        || reason != "desktop readiness deadline expired"
-    {
-        bail!("invalid protected runtime rollback request");
-    }
-    validate_guest_rootfs(rootfs)?;
-    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-    let root_metadata =
-        protected_runtime_metadata(&runtime_root, Some(expected_uid), "runtime root")?;
-    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
-        bail!("protected runtime root is not a real directory");
-    }
-    if read_revision_link(&runtime_root, "current", expected_uid)?.as_deref()
-        != Some(expected_current)
-    {
-        bail!("protected runtime current changed before guarded rollback");
-    }
-    if read_revision_link(&runtime_root, "previous", expected_uid)?.as_deref()
-        != Some(expected_previous)
-    {
-        bail!("protected runtime previous changed before guarded rollback");
-    }
-
-    let failed_dir = runtime_root.join(expected_current);
-    let (failed_manifest, _) =
-        read_guest_runtime_manifest(&failed_dir, Some(expected_uid), expected_current)?;
-    validate_guest_runtime_tree(&failed_dir, &failed_manifest, Some(expected_uid), true)?;
-
-    let previous_dir = runtime_root.join(expected_previous);
-    let (previous_manifest, previous_manifest_bytes) =
-        read_guest_runtime_manifest(&previous_dir, Some(expected_uid), expected_previous)?;
-    validate_guest_runtime_tree(&previous_dir, &previous_manifest, Some(expected_uid), true)?;
-    validate_runtime_readiness(
-        &previous_dir,
-        expected_previous,
-        &previous_manifest_bytes,
-        expected_uid,
-    )?;
-
-    let evidence = GuestRuntimeActivationFailure {
-        schema_version: 1,
-        failed_revision: expected_current.to_owned(),
-        fallback_revision: expected_previous.to_owned(),
-        reason: reason.to_owned(),
-        observed_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock precedes the Unix epoch")?
-            .as_secs(),
-    };
-    let mut evidence_bytes =
-        serde_json::to_vec_pretty(&evidence).context("serializing runtime failure evidence")?;
-    evidence_bytes.push(b'\n');
-    install_guest_asset(
-        rootfs,
-        &runtime_failure_marker_relative(expected_current),
-        &evidence_bytes,
-        0o644,
-    )?;
-    atomic_revision_link(&runtime_root, "current", expected_previous, expected_uid)?;
-    File::open(&runtime_root)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| {
-            format!(
-                "syncing protected runtime rollback {}",
-                runtime_root.display()
-            )
-        })
-}
-
-fn validated_failed_runtime_fallback(
-    rootfs: &Path,
-    failed_revision: &str,
-    current_revision: &str,
-    expected_uid: u32,
-) -> Result<bool> {
-    let Some(evidence) = read_runtime_activation_failure(rootfs, failed_revision, expected_uid)?
-    else {
-        return Ok(false);
-    };
-    if evidence.fallback_revision != current_revision {
-        return Ok(false);
-    }
-    let fallback_dir = rootfs.join(GUEST_RUNTIME_ROOT).join(current_revision);
-    let (manifest, manifest_bytes) =
-        read_guest_runtime_manifest(&fallback_dir, Some(expected_uid), current_revision)?;
-    validate_guest_runtime_tree(&fallback_dir, &manifest, Some(expected_uid), true)?;
-    validate_runtime_readiness(
-        &fallback_dir,
-        current_revision,
-        &manifest_bytes,
-        expected_uid,
-    )?;
-    Ok(true)
-}
-
-fn migrate_guest_assets(rootfs: &Path) -> Result<()> {
-    validate_guest_rootfs(rootfs)?;
-    remove_empty_nvidia_mount_placeholders(rootfs)?;
-    install_bundled_guest_runtime(rootfs)?;
-    let previous = read_guest_asset_manifest(rootfs);
-    let legacy_tiled_sway_config = GuestAssetRecord {
-        sha256: LEGACY_TILED_SWAY_CONFIG_SHA256.into(),
-        mode: 0o644,
-    };
-    for (relative, contents, mode) in GUEST_ASSETS {
-        migrate_guest_asset(
-            rootfs,
-            Path::new(relative),
-            contents,
-            *mode,
-            previous
-                .as_ref()
-                .and_then(|manifest| manifest.assets.get(*relative)),
-            match *relative {
-                "etc/buzzardos/sway-config" => Some(&legacy_tiled_sway_config),
-                _ => None,
-            },
-        )?;
-    }
-    for relative in [
-        "usr/libexec/buzzardos-wayfire-session",
-        "etc/xdg/wayfire.ini",
-        "etc/chromium.d/buzzardos",
-        "etc/chromium/master_preferences",
-        "usr/share/themes/BuzzardOS/index.theme",
-        "usr/share/themes/BuzzardOS/gtk-3.0/gtk.css",
-        "usr/share/themes/BuzzardOS/gtk-4.0/gtk.css",
-        "usr/share/color-schemes/BuzzardOS.colors",
-        "usr/libexec/buzzardos-init",
-        "usr/libexec/buzzardos-session",
-        "usr/libexec/buzzardos-sway-session",
-        "usr/libexec/buzzardos-output-sync",
-        "usr/libexec/buzzardos-desktop-stopped",
-        "usr/libexec/buzzardos-desktop-services",
-        "usr/libexec/buzzardos-integration-agent",
-        "usr/libexec/buzzardos-appimage-ready",
-        "usr/libexec/buzzardos-fusermount",
-        "usr/libexec/buzzardos-fusermount-exec",
-        "usr/libexec/buzzardos-sudo-exec",
-        "usr/libexec/buzzardos-shell",
-        "usr/libexec/buzzardos-settings",
-    ] {
-        remove_retired_guest_asset(
-            rootfs,
-            Path::new(relative),
-            previous
-                .as_ref()
-                .and_then(|manifest| manifest.assets.get(relative)),
-        )?;
-    }
-    let legacy_cua_record = GuestAssetRecord {
-        sha256: LEGACY_REFERENCE_CUA_SHA256.into(),
-        mode: 0o755,
-    };
-    remove_retired_guest_asset(
-        rootfs,
-        Path::new("usr/local/bin/cua-driver"),
-        previous
-            .as_ref()
-            .and_then(|manifest| manifest.assets.get("usr/local/bin/cua-driver"))
-            .or(Some(&legacy_cua_record)),
-    )?;
-    install_guest_asset_manifest(rootfs, &current_guest_asset_manifest())?;
-    // The revision is the commit marker and is deliberately written last. If
-    // a migration fails, the next start retries without mistaking a partial
-    // update for a completed one.
-    install_guest_asset(
-        rootfs,
-        Path::new("usr/lib/buzzardos/guest-assets.version"),
-        GUEST_ASSETS_REVISION.as_bytes(),
-        0o644,
-    )
-}
-
-fn guest_asset_record(contents: &[u8], mode: u32) -> GuestAssetRecord {
-    GuestAssetRecord {
-        sha256: format!("{:x}", Sha256::digest(contents)),
-        mode,
-    }
-}
-
-fn current_guest_asset_manifest() -> GuestAssetManifest {
-    let mut assets = BTreeMap::new();
-    for (relative, contents, mode) in GUEST_ASSETS {
-        assets.insert((*relative).to_owned(), guest_asset_record(contents, *mode));
-    }
-    GuestAssetManifest { schema: 1, assets }
-}
-
-fn read_guest_asset_manifest(rootfs: &Path) -> Option<GuestAssetManifest> {
-    let bytes = fs::read(rootfs.join(GUEST_ASSETS_MANIFEST)).ok()?;
-    let manifest: GuestAssetManifest = serde_json::from_slice(&bytes).ok()?;
-    (manifest.schema == 1).then_some(manifest)
-}
-
-fn install_guest_asset_manifest(rootfs: &Path, manifest: &GuestAssetManifest) -> Result<()> {
-    let mut contents =
-        serde_json::to_vec_pretty(manifest).context("serializing guest asset manifest")?;
-    contents.push(b'\n');
-    install_guest_asset(rootfs, Path::new(GUEST_ASSETS_MANIFEST), &contents, 0o644)
-}
-
-fn guest_asset_matches_record(path: &Path, record: &GuestAssetRecord) -> Result<bool> {
-    let metadata =
-        fs::symlink_metadata(path).with_context(|| format!("inspecting {}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!(
-            "guest asset destination {} is not a regular file",
-            path.display()
-        );
-    }
-    let contents = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(metadata.permissions().mode() & 0o7777 == record.mode
-        && format!("{:x}", Sha256::digest(&contents)) == record.sha256)
-}
-
-fn remove_retired_guest_asset(
-    rootfs: &Path,
-    relative: &Path,
-    previous: Option<&GuestAssetRecord>,
-) -> Result<()> {
-    let Some(previous) = previous else {
-        return Ok(());
-    };
-    let destination = prepare_guest_asset_destination(rootfs, relative)?;
-    match fs::symlink_metadata(&destination) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("inspecting retired asset {}", destination.display())),
-        Ok(_) if guest_asset_matches_record(&destination, previous)? => {
-            remove_guest_file(rootfs, relative)
-        }
-        Ok(_) => {
-            // A guest edit turns a formerly managed file into persistent user
-            // state. Preserve it even though new Buzzard OS releases no
-            // longer reference it.
-            Ok(())
-        }
-    }
-}
-
-fn migrate_guest_asset(
-    rootfs: &Path,
-    relative: &Path,
-    contents: &[u8],
-    mode: u32,
-    previous: Option<&GuestAssetRecord>,
-    recognized_legacy: Option<&GuestAssetRecord>,
-) -> Result<()> {
-    let destination = prepare_guest_asset_destination(rootfs, relative)?;
-    match fs::symlink_metadata(&destination) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            install_guest_asset(rootfs, relative, contents, mode)
-        }
-        Err(error) => {
-            Err(error).with_context(|| format!("inspecting guest asset {}", destination.display()))
-        }
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!(
-                    "guest asset destination {} is not a regular file",
-                    destination.display()
-                );
-            }
-            let matches_previous = match previous {
-                Some(record) => guest_asset_matches_record(&destination, record)?,
-                None => false,
-            };
-            let matches_recognized_legacy = match recognized_legacy {
-                Some(record) => guest_asset_matches_record(&destination, record)?,
-                None => false,
-            };
-            let replace = matches_previous || matches_recognized_legacy;
-            if replace {
-                install_guest_asset(rootfs, relative, contents, mode)
-            } else {
-                // No previous manifest means a legacy machine. Existing files
-                // are conservatively user-owned; with a manifest, any
-                // content/mode change from the last distributed record is
-                // likewise preserved.
-                Ok(())
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn remove_kde_wallet_activation(rootfs: &Path) -> Result<()> {
-    for relative in [
-        "usr/share/dbus-1/services/org.kde.kwalletd5.service",
-        "usr/share/dbus-1/services/org.kde.kwalletd6.service",
-        "usr/share/dbus-1/services/org.kde.secretservicecompat.service",
-        "usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.kwallet.service",
-        "usr/share/xdg-desktop-portal/portals/kwallet.portal",
-        "usr/share/applications/org.kde.ksecretd.desktop",
-    ] {
-        remove_guest_file(rootfs, Path::new(relative))?;
-    }
-    Ok(())
-}
-
-fn remove_empty_nvidia_mount_placeholders(rootfs: &Path) -> Result<()> {
-    for relative in [
-        "etc/vulkan/icd.d/nvidia_icd.json",
-        "usr/share/vulkan/icd.d/nvidia_icd.json",
-    ] {
-        let destination = prepare_guest_asset_destination(rootfs, Path::new(relative))?;
-        match fs::symlink_metadata(&destination) {
-            Ok(metadata)
-                if metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.len() == 0 =>
-            {
-                fs::remove_file(&destination).with_context(|| {
-                    format!(
-                        "removing stale NVIDIA metadata mountpoint {}",
-                        destination.display()
-                    )
-                })?;
-            }
-            Ok(_) => {
-                // A nonempty guest-installed ICD is user state. Preserve it.
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "inspecting NVIDIA metadata mountpoint {}",
-                        destination.display()
-                    )
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn remove_guest_file(rootfs: &Path, relative: &Path) -> Result<()> {
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("unsafe guest file path {}", relative.display());
-    }
-    let mut parent = rootfs.to_path_buf();
-    for component in relative
-        .parent()
-        .context("guest file path has no parent")?
-        .components()
-    {
-        let std::path::Component::Normal(component) = component else {
-            bail!("unsafe guest file path {}", relative.display());
-        };
-        parent.push(component);
-        match fs::symlink_metadata(&parent) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => bail!(
-                "guest file parent {} is not a real directory",
-                parent.display()
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspecting guest file path {}", parent.display()));
-            }
-        }
-    }
-    let destination = rootfs.join(relative);
-    match fs::symlink_metadata(&destination) {
-        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
-            fs::remove_file(&destination)
-                .with_context(|| format!("removing guest service {}", destination.display()))
-        }
-        Ok(_) => bail!(
-            "guest service path {} is not a regular file",
-            destination.display()
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("inspecting guest service {}", destination.display())),
-    }
-}
-
-fn prepare_guest_asset_destination(rootfs: &Path, relative: &Path) -> Result<PathBuf> {
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("unsafe guest asset path {}", relative.display());
-    }
-
-    let mut parent = rootfs.to_path_buf();
-    let relative_parent = relative
-        .parent()
-        .context("guest asset path has no parent")?;
-    for component in relative_parent.components() {
-        let std::path::Component::Normal(component) = component else {
-            bail!("unsafe guest asset path {}", relative.display());
-        };
-        parent.push(component);
-        match fs::symlink_metadata(&parent) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => bail!(
-                "guest asset parent {} is not a real directory",
-                parent.display()
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&parent).with_context(|| {
-                    format!("creating guest asset directory {}", parent.display())
-                })?;
-                fs::set_permissions(&parent, fs::Permissions::from_mode(0o755))
-                    .with_context(|| format!("setting permissions on {}", parent.display()))?;
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspecting guest asset path {}", parent.display()));
-            }
-        }
-    }
-    Ok(rootfs.join(relative))
-}
-
-fn install_guest_asset(rootfs: &Path, relative: &Path, contents: &[u8], mode: u32) -> Result<()> {
-    let destination = prepare_guest_asset_destination(rootfs, relative)?;
-    if let Ok(metadata) = fs::symlink_metadata(&destination)
-        && (metadata.file_type().is_symlink() || !metadata.is_file())
-    {
-        bail!(
-            "guest asset destination {} is not a regular file",
-            destination.display()
-        );
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(mode)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&destination)
-        .with_context(|| format!("installing guest asset {}", destination.display()))?;
-    file.write_all(contents)
-        .with_context(|| format!("writing guest asset {}", destination.display()))?;
-    file.set_permissions(fs::Permissions::from_mode(mode))
-        .with_context(|| format!("setting permissions on {}", destination.display()))?;
-    file.sync_all()
-        .with_context(|| format!("syncing guest asset {}", destination.display()))
 }
 
 fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
@@ -5637,12 +3921,6 @@ fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
                     return Ok(());
                 }
                 Err(error) => {
-                    let error = recover_new_runtime_after_readiness_deadline(
-                        &machine_dir,
-                        &rootfs,
-                        None,
-                        error,
-                    );
                     if let Some(pid) = supervisor_pid {
                         let _ = wait_for_process_exit(pid, Duration::from_secs(5));
                     }
@@ -5690,19 +3968,12 @@ fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
         .spawn()
         .with_context(|| format!("starting {}", broker.display()))?;
     let broker_pid = child.id();
-    if let Err(error) = wait_for_detached_start(
+    wait_for_detached_start(
         &machine_dir,
         &mut child,
         broker_pid,
         Duration::from_secs(95),
-    ) {
-        return Err(recover_new_runtime_after_readiness_deadline(
-            &machine_dir,
-            &rootfs,
-            None,
-            error,
-        ));
-    }
+    )?;
     if detach {
         println!("Started '{name}' (broker pid {})", child.id());
         Ok(())
@@ -5714,62 +3985,6 @@ fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
             bail!("machine exited with {status}")
         }
     }
-}
-
-#[allow(dead_code)]
-fn observed_runtime_link(rootfs: &Path, name: &str) -> Result<Option<String>> {
-    let path = rootfs.join(GUEST_RUNTIME_ROOT).join(name);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspecting runtime link {}", path.display()));
-        }
-    };
-    if !metadata.file_type().is_symlink() {
-        bail!("protected runtime {name} is not a symbolic link");
-    }
-    let target = fs::read_link(&path)
-        .with_context(|| format!("reading protected runtime link {}", path.display()))?;
-    let target = target
-        .to_str()
-        .context("protected runtime link target is not UTF-8")?;
-    if !valid_runtime_revision(target) {
-        bail!("protected runtime {name} has an unsafe target");
-    }
-    Ok(Some(target.to_owned()))
-}
-
-#[allow(dead_code)]
-fn refresh_guest_assets(rootfs: &Path) -> Result<Option<GuestRuntimeActivation>> {
-    let before = observed_runtime_link(rootfs, "current")?;
-    if guest_assets_are_current_rootless(rootfs)? {
-        return Ok(None);
-    }
-
-    let status = run_guest_asset_helper(rootfs, "__install-guest-assets")?;
-    if !status.success() {
-        bail!("rootless guest asset migration exited with {status}");
-    }
-    if !guest_assets_are_current_rootless(rootfs)? {
-        bail!("rootless guest asset migration did not commit its revision");
-    }
-    let revision = guest_runtime_revision()?;
-    let after = observed_runtime_link(rootfs, "current")?;
-    if after.as_deref() != Some(revision.as_str()) {
-        bail!("rootless guest asset migration activated an unexpected runtime revision");
-    }
-    let activation = before
-        .filter(|previous| previous != &revision)
-        .map(|previous| GuestRuntimeActivation { revision, previous });
-    if let Some(activation) = &activation
-        && observed_runtime_link(rootfs, "previous")?.as_deref()
-            != Some(activation.previous.as_str())
-    {
-        bail!("rootless guest asset migration did not retain its previous revision");
-    }
-    Ok(activation)
 }
 
 fn guest_settings_runtime_diagnostics(rootfs: &Path) -> Result<Vec<String>> {
@@ -5820,159 +4035,6 @@ fn guest_settings_runtime_diagnostics(rootfs: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(diagnostics)
-}
-
-#[allow(dead_code)]
-fn guest_assets_are_current_rootless(rootfs: &Path) -> Result<bool> {
-    let status = run_guest_asset_helper(rootfs, "__verify-guest-assets")?;
-    match status.code() {
-        Some(0) => Ok(true),
-        Some(3) => Ok(false),
-        _ => bail!("rootless guest asset verification exited with {status}"),
-    }
-}
-
-#[allow(dead_code)]
-fn run_guest_asset_helper(
-    rootfs: &Path,
-    internal_command: &str,
-) -> Result<std::process::ExitStatus> {
-    let id_map = IdMap::discover()?;
-    let resources = ResourceLocator::discover()?;
-    let unshare = resources.helper_or_path("unshare")?;
-    let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("guest asset helper")?;
-    let rootfs = namespace.relative(rootfs, "guest rootfs")?;
-    let mut command = Command::new(namespace_program);
-    command.env_clear();
-    id_map.configure_command(&mut command);
-    namespace.configure(&mut command);
-    command
-        .args(id_map.namespace_args())
-        .arg(&namespace.launcher)
-        .arg(internal_command)
-        .arg("--rootfs")
-        .arg(rootfs)
-        .stdin(Stdio::null());
-    command.status().with_context(|| {
-        format!(
-            "starting rootless guest asset helper through {}",
-            namespace_program.display()
-        )
-    })
-}
-
-fn run_guest_runtime_rollback_helper(
-    rootfs: &Path,
-    activation: &GuestRuntimeActivation,
-) -> Result<()> {
-    let id_map = IdMap::discover()?;
-    let resources = ResourceLocator::discover()?;
-    let unshare = resources.helper_or_path("unshare")?;
-    let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("guest runtime rollback helper")?;
-    let rootfs = namespace.relative(rootfs, "guest rootfs")?;
-    let mut command = Command::new(namespace_program);
-    command.env_clear();
-    id_map.configure_command(&mut command);
-    namespace.configure(&mut command);
-    let status = command
-        .args(id_map.namespace_args())
-        .arg(&namespace.launcher)
-        .arg("__rollback-guest-runtime")
-        .arg("--rootfs")
-        .arg(rootfs)
-        .arg("--expected-current")
-        .arg(&activation.revision)
-        .arg("--expected-previous")
-        .arg(&activation.previous)
-        .stdin(Stdio::null())
-        .status()
-        .with_context(|| {
-            format!(
-                "starting rootless guest runtime rollback through {}",
-                namespace_program.display()
-            )
-        })?;
-    if !status.success() {
-        bail!("guarded guest runtime rollback exited with {status}");
-    }
-    Ok(())
-}
-
-fn recover_new_runtime_after_readiness_deadline(
-    machine_dir: &Path,
-    rootfs: &Path,
-    activation: Option<&GuestRuntimeActivation>,
-    error: anyhow::Error,
-) -> anyhow::Error {
-    let Some(activation) = activation else {
-        return error;
-    };
-    if error.downcast_ref::<DesktopReadinessDeadline>().is_none() {
-        return error;
-    }
-    let recovery = (|| -> Result<()> {
-        if RuntimeState::load(machine_dir)?.is_some_and(|state| {
-            supervisor_is_live(&state, machine_dir) || state.container_pid.is_some()
-        }) {
-            send_host_control(machine_dir, "stop")
-                .context("stopping the failed newly activated runtime")?;
-            wait_for_machine_stopped(machine_dir, Duration::from_secs(30))
-                .context("waiting for the failed newly activated runtime to stop")?;
-        }
-        run_guest_runtime_rollback_helper(rootfs, activation)
-    })();
-    match recovery {
-        Ok(()) => error.context(format!(
-            "new protected runtime {} missed desktop readiness; restored complete revision {} and retained failure evidence under /opt/buzzardos/runtime (start the machine again to use the fallback)",
-            activation.revision, activation.previous
-        )),
-        Err(recovery_error) => error.context(format!(
-            "new protected runtime {} missed desktop readiness, and its guarded fallback to {} failed: {recovery_error:#}",
-            activation.revision, activation.previous
-        )),
-    }
-}
-
-fn guest_assets_are_current(rootfs: &Path) -> Result<bool> {
-    let installed = fs::read_to_string(rootfs.join("usr/lib/buzzardos/guest-assets.version"))
-        .unwrap_or_default();
-    if installed != GUEST_ASSETS_REVISION {
-        return Ok(false);
-    }
-
-    let Some(installed_manifest) = read_guest_asset_manifest(rootfs) else {
-        return Ok(false);
-    };
-    if installed_manifest != current_guest_asset_manifest() {
-        return Ok(false);
-    }
-
-    let revision = guest_runtime_revision()?;
-    let source = bundled_guest_runtime_dir(&revision)?;
-    let (bundled_manifest, _) = read_guest_runtime_manifest(&source, None, &revision)?;
-    validate_guest_runtime_tree(&source, &bundled_manifest, None, false)?;
-    let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-    let Some(current_revision) = read_revision_link(&runtime_root, "current", 0)? else {
-        return Ok(false);
-    };
-    if current_revision != revision {
-        return validated_failed_runtime_fallback(rootfs, &revision, &current_revision, 0);
-    }
-    let installed_revision = runtime_root.join(&revision);
-    let (installed_runtime_manifest, _) =
-        read_guest_runtime_manifest(&installed_revision, Some(0), &revision)?;
-    if installed_runtime_manifest != bundled_manifest {
-        return Ok(false);
-    }
-    validate_guest_runtime_tree(
-        &installed_revision,
-        &installed_runtime_manifest,
-        Some(0),
-        true,
-    )?;
-    Ok(true)
 }
 
 fn wait_for_detached_start(
@@ -6494,8 +4556,8 @@ fn doctor() -> Result<()> {
         ),
         ("NVIDIA device", Path::new("/dev/nvidiactl").exists(), false),
         (
-            "bundled OCI helper",
-            resources.helper_or_path("crane").is_ok(),
+            "rootless Buildah OCI tools",
+            resources.helper_or_path("buildah").is_ok(),
             true,
         ),
         (
@@ -6725,488 +4787,8 @@ fn has_matching_device(directory: &str, prefix: &str) -> bool {
 mod layer_tests {
     use super::*;
     use std::io::Cursor;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use tar::{Builder, EntryType, Header};
-
-    struct SeedFixture {
-        _temp: tempfile::TempDir,
-        archive: PathBuf,
-        manifest: PathBuf,
-        rootfs: PathBuf,
-        digest: String,
-    }
-
-    fn runtime_fixture(directory: &Path) -> PathBuf {
-        runtime_fixture_for(directory, &guest_runtime_revision().unwrap())
-    }
-
-    fn runtime_fixture_for(directory: &Path, revision: &str) -> PathBuf {
-        let runtime = directory.join("bundled-runtime").join(revision);
-        fs::create_dir_all(&runtime).unwrap();
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut files = BTreeMap::new();
-        for relative in REQUIRED_GUEST_RUNTIME_FILES.iter().copied() {
-            let path = runtime.join(relative);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let contents = format!("fixture:{relative}\n");
-            fs::write(&path, contents.as_bytes()).unwrap();
-            let mode = if relative.ends_with(".py") || relative.starts_with("lib/") {
-                0o644
-            } else {
-                0o755
-            };
-            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
-            files.insert(
-                relative.to_owned(),
-                GuestRuntimeFileRecord {
-                    sha256: format!("{:x}", Sha256::digest(contents.as_bytes())),
-                    mode,
-                },
-            );
-        }
-        for entry in walk_runtime_directories(&runtime) {
-            fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let manifest = GuestRuntimeManifest {
-            schema_version: 1,
-            revision: revision.to_owned(),
-            files,
-        };
-        fs::write(
-            runtime.join("runtime.manifest.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        fs::set_permissions(
-            runtime.join("runtime.manifest.json"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-        runtime
-    }
-
-    fn add_runtime_readiness(runtime: &Path, revision: &str) {
-        let manifest_bytes = fs::read(runtime.join("runtime.manifest.json")).unwrap();
-        let readiness = GuestRuntimeReadiness {
-            schema_version: 1,
-            revision: revision.to_owned(),
-            manifest_sha256: canonical_runtime_manifest_digest(&manifest_bytes).unwrap(),
-            ready: true,
-        };
-        fs::write(
-            runtime.join("readiness.json"),
-            serde_json::to_vec(&readiness).unwrap(),
-        )
-        .unwrap();
-        fs::set_permissions(
-            runtime.join("readiness.json"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-    }
-
-    fn walk_runtime_directories(root: &Path) -> Vec<PathBuf> {
-        let mut directories = vec![root.to_path_buf()];
-        let mut result = Vec::new();
-        while let Some(directory) = directories.pop() {
-            result.push(directory.clone());
-            for entry in fs::read_dir(&directory).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    directories.push(entry.path());
-                }
-            }
-        }
-        result
-    }
-
-    #[test]
-    fn protected_runtime_activation_is_atomic_and_retains_the_previous_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let revision = guest_runtime_revision().unwrap();
-        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-        fs::create_dir_all(runtime_root.join("old-revision")).unwrap();
-        for directory in [
-            rootfs.join("opt"),
-            rootfs.join("opt/buzzardos"),
-            runtime_root.clone(),
-            runtime_root.join("old-revision"),
-        ] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        symlink("old-revision", runtime_root.join("current")).unwrap();
-        let uid = unsafe { libc::geteuid() };
-
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-
-        assert_eq!(
-            fs::read_link(runtime_root.join("current")).unwrap(),
-            Path::new(&revision)
-        );
-        assert_eq!(
-            fs::read_link(runtime_root.join("previous")).unwrap(),
-            Path::new("old-revision")
-        );
-        assert!(runtime_root.join("old-revision").is_dir());
-        assert!(
-            runtime_root
-                .join(&revision)
-                .join("libexec/buzzardos-shell")
-                .is_file()
-        );
-        assert!(
-            fs::read_dir(&runtime_root)
-                .unwrap()
-                .filter_map(Result::ok)
-                .all(|entry| {
-                    let name = entry.file_name();
-                    name == "current"
-                        || name == "previous"
-                        || name == revision.as_str()
-                        || name == "old-revision"
-                })
-        );
-    }
-
-    #[test]
-    fn protected_runtime_retry_preserves_a_readiness_record() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let revision = guest_runtime_revision().unwrap();
-        let uid = unsafe { libc::geteuid() };
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-        let readiness = rootfs
-            .join(GUEST_RUNTIME_ROOT)
-            .join(&revision)
-            .join("readiness.json");
-        fs::write(&readiness, b"readiness evidence\n").unwrap();
-        fs::set_permissions(&readiness, fs::Permissions::from_mode(0o644)).unwrap();
-
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-
-        assert_eq!(fs::read(&readiness).unwrap(), b"readiness evidence\n");
-    }
-
-    #[test]
-    fn protected_runtime_rejects_source_symlinks() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let outside = temp.path().join("outside");
-        fs::write(&outside, b"outside").unwrap();
-        fs::remove_file(source.join("libexec/buzzardos-shell")).unwrap();
-        symlink(&outside, source.join("libexec/buzzardos-shell")).unwrap();
-
-        let error = install_protected_guest_runtime(
-            &rootfs,
-            &source,
-            &guest_runtime_revision().unwrap(),
-            unsafe { libc::geteuid() },
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("symbolic link"));
-        assert!(!rootfs.join(GUEST_RUNTIME_ROOT).exists());
-    }
-
-    #[test]
-    fn protected_runtime_rejects_a_symlinked_intermediate_parent() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&rootfs).unwrap();
-        fs::create_dir(&outside).unwrap();
-        symlink(&outside, rootfs.join("opt")).unwrap();
-        let source = runtime_fixture(temp.path());
-
-        let error = install_protected_guest_runtime(
-            &rootfs,
-            &source,
-            &guest_runtime_revision().unwrap(),
-            unsafe { libc::geteuid() },
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("not a real directory"));
-        assert!(fs::read_dir(&outside).unwrap().next().is_none());
-    }
-
-    #[test]
-    fn protected_runtime_never_follows_hostile_staging_symlinks() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&rootfs).unwrap();
-        fs::create_dir(&outside).unwrap();
-        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-        fs::create_dir_all(&runtime_root).unwrap();
-        for directory in [
-            rootfs.join("opt"),
-            rootfs.join("opt/buzzardos"),
-            runtime_root.clone(),
-        ] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let revision = guest_runtime_revision().unwrap();
-        for counter in 0..128_u32 {
-            symlink(
-                &outside,
-                runtime_root.join(format!(
-                    ".{revision}.staging.{}.{}",
-                    std::process::id(),
-                    counter
-                )),
-            )
-            .unwrap();
-        }
-        let source = runtime_fixture(temp.path());
-
-        let error = install_protected_guest_runtime(&rootfs, &source, &revision, unsafe {
-            libc::geteuid()
-        })
-        .unwrap_err();
-
-        assert!(error.to_string().contains("runtime migration intermediate"));
-        assert!(fs::read_dir(&outside).unwrap().next().is_none());
-    }
-
-    #[test]
-    fn protected_runtime_discards_a_safe_interrupted_stage_and_retries() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let revision = guest_runtime_revision().unwrap();
-        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-        fs::create_dir_all(&runtime_root).unwrap();
-        for directory in [
-            rootfs.join("opt"),
-            rootfs.join("opt/buzzardos"),
-            runtime_root.clone(),
-        ] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let interrupted = runtime_root.join(format!(".{revision}.staging.interrupted"));
-        fs::create_dir(&interrupted).unwrap();
-        fs::set_permissions(&interrupted, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(interrupted.join("partial"), b"partial").unwrap();
-        fs::set_permissions(
-            interrupted.join("partial"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
-
-        install_protected_guest_runtime(&rootfs, &source, &revision, unsafe { libc::geteuid() })
-            .unwrap();
-
-        assert!(!interrupted.exists());
-        assert!(
-            runtime_root
-                .join(revision)
-                .join("libexec/buzzardos-shell")
-                .is_file()
-        );
-    }
-
-    #[test]
-    fn protected_runtime_replaces_only_an_inactive_incomplete_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let revision = guest_runtime_revision().unwrap();
-        let uid = unsafe { libc::geteuid() };
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-        fs::remove_file(runtime_root.join("current")).unwrap();
-        fs::write(
-            runtime_root.join(&revision).join("libexec/buzzardos-shell"),
-            b"interrupted",
-        )
-        .unwrap();
-
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-
-        assert_eq!(
-            fs::read(runtime_root.join(&revision).join("libexec/buzzardos-shell")).unwrap(),
-            b"fixture:libexec/buzzardos-shell\n"
-        );
-        assert_eq!(
-            fs::read_link(runtime_root.join("current")).unwrap(),
-            Path::new(&revision)
-        );
-    }
-
-    #[test]
-    fn protected_runtime_never_replaces_a_corrupt_active_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let source = runtime_fixture(temp.path());
-        let revision = guest_runtime_revision().unwrap();
-        let uid = unsafe { libc::geteuid() };
-        install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap();
-        let shell = rootfs
-            .join(GUEST_RUNTIME_ROOT)
-            .join(&revision)
-            .join("libexec/buzzardos-shell");
-        fs::write(&shell, b"corrupt active payload").unwrap();
-
-        let error = install_protected_guest_runtime(&rootfs, &source, &revision, uid).unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("active protected runtime is incomplete")
-        );
-        assert_eq!(fs::read(&shell).unwrap(), b"corrupt active payload");
-    }
-
-    #[test]
-    fn new_machine_reconciles_a_same_revision_oci_runtime_before_commit() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let revision = guest_runtime_revision().unwrap();
-        let uid = unsafe { libc::geteuid() };
-        let oci_source = runtime_fixture(&temp.path().join("oci"));
-        install_protected_guest_runtime(&rootfs, &oci_source, &revision, uid).unwrap();
-
-        let appimage_source = runtime_fixture(&temp.path().join("appimage"));
-        let shell = appimage_source.join("libexec/buzzardos-shell");
-        fs::write(&shell, b"package-built shell runtime fixture\n").unwrap();
-        let manifest_path = appimage_source.join("runtime.manifest.json");
-        let mut manifest: GuestRuntimeManifest =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest
-            .files
-            .get_mut("libexec/buzzardos-shell")
-            .unwrap()
-            .sha256 = format!(
-            "{:x}",
-            Sha256::digest(b"package-built shell runtime fixture\n")
-        );
-        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-
-        install_protected_guest_runtime_for_new_rootfs(&rootfs, &appimage_source, &revision, uid)
-            .unwrap();
-
-        let installed = rootfs
-            .join(GUEST_RUNTIME_ROOT)
-            .join(&revision)
-            .join("libexec/buzzardos-shell");
-        assert_eq!(
-            fs::read(installed).unwrap(),
-            b"package-built shell runtime fixture\n"
-        );
-        assert_eq!(
-            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
-            Path::new(&revision)
-        );
-        assert!(
-            fs::read_dir(rootfs.join(GUEST_RUNTIME_ROOT))
-                .unwrap()
-                .filter_map(Result::ok)
-                .all(|entry| !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("seed-original"))
-        );
-    }
-
-    #[test]
-    fn guarded_runtime_rollback_restores_only_the_ready_previous_revision() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let uid = unsafe { libc::geteuid() };
-        let previous_revision = "previous-ready";
-        let previous_source = runtime_fixture_for(&temp.path().join("previous"), previous_revision);
-        install_protected_guest_runtime(&rootfs, &previous_source, previous_revision, uid).unwrap();
-        let previous_runtime = rootfs.join(GUEST_RUNTIME_ROOT).join(previous_revision);
-        add_runtime_readiness(&previous_runtime, previous_revision);
-
-        let current_revision = guest_runtime_revision().unwrap();
-        let current_source = runtime_fixture(&temp.path().join("current"));
-        install_protected_guest_runtime(&rootfs, &current_source, &current_revision, uid).unwrap();
-
-        rollback_guest_runtime(
-            &rootfs,
-            &current_revision,
-            previous_revision,
-            "desktop readiness deadline expired",
-            uid,
-        )
-        .unwrap();
-
-        let runtime_root = rootfs.join(GUEST_RUNTIME_ROOT);
-        assert_eq!(
-            fs::read_link(runtime_root.join("current")).unwrap(),
-            Path::new(previous_revision)
-        );
-        assert!(runtime_root.join(&current_revision).is_dir());
-        assert!(runtime_root.join(previous_revision).is_dir());
-        let evidence = read_runtime_activation_failure(&rootfs, &current_revision, uid)
-            .unwrap()
-            .unwrap();
-        assert_eq!(evidence.fallback_revision, previous_revision);
-        assert!(
-            validated_failed_runtime_fallback(&rootfs, &current_revision, previous_revision, uid,)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn guarded_runtime_rollback_rejects_stale_current_or_unready_previous() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let uid = unsafe { libc::geteuid() };
-        let previous_revision = "previous-unready";
-        let previous_source = runtime_fixture_for(&temp.path().join("previous"), previous_revision);
-        install_protected_guest_runtime(&rootfs, &previous_source, previous_revision, uid).unwrap();
-        let current_revision = guest_runtime_revision().unwrap();
-        let current_source = runtime_fixture(&temp.path().join("current"));
-        install_protected_guest_runtime(&rootfs, &current_source, &current_revision, uid).unwrap();
-
-        let error = rollback_guest_runtime(
-            &rootfs,
-            &current_revision,
-            previous_revision,
-            "desktop readiness deadline expired",
-            uid,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("runtime readiness"));
-        assert_eq!(
-            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
-            Path::new(&current_revision)
-        );
-
-        add_runtime_readiness(
-            &rootfs.join(GUEST_RUNTIME_ROOT).join(previous_revision),
-            previous_revision,
-        );
-        let stale = rollback_guest_runtime(
-            &rootfs,
-            "not-the-current-revision",
-            previous_revision,
-            "desktop readiness deadline expired",
-            uid,
-        )
-        .unwrap_err();
-        assert!(stale.to_string().contains("current changed"));
-        assert_eq!(
-            fs::read_link(rootfs.join(GUEST_RUNTIME_ROOT).join("current")).unwrap(),
-            Path::new(&current_revision)
-        );
-    }
 
     #[test]
     fn only_the_broker_readiness_deadline_code_enables_guarded_recovery() {
@@ -7226,35 +4808,13 @@ mod layer_tests {
     }
 
     #[test]
-    fn compiled_guest_assets_match_the_oci_install_manifest() {
-        let manifest = include_str!("../../../../guest/asset-manifest.tsv");
-        let declared: BTreeMap<&str, u32> = manifest
-            .lines()
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .filter_map(|line| {
-                let mut fields = line.split('\t');
-                let mode = u32::from_str_radix(fields.next().unwrap(), 8).unwrap();
-                let _source = fields.next().unwrap();
-                let destination = fields.next().unwrap();
-                assert!(fields.next().is_none());
-                (!destination.starts_with("@runtime/")).then_some((destination, mode))
-            })
-            .collect();
-        let compiled: BTreeMap<&str, u32> = GUEST_ASSETS
-            .iter()
-            .map(|(destination, _contents, mode)| (*destination, *mode))
-            .collect();
-        assert_eq!(declared, compiled);
-    }
-
-    #[test]
     fn guest_installer_output_satisfies_seed_validator() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
         let binaries = temp.path().join("binaries");
         fs::create_dir(&rootfs).unwrap();
         fs::create_dir(&binaries).unwrap();
-        let shell = binaries.join("buzzardos-shell");
+        let shell = binaries.join("buzzardos-desktop");
         let settings = binaries.join("buzzardos-settings");
         let shortcut_helper = binaries.join("buzzardos-shortcut-helper");
         let clipboard_agent = binaries.join("buzzardos-clipboard-agent");
@@ -7270,10 +4830,16 @@ mod layer_tests {
         let status = Command::new("sh")
             .arg(repository.join("guest/install-rootfs-assets.sh"))
             .arg(&rootfs)
+            .arg(&clipboard_agent)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = Command::new("sh")
+            .arg(repository.join("guest/install-desktop-assets.sh"))
+            .arg(&rootfs)
             .arg(&shell)
             .arg(&settings)
             .arg(&shortcut_helper)
-            .arg(&clipboard_agent)
             .status()
             .unwrap();
         assert!(status.success());
@@ -7281,7 +4847,7 @@ mod layer_tests {
             "lib/systemd/systemd",
             "usr/bin/sway",
             "usr/bin/swaymsg",
-            "usr/bin/buzzardcua",
+            "usr/bin/buzzardoscua",
             "var/lib/dpkg/status",
         ] {
             let destination = rootfs.join(required);
@@ -7356,222 +4922,11 @@ mod layer_tests {
         layer
     }
 
-    fn seed_fixture(build: impl FnOnce(&mut Builder<File>)) -> SeedFixture {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("runtime");
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&runtime).unwrap();
-        fs::create_dir(&rootfs).unwrap();
-        let tar_path = temp.path().join("rootfs.tar");
-        let mut builder = Builder::new(File::create(&tar_path).unwrap());
-        let revision = guest_runtime_revision().unwrap();
-        for required in [
-            "libexec/buzzardos-clipboard-agent",
-            "libexec/buzzardos-settings",
-            "libexec/buzzardos-shell",
-        ] {
-            append_file(
-                &mut builder,
-                &format!("opt/buzzardos/runtime/{revision}/{required}"),
-                b"fixture",
-                0o755,
-            );
-        }
-        append_file(&mut builder, "lib/systemd/systemd", b"fixture", 0o755);
-        for required in ["usr/bin/sway", "usr/bin/swaymsg", "usr/bin/buzzardcua"] {
-            append_file(&mut builder, required, b"fixture", 0o755);
-        }
-        append_file(
-            &mut builder,
-            "usr/libexec/buzzardos-shortcut-helper",
-            b"fixture",
-            0o755,
-        );
-        append_file(&mut builder, "var/lib/dpkg/status", b"fixture", 0o644);
-        append_link(
-            &mut builder,
-            EntryType::Symlink,
-            "opt/buzzardos/runtime/current",
-            Path::new(&revision),
-        );
-        build(&mut builder);
-        builder.finish().unwrap();
-        drop(builder);
-
-        let uncompressed = fs::read(&tar_path).unwrap();
-        let compressed = zstd::stream::encode_all(Cursor::new(&uncompressed), 1).unwrap();
-        let archive = runtime.join(ROOTFS_SEED_ARCHIVE);
-        let manifest = runtime.join(ROOTFS_SEED_MANIFEST);
-        fs::write(&archive, &compressed).unwrap();
-        let compressed_hash = format!("{:x}", Sha256::digest(&compressed));
-        let uncompressed_hash = format!("{:x}", Sha256::digest(&uncompressed));
-        let record = serde_json::json!({
-            "schema": ROOTFS_SEED_SCHEMA,
-            "kind": ROOTFS_SEED_KIND,
-            "platform": {"os": "linux", "architecture": "amd64"},
-            "archive": {
-                "name": ROOTFS_SEED_ARCHIVE,
-                "media_type": ROOTFS_SEED_MEDIA_TYPE,
-                "size": compressed.len(),
-                "sha256": compressed_hash,
-                "uncompressed_size": uncompressed.len(),
-                "uncompressed_sha256": uncompressed_hash,
-            }
-        });
-        fs::write(&manifest, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
-        SeedFixture {
-            _temp: temp,
-            archive,
-            manifest,
-            rootfs,
-            digest: format!("sha256:{compressed_hash}"),
-        }
-    }
-
     #[test]
     fn create_requires_an_explicit_oci_image() {
         let parsed =
             Cli::try_parse_from(["BuzzardOS", "--machine-dir", "/data/demo", "create", "demo"]);
         assert!(parsed.is_err());
-    }
-
-    #[test]
-    fn flat_seed_preserves_hardlinks_modes_mtime_and_xattrs() {
-        let fixture = seed_fixture(|builder| {
-            append_directory(builder, "opt", 0o750);
-            builder
-                .append_pax_extensions([
-                    ("mtime", b"123.456789123".as_slice()),
-                    ("SCHILY.xattr.user.buzzardos", b"kept".as_slice()),
-                ])
-                .unwrap();
-            append_file(builder, "opt/original", b"persistent", 0o6750);
-            append_link(
-                builder,
-                EntryType::Link,
-                "opt/hardlink",
-                Path::new("opt/original"),
-            );
-            append_link(
-                builder,
-                EntryType::Symlink,
-                "opt/symlink",
-                Path::new("original"),
-            );
-        });
-
-        apply_rootfs_seed(
-            &fixture.archive,
-            &fixture.manifest,
-            &fixture.digest,
-            &fixture.rootfs,
-        )
-        .unwrap();
-
-        let original = fs::symlink_metadata(fixture.rootfs.join("opt/original")).unwrap();
-        let hardlink = fs::symlink_metadata(fixture.rootfs.join("opt/hardlink")).unwrap();
-        assert_eq!(original.ino(), hardlink.ino());
-        assert_eq!(original.permissions().mode() & 0o7777, 0o6750);
-        assert_eq!(original.mtime(), 123);
-        assert_eq!(original.mtime_nsec(), 456_789_123);
-        assert_eq!(
-            fs::read_link(fixture.rootfs.join("opt/symlink")).unwrap(),
-            Path::new("original")
-        );
-        let path =
-            CString::new(fixture.rootfs.join("opt/original").as_os_str().as_bytes()).unwrap();
-        let mut value = [0_u8; 16];
-        let length = unsafe {
-            libc::lgetxattr(
-                path.as_ptr(),
-                c"user.buzzardos".as_ptr(),
-                value.as_mut_ptr().cast(),
-                value.len(),
-            )
-        };
-        assert_eq!(length, 4);
-        assert_eq!(&value[..4], b"kept");
-    }
-
-    #[test]
-    fn flat_seed_rejects_digest_mismatch_before_extraction() {
-        let fixture = seed_fixture(|_| {});
-        let mut bytes = fs::read(&fixture.archive).unwrap();
-        let last = bytes.len() - 1;
-        bytes[last] ^= 1;
-        fs::write(&fixture.archive, bytes).unwrap();
-
-        let error = apply_rootfs_seed(
-            &fixture.archive,
-            &fixture.manifest,
-            &fixture.digest,
-            &fixture.rootfs,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("archive digest mismatch"));
-        assert!(fs::read_dir(&fixture.rootfs).unwrap().next().is_none());
-    }
-
-    #[test]
-    fn flat_seed_rejects_parent_hardlinks_whiteouts_and_unmapped_ids() {
-        let hardlink = seed_fixture(|builder| {
-            append_link(builder, EntryType::Link, "escape", Path::new("../outside"));
-        });
-        assert!(
-            apply_rootfs_seed(
-                &hardlink.archive,
-                &hardlink.manifest,
-                &hardlink.digest,
-                &hardlink.rootfs,
-            )
-            .is_err()
-        );
-
-        let whiteout = seed_fixture(|builder| {
-            append_file(builder, "etc/.wh.forbidden", b"", 0o000);
-        });
-        assert!(
-            apply_rootfs_seed(
-                &whiteout.archive,
-                &whiteout.manifest,
-                &whiteout.digest,
-                &whiteout.rootfs,
-            )
-            .is_err()
-        );
-
-        let unmapped = seed_fixture(|builder| {
-            let mut header = header(EntryType::Regular, 0o644, 1);
-            header.set_uid(MAX_GUEST_ID + 1);
-            header.set_path("unsupported-owner").unwrap();
-            header.set_cksum();
-            builder.append(&header, Cursor::new(b"x")).unwrap();
-        });
-        assert!(
-            apply_rootfs_seed(
-                &unmapped.archive,
-                &unmapped.manifest,
-                &unmapped.digest,
-                &unmapped.rootfs,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn bundled_seed_manifest_rejects_wrong_platform_and_symlink_files() {
-        let fixture = seed_fixture(|_| {});
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&fixture.manifest).unwrap()).unwrap();
-        manifest["platform"]["architecture"] = serde_json::json!("arm64");
-        fs::write(&fixture.manifest, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert!(read_rootfs_seed_manifest(&fixture.manifest).is_err());
-
-        let target = fixture.archive.with_extension("actual");
-        fs::rename(&fixture.archive, &target).unwrap();
-        std::os::unix::fs::symlink(&target, &fixture.archive).unwrap();
-        assert!(open_regular_nofollow(&fixture.archive, "test archive").is_err());
     }
 
     #[test]
@@ -7804,355 +5159,6 @@ mod layer_tests {
             safe_relative_path(Path::new("safe/path")).unwrap(),
             Path::new("safe/path")
         );
-    }
-
-    #[test]
-    fn installs_versioned_sway_guest_assets() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        fs::create_dir_all(rootfs.join("usr/share/dbus-1/services")).unwrap();
-        fs::write(
-            rootfs.join("usr/share/dbus-1/services/org.kde.kwalletd6.service"),
-            b"[D-BUS Service]\nName=org.kde.kwalletd6\nExec=/usr/bin/kwalletd6\n",
-        )
-        .unwrap();
-
-        // Static session integration is unit-tested here. The compiled native
-        // shell is installed from the sibling AppImage binary during a real
-        // machine creation.
-        install_guest_assets_without_shell(&rootfs).unwrap();
-
-        let sway_config = fs::read_to_string(rootfs.join("etc/buzzardos/sway-config")).unwrap();
-        assert!(sway_config.contains("for_window [all] floating enable, border normal 8"));
-        assert!(sway_config.contains("titlebar_padding 6 7"));
-        assert!(sway_config.contains("client.focused #30343a #30343a #f2f2f2 #ff7139"));
-        assert!(sway_config.contains(
-            "bindsym button3 focus, exec --no-startup-id \
-             /opt/buzzardos/runtime/current/libexec/buzzardos-shell \
-             --request-focused-window-menu"
-        ));
-        assert!(sway_config.contains("workspace 1"));
-        assert!(sway_config.contains("buzzardos-desktop-services"));
-        assert!(!sway_config.contains("waybar"));
-        assert!(!sway_config.contains("fuzzel"));
-        assert_eq!(
-            fs::read_to_string(rootfs.join("usr/lib/buzzardos/guest-assets.version")).unwrap(),
-            GUEST_ASSETS_REVISION
-        );
-        let desktop_services = include_str!("../../../../guest/assets/buzzardos-desktop-services");
-        assert!(desktop_services.contains("buzzardos-output-sync"));
-        assert!(desktop_services.contains("$runtime/libexec/buzzardos-shell"));
-        let integration_agent =
-            include_str!("../../../../guest/assets/buzzardos-integration-agent");
-        assert!(integration_agent.contains("media.class=Video/Source,media.role=Camera"));
-        assert!(
-            integration_agent
-                .contains("pipewiresink\", \"mode=provide\",\n                \"async=false")
-        );
-        assert!(
-            !rootfs
-                .join("usr/local/bin/buzzardos-window-control")
-                .exists()
-        );
-        let session = include_str!("../../../../guest/assets/buzzardos-session");
-        assert!(session.contains("XDG_CURRENT_DESKTOP=sway"));
-        assert!(
-            fs::read_to_string(rootfs.join("usr/lib/systemd/system/buzzardos-desktop.service"))
-                .unwrap()
-                .contains("EnvironmentFile=/run/buzzardos-host/driver.env")
-        );
-        assert!(!rootfs.join("etc/chromium.d/buzzardos").exists());
-        assert!(!rootfs.join("etc/chromium/master_preferences").exists());
-        assert!(
-            fs::read_to_string(rootfs.join("etc/buzzardos/xdg/kwalletrc"))
-                .unwrap()
-                .contains("Enabled=false")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("etc/buzzardos/xdg/gtk-3.0/settings.ini"))
-                .unwrap()
-                .contains("gtk-theme-name=BuzzardOS-Dark")
-        );
-        let dark_gtk3 =
-            fs::read_to_string(rootfs.join("usr/share/themes/BuzzardOS-Dark/gtk-3.0/gtk.css"))
-                .unwrap();
-        let light_gtk3 =
-            fs::read_to_string(rootfs.join("usr/share/themes/BuzzardOS-Light/gtk-3.0/gtk.css"))
-                .unwrap();
-        assert_eq!(dark_gtk3, light_gtk3);
-        assert!(dark_gtk3.contains("BuzzardOS-Shared/gtk-3.0/geometry.css"));
-        let gtk3_geometry = fs::read_to_string(
-            rootfs.join("usr/share/themes/BuzzardOS-Shared/gtk-3.0/geometry.css"),
-        )
-        .unwrap();
-        assert!(gtk3_geometry.contains(".sidebar .view:selected"));
-        assert!(gtk3_geometry.contains("color: @wb_selected_text"));
-        assert!(!gtk3_geometry.contains("color: #ffffff"));
-        assert!(
-            fs::read_to_string(rootfs.join("usr/share/icons/BuzzardOS/index.theme"))
-                .unwrap()
-                .contains("Inherits=Adwaita,hicolor")
-        );
-        assert!(
-            fs::read_to_string(rootfs.join("etc/buzzardos/xdg/kdeglobals"))
-                .unwrap()
-                .contains("ColorScheme=BuzzardOS-Dark")
-        );
-        assert!(session.contains("file:///shared Shared"));
-        assert!(!session.contains("gsettings set org.gnome.desktop.interface color-scheme"));
-        assert!(!session.contains("gsettings set org.gnome.desktop.interface gtk-theme"));
-        assert!(
-            !rootfs
-                .join("usr/share/dbus-1/services/org.kde.kwalletd6.service")
-                .exists()
-        );
-        assert_eq!(
-            fs::metadata(rootfs.join("etc/sudoers.d/90-buzzardos"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o440
-        );
-    }
-
-    #[test]
-    fn fresh_install_includes_discoverable_application_icons() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-
-        install_guest_assets_without_shell(&rootfs).unwrap();
-
-        let application_icons: &[(&str, &[u8])] = &[
-            (
-                "usr/share/icons/BuzzardOS/scalable/apps/buzzardos.svg",
-                include_bytes!(
-                    "../../../../guest/assets/icons/BuzzardOS/scalable/apps/buzzardos.svg"
-                ),
-            ),
-            (
-                "usr/share/icons/BuzzardOS/scalable/apps/buzzardos-settings.svg",
-                include_bytes!(
-                    "../../../../guest/assets/icons/BuzzardOS/scalable/apps/buzzardos-settings.svg"
-                ),
-            ),
-            (
-                "usr/share/icons/BuzzardOS/symbolic/apps/buzzardos-symbolic.svg",
-                include_bytes!(
-                    "../../../../guest/assets/icons/BuzzardOS/symbolic/apps/buzzardos-symbolic.svg"
-                ),
-            ),
-            (
-                "usr/share/icons/BuzzardOS/symbolic/apps/buzzardos-settings-symbolic.svg",
-                include_bytes!(
-                    "../../../../guest/assets/icons/BuzzardOS/symbolic/apps/buzzardos-settings-symbolic.svg"
-                ),
-            ),
-        ];
-        for (relative, expected) in application_icons {
-            let destination = rootfs.join(relative);
-            assert_eq!(fs::read(&destination).unwrap(), *expected, "{relative}");
-            assert_eq!(
-                fs::metadata(&destination).unwrap().permissions().mode() & 0o7777,
-                0o644,
-                "{relative}"
-            );
-        }
-
-        let icon_theme =
-            fs::read_to_string(rootfs.join("usr/share/icons/BuzzardOS/index.theme")).unwrap();
-        let directories = icon_theme
-            .lines()
-            .find_map(|line| line.strip_prefix("Directories="))
-            .unwrap()
-            .split(',')
-            .collect::<std::collections::BTreeSet<_>>();
-        for directory in ["scalable/apps", "symbolic/apps"] {
-            assert!(directories.contains(directory), "missing {directory}");
-            let section = format!("[{directory}]");
-            let body = icon_theme
-                .split(&section)
-                .nth(1)
-                .unwrap_or_else(|| panic!("missing {section}"))
-                .split("\n[")
-                .next()
-                .unwrap();
-            assert!(body.lines().any(|line| line == "Type=Scalable"));
-            assert!(body.lines().any(|line| line == "Context=Applications"));
-        }
-    }
-
-    #[test]
-    fn a_revision_without_the_bundled_manifest_is_not_current() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir_all(rootfs.join("usr/lib/buzzardos")).unwrap();
-        fs::create_dir_all(rootfs.join("etc/buzzardos")).unwrap();
-        fs::write(
-            rootfs.join("usr/lib/buzzardos/guest-assets.version"),
-            GUEST_ASSETS_REVISION,
-        )
-        .unwrap();
-        fs::write(
-            rootfs.join("etc/buzzardos/sway-config"),
-            b"guest-owned configuration",
-        )
-        .unwrap();
-
-        assert!(read_guest_asset_manifest(&rootfs).is_none());
-        assert_eq!(
-            fs::read(rootfs.join("etc/buzzardos/sway-config")).unwrap(),
-            b"guest-owned configuration"
-        );
-    }
-
-    #[test]
-    fn migration_updates_an_unmodified_distributed_asset() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let relative = Path::new("etc/buzzardos/test.conf");
-        install_guest_asset(&rootfs, relative, b"old distributed value", 0o644).unwrap();
-        let previous = guest_asset_record(b"old distributed value", 0o644);
-
-        migrate_guest_asset(
-            &rootfs,
-            relative,
-            b"new distributed value",
-            0o600,
-            Some(&previous),
-            None,
-        )
-        .unwrap();
-
-        let destination = rootfs.join(relative);
-        assert_eq!(fs::read(&destination).unwrap(), b"new distributed value");
-        assert_eq!(
-            fs::metadata(destination).unwrap().permissions().mode() & 0o7777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn migration_preserves_a_guest_modified_asset() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let relative = Path::new("etc/buzzardos/test.conf");
-        install_guest_asset(&rootfs, relative, b"guest modified value", 0o644).unwrap();
-        let previous = guest_asset_record(b"old distributed value", 0o644);
-
-        migrate_guest_asset(
-            &rootfs,
-            relative,
-            b"new distributed value",
-            0o600,
-            Some(&previous),
-            None,
-        )
-        .unwrap();
-
-        let destination = rootfs.join(relative);
-        assert_eq!(fs::read(&destination).unwrap(), b"guest modified value");
-        assert_eq!(
-            fs::metadata(destination).unwrap().permissions().mode() & 0o7777,
-            0o644
-        );
-    }
-
-    #[test]
-    fn migration_removes_only_empty_nvidia_mount_placeholders() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        let etc_icd = rootfs.join("etc/vulkan/icd.d/nvidia_icd.json");
-        let usr_icd = rootfs.join("usr/share/vulkan/icd.d/nvidia_icd.json");
-        fs::create_dir_all(etc_icd.parent().unwrap()).unwrap();
-        fs::create_dir_all(usr_icd.parent().unwrap()).unwrap();
-        fs::write(&etc_icd, b"").unwrap();
-        fs::write(&usr_icd, b"{\"guest\":\"configured\"}\n").unwrap();
-
-        remove_empty_nvidia_mount_placeholders(&rootfs).unwrap();
-
-        assert!(!etc_icd.exists());
-        assert_eq!(fs::read(&usr_icd).unwrap(), b"{\"guest\":\"configured\"}\n");
-    }
-
-    #[test]
-    fn legacy_migration_preserves_existing_assets_and_installs_missing_ones() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let existing = Path::new("etc/buzzardos/existing.conf");
-        let missing = Path::new("etc/buzzardos/missing.conf");
-        install_guest_asset(&rootfs, existing, b"legacy guest value", 0o640).unwrap();
-
-        migrate_guest_asset(&rootfs, existing, b"distributed", 0o644, None, None).unwrap();
-        migrate_guest_asset(&rootfs, missing, b"new file", 0o600, None, None).unwrap();
-
-        assert_eq!(
-            fs::read(rootfs.join(existing)).unwrap(),
-            b"legacy guest value"
-        );
-        assert_eq!(fs::read(rootfs.join(missing)).unwrap(), b"new file");
-    }
-
-    #[test]
-    fn migration_replaces_a_recognized_unmanifested_legacy_asset() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let relative = Path::new("etc/buzzardos/legacy.conf");
-        install_guest_asset(&rootfs, relative, b"recognized legacy value", 0o644).unwrap();
-        let recognized_legacy = guest_asset_record(b"recognized legacy value", 0o644);
-
-        migrate_guest_asset(
-            &rootfs,
-            relative,
-            b"new distributed value",
-            0o644,
-            None,
-            Some(&recognized_legacy),
-        )
-        .unwrap();
-
-        assert_eq!(
-            fs::read(rootfs.join(relative)).unwrap(),
-            b"new distributed value"
-        );
-    }
-
-    #[test]
-    fn migration_removes_unchanged_retired_asset_and_preserves_guest_edit() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        fs::create_dir(&rootfs).unwrap();
-        let unchanged = Path::new("etc/buzzardos/retired.conf");
-        let edited = Path::new("etc/buzzardos/edited-retired.conf");
-        let previous = guest_asset_record(b"managed value", 0o644);
-        install_guest_asset(&rootfs, unchanged, b"managed value", 0o644).unwrap();
-        install_guest_asset(&rootfs, edited, b"guest value", 0o644).unwrap();
-
-        remove_retired_guest_asset(&rootfs, unchanged, Some(&previous)).unwrap();
-        remove_retired_guest_asset(&rootfs, edited, Some(&previous)).unwrap();
-
-        assert!(!rootfs.join(unchanged).exists());
-        assert_eq!(fs::read(rootfs.join(edited)).unwrap(), b"guest value");
-    }
-
-    #[test]
-    fn guest_asset_install_rejects_symlink_parent_escape() {
-        let temp = tempfile::tempdir().unwrap();
-        let rootfs = temp.path().join("rootfs");
-        let outside = temp.path().join("outside");
-        fs::create_dir(&rootfs).unwrap();
-        fs::create_dir(&outside).unwrap();
-        fs::create_dir(rootfs.join("usr")).unwrap();
-        std::os::unix::fs::symlink(&outside, rootfs.join("usr/libexec")).unwrap();
-
-        assert!(install_guest_assets(&rootfs).is_err());
-        assert!(!outside.join("buzzardos-init").exists());
     }
 
     #[test]

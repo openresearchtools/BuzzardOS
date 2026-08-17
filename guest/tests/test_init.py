@@ -13,26 +13,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 INIT = ROOT / "guest/assets/buzzardos-init"
 BWRAP = shutil.which("bwrap")
-HOST_KEY_TYPES = ("rsa", "ecdsa", "ed25519")
-
-
 @unittest.skipUnless(BWRAP, "bubblewrap is required to isolate the guest init test")
 class GuestInitTests(unittest.TestCase):
     def run_init(
         self,
-        host_keys: dict[str, bytes],
         *,
         machine_id: bytes = b"fixture-machine-id\n",
-        ssh_keygen_available: bool = True,
-    ) -> tuple[list[str], dict[str, bytes]]:
+    ) -> tuple[list[str], bytes]:
         with tempfile.TemporaryDirectory(prefix="buzzardos-init-") as temporary:
             sandbox = Path(temporary)
             etc = sandbox / "etc"
-            ssh = etc / "ssh"
             run = sandbox / "run"
             commands = sandbox / "commands"
             usr_bin = sandbox / "usr-bin"
-            ssh.mkdir(parents=True)
+            etc.mkdir(parents=True)
             run.mkdir()
             commands.mkdir()
             usr_bin.mkdir()
@@ -47,9 +41,6 @@ class GuestInitTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            for key_type, contents in host_keys.items():
-                (ssh / f"ssh_host_{key_type}_key").write_bytes(contents)
-
             machine_id_setup = commands / "systemd-machine-id-setup"
             machine_id_setup.write_text(
                 "#!/bin/sh\n"
@@ -63,23 +54,6 @@ class GuestInitTests(unittest.TestCase):
             install = shutil.which("install")
             self.assertIsNotNone(install)
             shutil.copy2(install, usr_bin / "install", follow_symlinks=True)
-
-            ssh_keygen = usr_bin / "ssh-keygen"
-            if ssh_keygen_available:
-                ssh_keygen.write_text(
-                    "#!/bin/sh\n"
-                    "test \"$#\" -eq 1\n"
-                    "test \"$1\" = -A\n"
-                    "printf '%s\\n' 'ssh-keygen -A' >>/run/init-events\n"
-                    "for type in rsa ecdsa ed25519; do\n"
-                    "    key=/etc/ssh/ssh_host_${type}_key\n"
-                    "    if [ ! -e \"$key\" ] && [ ! -L \"$key\" ]; then\n"
-                    "        printf 'generated-%s\\n' \"$type\" >\"$key\"\n"
-                    "    fi\n"
-                    "done\n",
-                    encoding="utf-8",
-                )
-                ssh_keygen.chmod(0o755)
 
             systemd = commands / "systemd"
             systemd.write_text(
@@ -129,40 +103,20 @@ class GuestInitTests(unittest.TestCase):
             )
 
             events = (run / "init-events").read_text(encoding="utf-8").splitlines()
-            resulting_keys = {
-                key_type: path.read_bytes()
-                for key_type in HOST_KEY_TYPES
-                if (path := ssh / f"ssh_host_{key_type}_key").exists()
-            }
-            return events, resulting_keys
+            return events, (etc / "machine-id").read_bytes()
 
-    def test_clone_generates_only_missing_host_keys_after_machine_id_setup(self) -> None:
-        original = {
-            "rsa": b"original-rsa\n",
-            "ed25519": b"original-ed25519\n",
-        }
-        events, keys = self.run_init(original, machine_id=b"")
+    def test_clone_generates_machine_id_before_systemd(self) -> None:
+        events, machine_id = self.run_init(machine_id=b"")
 
-        self.assertEqual(events, ["machine-id", "ssh-keygen -A", "systemd --system"])
-        self.assertEqual(keys["rsa"], original["rsa"])
-        self.assertEqual(keys["ed25519"], original["ed25519"])
-        self.assertEqual(keys["ecdsa"], b"generated-ecdsa\n")
+        self.assertEqual(events, ["machine-id", "systemd --system"])
+        self.assertEqual(machine_id, b"generated-machine-id\n")
 
-    def test_existing_host_key_set_is_never_regenerated(self) -> None:
-        original = {
-            key_type: f"original-{key_type}\n".encode("ascii")
-            for key_type in HOST_KEY_TYPES
-        }
-        events, keys = self.run_init(original)
+    def test_existing_machine_id_is_preserved(self) -> None:
+        original = b"fixture-machine-id\n"
+        events, machine_id = self.run_init(machine_id=original)
 
         self.assertEqual(events, ["systemd --system"])
-        self.assertEqual(keys, original)
-
-    def test_guest_without_ssh_keygen_still_boots(self) -> None:
-        events, keys = self.run_init({}, ssh_keygen_available=False)
-
-        self.assertEqual(events, ["systemd --system"])
-        self.assertEqual(keys, {})
+        self.assertEqual(machine_id, original)
 
 
 if __name__ == "__main__":

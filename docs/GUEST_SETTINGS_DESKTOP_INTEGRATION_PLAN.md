@@ -47,9 +47,7 @@ Settings
 │   └── Background colour
 │
 └── Updates
-    ├── Check for updates
-    ├── Available updates
-    └── Install now
+    └── Standard APT/unattended-upgrades status and manual-control guidance
 ```
 
 There is no About page, Applications/Desktop page, host-integration page,
@@ -126,30 +124,19 @@ custom colour then persists that explicit colour.
 
 ## 6. Debian updates
 
-The Updates page manages packages inside the persistent Debian rootfs only,
-including `buzzardos-guest-desktop` and `buzzardcua` when their configured APT
-repository offers newer versions. The host `buzzardos` package is updated by
-the host's own APT transaction and is never replaced from inside a guest.
+Package updates inside the persistent guest use the distribution's standard
+APT and unattended-upgrades mechanisms. This includes `buzzardos-guest`,
+`buzzardos-desktop`, and `buzzardoscua` once a signed Buzzard OS APT repository
+is configured. The host `buzzardos` package is updated by the host's own APT
+transaction and is never replaced from inside a guest.
 
-`Check for updates` starts one fixed fresh updater worker. The worker refreshes
-APT metadata and creates an exact candidate plan. The scrollable list shows
-the package name, installed version, candidate version, and download size.
-`Install now` installs only that opaque plan generation after revalidation.
-There is no arbitrary command, package, path, repository, environment, or APT
-argument surface.
-
-`Check for updates` and `Install now` are visually complete Cinnamon-orange
-buttons with dark high-contrast text, not label-like highlights. Active work
-shows a native progress bar and a textual phase: repository refresh, plan
-resolution, the current Debian archive with percentage/bytes and measured
-download speed, the current package/install count, completion, or the bounded
-failure reason.
-
-The system-bus service is guest-root-owned and callable only by guest root or
-the interactive UID 1000 user. It permits only the exact APT plan resolved
-from configured repositories; there is no arbitrary package or command
-surface. Buzzard OS guest files are dpkg-owned and updated only as versioned
-packages. Updates are never installed automatically.
+Buzzard OS installs no custom updater daemon, timer, D-Bus API, privileged APT
+broker, candidate-plan format, or package transaction UI. The Updates page is
+informational: it identifies standard APT as the owner of guest updates and
+directs a user who wants manual control to `apt` in Foot. One-time image
+provisioning enables the distro's normal periodic APT and unattended-upgrades
+units; later package upgrades do not re-run provisioning or rewrite user
+policy.
 
 ## 7. Desktop and application discovery
 
@@ -221,18 +208,18 @@ setting gains access to host D-Bus, host files outside explicit shares, host
 clipboard, host window policy, or another machine. Every managed read/write
 rejects unsafe types and symlink escapes and uses bounded data.
 
-Acceptance must rebuild all three Debian packages, install `buzzardos` on the
-host, install `buzzardos-guest-desktop` and `buzzardcua` in a reference image,
+Acceptance must rebuild all four Debian packages, install `buzzardos` on the
+host, install `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` in a reference image,
 launch an actual persistent machine, and then verify at minimum:
 
-- all five Settings pages at normal and small window sizes;
+- all six Settings pages at normal and small window sizes;
 - scaling persistence and pixel-aligned input;
 - output and microphone volume/mute;
 - at least US and one non-US physical layout while CUA remains usable;
 - Light and Dark screenshots of Settings, desktop, Thunar focused/unfocused,
   taskbar, menus, selection, and installed application windows;
-- APT check, scrollable plan, and fixed-plan installation against a signed
-  local fixture before any real update is accepted;
+- standard APT/unattended-upgrades configuration with no Buzzard-owned updater
+  service, timer, or D-Bus policy;
 - AppImage registration, desktop icon/placement/trust, move/relink, and launch;
 - text and screenshot clipboard snapshots in both directions; and
 - AT-SPI names/actions plus CUA pointer, keyboard, screenshots, and windows.

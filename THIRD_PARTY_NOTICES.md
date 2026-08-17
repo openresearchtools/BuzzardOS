@@ -44,14 +44,14 @@ Buzzard OS. Machine-readable component and asset records are under
 
 ## Native Debian packages
 
-- Host runtime tools such as `bubblewrap`, `skopeo`, `slirp4netns`, `uidmap`,
+- Host runtime tools such as `bubblewrap`, `buildah`, `slirp4netns`, `uidmap`,
   GStreamer, GTK, and PipeWire are normal Debian dependencies. They are not
   copied into or statically repackaged by `buzzardos`; their distro packages
   retain the authoritative copyright and source records.
-- The OCI command adapter installed by `buzzardos` is project-authored shell
-  code which delegates only the required inspect/copy operations to distro
-  `skopeo`. No Crane or other downloaded Go executable is shipped.
-- `buzzardos-guest-desktop` and `buzzardcua` carry the project, dependency, and
+- OCI pull and build operations use the distribution's normal `buildah`
+  executable with isolated temporary storage. No Crane, Skopeo, or downloaded
+  Go executable is shipped by Buzzard OS.
+- `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` carry the project, dependency, and
   upstream-fork evidence for their own payloads. Sway/wlroots remain owned by
   their distro packages rather than either Buzzard OS package.
 

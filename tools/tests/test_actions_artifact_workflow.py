@@ -62,12 +62,13 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         self.assertNotIn("host/build-portable-app.sh", self.workflow)
         self.assertNotIn("assemble-release-assets.sh", self.workflow)
 
-    def test_three_versioned_debs_are_built_and_checked(self) -> None:
+    def test_four_versioned_debs_are_built_and_checked(self) -> None:
         for required in (
             "packaging/build-debs.sh all",
             'buzzardos_${version}_amd64.deb',
-            'buzzardos-guest-desktop_${version}_amd64.deb',
-            'buzzardcua_${cua_version}_amd64.deb',
+            'buzzardos-guest_${guest_version}_amd64.deb',
+            'buzzardos-desktop_${desktop_version}_amd64.deb',
+            'buzzardoscua_${cua_version}_amd64.deb',
             "dpkg-deb --info",
             "dpkg-deb --contents",
             "sha256sum --check --strict",
@@ -79,10 +80,11 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("Depends: $depends", self.packager)
 
     def test_reference_oci_consumes_packages_and_stock_sway(self) -> None:
-        self.assertIn("packaging/build-debs.sh guest cua", self.containerfile)
-        self.assertIn("sway", self.containerfile)
-        self.assertIn("buzzardos-guest-desktop_", self.containerfile)
-        self.assertIn("buzzardcua_", self.containerfile)
+        self.assertNotIn("packaging/build-debs.sh", self.containerfile)
+        self.assertIn("buzzardos-guest_", self.containerfile)
+        self.assertIn("buzzardos-desktop_", self.containerfile)
+        self.assertIn("buzzardoscua_", self.containerfile)
+        self.assertIn("BUZZARDOS_GUEST_DEB_DIR", self.workflow)
         for forbidden in ("git clone", "meson setup", "wlroots.git", "sway.git"):
             self.assertNotIn(forbidden, self.containerfile)
 

@@ -42,7 +42,7 @@ for_window [all] floating enable, border normal 8
 # Stock Sway scopes an unqualified mouse binding to the titlebar. Focus the
 # exact container under the pointer, then ask the shell to open its normal
 # accessible window-controls menu. Application content keeps button 3.
-bindsym button3 focus, exec --no-startup-id /opt/buzzardos/runtime/current/libexec/buzzardos-shell --request-focused-window-menu
+bindsym button3 focus, exec --no-startup-id /usr/bin/buzzardos-desktop --request-focused-window-menu
 
 # Conventional guest shortcuts. There is deliberately no compositor root menu,
 # workspace bar, launcher, or host lifecycle action in this configuration.

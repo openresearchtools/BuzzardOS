@@ -3,7 +3,6 @@
 mod model;
 pub mod sound;
 mod ui;
-mod updater;
 
 use gio::prelude::*;
 use glib::variant::ToVariant;

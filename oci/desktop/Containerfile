@@ -1,39 +1,7 @@
 # syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720
-# These are the verified linux/amd64 child manifests, not mutable tags or the
-# multi-platform indexes.  oci/base-images.lock.toml records the corresponding
-# index, config, and layer digests.
-FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS deb-builder
-
-COPY oci/desktop/apt/debian-trixie-snapshot.sources \
-    /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99buzzardos-snapshot \
-    /etc/apt/apt.conf.d/99buzzardos-snapshot
-
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        binutils \
-        dpkg-dev \
-        libglib2.0-dev \
-        libgtk-4-dev \
-        libpulse-dev \
-        libx11-dev \
-        libxfixes-dev \
-        libxi-dev \
-        libxkbcommon-dev \
-        libxrandr-dev \
-        libxtst-dev \
-        pkg-config && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /source
-COPY . .
-RUN BUZZARDOS_DEB_BUILD_ROOT=/deb-build \
-    BUZZARDOS_DEB_OUTPUT_DIR=/debs \
-        packaging/build-debs.sh guest cua && \
-    install -D -m 0644 \
-        "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" \
-        /rust-notices/COPYRIGHT-library.html
-
+# This build context contains three already-built Buzzard OS guest packages.
+# No source tree, compiler, language toolchain, or package-build dependency is
+# allowed into the reference image build.
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
 
 ARG CUDA_CUDART_VERSION=13.1.80-1
@@ -45,101 +13,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 # the pinned sid base.  The normal live sid source is restored after the image
 # is assembled so persistent guest machines continue to receive user-requested
 # package updates.
-COPY oci/desktop/apt/debian-sid-snapshot.sources \
+COPY apt/debian-sid-snapshot.sources \
     /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99buzzardos-snapshot \
+COPY apt/99buzzardos-snapshot \
     /etc/apt/apt.conf.d/99buzzardos-snapshot
 
-# Stock Sway/wlroots desktop with a private D-Bus/AT-SPI session. The image
-# intentionally contains no KWin, Plasma shell, compositor source
-# tree, compiler toolchain, or Blender.
+# APT resolves the complete stock Sway/wlroots desktop from the dependencies
+# declared by these three local packages. The image definition itself contains
+# no source build and no compiler toolchain.
+COPY debs/ /tmp/buzzardos-debs/
 RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        at-spi2-core \
         ca-certificates \
         curl \
-        dbus \
-        dbus-user-session \
-        dbus-x11 \
-        dconf-gsettings-backend \
-        ffmpeg \
-        firefox-esr \
-        fonts-dejavu-core \
-        fonts-noto-color-emoji \
-        fonts-noto-core \
-        fonts-noto-cjk \
-        foot \
-        fuse3 \
-        gsettings-desktop-schemas \
-        gstreamer1.0-pipewire \
-        gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-bad \
-        gstreamer1.0-plugins-good \
-        gstreamer1.0-tools \
-        grim \
-        libgl1 \
-        libgl1-mesa-dri \
-        libasound2t64 \
-        libatk-bridge2.0-0t64 \
-        libatk1.0-0t64 \
-        libcairo2 \
-        libcups2t64 \
-        libdbus-1-3 \
-        libdrm2 \
-        libexpat1 \
-        libfuse2t64 \
-        libgbm1 \
-        libglib2.0-0t64 \
-        libglib2.0-bin \
-        libgtk-3-0t64 \
-        libgtk-4-1 \
-        libnotify-bin \
-        libnspr4 \
-        libnss3 \
-        libpango-1.0-0 \
-        libpulse0 \
-        libx11-6 \
-        libxcb1 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxext6 \
-        libxfixes3 \
-        libxi6 \
-        libxkbcommon0 \
-        libxrandr2 \
-        mako-notifier \
-        mesa-vulkan-drivers \
-        mousepad \
-        openssh-client \
-        pipewire \
-        pipewire-alsa \
-        pipewire-pulse \
-        pkexec \
-        polkitd \
-        python3 \
-        python3-apt \
-        python3-gi \
-        python3-pyatspi \
-        qt6-wayland \
-        qt6-gtk-platformtheme \
-        qt6-svg-plugins \
-        slurp \
-        squashfs-tools \
-        sudo \
-        sway \
-        wlr-randr \
-        systemd \
-        systemd-sysv \
-        thunar \
-        util-linux \
-        wireplumber \
-        wtype \
-        xdg-desktop-portal \
-        xdg-desktop-portal-gtk \
-        xdg-desktop-portal-wlr \
-        xdg-utils \
-        xkb-data \
-        xwayland && \
+        /tmp/buzzardos-debs/buzzardoscua_*_amd64.deb \
+        /tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb \
+        /tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb && \
     rm -f \
         /usr/share/applications/org.kde.ksecretd.desktop \
         /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.kwallet.service \
@@ -148,7 +37,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         /usr/share/dbus-1/services/org.kde.secretservicecompat.service \
         /usr/share/xdg-desktop-portal/portals/kwallet.portal && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /tmp/buzzardos-debs /var/lib/apt/lists/*
 
 ARG CUDA_CUDART_SHA256=b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84
 ARG CUDA_CUBLAS_SHA256=0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7
@@ -199,62 +88,14 @@ RUN curl --fail --location --retry 3 \
         /tmp/cuda-cudart.deb \
         /tmp/libcublas.deb
 
-COPY --from=deb-builder /debs/ /tmp/buzzardos-debs/
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        /tmp/buzzardos-debs/buzzardcua_*_amd64.deb \
-        /tmp/buzzardos-debs/buzzardos-guest-desktop_*_amd64.deb && \
-    rm -rf /tmp/buzzardos-debs /var/lib/apt/lists/* && \
-    apt-get clean
-
-COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md \
-    /usr/share/doc/buzzardos-guest-desktop/
-COPY LICENSES /usr/share/doc/buzzardos-guest-desktop/licenses
-RUN install -m 0644 \
-        /usr/share/doc/buzzardos-guest-desktop/licenses/generated/RUST_DEPENDENCY_LICENSES.txt \
-        /usr/share/doc/buzzardos-guest-desktop/RUST_DEPENDENCY_LICENSES.txt && \
-    install -m 0644 \
-        /usr/share/doc/buzzardos-guest-desktop/licenses/generated/cargo-guest.tsv \
-        /usr/share/doc/buzzardos-guest-desktop/cargo-guest.tsv && \
-    install -m 0644 \
-        /usr/share/doc/buzzardos-guest-desktop/licenses/generated/cargo-cua.tsv \
-        /usr/share/doc/buzzardos-guest-desktop/cargo-cua.tsv
-COPY tools/fetch-mpl-sources.sh /usr/libexec/buzzardos-fetch-mpl-sources
-RUN chmod 0755 /usr/libexec/buzzardos-fetch-mpl-sources && \
-    BUZZARDOS_MPL_SOURCE_MANIFEST=/usr/share/doc/buzzardos-guest-desktop/licenses/mpl-sources.tsv \
-        /usr/libexec/buzzardos-fetch-mpl-sources \
-        /usr/share/doc/buzzardos-guest-desktop/sources/mpl
-COPY --from=deb-builder /rust-notices/COPYRIGHT-library.html \
-    /usr/share/doc/buzzardos-guest-desktop/rust/COPYRIGHT-library.html
-COPY oci/desktop/apt/debian-sid-live.sources \
+COPY apt/debian-sid-live.sources \
     /etc/apt/sources.list.d/debian.sources
 RUN rm -f /etc/apt/apt.conf.d/99buzzardos-snapshot
 
-RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash buzzard && \
-    install -d -o buzzard -g buzzard -m 0700 \
-        /home/buzzard \
-        /home/buzzard/.cache \
-        /home/buzzard/.config \
-        /home/buzzard/.config/sway \
-        /home/buzzard/.config/sway/config.d \
-        /home/buzzard/.local \
-        /home/buzzard/.local/share \
-        /home/buzzard/.local/state && \
-    systemctl mask \
-        console-getty.service \
-        dev-hugepages.mount \
-        getty@.service \
-        systemd-logind.service \
-        systemd-modules-load.service \
-        systemd-remount-fs.service \
-        systemd-udevd.service \
-        systemd-udevd-control.socket \
-        systemd-udevd-kernel.socket
-
-RUN systemctl mask \
-        sys-kernel-config.mount \
-        sys-kernel-debug.mount \
-        sys-kernel-tracing.mount
+COPY provision-image.sh /tmp/buzzardos-provision-image
+RUN chmod 0755 /tmp/buzzardos-provision-image && \
+    /tmp/buzzardos-provision-image && \
+    rm -f /tmp/buzzardos-provision-image
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd", "--system"]

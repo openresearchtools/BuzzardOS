@@ -3,30 +3,27 @@
 set -euo pipefail
 
 if (($# < 3 || $# > 4)); then
-    echo "usage: $0 BUZZARDOS-LAUNCHER-OR-PORTABLE-DIR MACHINE TOOL [JSON-ARGUMENTS]" >&2
+    echo "usage: $0 MACHINE-DIR MACHINE TOOL [JSON-ARGUMENTS]" >&2
     exit 2
 fi
 
-portable_input=$1
+machine_input=$1
 machine=$2
 tool=$3
 arguments=${4:-\{\}}
 
-if [[ -f "$portable_input" ]]; then
-    portable_dir=$(dirname -- "$(readlink -f -- "$portable_input")")
-elif [[ -d "$portable_input" ]]; then
-    portable_dir=$(readlink -f -- "$portable_input")
-else
-    echo "portable path does not exist: $portable_input" >&2
+if [[ ! -d "$machine_input" ]]; then
+    echo "machine directory does not exist: $machine_input" >&2
     exit 2
 fi
+machine_dir=$(readlink -f -- "$machine_input")
 
 if [[ ! "$machine" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; then
     echo "invalid machine name: $machine" >&2
     exit 2
 fi
 
-runtime=$portable_dir/Machines/$machine/runtime.json
+runtime=$machine_dir/runtime.json
 container_pid=$(jq -er '
     select(.state == "running") |
     .container_pid |
@@ -66,7 +63,7 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         shell_observed=0
         attempt=0
         while [ "$attempt" -lt 150 ]; do
-            candidate=$(pgrep -xo buzzardos-she 2>/dev/null || true)
+            candidate=$(pgrep -xo buzzardos-deskt 2>/dev/null || true)
             if [ -n "$candidate" ] && [ -r "/proc/$candidate/environ" ]; then
                 shell_observed=1
                 wayland_display=$(
@@ -99,4 +96,4 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         fi
         export WAYLAND_DISPLAY SWAYSOCK
         exec "$@"
-    ' sh /opt/buzzardos/runtime/current/bin/cua-driver "$tool" "$arguments"
+    ' sh /usr/bin/buzzardoscua "$tool" "$arguments"

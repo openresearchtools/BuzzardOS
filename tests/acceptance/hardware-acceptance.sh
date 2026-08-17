@@ -5,9 +5,13 @@ trap 'rc=$?; echo "hardware acceptance failed at line $LINENO: $BASH_COMMAND" >&
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 task_uid=$(id -u)
-default_launcher="${TMPDIR:-/tmp}/buzzardos-build-$task_uid/out/BuzzardOS/BuzzardOS"
+default_launcher=/usr/bin/buzzardos
 launcher=${1:-${BUZZARDOS_LAUNCHER:-$default_launcher}}
 machine=${2:-acceptance}
+machine_dir=${3:-${BUZZARDOS_ACCEPT_MACHINE_DIR:-"${TMPDIR:-/tmp}/buzzardos-acceptance-$task_uid/$machine"}}
+shared_dir=${BUZZARDOS_ACCEPT_SHARE_DIR:-"${TMPDIR:-/tmp}/buzzardos-acceptance-$task_uid/shared-$machine"}
+machine_dir=$(readlink -m -- "$machine_dir")
+shared_dir=$(readlink -m -- "$shared_dir")
 install_package=${BUZZARDOS_ACCEPT_INSTALL_PACKAGE:-0}
 full_matrix=${BUZZARDOS_ACCEPT_FULL_MATRIX:-0}
 integration_acceptance=${BUZZARDOS_ACCEPT_INTEGRATIONS:-1}
@@ -31,10 +35,8 @@ restore_interrupted_relocation() {
         [[ -n "$relocation_target" ]] &&
         [[ -d "$relocation_target" ]] &&
         [[ ! -e "$relocation_original" ]]; then
-        if [[ -x "$relocation_target/$(basename -- "$launcher")" ]]; then
-            "$relocation_target/$(basename -- "$launcher")" \
-                stop "$machine" >/dev/null 2>&1 || true
-        fi
+        "$launcher" --machine-dir "$relocation_target" \
+            stop "$machine" >/dev/null 2>&1 || true
         mv -- "$relocation_target" "$relocation_original"
     fi
     if [[ -n "${electron_acceptance_host_path:-}" ]]; then
@@ -53,22 +55,16 @@ for command_name in awk jq nsenter python3 readlink; do
     }
 done
 [[ -x "$launcher" ]] || {
-    echo "portable Buzzard OS launcher is missing or not executable: $launcher" >&2
+    echo "installed Buzzard OS launcher is missing or not executable: $launcher" >&2
     exit 1
 }
 
-portable_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
-launcher="$portable_dir/$(basename -- "$launcher")"
-runtime="$portable_dir/Machines/$machine/runtime.json"
+launcher=$(readlink -f -- "$launcher")
+runtime="$machine_dir/runtime.json"
 marker="buzzardos-acceptance-$(date +%s)-$$"
 
 wb() {
-    "$launcher" "$@"
-}
-
-wb_without_host_path() {
-    env PATH=/definitely-not-a-host-helper-path \
-        "$launcher" "$@"
+    "$launcher" --machine-dir "$machine_dir" "$@"
 }
 
 wait_running() {
@@ -764,19 +760,25 @@ drag_guest_frame_edge() {
 }
 
 wb doctor
-if [[ ! -f "$portable_dir/Machines/$machine/machine.json" ]]; then
-    create_arguments=(create "$machine" --gpu all)
-    if [[ -n "$accept_image" ]]; then
-        create_arguments+=(--image "$accept_image")
-    fi
+if [[ ! -f "$machine_dir/machine.json" ]]; then
+    [[ -n "$accept_image" ]] || {
+        echo "BUZZARDOS_ACCEPT_IMAGE is required to create the acceptance machine" >&2
+        exit 1
+    }
+    mkdir -p -- "$shared_dir"
+    create_arguments=(create "$machine" --gpu all --image "$accept_image" --share "$shared_dir")
     wb "${create_arguments[@]}"
 fi
-configured_width=$(jq -er '.width' "$portable_dir/Machines/$machine/machine.json")
-configured_height=$(jq -er '.height' "$portable_dir/Machines/$machine/machine.json")
+[[ -d "$shared_dir" ]]
+jq -e --arg shared "$shared_dir" \
+    'any(.shares[]; .host_path == $shared)' \
+    "$machine_dir/machine.json" >/dev/null
+configured_width=$(jq -er '.width' "$machine_dir/machine.json")
+configured_height=$(jq -er '.height' "$machine_dir/machine.json")
 # Stop deliberately preserves the native host window and its supervising
 # broker. Close any live supervisor instead, including one already in Stopped
-# state, so this run unequivocally exercises the supplied portable application
-# folder rather than reusing an older build's process.
+# state, so this run unequivocally exercises the supplied installed package
+# rather than reusing an older build's process.
 existing_supervisor_pid=$(jq -r '.launcher_pid // empty' "$runtime" 2>/dev/null || true)
 if [[ "$existing_supervisor_pid" =~ ^[1-9][0-9]*$ ]] &&
     [[ -r "/proc/$existing_supervisor_pid/stat" ]]; then
@@ -791,22 +793,22 @@ wait_running
 refresh_pid
 wait_configured_initial_window_frame "$configured_width" "$configured_height"
 
-# The portable launcher returns after readiness. Stop keeps the same native
+# The installed launcher returns after readiness. Stop keeps the same native
 # host window and supervising broker alive; a later Start must reuse that
-# process and the dependency-complete sibling app/ tree.
-portable_broker_pid=$(jq -er '.launcher_pid' "$runtime")
-portable_broker_start_time=$(process_start_time "$portable_broker_pid")
+# process and the dpkg-owned helper payload.
+package_broker_pid=$(jq -er '.launcher_pid' "$runtime")
+package_broker_start_time=$(process_start_time "$package_broker_pid")
 wb stop "$machine"
 wait_stopped
-[[ $(process_start_time "$portable_broker_pid") == \
-    "$portable_broker_start_time" ]]
-[[ -x "$portable_dir/app/usr/libexec/buzzardos/gst-launch-1.0" ]]
+[[ $(process_start_time "$package_broker_pid") == \
+    "$package_broker_start_time" ]]
+[[ -x /usr/libexec/buzzardos/buzzardos-broker ]]
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(jq -er '.launcher_pid' "$runtime") == "$portable_broker_pid" ]]
-[[ $(process_start_time "$portable_broker_pid") == \
-    "$portable_broker_start_time" ]]
+[[ $(jq -er '.launcher_pid' "$runtime") == "$package_broker_pid" ]]
+[[ $(process_start_time "$package_broker_pid") == \
+    "$package_broker_start_time" ]]
 wait_native_window_frame
 
 # Exercise live TCP/UDP mappings in both directions and all three separately
@@ -814,11 +816,12 @@ wait_native_window_frame
 # snapshots and restores machine.json and asserts that the container PID never
 # changes, so this also guards the no-restart live-reconciliation contract.
 if [[ "$integration_acceptance" == 1 ]]; then
-    "$project_dir/tests/acceptance/integration-acceptance.sh" "$launcher" "$machine"
+    "$project_dir/tests/acceptance/integration-acceptance.sh" \
+        "$launcher" "$machine" "$machine_dir"
     refresh_pid
 fi
 
-# Namespace, PID 1, portable layout, private network, and explicit data share.
+# Namespace, PID 1, installed-package layout, private network, and explicit data share.
 [[ $(guest cat /proc/1/comm) == systemd ]]
 [[ $(guest hostname) == "$machine" ]]
 # Bubblewrap must construct POSIX message queues before systemd starts. If PID
@@ -836,7 +839,7 @@ done
 
 # A real host-loopback listener must not be reachable through slirp's host
 # gateway in the default private network mode.
-loopback_probe=$(mktemp "$portable_dir/Machines/.cache/loopback-probe.XXXXXX")
+loopback_probe=$(mktemp "$machine_dir/cache/loopback-probe.XXXXXX")
 python3 - "$loopback_probe" <<'PY' &
 import pathlib
 import socket
@@ -875,7 +878,7 @@ rm -f -- "$loopback_probe"
 
 [[ $(guest stat -c %a /run/buzzardos-host/wayland-0) == 0 ]]
 ! guest test -e /run/buzzardos-host/window-control
-! test -e "$portable_dir/Machines/$machine/.window-control.sock"
+! test -e "$machine_dir/.window-control.sock"
 ! guest python3 -c \
     'import socket; client = socket.socket(socket.AF_UNIX); client.connect("/run/buzzardos-host/wayland-0")' \
     2>/dev/null
@@ -883,7 +886,7 @@ rm -f -- "$loopback_probe"
 ! guest test -S /run/docker.sock
 ! guest test -S /var/run/docker.sock
 [[ $(guest sudo -n id -u) == 0 ]]
-rootfs_host_uid=$(stat -c %u "$portable_dir/Machines/$machine/rootfs")
+rootfs_host_uid=$(stat -c %u "$machine_dir/rootfs")
 [[ "$rootfs_host_uid" != 0 ]]
 [[ "$rootfs_host_uid" != "$(id -u)" ]]
 guest findmnt -T / -n -o OPTIONS | grep -q 'nosuid'
@@ -911,8 +914,12 @@ for host_gpu_device in \
         '.display.exposed_devices | index($device) != null' \
         "$runtime" >/dev/null
 done
-! jq -e '.. | strings | select(startswith("/"))' \
-    "$portable_dir/Machines/$machine/machine.json" >/dev/null
+# Only explicitly authorized shares may persist host filesystem paths in the
+# otherwise destination-independent machine metadata.
+jq -e --arg shared "$shared_dir" '
+    [.shares[].host_path] == [$shared] and
+    ([.. | strings | select(startswith("/") and . != $shared)] | length) == 0
+' "$machine_dir/machine.json" >/dev/null
 
 # The private desktop sockets may use familiar names, but they must be
 # different kernel socket objects from the host session.
@@ -942,16 +949,16 @@ if guest test -e /dev/nvidiactl; then
         <<<"$session_environment" >/dev/null
 fi
 
-printf '%s\n' "$marker" >"$portable_dir/shared/.buzzardos-acceptance"
+printf '%s\n' "$marker" >"$shared_dir/.buzzardos-acceptance"
 [[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
 guest sh -c 'printf "%s\n" "$1" > /shared/.buzzardos-guest-created' sh "$marker"
-[[ $(stat -c %u "$portable_dir/shared/.buzzardos-guest-created") == "$(id -u)" ]]
-[[ $(stat -c %g "$portable_dir/shared/.buzzardos-guest-created") == "$(id -g)" ]]
-printf '%s-host-edit\n' "$marker" >"$portable_dir/shared/.buzzardos-guest-created"
+[[ $(stat -c %u "$shared_dir/.buzzardos-guest-created") == "$(id -u)" ]]
+[[ $(stat -c %g "$shared_dir/.buzzardos-guest-created") == "$(id -g)" ]]
+printf '%s-host-edit\n' "$marker" >"$shared_dir/.buzzardos-guest-created"
 [[ $(guest cat /shared/.buzzardos-guest-created) == "$marker-host-edit" ]]
 guest mkdir -p /shared/.buzzardos-guest-directory
 printf '%s-host-created\n' "$marker" \
-    >"$portable_dir/shared/.buzzardos-guest-directory/host-file"
+    >"$shared_dir/.buzzardos-guest-directory/host-file"
 [[ $(guest cat /shared/.buzzardos-guest-directory/host-file) == "$marker-host-created" ]]
 guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.buzzardos-persistence"
 guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.config/buzzardos-acceptance.setting"
@@ -1494,8 +1501,8 @@ if [[ "$full_matrix" == 1 ]]; then
     }
     electron_name="buzzardos-electron-acceptance-$$.AppImage"
     electron_log_name="buzzardos-electron-acceptance-$$.log"
-    electron_acceptance_host_path="$portable_dir/shared/$electron_name"
-    electron_acceptance_log_path="$portable_dir/shared/$electron_log_name"
+    electron_acceptance_host_path="$shared_dir/$electron_name"
+    electron_acceptance_log_path="$shared_dir/$electron_log_name"
     if [[ -e "$electron_acceptance_host_path" ||
         -e "$electron_acceptance_log_path" ]]; then
         echo "refusing to replace a pre-existing AppImage acceptance artifact" >&2
@@ -1709,10 +1716,10 @@ wait_native_window_frame
 wb window "$machine" minimize
 sleep 1
 [[ $(jq -r '.state' "$runtime") == running ]]
-[[ -x "$portable_dir/app/usr/libexec/buzzardos/gst-launch-1.0" ]]
+[[ -x /usr/libexec/buzzardos/buzzardos-broker ]]
 wb window "$machine" close
 wait_stopped
-wait_process_identity_gone "$portable_broker_pid" "$portable_broker_start_time"
+wait_process_identity_gone "$package_broker_pid" "$package_broker_start_time"
 
 # A full orderly close/start proves the same mutable rootfs and shared
 # directory return.
@@ -1734,10 +1741,10 @@ if [[ "$install_package" == 1 ]]; then
     guest dpkg-query -W hello >/dev/null
 fi
 
-# Move the complete stopped portable folder, boot the full machine from its new
-# location without rewriting metadata, verify persistent state, then return it
-# to the original path and boot it once more. This proves real portability,
-# rather than merely testing path construction or listing copied metadata.
+# Move the complete stopped machine directory, boot it from its new location
+# through the explicit recovery override, verify persistent state, then return
+# it to the registered path and boot it once more. The dpkg-owned application
+# stays installed while the self-describing mutable machine moves independently.
 relocation_outbound_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 relocation_outbound_broker_start_time=$(
     process_start_time "$relocation_outbound_broker_pid"
@@ -1746,30 +1753,28 @@ wb window "$machine" close
 wait_stopped
 wait_process_identity_gone \
     "$relocation_outbound_broker_pid" "$relocation_outbound_broker_start_time"
-machine_config_hash=$(sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1)
-launcher_name=$(basename -- "$launcher")
-relocation_original=$portable_dir
-relocation_target="${portable_dir}.buzzardos-relocation-$$"
+machine_config_hash=$(sha256sum "$machine_dir/machine.json" | cut -d' ' -f1)
+relocation_original=$machine_dir
+relocation_target="${machine_dir}.buzzardos-relocation-$$"
 [[ ! -e "$relocation_target" ]]
 mv -- "$relocation_original" "$relocation_target"
 relocation_active=1
-portable_dir=$relocation_target
-launcher="$portable_dir/$launcher_name"
-runtime="$portable_dir/Machines/$machine/runtime.json"
+machine_dir=$relocation_target
+runtime="$machine_dir/runtime.json"
 
-wb_without_host_path list | grep "^$machine"$'\t' >/dev/null
-wb_without_host_path start "$machine" --detach
+wb status "$machine" | grep -Fx "rootfs: $machine_dir/rootfs" >/dev/null
+wb start "$machine" --detach
 wait_running
 refresh_pid
 [[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
 [[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
 [[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 relocated_machine_config_hash=$(
-    sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1
+    sha256sum "$machine_dir/machine.json" | cut -d' ' -f1
 )
 [[ "$relocated_machine_config_hash" == "$machine_config_hash" ]]
 wb status "$machine" |
-    grep -Fx "rootfs: $portable_dir/Machines/$machine/rootfs" >/dev/null
+    grep -Fx "rootfs: $machine_dir/rootfs" >/dev/null
 relocation_return_broker_pid=$(jq -er '.launcher_pid' "$runtime")
 relocation_return_broker_start_time=$(
     process_start_time "$relocation_return_broker_pid"
@@ -1781,9 +1786,8 @@ wait_process_identity_gone \
 
 mv -- "$relocation_target" "$relocation_original"
 relocation_active=0
-portable_dir=$relocation_original
-launcher="$portable_dir/$launcher_name"
-runtime="$portable_dir/Machines/$machine/runtime.json"
+machine_dir=$relocation_original
+runtime="$machine_dir/runtime.json"
 wb start "$machine" --detach
 wait_running
 refresh_pid
@@ -1861,8 +1865,8 @@ wait_running
 refresh_pid
 wait_native_window_frame
 
-rm -f -- "$portable_dir/shared/.buzzardos-acceptance"
-rm -f -- "$portable_dir/shared/.buzzardos-guest-created"
-rm -f -- "$portable_dir/shared/.buzzardos-guest-directory/host-file"
-rmdir -- "$portable_dir/shared/.buzzardos-guest-directory"
+rm -f -- "$shared_dir/.buzzardos-acceptance"
+rm -f -- "$shared_dir/.buzzardos-guest-created"
+rm -f -- "$shared_dir/.buzzardos-guest-directory/host-file"
+rmdir -- "$shared_dir/.buzzardos-guest-directory"
 echo "Buzzard OS hardware acceptance passed for '$machine'"

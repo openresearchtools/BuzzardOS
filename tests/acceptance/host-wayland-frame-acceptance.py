@@ -560,13 +560,13 @@ def pointer_continuity_sweep(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("portable_folder", type=Path)
+    parser.add_argument("machine_dir", type=Path)
     parser.add_argument("machine")
     parser.add_argument("artifact_dir", type=Path)
     args = parser.parse_args()
 
-    portable_folder = args.portable_folder.resolve()
-    runtime_path = portable_folder / "vm" / args.machine / "runtime.json"
+    machine_dir = args.machine_dir.resolve()
+    runtime_path = machine_dir / "runtime.json"
     if not runtime_path.is_file():
         fail(f"runtime metadata is missing: {runtime_path}")
     runtime = runtime_snapshot(runtime_path)

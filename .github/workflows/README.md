@@ -4,7 +4,7 @@
 disposable Ubuntu 24.04 x86-64 runner it:
 
 1. validates source, packaging, OCI, and licensing contracts;
-2. builds `buzzardos`, `buzzardos-guest-desktop`, and `buzzardcua` `.deb` files;
+2. builds `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` `.deb` files;
 3. install-smokes the host package;
 4. builds and verifies the reference OCI with distro Sway/wlroots; and
 5. uploads the three packages and their SHA-256 files as one seven-day Actions

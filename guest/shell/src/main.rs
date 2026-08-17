@@ -4,7 +4,6 @@ mod desktop;
 mod icons;
 mod model;
 mod sway_ipc;
-mod updates;
 mod watch;
 
 use accesskit::{
@@ -80,7 +79,6 @@ use wayland_protocols::wp::{
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
 
 use crate::desktop::DesktopModel;
-use crate::updates::{UPDATER_STATE_DIRECTORY, UPDATER_STATE_PATH, UpdateTracker};
 use crate::watch::DirectoryWatcher;
 
 const SHELL_NAME: &str = "Buzzard OS Desktop";
@@ -108,7 +106,6 @@ const URI_LIST_MIME: &str = "text/uri-list";
 const MAX_DESKTOP_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const DOUBLE_CLICK_MILLIS: u32 = 400;
 const DRAG_THRESHOLD: f64 = 6.0;
-const SETTINGS_DESKTOP_ENTRY_ID: &str = "org.openresearchtools.BuzzardOS.Settings1.desktop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSurface {
@@ -209,6 +206,13 @@ enum DesktopPointerGesture {
 }
 
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--version" || argument == "-V")
+    {
+        println!("Buzzard OS Desktop {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(OsStr::new(REQUEST_FOCUSED_WINDOW_MENU)) {
         if let Err(error) = request_focused_window_menu() {
             eprintln!("buzzardos-shell: titlebar menu request failed: {error:#}");
@@ -733,20 +737,6 @@ fn run() -> Result<()> {
     let desktop_model = DesktopModel::discover().context("initializing desktop items")?;
     let desktop_watcher = DirectoryWatcher::new(&[desktop_model.directory_path().to_path_buf()])
         .context("watching XDG Desktop")?;
-    let update_watch_root = PathBuf::from(UPDATER_STATE_DIRECTORY);
-    let update_rescan_after =
-        (!update_watch_root.is_dir()).then(|| Instant::now() + Duration::from_secs(5));
-    let update_watcher = DirectoryWatcher::new(std::slice::from_ref(&update_watch_root))
-        .context("watching fixed updater state")?;
-    let mut update_tracker = UpdateTracker::new(
-        PathBuf::from(UPDATER_STATE_PATH),
-        xdg_paths
-            .managed_state_dir()
-            .join("update-notification.json"),
-    );
-    if let Err(error) = update_tracker.reload() {
-        eprintln!("buzzardos-shell: startup updater state was preserved: {error}");
-    }
     let applications = scan_applications().unwrap_or_default();
     let application_icons = load_application_icons(&applications);
     let pool = SlotPool::new(3840 * 2160 * 4, &shm).context("creating shell render pool")?;
@@ -822,10 +812,6 @@ fn run() -> Result<()> {
         desktop_accessible_targets: Vec::new(),
         desktop_watcher,
         desktop_rescan_after: None,
-        update_watch_root,
-        update_watcher,
-        update_rescan_after,
-        update_tracker,
         exact_toplevels: BTreeMap::new(),
         sway_window_changes: sway_ipc::subscribe_window_changes()
             .context("subscribing to authoritative Sway window events")?,
@@ -952,10 +938,6 @@ struct Shell {
     desktop_accessible_targets: Vec<HitTarget>,
     desktop_watcher: DirectoryWatcher,
     desktop_rescan_after: Option<Instant>,
-    update_watch_root: PathBuf,
-    update_watcher: DirectoryWatcher,
-    update_rescan_after: Option<Instant>,
-    update_tracker: UpdateTracker,
     exact_toplevels: BTreeMap<u32, ExactToplevel>,
     sway_window_changes: Receiver<()>,
     repaint_request: Option<PathBuf>,
@@ -1200,36 +1182,6 @@ impl Shell {
                 Err(error) => {
                     eprintln!("buzzardos-shell: rearming desktop watch failed: {error:#}")
                 }
-            }
-        }
-        match self.update_watcher.changed() {
-            Ok(true) => self.update_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("buzzardos-shell: updater-state watch failed: {error:#}");
-                self.update_rescan_after = Some(Instant::now());
-            }
-        }
-        if self
-            .update_rescan_after
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.update_rescan_after = None;
-            match self.update_tracker.reload() {
-                Ok(true) => self.dirty = true,
-                Ok(false) => {}
-                Err(error) => {
-                    eprintln!("buzzardos-shell: updater state was preserved: {error}")
-                }
-            }
-            match DirectoryWatcher::new(std::slice::from_ref(&self.update_watch_root)) {
-                Ok(watcher) => self.update_watcher = watcher,
-                Err(error) => {
-                    eprintln!("buzzardos-shell: rearming updater-state watch failed: {error:#}")
-                }
-            }
-            if !self.update_watch_root.is_dir() {
-                self.update_rescan_after = Some(Instant::now() + Duration::from_secs(5));
             }
         }
         if self.sway_window_changes.try_recv().is_ok() {
@@ -3197,12 +3149,7 @@ impl Shell {
                 } else {
                     draw_menu_icon(canvas, width, height, icon_rect, &target.action, theme);
                 }
-                let update_badge = match &target.action {
-                    ShellAction::LaunchApplication(id) if id == SETTINGS_DESKTOP_ENTRY_ID => {
-                        self.update_tracker.badge_count()
-                    }
-                    _ => None,
-                };
+                let update_badge: Option<usize> = None;
                 draw_text(
                     canvas,
                     width,
@@ -3804,21 +3751,7 @@ impl Shell {
                 .unwrap_or(i32::MAX)
                 .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX));
             let mut node = A11yNode::new(Role::MenuItem);
-            node.set_label(if application.id == SETTINGS_DESKTOP_ENTRY_ID {
-                self.update_tracker.badge_count().map_or_else(
-                    || application.name.clone(),
-                    |count| {
-                        format!(
-                            "{}, {} {} available",
-                            application.name,
-                            count,
-                            if count == 1 { "update" } else { "updates" }
-                        )
-                    },
-                )
-            } else {
-                application.name.clone()
-            });
+            node.set_label(application.name.clone());
             if applications_menu_open
                 && index >= self.menu_scroll
                 && index < self.menu_scroll.saturating_add(visible_rows)

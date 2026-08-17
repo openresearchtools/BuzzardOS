@@ -38,7 +38,7 @@ class ThunarAppImageActionContractTests(unittest.TestCase):
                 self.assertNotIn(forbidden, command)
 
     def test_asset_and_fail_open_session_migration_are_wired(self) -> None:
-        manifest = (ROOT / "guest/asset-manifest.tsv").read_text(encoding="utf-8")
+        manifest = (ROOT / "guest/desktop-asset-manifest.tsv").read_text(encoding="utf-8")
         self.assertIn(
             "0644\tassets/thunar-uca.xml\tetc/buzzardos/xdg/Thunar/uca.xml",
             manifest,

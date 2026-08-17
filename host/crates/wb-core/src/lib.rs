@@ -12,8 +12,8 @@ pub use idmap::IdMap;
 pub use machine::{
     DisplayDiagnostics, IntegrationDiagnostics, IntegrationSettings, MachineConfig, MachineState,
     MediaIntegrationDiagnostics, MediaSharing, NetworkMode, OciImageMetadata, PortDirection,
-    PortForward, PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics, RuntimeState,
-    SharedPath, WindowDiagnostics,
+    PortForward, PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics,
+    RetainedOciArchive, RuntimeState, SharedPath, WindowDiagnostics,
 };
 pub use media::{HostMediaBackend, HostMediaDevice, HostMediaKind, discover_host_media};
 pub use paths::{WbPaths, host_control_socket};

@@ -12,24 +12,29 @@ one-shot clipboard transfers.
 
 ## Debian packages
 
-Buzzard OS is built as three independently understandable packages:
+Buzzard OS is built as four independently versioned packages:
 
 ```text
 buzzardos_<version>_amd64.deb
-buzzardos-guest-desktop_<version>_amd64.deb
-buzzardcua_<version>_amd64.deb
+buzzardos-guest_<version>_amd64.deb
+buzzardos-desktop_<version>_amd64.deb
+buzzardoscua_<version>_amd64.deb
 ```
 
 - `buzzardos` installs the host manager, broker, native display application,
   desktop-menu entry, AppStream metadata, icons, and helpers.
-- `buzzardos-guest-desktop` installs the guest shell, Settings, services,
-  themes, clipboard agent, session integration, and depends on the
-  distribution's normal `sway` package.
-- `buzzardcua` installs the reviewed in-guest computer-use service under the
+- `buzzardos-guest` installs guest mechanics: systemd/session integration,
+  clipboard and media integration, AppImage support, and the distribution's
+  normal `sway`/wlroots stack.
+- `buzzardos-desktop` installs the optional Buzzard OS desktop shell,
+  Settings, themes, icons, Thunar integration, and reference applications.
+- `buzzardoscua` installs the reviewed in-guest computer-use service under the
   Buzzard CUA identity, while retaining upstream attribution.
 
-The package version is read from [`VERSION`](VERSION). Buzzard CUA has its own
-version in [`guest/BUZZARDCUA_VERSION`](guest/BUZZARDCUA_VERSION). A future
+The versions come from [`VERSION`](VERSION),
+[`guest/GUEST_VERSION`](guest/GUEST_VERSION),
+[`guest/DESKTOP_VERSION`](guest/DESKTOP_VERSION), and
+[`guest/BUZZARDOSCUA_VERSION`](guest/BUZZARDOSCUA_VERSION). A future
 signed APT repository can publish these same packages; the current workflow
 only builds short-lived engineering artifacts and never publishes anything.
 
@@ -75,6 +80,12 @@ buzzardos --machine-dir /data/projects/research-vm create research \
 buzzardos --machine-dir /fast-disk/imported import ./machine.oci.tar.zst \
   --name imported --mode clone
 
+buzzardos --machine-dir /fast-disk/pulled pull pulled \
+  docker.io/openresearchtools/example:latest --keep-oci-archive
+
+buzzardos --machine-dir /fast-disk/local-build build local-build \
+  --context ./my-image --file Containerfile
+
 buzzardos start research
 buzzardos stop research
 buzzardos status research
@@ -87,14 +98,18 @@ buzzardos unregister research
 Import accepts a local OCI image-layout directory, tar/gzip/zstd OCI archive,
 Buzzard OS export, or remote OCI reference. OCI indexes with multiple matching
 images require `--manifest`. Restore retains a Buzzard OS export's machine
-identity; clone removes machine ID, random-seed, and SSH host-key material
-before committing the destination.
+identity; clone removes machine-local identity material before committing the
+destination. Pulled and built install media is discarded by default;
+`--keep-oci-archive` retains a verified OCI archive in the machine's cache.
 
-Export requires a stopped, exclusively locked machine. It emits a canonical
+Buildah is the only end-user OCI tool dependency. Pull and build use isolated
+temporary Buildah storage beside the selected destination, never the user's
+normal Buildah cache; builds use `--no-cache`, and temporary images/layers are
+deleted after rootfs import. Export requires a stopped, exclusively locked
+machine. It emits a canonical
 OCI archive with numeric guest IDs, hardlinks, symlinks, modes, timestamps,
 xattrs, ACLs, capabilities, and sparse files. Runtime mounts and configured
-host shares are excluded. Docker and Podman are development tools, not
-end-user runtime dependencies.
+host shares are excluded. Docker and Podman are not end-user dependencies.
 
 ## Guest desktop
 

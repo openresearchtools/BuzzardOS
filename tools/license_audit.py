@@ -58,7 +58,6 @@ NON_DPKG_APPDIR_ELFS = {
     "usr/lib/libxkbcommon.so.0",
     "usr/lib/libnvidia-container-go.so.1.19.1",
     "usr/lib/libnvidia-container.so.1.19.1",
-    "usr/libexec/buzzardos/crane",
     "usr/libexec/buzzardos/nvidia-cdi-hook",
     "usr/libexec/buzzardos/nvidia-container-cli",
     "usr/libexec/buzzardos/nvidia-ctk",
@@ -488,7 +487,6 @@ def validate_provenance() -> None:
         LICENSES / "release-components.toml",
         LICENSES / "guest-assets.toml",
         LICENSES / "package-inputs.toml",
-        LICENSES / "crane-dependencies.toml",
         LICENSES / "nvidia-go-dependencies.toml",
         LICENSES / "go-runtime.toml",
         LICENSES / "go-source-archives.tsv",
@@ -673,10 +671,10 @@ def validate_build_pins() -> None:
         ROOT / "oci/desktop/Containerfile",
         [
             "# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720",
-            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS deb-builder",
             "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b",
-            "packaging/build-debs.sh guest cua",
-            "sway",
+            "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb",
+            "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb",
+            "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb",
             "ARG CUDA_CUDART_VERSION=13.1.80-1",
             "ARG CUDA_CUBLAS_VERSION=13.2.2.2-1",
         ],
@@ -787,33 +785,13 @@ def validate_go_module_records(path: Path) -> dict[str, set[tuple[str, str]]]:
 
 
 def validate_embedded_dependency_records() -> None:
-    crane = read_toml(LICENSES / "crane-dependencies.toml")
-    modules = crane.get("module", [])
-    pairs = {(item.get("path", ""), item.get("version", "")) for item in modules}
-    if len(pairs) != 11 or len(pairs) != len(modules):
-        raise AuditError("crane dependency inventory is incomplete or contains duplicates")
     recorded_hashes = source_notice_hashes()
-    for module in modules:
-        if not module.get("module_sum", "").startswith("h1:"):
-            raise AuditError(f"crane module has no Go sum: {module.get('path', '?')}")
-        if not re.fullmatch(r"[0-9a-f]{64}", module.get("archive_sha256", "")):
-            raise AuditError(f"crane module has no archive checksum: {module.get('path', '?')}")
-        if not module.get("license") or not module.get("license_files"):
-            raise AuditError(f"crane module has no license evidence: {module.get('path', '?')}")
-        for notice in module["license_files"]:
-            _, separator, digest = notice.rpartition("@sha256:")
-            if not separator or digest not in recorded_hashes:
-                raise AuditError(
-                    f"crane module notice is not preserved: {module.get('path', '?')} {notice}"
-                )
-
     nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     if set(nvidia) != {"nvidia-ctk", "nvidia-cdi-hook"}:
         raise AuditError("NVIDIA Go dependency inventory has an unexpected binary set")
 
     go_runtime = read_toml(LICENSES / "go-runtime.toml")
     expected_go_binaries = {
-        "crane": ("go1.26.5", "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7"),
         "nvidia-ctk": ("go1.26.3", "891cc1c4055da8e98892d6e3ade5aae87c11b0b1e17115e74c2861d86e2f6eb9"),
         "nvidia-cdi-hook": ("go1.26.3", "cca9969335a8d84d59611ee3da0de9c7942ad2202e927c75ec0735df79052a75"),
     }
@@ -987,10 +965,9 @@ def validate_oci_package_inventory_record() -> None:
         raise AuditError("OCI package closure count differs from generated inventory")
     if component.get("package_inventory_sha256") != digest:
         raise AuditError("OCI package closure checksum differs from generated inventory")
-    for key in ["image_manifest_digest", "image_config_digest", "archive_sha256"]:
-        if re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", str(component.get(key, ""))) is None:
-            raise AuditError(f"OCI package closure has invalid {key}")
-    if component.get("status") != "current-built-image-package-inventory-recorded-and-audited":
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", str(component.get("image_id", ""))) is None:
+        raise AuditError("OCI package closure has invalid image_id")
+    if component.get("status") != "reference-image-package-inventory-recorded":
         raise AuditError("OCI package closure status does not describe the recorded build")
 
 
@@ -1711,7 +1688,6 @@ def audit_appdir(appdir: Path) -> list[str]:
         verify_copy(appdir, destination, source, issues, "AppDir")
 
     expected_hashes = {
-        "usr/libexec/buzzardos/crane": "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7",
         "usr/libexec/buzzardos/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
         "usr/libexec/buzzardos/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
         "usr/libexec/buzzardos/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
@@ -1820,17 +1796,6 @@ def audit_appdir(appdir: Path) -> list[str]:
         issues.append("AppDir MPL source archive set differs from the locked graph")
     issues.extend(audit_appdir_go_sources(appdir))
 
-    crane_path = appdir / "usr/libexec/buzzardos/crane"
-    if crane_path.is_file():
-        actual_crane = go_build_modules(crane_path)
-        actual_crane.discard(("github.com/google/go-containerregistry", "(devel)"))
-        expected_crane = {
-            (module["path"], module["version"])
-            for module in read_toml(LICENSES / "crane-dependencies.toml").get("module", [])
-        }
-        if actual_crane != expected_crane:
-            issues.append("AppDir crane Go dependency inventory differs from the audited set")
-
     expected_nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     for binary, expected_modules in expected_nvidia.items():
         binary_path = appdir / "usr/libexec/buzzardos" / binary
@@ -1901,12 +1866,17 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
                 f"OCI package has no copyright file: {name}={package.get('Version', '?')}"
             )
     required = {
-        "usr/share/doc/buzzardos-guest-desktop/LICENSE": ROOT / "LICENSE",
-        "usr/share/doc/buzzardos-guest-desktop/NOTICE": ROOT / "NOTICE",
-        "usr/share/doc/buzzardos-guest-desktop/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/buzzardos-guest-desktop/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
-        "usr/share/doc/buzzardos-guest-desktop/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
-        "usr/share/doc/buzzardos-guest-desktop/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
+        "usr/share/doc/buzzardos-guest/copyright": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos-guest/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos-guest/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+        "usr/share/doc/buzzardos-guest/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
+        "usr/share/doc/buzzardos-guest/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
+        "usr/share/doc/buzzardos-desktop/copyright": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos-desktop/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos-desktop/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+        "usr/share/doc/buzzardos-desktop/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
+        "usr/share/doc/buzzardos-desktop/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
+        "usr/share/doc/buzzardoscua/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
         "usr/share/doc/buzzardcua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
         "usr/share/doc/buzzardcua/CITATION.cff": CUA_ROOT / "CITATION.cff",
         "usr/share/doc/buzzardcua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
@@ -1917,21 +1887,22 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
     for destination, source in required.items():
         verify_copy(rootfs, destination, source, issues, "OCI")
     rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
-    verify_hash(
-        rootfs,
-        "usr/share/doc/buzzardos-guest-desktop/rust/COPYRIGHT-library.html",
-        rust_runtime["standard_library_notice_sha256"],
-        issues,
-        "OCI",
-    )
-    for name, version, checksum, _url in mpl_source_records():
+    for package in ["buzzardos-guest", "buzzardos-desktop", "buzzardoscua"]:
         verify_hash(
             rootfs,
-            f"usr/share/doc/buzzardos-guest-desktop/sources/mpl/{name}-{version}.crate",
-            checksum,
+            f"usr/share/doc/{package}/rust/COPYRIGHT-library.html",
+            rust_runtime["standard_library_notice_sha256"],
             issues,
             "OCI",
         )
+        for name, version, checksum, _url in mpl_source_records():
+            verify_hash(
+                rootfs,
+                f"usr/share/doc/{package}/sources/mpl/{name}-{version}.crate",
+                checksum,
+                issues,
+                "OCI",
+            )
     for relative in [
         "usr/share/doc/cuda-cudart-13-1/copyright",
         "usr/share/doc/libcublas-13-1/copyright",

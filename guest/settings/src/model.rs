@@ -2,7 +2,7 @@
 
 use buzzardos_desktop_core::{
     BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
-    ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files, effective_user_id,
+    ThemeConfigSet, ThemeMode, XdgPaths, apply_theme_files, effective_user_id,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -14,7 +14,6 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub const OUTPUT_STATE_PATH: &str = "/run/buzzardos-display-state/output-state.json";
-pub const UPDATE_STATE_PATH: &str = "/var/lib/buzzardos-updater/state.json";
 const MAX_RUNTIME_STATE_BYTES: usize = 1024 * 1024;
 const MAX_SCALE_MESSAGE_BYTES: usize = 4096;
 const MAX_KEYBOARD_MESSAGE_BYTES: usize = 4096;
@@ -752,24 +751,10 @@ pub fn set_guest_keyboard(
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UpdateView {
-    pub state: UpdateState,
-}
-
-pub fn load_update_view(path: &Path) -> UpdateView {
-    let state = if path.exists() {
-        UpdateState::load(path).unwrap_or_default()
-    } else {
-        UpdateState::default()
-    };
-    UpdateView { state }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buzzardos_desktop_core::{SolidColor, UpdateStatus};
+    use buzzardos_desktop_core::SolidColor;
     use std::os::unix::fs::symlink;
 
     fn xdg(root: &Path) -> XdgPaths {
@@ -1005,13 +990,5 @@ mod tests {
         assert_eq!(geometry.geometry_generation, 8);
         assert_eq!(geometry.physical_width, 1600);
         server.join().unwrap();
-    }
-
-    #[test]
-    fn absent_updater_is_not_reported_as_ready() {
-        let temp = tempfile::tempdir().unwrap();
-        let view = load_update_view(&temp.path().join("missing.json"));
-        assert_eq!(view.state.status, UpdateStatus::NeverChecked);
-        assert!(!view.state.runtime_ready);
     }
 }

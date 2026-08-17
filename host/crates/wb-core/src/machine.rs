@@ -299,6 +299,32 @@ pub struct MachineConfig {
     /// that guest process and preserves the remaining metadata on export.
     #[serde(default)]
     pub oci: OciImageMetadata,
+    /// Optional verified install media retained below this machine's cache.
+    /// The running rootfs never depends on this archive.
+    #[serde(default)]
+    pub retained_oci_archive: Option<RetainedOciArchive>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedOciArchive {
+    pub relative_path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl RetainedOciArchive {
+    pub fn validate(&self) -> Result<()> {
+        if self.relative_path != "cache/source.oci.tar" {
+            bail!("retained OCI archive must use cache/source.oci.tar");
+        }
+        if self.sha256.len() != 64 || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("retained OCI archive has an invalid SHA-256 digest");
+        }
+        if self.size == 0 {
+            bail!("retained OCI archive cannot be empty");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -411,7 +437,7 @@ impl MachineConfig {
         gpus: Vec<String>,
     ) -> Self {
         Self {
-            schema: 4,
+            schema: 5,
             id: Uuid::new_v4(),
             title: name.clone(),
             name,
@@ -426,6 +452,7 @@ impl MachineConfig {
             integrations: IntegrationSettings::default(),
             shares: Vec::new(),
             oci: OciImageMetadata::default(),
+            retained_oci_archive: None,
         }
     }
 
@@ -469,13 +496,16 @@ impl MachineConfig {
         let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self = serde_json::from_slice(&bytes)
             .with_context(|| format!("parsing {}", path.display()))?;
-        if config.schema != 4 {
+        if config.schema != 5 {
             bail!("unsupported machine metadata schema {}", config.schema);
         }
         Self::validate_name(&config.name)?;
         Self::validate_gpus(&config.gpus)?;
         Self::validate_guest_scale(config.guest_scale_120)?;
         config.oci.validate()?;
+        if let Some(archive) = &config.retained_oci_archive {
+            archive.validate()?;
+        }
         config.integrations.validate(config.network)?;
         Self::validate_shares(&config.shares)?;
         Self::validate_display_size(config.width, config.height)?;
@@ -483,7 +513,7 @@ impl MachineConfig {
     }
 
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
-        if self.schema != 4 {
+        if self.schema != 5 {
             bail!("unsupported machine metadata schema {}", self.schema);
         }
         Self::validate_name(&self.name)?;
@@ -491,6 +521,9 @@ impl MachineConfig {
         Self::validate_gpus(&self.gpus)?;
         Self::validate_display_size(self.width, self.height)?;
         self.oci.validate()?;
+        if let Some(archive) = &self.retained_oci_archive {
+            archive.validate()?;
+        }
         self.integrations.validate(self.network)?;
         Self::validate_shares(&self.shares)?;
         atomic_json(&machine_dir.join(Self::FILE), self)
@@ -1008,7 +1041,7 @@ mod tests {
                     .mode()
                     & 0o777,
                 0o600,
-                "{name} exposed portable machine metadata"
+                "{name} exposed private machine metadata"
             );
         }
     }

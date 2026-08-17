@@ -201,10 +201,10 @@ pub fn parse_command() -> Command {
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "cua-driver {} — cross-platform computer-use automation driver",
+            "Buzzard CUA {} — computer-use automation for Buzzard OS",
             env!("CARGO_PKG_VERSION")
         );
-        println!("Usage: cua-driver [SUBCOMMAND] [OPTIONS]");
+        println!("Usage: buzzardoscua [SUBCOMMAND] [OPTIONS]");
         println!("Subcommands: mcp, list-tools, describe, call, serve, stop, revoke, status, config, recording, doctor, diagnose, permissions, autostart, browser-approve, manifest, cursor-theme");
         println!();
         println!("permissions options (macOS):");

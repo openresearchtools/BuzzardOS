@@ -5,7 +5,7 @@ set -euo pipefail
 image=${1:?usage: verify-image.sh IMAGE}
 container_engine=${BUZZARDOS_CONTAINER_ENGINE:-docker}
 case "$container_engine" in
-    docker|podman) ;;
+    docker|podman|buildah) ;;
     *) echo "unsupported container engine: $container_engine" >&2; exit 2 ;;
 esac
 command -v "$container_engine" >/dev/null 2>&1 || {
@@ -13,13 +13,27 @@ command -v "$container_engine" >/dev/null 2>&1 || {
     exit 1
 }
 
-"$container_engine" run --rm --entrypoint /bin/sh "$image" -ec '
+run_shell() {
+    if [[ "$container_engine" == buildah ]]; then
+        : "${BUZZARDOS_BUILDAH_ROOT:?Buildah verification requires BUZZARDOS_BUILDAH_ROOT}"
+        : "${BUZZARDOS_BUILDAH_RUNROOT:?Buildah verification requires BUZZARDOS_BUILDAH_RUNROOT}"
+        buildah \
+            --root "$BUZZARDOS_BUILDAH_ROOT" \
+            --runroot "$BUZZARDOS_BUILDAH_RUNROOT" \
+            --storage-driver vfs \
+            run "$image" -- /bin/sh -ec "$1"
+    else
+        "$container_engine" run --rm --entrypoint /bin/sh "$image" -ec "$1"
+    fi
+}
+
+run_shell '
     test "$(stat -c "%u:%g:%a" /home/buzzard)" = "1000:1000:700"
     test "$(stat -c "%u:%g:%a" /home/buzzard/.config)" = "1000:1000:700"
     for command in \
         Xwayland dbus-daemon dbus-run-session ffmpeg firefox-esr \
         foot fusermount3 \
-        buzzardcua gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
+        buzzardoscua gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
         unsquashfs \
         thunar wireplumber wtype
     do
@@ -32,16 +46,15 @@ command -v "$container_engine" >/dev/null 2>&1 || {
         "$runtime/libexec/buzzardos-init" \
         "$runtime/libexec/buzzardos-session" \
         "$runtime/libexec/buzzardos-sway-session" \
-        "$runtime/libexec/buzzardos-shell" \
-        "$runtime/libexec/buzzardos-settings" \
-        "$runtime/libexec/buzzardos-shortcut-helper" \
         "$runtime/libexec/buzzardos-clipboard-agent" \
-        "$runtime/libexec/buzzardos-updater" \
         "$runtime/libexec/buzzardos-appimage-ready" \
         "$runtime/libexec/buzzardos-fusermount" \
         "$runtime/libexec/buzzardos-fusermount-exec" \
         "$runtime/libexec/buzzardos-integration-agent" \
-        /usr/bin/buzzardcua \
+        /usr/bin/buzzardoscua \
+        /usr/bin/buzzardos-desktop \
+        /usr/bin/buzzardos-settings \
+        /usr/libexec/buzzardos-desktop/buzzardos-shortcut-helper \
         /usr/bin/sway \
         /usr/bin/swaymsg \
         /usr/share/X11/xkb/rules/evdev \
@@ -55,7 +68,7 @@ command -v "$container_engine" >/dev/null 2>&1 || {
         test -s "$required"
     done
 	dpkg-query -W \
-	    buzzardcua buzzardos-guest-desktop sway \
+	    buzzardoscua buzzardos-guest buzzardos-desktop sway \
 	    at-spi2-core dconf-gsettings-backend ffmpeg firefox-esr foot fuse3 \
 	    gsettings-desktop-schemas libfuse2t64 mousepad squashfs-tools \
 	    fonts-noto-color-emoji fonts-noto-core fonts-noto-cjk \
@@ -65,9 +78,18 @@ command -v "$container_engine" >/dev/null 2>&1 || {
 	    libgtk-3-0t64 libgtk-4-1 libnotify-bin libnspr4 libnss3 \
 	    libpango-1.0-0 libpulse0 libx11-6 \
 	    libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 \
-	    libxkbcommon0 libxrandr2 python3-apt python3-gi python3-pyatspi \
-	    pipewire wireplumber xkb-data xwayland >/dev/null
-	/usr/bin/python3 -c "import apt, gi"
+		    libxkbcommon0 libxrandr2 python3-apt \
+		    pipewire wireplumber xkb-data xwayland >/dev/null
+		guest_version=$(dpkg-query -W -f="\${Version}" buzzardos-guest)
+		desktop_version=$(dpkg-query -W -f="\${Version}" buzzardos-desktop)
+		cua_version=$(dpkg-query -W -f="\${Version}" buzzardoscua)
+		test "$(cat /usr/share/buzzardos-guest/version)" = "$guest_version"
+		test "$(cat /usr/share/buzzardos-desktop/version)" = "$desktop_version"
+		test "$(cat /usr/share/buzzardoscua/version)" = "$cua_version"
+		test "$(/usr/bin/buzzardos-desktop --version)" = "Buzzard OS Desktop $desktop_version"
+		test "$(/usr/bin/buzzardos-settings --version)" = "Buzzard OS Settings $desktop_version"
+		test "$(/usr/bin/buzzardoscua --version)" = "Buzzard CUA $cua_version"
+		/usr/bin/python3 -c "import apt"
 	settings_root=/tmp/buzzardos-gsettings-verifier
 	rm -rf "$settings_root"
 	install -d -m 0700 -o 1000 -g 1000 \
@@ -98,10 +120,10 @@ command -v "$container_engine" >/dev/null 2>&1 || {
 	    "not found|undefined symbol|relocation error|symbol lookup error"
 	printf '%s\n' "$sway_relocations" | grep -F "libwlroots" >/dev/null
 	printf '%s\n' "$sway_relocations" | grep -F "libxkbcommon.so.0" >/dev/null
-	ldd "$runtime/libexec/buzzardos-shell" | grep -F "not found" && exit 1 || true
-	ldd "$runtime/libexec/buzzardos-settings" | grep -F "not found" && exit 1 || true
-	ldd "$runtime/libexec/buzzardos-settings" | grep -F "libpulse.so.0" >/dev/null
-	ldd "$runtime/libexec/buzzardos-shortcut-helper" | grep -F "not found" && exit 1 || true
+	ldd /usr/bin/buzzardos-desktop | grep -F "not found" && exit 1 || true
+	ldd /usr/bin/buzzardos-settings | grep -F "not found" && exit 1 || true
+	ldd /usr/bin/buzzardos-settings | grep -F "libpulse.so.0" >/dev/null
+	ldd /usr/libexec/buzzardos-desktop/buzzardos-shortcut-helper | grep -F "not found" && exit 1 || true
 	ldd "$runtime/libexec/buzzardos-clipboard-agent" | grep -F "not found" && exit 1 || true
 	test -s /usr/share/buzzardos/applications/footclient.desktop
 	test -s /usr/share/applications/org.openresearchtools.BuzzardOS.Settings1.desktop
@@ -156,7 +178,7 @@ manifest = json.loads(
     (root / "usr/lib/buzzardos/guest-assets.manifest.json").read_text()
 )
 assert manifest["schema"] == 1
-assert len(manifest["assets"]) >= 47
+assert len(manifest["assets"]) >= 7
 for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
@@ -183,9 +205,10 @@ assert runtime_manifest["schema_version"] == 1
 assert runtime_manifest["revision"] == revision
 runtime_files = runtime_manifest["files"]
 required_runtime = {
-    "libexec/buzzardos-shell", "libexec/buzzardos-settings",
-    "libexec/buzzardos-shortcut-helper", "libexec/buzzardos-clipboard-agent",
-    "libexec/buzzardos-updater",
+    "libexec/buzzardos-clipboard-agent", "libexec/buzzardos-init",
+    "libexec/buzzardos-session", "libexec/buzzardos-sway-session",
+    "libexec/buzzardos-output-sync", "libexec/buzzardos-desktop-services",
+    "libexec/buzzardos-integration-agent",
 }
 assert required_runtime <= set(runtime_files)
 seen = set()
@@ -206,26 +229,49 @@ for path in revision_dir.rglob("*"):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"], relative
     seen.add(relative)
 assert seen == set(runtime_files)
-desktop_listing = root / "var/lib/dpkg/info/buzzardos-guest-desktop.list"
-assert desktop_listing.is_file()
-assert b"/opt/buzzardos/runtime/" in desktop_listing.read_bytes()
+guest_listing = root / "var/lib/dpkg/info/buzzardos-guest.list"
+desktop_listing = root / "var/lib/dpkg/info/buzzardos-desktop.list"
+assert guest_listing.is_file() and desktop_listing.is_file()
+assert b"/opt/buzzardos/runtime/" in guest_listing.read_bytes()
+assert b"/usr/bin/buzzardos-desktop" in desktop_listing.read_bytes()
 PY
-    test -s /usr/share/doc/buzzardcua/LICENSE.trycua-cua.md
+    test -s /usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md
     grep -F 10279552e2bbe479e367a082f78b1b98ee85a697 \
-        /usr/share/doc/buzzardcua/UPSTREAM.toml
+        /usr/share/doc/buzzardoscua/UPSTREAM.toml
+		test -s /etc/apt/apt.conf.d/20auto-upgrades || {
+	    echo "standard APT automatic-update configuration is missing" >&2
+	    exit 1
+	}
+		grep -Fq "APT::Periodic::Unattended-Upgrade \"1\";" /etc/apt/apt.conf.d/20auto-upgrades || {
+	    echo "standard unattended-upgrades preset is missing" >&2
+	    exit 1
+	}
+	test ! -e /usr/lib/systemd/system/buzzardos-updater.service || {
+	    echo "obsolete Buzzard OS updater service leaked into the image" >&2
+	    exit 1
+	}
 	for forbidden in \
 	    blender gcc g++ make meson ninja cargo rustc kwin_wayland \
 	    wayfire labwc waybar fuzzel \
 	    buzzardos-electron-demo
     do
-        ! command -v "$forbidden" >/dev/null 2>&1
+        if command -v "$forbidden" >/dev/null 2>&1; then
+	        echo "forbidden runtime command is installed: $forbidden" >&2
+	        exit 1
+	    fi
     done
-    test ! -e /opt/electron
-    test ! -e /usr/include/wlroots-0.20
-    test ! -e /usr/lib/x86_64-linux-gnu/pkgconfig/wlroots-0.20.pc
+	test ! -e /opt/electron || { echo "private Electron payload is installed" >&2; exit 1; }
+	test ! -e /usr/include/wlroots-0.20 || { echo "wlroots development headers are installed" >&2; exit 1; }
+	test ! -e /usr/lib/x86_64-linux-gnu/pkgconfig/wlroots-0.20.pc || {
+	    echo "wlroots development metadata is installed" >&2
+	    exit 1
+	}
 	for build_command in cargo cc meson ninja rustc
     do
-        ! command -v "$build_command" >/dev/null 2>&1
+	    if command -v "$build_command" >/dev/null 2>&1; then
+	        echo "build tool leaked into the image: $build_command" >&2
+	        exit 1
+	    fi
 	done
 	for forbidden_package in \
 	    blender build-essential cargo chromium cmake dolphin fuzzel g++ gcc git \
@@ -238,12 +284,16 @@ PY
 	        ii*) echo "forbidden runtime package is installed: $forbidden_package" >&2; exit 1 ;;
 	    esac
 	done
-	test ! -d /source
+	test ! -d /source || { echo "source tree leaked into the image" >&2; exit 1; }
     for unit in \
         sys-kernel-config.mount \
         sys-kernel-debug.mount \
         sys-kernel-tracing.mount
     do
-        test "$(readlink "/etc/systemd/system/$unit")" = /dev/null
+	    target=$(readlink "/etc/systemd/system/$unit" || true)
+	    if [ "$target" != /dev/null ]; then
+	        echo "namespace-inapplicable unit is not masked: $unit -> $target" >&2
+	        exit 1
+	    fi
     done
 '

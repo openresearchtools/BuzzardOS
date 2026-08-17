@@ -68,13 +68,13 @@ fn configure_gtk_portal_policy() {
     unsafe { std::env::set_var("GDK_DEBUG", flags) };
 }
 
-/// GLib records the PID that was launched from a desktop file. AppRun starts
-/// the lifecycle launcher, which then starts this host-window process, so the
-/// inherited PID no longer identifies the Wayland client. Re-exec this same
+/// GLib records the PID that was launched from a desktop file. The manager
+/// starts this host-window process, so the inherited PID no longer identifies
+/// the Wayland client. Re-exec this same
 /// process once with its own PID recorded in the initial environment. Keeping
 /// the PID across exec also makes `/proc/<pid>/environ` truthful to GNOME
-/// Shell, allowing shortcut-inhibition consent to be attributed to Wild
-/// Buzzard instead of the parent terminal, file manager, or IDE.
+/// Shell, allowing shortcut-inhibition consent to be attributed to Buzzard OS
+/// instead of the parent terminal, file manager, or IDE.
 fn reexec_with_display_desktop_identity() -> Result<()> {
     const REEXEC_MARKER: &str = "BUZZARDOS_DISPLAY_DESKTOP_REEXEC";
     if std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_none()

@@ -52,24 +52,24 @@ impl IdMap {
     }
 
     /// util-linux unshare delegates subordinate-ID authorization to the
-    /// host's trusted newuidmap/newgidmap gates. The portable application
-    /// cannot safely manufacture setuid privilege, so use a validated system
-    /// directory rather than inheriting a user-controlled PATH.
+    /// host's trusted newuidmap/newgidmap gates. Buzzard OS never manufactures
+    /// setuid privilege, so use a validated system directory rather than
+    /// inheriting a user-controlled PATH.
     pub fn configure_command<'a>(&self, command: &'a mut Command) -> &'a mut Command {
         command.env("PATH", self.mapping_helper_path)
     }
 
-    /// Use the bundled namespace implementation on every supported host.
+    /// Use the validated distribution-provided namespace executable.
     /// Subordinate-ID authorization still goes through the host's trusted
     /// newuidmap/newgidmap gates selected above.
-    pub fn namespace_program<'a>(&self, bundled_unshare: &'a Path) -> Result<&'a Path> {
-        Ok(bundled_unshare)
+    pub fn namespace_program<'a>(&self, unshare: &'a Path) -> Result<&'a Path> {
+        Ok(unshare)
     }
 
     /// Guest UID/GID 1000 maps to the host
     /// desktop user, while every other guest identity maps into subordinate
-    /// ranges. The interactive guest can therefore access the portable data
-    /// directory without giving guest root the host user's identity. Host
+    /// ranges. The interactive guest can therefore access explicitly shared
+    /// host paths without giving guest root the host user's identity. Host
     /// Wayland access is separately scoped to the display gateway's private
     /// socket; the real host compositor socket never enters this namespace.
     pub fn namespace_args(&self) -> Vec<OsString> {
