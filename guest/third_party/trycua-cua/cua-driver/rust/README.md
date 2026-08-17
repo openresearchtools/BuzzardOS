@@ -1,4 +1,4 @@
-# Wild Buzzard CUA Driver Rust workspace
+# Buzzard CUA Rust workspace
 
 This locked Cargo workspace builds the Linux CUA Driver embedded in Wild
 Buzzard's guest image.
@@ -40,5 +40,5 @@ outputs are never source and must remain outside the repository.
 
 `CUA_DRIVER_POLICY_FILE` accepts a YAML/Rego file or a directory of Rego files.
 The daemon evaluates the configured deny-by-default policy locally; no OPA
-service is required. Wild Buzzard normally starts the driver in its managed
+service is required. Buzzard OS normally starts the driver in its managed
 guest session with the product's explicit authorization policy.

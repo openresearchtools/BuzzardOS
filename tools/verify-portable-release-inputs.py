@@ -37,8 +37,8 @@ GUEST_PROVENANCE_SOURCES = {
     "release-components.toml": Path("LICENSES/release-components.toml"),
     "oci-packages.tsv": Path("LICENSES/generated/oci-packages.tsv"),
     "TRYCUA_UPSTREAM.toml": Path("guest/third_party/trycua-cua/UPSTREAM.toml"),
-    "TRYCUA_CHANGES.WILDBUZZARD.md": Path(
-        "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md"
+    "TRYCUA_CHANGES.BUZZARDOS.md": Path(
+        "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md"
     ),
 }
 

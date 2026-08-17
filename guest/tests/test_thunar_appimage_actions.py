@@ -26,7 +26,7 @@ class ThunarAppImageActionContractTests(unittest.TestCase):
             self.assertIn(name, expected)
             self.assertEqual(
                 command,
-                "/usr/libexec/wildbuzzard-shortcut-helper "
+                "/usr/libexec/buzzardos-shortcut-helper "
                 f"{expected[name]} %f",
             )
             self.assertEqual(action.findtext("range"), "1-1")
@@ -40,14 +40,14 @@ class ThunarAppImageActionContractTests(unittest.TestCase):
     def test_asset_and_fail_open_session_migration_are_wired(self) -> None:
         manifest = (ROOT / "guest/asset-manifest.tsv").read_text(encoding="utf-8")
         self.assertIn(
-            "0644\tassets/thunar-uca.xml\tetc/wildbuzzard/xdg/Thunar/uca.xml",
+            "0644\tassets/thunar-uca.xml\tetc/buzzardos/xdg/Thunar/uca.xml",
             manifest,
         )
-        session = (ROOT / "guest/assets/wildbuzzard-session").read_text(
+        session = (ROOT / "guest/assets/buzzardos-session").read_text(
             encoding="utf-8"
         )
         invocation = (
-            "if ! /usr/libexec/wildbuzzard-shortcut-helper "
+            "if ! /usr/libexec/buzzardos-shortcut-helper "
             "install-thunar-actions >/dev/null; then"
         )
         self.assertIn(invocation, session)

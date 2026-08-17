@@ -13,11 +13,11 @@ use std::rc::Rc;
 
 pub use model::{ChangeSection, PageId, SettingsStore};
 
-pub const APPLICATION_ID: &str = "org.openresearchtools.WildBuzzard.Settings1";
-pub const OBJECT_PATH: &str = "/org/openresearchtools/WildBuzzard/Settings1";
+pub const APPLICATION_ID: &str = "org.openresearchtools.BuzzardOS.Settings1";
+pub const OBJECT_PATH: &str = "/org/openresearchtools/BuzzardOS/Settings1";
 const INTROSPECTION_XML: &str = r#"
 <node>
-  <interface name="org.openresearchtools.WildBuzzard.Settings1">
+  <interface name="org.openresearchtools.BuzzardOS.Settings1">
     <signal name="Changed">
       <arg name="generation" type="t"/>
       <arg name="sections" type="as"/>
@@ -94,7 +94,7 @@ pub fn run() -> glib::ExitCode {
         let bus = Rc::clone(&bus);
         application.connect_startup(move |application| {
             if let Err(error) = bus.register(application) {
-                eprintln!("wildbuzzard-settings: {error}");
+                eprintln!("buzzardos-settings: {error}");
             }
         });
     }
@@ -130,10 +130,7 @@ mod tests {
 
     #[test]
     fn application_identity_and_signal_contract_are_stable() {
-        assert_eq!(
-            APPLICATION_ID,
-            "org.openresearchtools.WildBuzzard.Settings1"
-        );
+        assert_eq!(APPLICATION_ID, "org.openresearchtools.BuzzardOS.Settings1");
         assert!(OBJECT_PATH.starts_with('/'));
         let node = gio::DBusNodeInfo::for_xml(INTROSPECTION_XML).unwrap();
         assert!(node.lookup_interface(APPLICATION_ID).is_some());

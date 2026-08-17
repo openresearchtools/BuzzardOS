@@ -1,23 +1,17 @@
-# Hosted portable artifact assembly
+# Hosted Debian package assembly
 
-`build-release-assets.yml` is a manually dispatched, read-only workflow on a
-disposable GitHub-hosted x86-64 runner. It builds the OCI image only inside the
-runner's local Docker daemon, converts it into the verified OCI install seed,
-then deletes all image and builder state.
+`build-release-assets.yml` is manually dispatched and read-only. On a
+disposable Ubuntu 24.04 x86-64 runner it:
 
-The workflow uploads exactly one seven-day Actions artifact containing:
+1. validates source, packaging, OCI, and licensing contracts;
+2. builds `buzzardos`, `buzzardos-guest-desktop`, and `buzzardcua` `.deb` files;
+3. install-smokes the host package;
+4. builds and verifies the reference OCI with distro Sway/wlroots; and
+5. uploads the three packages and their SHA-256 files as one seven-day Actions
+   artifact named `BuzzardOS-debian-packages-amd64`.
 
-`BuzzardOS-portable-linux-x86_64.tar.xz`
-
-`BuzzardOS-portable-linux-x86_64.tar.xz.sha256`
-
-Its archive root is exactly `BuzzardOS/`, containing the executable launcher,
-`Install-Dependencies`, the dependency-complete `app/` directory, empty
-`Machines/` and `shared/` directories, the compressed OCI seed, checksums,
-notices, corresponding source, and provenance.
-
-There is no automatic trigger, publisher job, release/prerelease input, write
-permission, registry login, or OCI push. The workflow cannot create or modify
-a GitHub Release, tag, environment, Package, GHCR image, or other registry
-object. The uploaded Actions artifact is an engineering build for inspection,
-not publication.
+The OCI image exists only in the runner's local Docker daemon and is removed
+after verification. The workflow has no automatic trigger, write permission,
+publisher job, registry login, OCI push, APT upload, or GitHub Release action.
+It cannot create or modify a tag, environment, Package, GHCR image, or APT
+repository.

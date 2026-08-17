@@ -2,7 +2,7 @@ schema = 1
 audited_at = "2026-08-09"
 binary = "crane 0.21.8 linux/amd64"
 binary_source_commit = "2ea098f4b13456cd628460632760b0a74b7488e9"
-notes = "The exact module set was extracted from the Go build information in the checksum-pinned upstream crane binary. module_sum values are from go-containerregistry's go.sum at binary_source_commit. archive_sha256 values identify the canonical proxy.golang.org module zips. Every recorded module license and notice is stored under LICENSES/upstream/crane-dependencies/ and copied into the AppImage's Wild Buzzard license tree; the artifact audit verifies that closure against this inventory."
+notes = "The exact module set was extracted from the Go build information in the checksum-pinned upstream crane binary. module_sum values are from go-containerregistry's go.sum at binary_source_commit. archive_sha256 values identify the canonical proxy.golang.org module zips. Every recorded module license and notice is stored under LICENSES/upstream/crane-dependencies/ and copied into the AppImage's Buzzard OS license tree; the artifact audit verifies that closure against this inventory."
 
 [[module]]
 path = "github.com/docker/cli"

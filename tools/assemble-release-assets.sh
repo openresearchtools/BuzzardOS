@@ -22,7 +22,7 @@ for required in \
     "$portable_app_root/BuzzardOS" \
     "$portable_app_root/Install-Dependencies" \
     "$portable_app_root/app/AppRun" \
-    "$portable_app_root/app/usr/bin/wildbuzzard" \
+    "$portable_app_root/app/usr/bin/buzzardos" \
     "$rootfs_stage/runtime/default-rootfs.oci.tar.zst" \
     "$rootfs_stage/runtime/default-rootfs.oci.json" \
     "$rootfs_stage/ROOTFS_SHA256SUMS"; do
@@ -209,7 +209,7 @@ mapfile -t roots < <(find "$roundtrip" -mindepth 1 -maxdepth 1 -printf '%f\n' | 
     sha256sum --check --strict SHA256SUMS
     test -x ./BuzzardOS
     test -x ./app/AppRun
-    test -x ./app/usr/bin/wildbuzzard
+    test -x ./app/usr/bin/buzzardos
     test -f ./app/runtime/default-rootfs.oci.tar.zst
     test -f ./app/runtime/default-rootfs.oci.json
     test -f ./app/licenses/host/README.md

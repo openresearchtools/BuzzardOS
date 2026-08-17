@@ -32,7 +32,7 @@ and other generated test artifacts outside the checkout:
 For a guest-only pass, keep both Cargo and Python-generated files external:
 
 ```sh
-CARGO_TARGET_DIR="${TMPDIR:-/tmp}/wildbuzzard-build-$(id -u)/tests/guest-target" \
+CARGO_TARGET_DIR="${TMPDIR:-/tmp}/buzzardos-build-$(id -u)/tests/guest-target" \
   cargo test --manifest-path guest/Cargo.toml --workspace --locked
 PYTHONDONTWRITEBYTECODE=1 \
   python3 -m unittest discover -s guest/tests -v

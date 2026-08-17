@@ -29,7 +29,7 @@ class OciBuildContractTests(unittest.TestCase):
             for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
             if match.group(1) != "scratch"
         ]
-        self.assertEqual(len(from_references), 6)
+        self.assertEqual(len(from_references), 2)
         for reference in from_references:
             name, separator, digest = reference.partition("@")
             self.assertEqual(separator, "@", reference)
@@ -86,9 +86,10 @@ class OciBuildContractTests(unittest.TestCase):
             "LICENSE",
             "NOTICE",
             "THIRD_PARTY_NOTICES.md",
+            "VERSION",
         ):
             self.assertIn(f"!{file_name}", rules)
-        for directory in ("oci", "LICENSES"):
+        for directory in ("oci", "LICENSES", "packaging"):
             self.assertIn(f"!{directory}/", rules)
             self.assertIn(f"!{directory}/**", rules)
         self.assertIn("!guest/", rules)
@@ -96,6 +97,7 @@ class OciBuildContractTests(unittest.TestCase):
             "Cargo.toml",
             "Cargo.lock",
             "ASSET_REVISION",
+            "BUZZARDCUA_VERSION",
             "asset-manifest.tsv",
             "install-rootfs-assets.sh",
         ):
@@ -126,78 +128,43 @@ class OciBuildContractTests(unittest.TestCase):
         for publishing_key in ("push:", "registry:", "pull_policy: always"):
             self.assertNotIn(publishing_key, compose)
 
-    def test_final_sway_payload_excludes_development_files(self) -> None:
+    def test_reference_image_uses_only_distribution_sway_and_wlroots(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"/sway-root$runtime_prefix/include"', containerfile)
-        self.assertIn('"/sway-root$runtime_prefix/lib/pkgconfig"', containerfile)
-        self.assertIn("-name '*.a'", containerfile)
-        self.assertIn("-name '*.la'", containerfile)
-        self.assertIn("-Wl,-rpath,$ORIGIN/../lib", containerfile)
-        self.assertIn("AS sway-runtime-artifact", containerfile)
-
-    def test_sway_runtime_carries_one_pinned_normalized_xkb_tree(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
+        self.assertRegex(containerfile, r"(?m)^\s+sway \\$")
+        self.assertRegex(containerfile, r"(?m)^\s+xkb-data \\$")
+        for forbidden in (
+            "AS sway-builder",
+            "AS sway-runtime-artifact",
+            "SWAY_COMMIT",
+            "WLROOTS_COMMIT",
+            "wlroots.git",
+            "meson setup sway",
+            "meson setup wlroots",
+            "/runtime-payload/bin/sway",
+        ):
+            self.assertNotIn(forbidden, containerfile)
+        session = (ROOT / "guest/assets/buzzardos-sway-session").read_text(
             encoding="utf-8"
         )
-        self.assertRegex(
-            containerfile,
-            r"(?m)^\s+xkb-data \\$",
-        )
-        for required in (
-            "xkb_library=$(readlink -f /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0)",
-            "/runtime-payload/lib/libxkbcommon.so.0",
-            "libxkbcommon0.manifest.sha256",
-            "libxkbcommon0.version",
-            "/runtime-payload/share/doc/libxkbcommon0/copyright",
-            "xkb_entry=/usr/share/X11/xkb",
-            'xkb_source=$(readlink -f -- "$xkb_entry")',
-            "/usr/share/xkeyboard-config-[0-9]*",
-            "xkb_destination=/runtime-payload/share/X11/xkb",
-            'case "$resolved" in',
-            'cp -aL "$xkb_source" "$xkb_destination"',
-            "xkb-data.manifest.sha256",
-            "xkb-data.version",
-            "/runtime-payload/share/doc/xkb-data/copyright",
-        ):
-            self.assertIn(required, containerfile)
-        self.assertIn(
-            '! find "$xkb_destination" -type l -print -quit | grep -q .',
-            containerfile,
-        )
-        self.assertIn(
-            '! find "$xkb_destination" -mindepth 1 ! -type d ! -type f',
-            containerfile,
-        )
+        self.assertIn("/usr/bin/sway", session)
+        self.assertIn("/usr/bin/swaymsg", session)
 
-    def test_portable_app_stages_the_same_pinned_xkb_tree_at_a_stable_path(self) -> None:
-        packager = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
-        for required in (
-            'host_xkb_root="$appdir/usr/share/wildbuzzard/xkb"',
-            '"$guest_compositor_runtime/share/X11/xkb/."',
-            '"$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256"',
-            '"$appdir/usr/share/wildbuzzard/xkb-data.version"',
-            '"$appdir/usr/share/doc/xkb-data/copyright"',
-            '"$appdir/usr/lib/libxkbcommon.so.0"',
-            '"$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256"',
-            '"$appdir/usr/share/doc/libxkbcommon0/copyright"',
-            '"$guest_runtime_destination/$guest_revision/share/X11/xkb"',
-            "host and guest pinned XKB manifests differ",
-            "host and guest pinned libxkbcommon payloads differ",
-            "verify_elf_relocation_closure",
-            'ldd -r -- "$object"',
-            "undefined symbol|relocation error|symbol lookup error",
-            "gtk_builder_lib=$(pkg-config --variable=libdir gtk4)",
-            'cargo_rustflags="-L native=$gtk_builder_lib',
+    def test_guest_defaults_do_not_overwrite_distribution_gtk_configuration(self) -> None:
+        manifest = (ROOT / "guest/asset-manifest.tsv").read_text(encoding="utf-8")
+        for forbidden in (
+            "etc/gtk-3.0/settings.ini",
+            "etc/gtk-4.0/settings.ini",
+            "etc/xdg/kwalletrc",
         ):
-            self.assertIn(required, packager)
-        self.assertIn("verify_xkb_payload", packager)
-        self.assertIn("followlinks=False", packager)
-        self.assertNotIn("cp -a -- /usr/share/X11/xkb", packager)
-        verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
-        self.assertIn('ldd -r -- "$runtime/lib/libxkbcommon.so.0"', verifier)
-        self.assertIn("undefined symbol|relocation error|symbol lookup error", verifier)
+            self.assertNotRegex(manifest, rf"(?m)\t{re.escape(forbidden)}$")
+        for managed in (
+            "etc/buzzardos/xdg/gtk-3.0/settings.ini",
+            "etc/buzzardos/xdg/gtk-4.0/settings.ini",
+            "etc/buzzardos/xdg/kwalletrc",
+        ):
+            self.assertRegex(manifest, rf"(?m)\t{re.escape(managed)}$")
 
     def test_runtime_contract_names_desktop_and_appimage_dependencies(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
@@ -247,17 +214,17 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("gsettings list-keys org.gnome.desktop.interface", verifier)
         self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
         self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
-        self.assertIn("AS settings-builder", containerfile)
+        self.assertIn("AS deb-builder", containerfile)
         self.assertRegex(containerfile, r"(?m)^\s+libglib2\.0-dev \\")
         self.assertRegex(containerfile, r"(?m)^\s+libpulse-dev \\")
-        self.assertIn("--package wildbuzzard-settings", containerfile)
-        self.assertIn("--package wildbuzzard-shortcut-helper", containerfile)
-        self.assertIn("--package wildbuzzard-clipboard-agent", containerfile)
-        self.assertIn("/usr/libexec/wildbuzzard-shortcut-helper", verifier)
-        self.assertIn("/libexec/wildbuzzard-clipboard-agent", verifier)
+        self.assertIn("packaging/build-debs.sh guest cua", containerfile)
+        self.assertIn("buzzardos-guest-desktop_*_amd64.deb", containerfile)
+        self.assertIn("buzzardcua_*_amd64.deb", containerfile)
+        self.assertIn("/usr/libexec/buzzardos-shortcut-helper", verifier)
+        self.assertIn("/libexec/buzzardos-clipboard-agent", verifier)
         self.assertIn("unsquashfs", verifier)
-        self.assertIn("cargo clippy", containerfile)
-        self.assertIn("cargo test", containerfile)
+        self.assertNotIn("AS shell-builder", containerfile)
+        self.assertNotIn("AS settings-builder", containerfile)
         self.assertIn("libpulse.so.0", verifier)
         for forbidden in (
             "blender",
@@ -297,26 +264,26 @@ class OciBuildContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, sound)
 
     def test_runtime_readiness_is_bound_to_one_broker_session(self) -> None:
-        broker = (ROOT / "host/crates/wildbuzzard-broker/src/main.rs").read_text(
+        broker = (ROOT / "host/crates/buzzardos-broker/src/main.rs").read_text(
             encoding="utf-8"
         )
-        services = (ROOT / "guest/assets/wildbuzzard-desktop-services").read_text(
+        services = (ROOT / "guest/assets/buzzardos-desktop-services").read_text(
             encoding="utf-8"
         )
-        readiness = (ROOT / "guest/assets/wildbuzzard-runtime-ready").read_text(
+        readiness = (ROOT / "guest/assets/buzzardos-runtime-ready").read_text(
             encoding="utf-8"
         )
-        unit = (ROOT / "guest/assets/wildbuzzard-runtime-ready.service").read_text(
+        unit = (ROOT / "guest/assets/buzzardos-runtime-ready.service").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"WILDBUZZARD_SESSION_TOKEN".into()', broker)
+        self.assertIn('"BUZZARDOS_SESSION_TOKEN".into()', broker)
         self.assertIn("Uuid::new_v4().simple().to_string()", broker)
         self.assertIn("desktop_ready_for_session(marker, expected_session_token)", broker)
         self.assertIn("const GUEST_RUNTIME_MODE: u32 = 0o700", broker)
         self.assertIn("mktemp \"$status_dir/.desktop-ready.XXXXXX\"", services)
         self.assertIn("chmod 0600 \"$desktop_ready_tmp\"", services)
-        self.assertIn("$WILDBUZZARD_SESSION_TOKEN", services)
-        self.assertIn("EnvironmentFile=/run/wildbuzzard-host/driver.env", unit)
+        self.assertIn("$BUZZARDOS_SESSION_TOKEN", services)
+        self.assertIn("EnvironmentFile=/run/buzzardos-host/driver.env", unit)
         self.assertIn("SESSION_TOKEN_RE", readiness)
         self.assertIn("HOST_RUNTIME_MODE = 0o700", readiness)
         self.assertIn("read_desktop_ready(DESKTOP_READY, session_token)", readiness)
@@ -374,7 +341,7 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertNotIn("cuda-keyring", containerfile)
         cuda_section = containerfile.split(
             "# The reference machine carries only the CUDA runtime", 1
-        )[1].split("COPY --from=sway-builder", 1)[0]
+        )[1].split("COPY --from=deb-builder", 1)[0]
         self.assertNotIn("apt-get", cuda_section)
 
 

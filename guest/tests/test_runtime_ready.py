@@ -15,11 +15,11 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "guest/assets/wildbuzzard-runtime-ready"
+SCRIPT = ROOT / "guest/assets/buzzardos-runtime-ready"
 
 
 def load_runtime_ready():
-    loader = importlib.machinery.SourceFileLoader("wildbuzzard_runtime_ready", str(SCRIPT))
+    loader = importlib.machinery.SourceFileLoader("buzzardos_runtime_ready", str(SCRIPT))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -102,7 +102,7 @@ class RuntimeReadyTests(unittest.TestCase):
 
     def test_desktop_marker_is_owner_mode_and_session_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            status = Path(temporary) / "wildbuzzard-host"
+            status = Path(temporary) / "buzzardos-host"
             status.mkdir(mode=self.module.HOST_RUNTIME_MODE)
             status.chmod(self.module.HOST_RUNTIME_MODE)
             marker = status / "desktop-ready"
@@ -140,7 +140,7 @@ class RuntimeReadyTests(unittest.TestCase):
 
     def test_desktop_marker_rejects_a_traversable_runtime_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            status = Path(temporary) / "wildbuzzard-host"
+            status = Path(temporary) / "buzzardos-host"
             status.mkdir(mode=0o711)
             status.chmod(0o711)
             marker = status / "desktop-ready"

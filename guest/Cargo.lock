@@ -2186,7 +2186,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
-name = "wildbuzzard-clipboard-agent"
+name = "buzzardos-clipboard-agent"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
@@ -2194,17 +2194,17 @@ dependencies = [
  "libc",
  "rustix",
  "tiff",
- "wildbuzzard-clipboard-protocol",
+ "buzzardos-clipboard-protocol",
  "wl-clipboard-rs",
  "zeroize",
 ]
 
 [[package]]
-name = "wildbuzzard-clipboard-protocol"
+name = "buzzardos-clipboard-protocol"
 version = "0.1.0"
 
 [[package]]
-name = "wildbuzzard-desktop-core"
+name = "buzzardos-desktop-core"
 version = "0.1.0"
 dependencies = [
  "gio",
@@ -2218,7 +2218,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wildbuzzard-settings"
+name = "buzzardos-settings"
 version = "0.1.0"
 dependencies = [
  "gio",
@@ -2230,11 +2230,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
- "wildbuzzard-desktop-core",
+ "buzzardos-desktop-core",
 ]
 
 [[package]]
-name = "wildbuzzard-shell"
+name = "buzzardos-shell"
 version = "0.1.0"
 dependencies = [
  "accesskit",
@@ -2252,13 +2252,13 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
- "wildbuzzard-desktop-core",
- "wildbuzzard-shortcut-helper",
+ "buzzardos-desktop-core",
+ "buzzardos-shortcut-helper",
  "wl-clipboard-rs",
 ]
 
 [[package]]
-name = "wildbuzzard-shortcut-helper"
+name = "buzzardos-shortcut-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2273,7 +2273,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
- "wildbuzzard-desktop-core",
+ "buzzardos-desktop-core",
 ]
 
 [[package]]

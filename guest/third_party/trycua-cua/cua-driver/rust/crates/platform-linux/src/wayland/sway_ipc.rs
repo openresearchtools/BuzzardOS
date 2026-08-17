@@ -1,4 +1,4 @@
-//! Exact Sway IPC metadata and window operations for Wild Buzzard.
+//! Exact Sway IPC metadata and window operations for Buzzard OS.
 //!
 //! Sway's IPC tree is the authority for global frame geometry and state.  The
 //! public CUA id is bound to Sway's opaque `foreign_toplevel_identifier`; title,
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 const SCRATCHPAD_WORKSPACE: &str = "__i3_scratch";
-const RESTORE_MARK_PREFIX: &str = "__wildbuzzard_restore_v1_";
+const RESTORE_MARK_PREFIX: &str = "__buzzardos_restore_v1_";
 const PUBLIC_ID_START: u64 = 0xFB00_0000;
 const PUBLIC_ID_END: u64 = 0xFBFF_FFFE;
 const IPC_MAGIC: &[u8; 6] = b"i3-ipc";
@@ -1007,7 +1007,7 @@ mod tests {
                 "rect":{"x":1600,"y":25,"width":1280,"height":833},
                 "deco_rect":{"x":0,"y":0,"width":1280,"height":25},
                 "window_rect":{"x":3,"y":0,"width":1274,"height":830},
-                "marks":["__wildbuzzard_restore_v1_19_1720_90_800_600"],
+                "marks":["__buzzardos_restore_v1_19_1720_90_800_600"],
                 "current_border_width":3,"scratchpad_state":"none"
               }]
             }]

@@ -1,34 +1,28 @@
-# Reference-image assembly
+# Reference OCI assembly
 
-`compose.yaml` builds the Debian reference image from `desktop/Containerfile`.
-The build compiles the pinned stock Sway/wlroots stack, the guest shell, and the
-vendored CUA driver, then installs the complete `guest/asset-manifest.tsv`
-payload. The final image includes systemd, Sway, Xwayland, Foot, Firefox ESR,
-Mousepad, Thunar, AT-SPI, PipeWire/WirePlumber, GPU userspace, and generic
-native Electron AppImage dependencies. It contains no host launcher code,
-compiler, compositor source, bundled Electron SDK/demo, LM Studio binary, or
-Blender. Chromium, Dolphin, Pavucontrol, `x11-apps`, XTerm/UXTerm, and
-Mesa/Vulkan diagnostic applications are also absent; Xwayland and the actual
-Mesa/Vulkan runtimes remain present.
+`compose.yaml` and `build-local.sh` build the Debian reference guest from
+`desktop/Containerfile`. A build stage produces the local
+`buzzardos-guest-desktop` and `buzzardcua` Debian packages; the final stage
+installs those packages plus the distribution's stock Sway/wlroots packages
+with APT.
+
+The final image includes systemd, Sway, Xwayland, Foot, Firefox ESR, Mousepad,
+Thunar, AT-SPI, PipeWire/WirePlumber, graphics runtimes, guest AppImage support,
+Buzzard OS Guest Desktop, and Buzzard CUA. It contains no host-manager code,
+private compositor fork, compositor source, compiler toolchain, Electron demo,
+LM Studio, or Blender.
 
 ```sh
 ./oci/build-local.sh
-WILDBUZZARD_EXPORT_ARCHIVE=1 ./oci/build-local.sh
+BUZZARDOS_EXPORT_ARCHIVE=1 ./oci/build-local.sh
 ```
 
 Every successful build records the content-addressed local image ID, unpacked
-size, and exact installed `dpkg` package/version inventory under
-`${WILDBUZZARD_OCI_OUTPUT_DIR:-/tmp/wildbuzzard-build-UID/oci}`. The optional
-compressed archive and checksum are written there as well. These files are
-build evidence; they are not committed to the source tree.
+size, and exact installed dpkg inventory below
+`${BUZZARDOS_OCI_OUTPUT_DIR:-/tmp/buzzardos-build-UID/oci}`. Optional OCI
+archive export writes its archive and checksum there as build evidence.
 
-The developer entry point is local-only. It does not log into a registry, push
-an image, create a GitHub package, or publish a release.
-
-The manually dispatched release-assets workflow uses the same Containerfile on
-a disposable GitHub-hosted x86-64 runner. Its image remains in that runner's
-Docker daemon long enough to pass `verify-image.sh`, export a digest-verified
-OCI layout, and flatten the filesystem into the compressed rootfs seed carried
-inside `BuzzardOS-portable-linux-x86_64.tar.xz`. The OCI layout and local image
-are then discarded. The checked-in workflow is artifact-only, has no write
-permission, and never pushes GHCR or another container registry/package.
+The developer entry point is local-only. It never logs into or pushes a
+registry. The manually dispatched Actions workflow uses the same definition
+only to verify the image alongside the three `.deb` artifacts; the image is
+discarded with the runner and is never uploaded.

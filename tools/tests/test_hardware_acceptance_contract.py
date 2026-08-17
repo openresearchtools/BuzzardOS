@@ -77,7 +77,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         fractional = self.script.split(
             "# Exercise the native fractional-scale bridge", maxsplit=1
         )[1].split(
-            'rm -f -- "$portable_dir/shared/.wildbuzzard-acceptance"', maxsplit=1
+            'rm -f -- "$portable_dir/shared/.buzzardos-acceptance"', maxsplit=1
         )[0]
         self.assertNotIn('wb stop "$machine"', fractional)
         self.assertEqual(fractional.count('wb window "$machine" close'), 2)
@@ -92,7 +92,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             "wait_stopped",
             "wait_process_identity_gone \\\n"
             '    "$fractional_baseline_broker_pid" "$fractional_baseline_broker_start_time"',
-            "WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180",
+            "BUZZARDOS_TEST_FRACTIONAL_SCALE_120=180",
             "fractional_override_broker_pid=$(jq -er '.launcher_pid' \"$runtime\")",
             'process_start_time "$fractional_override_broker_pid"',
             "wait_scaled_window_frame 180",
@@ -151,7 +151,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             r'\"text\":\"z\"',
             "assert_cua_ok press_key",
             r'\"key\":\"enter\"',
-            'cat /home/wildbuzzard/.wildbuzzard-cua-input) == "${marker%?}z"',
+            'cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z"',
             "assert_cua_ok end_session",
         )
         cursor = 0
@@ -161,7 +161,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("guest wtype", coexistence)
         self.assertNotIn("host_keyboard_input", self.script)
         self.assertNotIn('wb window "$machine" focus-monitor', self.script)
-        self.assertNotIn("WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK", self.script)
+        self.assertNotIn("BUZZARDOS_ACCEPT_HOST_INPUT_HOOK", self.script)
 
     def test_cua_session_end_waits_for_a_neutral_keyboard_acknowledgement(self) -> None:
         self.assertIn("register_session_end_hook", self.cua_keyboard)

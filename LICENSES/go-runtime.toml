@@ -8,7 +8,7 @@ root_license_sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d559146
 patent_grant_sha256 = "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
 source_archive_manifest = "LICENSES/go-source-archives.tsv"
 source_archive_fetcher = "tools/fetch-go-source-archives.sh"
-bundle_path = "/usr/share/doc/wildbuzzard/sources/go"
+bundle_path = "/usr/share/doc/buzzardos/sources/go"
 notes = "The root Go LICENSE and PATENTS files are byte-identical in tags go1.26.3 and go1.26.5 and are preserved here. Go build information identifies the exact compiler versions below. The checksum-pinned official source archives for both compiler versions are bundled in every AppImage together with every LICENSE, COPYING, NOTICE, and PATENTS file discovered inside them. This conservative source-and-notice delivery covers the compiled standard library without guessing a package set from stripped binary symbols."
 status = "exact-go-source-and-all-bundled-notices-shipped"
 

@@ -400,7 +400,7 @@ pub async fn run_serve(
     secure_local_socket(socket_path)?;
     let bound_socket = socket_identity(socket_path)?;
 
-    eprintln!("Cua Driver daemon listening on {socket_path}");
+    eprintln!("Buzzard CUA daemon listening on {socket_path}");
 
     // Write PID file.
     if let Some(pid_path) = pid_file_path {
@@ -714,11 +714,11 @@ pub async fn run_serve(
                 });
             }
             _ = &mut shutdown_rx => {
-                eprintln!("Cua Driver daemon shutting down.");
+                eprintln!("Buzzard CUA daemon shutting down.");
                 break;
             }
             _ = &mut parent_liveness => {
-                eprintln!("Cua Driver embedded host closed its lifetime pipe; shutting down.");
+                eprintln!("Buzzard CUA embedded host closed its lifetime pipe; shutting down.");
                 break;
             }
         }
@@ -999,7 +999,7 @@ pub async fn run_serve(
 
     cua_driver_core::authorization::validate_startup_authorization()?;
 
-    eprintln!("Cua Driver daemon listening on {socket_path}");
+    eprintln!("Buzzard CUA daemon listening on {socket_path}");
 
     // Build the current-user descriptor once and reuse it for every pipe
     // instance. Both service and embedded mode fail closed if the ACL cannot
@@ -1332,11 +1332,11 @@ pub async fn run_serve(
                 });
             }
             _ = &mut shutdown_rx => {
-                eprintln!("Cua Driver daemon shutting down.");
+                eprintln!("Buzzard CUA daemon shutting down.");
                 break;
             }
             _ = &mut parent_liveness => {
-                eprintln!("Cua Driver embedded host closed its lifetime pipe; shutting down.");
+                eprintln!("Buzzard CUA embedded host closed its lifetime pipe; shutting down.");
                 break;
             }
         }
@@ -1407,7 +1407,7 @@ pub fn run_serve_cmd(
             .map(|pid| format!(" (pid {pid})"))
             .unwrap_or_default();
         eprintln!(
-            "Cua Driver daemon is already running on {socket_path}{pid_hint}. \
+            "Buzzard CUA daemon is already running on {socket_path}{pid_hint}. \
              Run `cua-driver stop` first."
         );
         std::process::exit(1);
@@ -1456,7 +1456,7 @@ pub fn run_serve_cmd(
 /// `cua-driver stop` implementation.
 pub fn run_stop_cmd(socket_path: &str) {
     if !is_daemon_listening(socket_path) {
-        eprintln!("Cua Driver daemon is not running");
+        eprintln!("Buzzard CUA daemon is not running");
         std::process::exit(1);
     }
 
@@ -1485,7 +1485,7 @@ pub fn run_stop_cmd(socket_path: &str) {
                     return;
                 }
                 if std::time::Instant::now() >= deadline {
-                    eprintln!("Cua Driver daemon did not release socket within 2s");
+                    eprintln!("Buzzard CUA daemon did not release socket within 2s");
                     std::process::exit(1);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1501,7 +1501,7 @@ pub fn run_stop_cmd(socket_path: &str) {
 /// `cua-driver status` implementation.
 pub fn run_status_cmd(socket_path: &str, pid_file_path: &str) {
     if is_daemon_listening(socket_path) {
-        println!("Cua Driver daemon is running");
+        println!("Buzzard CUA daemon is running");
         println!("  socket: {socket_path}");
         if let Some(pid) = read_pid_file(pid_file_path) {
             println!("  pid: {pid}");
@@ -1576,7 +1576,7 @@ pub fn run_status_cmd(socket_path: &str, pid_file_path: &str) {
             }
         }
     } else {
-        eprintln!("Cua Driver daemon is not running");
+        eprintln!("Buzzard CUA daemon is not running");
         std::process::exit(1);
     }
 }

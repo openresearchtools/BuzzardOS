@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use buzzardos_desktop_core::UpdateState;
 use gio::prelude::*;
 use glib::variant::ToVariant;
-use wildbuzzard_desktop_core::UpdateState;
 
-const BUS_NAME: &str = "org.openresearchtools.WildBuzzard.Updater1";
-const OBJECT_PATH: &str = "/org/openresearchtools/WildBuzzard/Updater1";
+const BUS_NAME: &str = "org.openresearchtools.BuzzardOS.Updater1";
+const OBJECT_PATH: &str = "/org/openresearchtools/BuzzardOS/Updater1";
 const INTERFACE: &str = BUS_NAME;
 const CALL_TIMEOUT_MILLISECONDS: i32 = 10_000;
 
@@ -136,8 +136,8 @@ mod tests {
 
     #[test]
     fn endpoint_is_the_system_updater_only() {
-        assert_eq!(BUS_NAME, "org.openresearchtools.WildBuzzard.Updater1");
-        assert_eq!(OBJECT_PATH, "/org/openresearchtools/WildBuzzard/Updater1");
+        assert_eq!(BUS_NAME, "org.openresearchtools.BuzzardOS.Updater1");
+        assert_eq!(OBJECT_PATH, "/org/openresearchtools/BuzzardOS/Updater1");
         assert_eq!(INTERFACE, BUS_NAME);
     }
 }

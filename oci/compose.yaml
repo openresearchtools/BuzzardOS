@@ -1,8 +1,8 @@
-name: wildbuzzard-local
+name: buzzardos-local
 
 services:
   desktop:
-    image: ${WILDBUZZARD_OCI_TAG:-wildbuzzard-desktop:local}
+    image: ${BUZZARDOS_OCI_TAG:-buzzardos-desktop:local}
     build:
       context: ..
       dockerfile: oci/desktop/Containerfile

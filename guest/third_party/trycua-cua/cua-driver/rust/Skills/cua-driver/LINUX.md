@@ -196,7 +196,7 @@ genuine background limitation, and `foreground` is the documented escalation.)
 ## Wayland
 
 Set `CUA_DRIVER_RS_ENABLE_WAYLAND=1` to enable native Wayland support. The
-Wild Buzzard target is the private guest Sway session. `WAYLAND_DISPLAY` must
+Buzzard OS target is the private guest Sway session. `WAYLAND_DISPLAY` must
 name Sway's private application socket and `SWAYSOCK` must name that same
 session's private IPC socket. The driver uses Sway IPC for authoritative
 window state and geometry, wlroots screencopy for the complete guest output,

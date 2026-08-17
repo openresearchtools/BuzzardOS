@@ -37,22 +37,22 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
     setpriv --reuid=0 --regid=0 --clear-groups \
     setpriv --reuid=1000 --regid=1000 --clear-groups \
     env -i \
-    HOME=/home/wildbuzzard \
-    USER=wildbuzzard \
-    LOGNAME=wildbuzzard \
+    HOME=/home/buzzard \
+    USER=buzzard \
+    LOGNAME=buzzard \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     XDG_RUNTIME_DIR=/run/user/1000 \
-    XDG_CONFIG_HOME=/home/wildbuzzard/.config \
-    XDG_DATA_HOME=/home/wildbuzzard/.local/share \
-    XDG_CACHE_HOME=/home/wildbuzzard/.cache \
-    XDG_CONFIG_DIRS=/etc/wildbuzzard/xdg:/etc/xdg \
+    XDG_CONFIG_HOME=/home/buzzard/.config \
+    XDG_DATA_HOME=/home/buzzard/.local/share \
+    XDG_CACHE_HOME=/home/buzzard/.cache \
+    XDG_CONFIG_DIRS=/etc/buzzardos/xdg:/etc/xdg \
     XDG_DATA_DIRS=/usr/local/share:/usr/share \
     XDG_SESSION_TYPE=wayland \
     XDG_CURRENT_DESKTOP=sway \
     XDG_SESSION_DESKTOP=sway \
     DISPLAY=:0 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    LD_LIBRARY_PATH=/run/wildbuzzard-host/driver/lib \
+    LD_LIBRARY_PATH=/run/buzzardos-host/driver/lib \
     "QT_QPA_PLATFORM=wayland;xcb" \
     QT_QPA_PLATFORMTHEME=gtk3 \
     QT_ACCESSIBILITY=1 \
@@ -66,7 +66,7 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         shell_observed=0
         attempt=0
         while [ "$attempt" -lt 150 ]; do
-            candidate=$(pgrep -xo wildbuzzard-she 2>/dev/null || true)
+            candidate=$(pgrep -xo buzzardos-she 2>/dev/null || true)
             if [ -n "$candidate" ] && [ -r "/proc/$candidate/environ" ]; then
                 shell_observed=1
                 wayland_display=$(
@@ -99,4 +99,4 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         fi
         export WAYLAND_DISPLAY SWAYSOCK
         exec "$@"
-    ' sh /opt/wildbuzzard/runtime/current/bin/cua-driver "$tool" "$arguments"
+    ' sh /opt/buzzardos/runtime/current/bin/cua-driver "$tool" "$arguments"

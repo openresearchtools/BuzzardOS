@@ -52,7 +52,7 @@ const MICROPHONE_TEST_HARD_LIMIT: Duration = Duration::from_secs(30);
 const MICROPHONE_FRAGMENT_BYTES: u32 = 9_600;
 const MAX_MICROPHONE_FRAGMENTS_PER_TICK: usize = 4;
 const APPLICATION_NAME: &str = "Buzzard OS Settings";
-const APPLICATION_ID: &str = "org.openresearchtools.WildBuzzard.Settings1";
+const APPLICATION_ID: &str = "org.openresearchtools.BuzzardOS.Settings1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundConnection {
@@ -404,7 +404,7 @@ impl SoundService {
             shutdown: Arc::clone(&shutdown),
         };
         let worker = thread::Builder::new()
-            .name("wildbuzzard-sound".into())
+            .name("buzzardos-sound".into())
             .spawn(move || Worker::new(receiver, state, shutdown).run())?;
         Ok(Self {
             controller,
@@ -598,7 +598,7 @@ impl Session {
         set_property(
             &mut proplist,
             properties::APPLICATION_ICON_NAME,
-            "wildbuzzard-settings",
+            "buzzardos-settings",
         )?;
         let mut context = Context::new_with_proplist(&mainloop, APPLICATION_NAME, &proplist)
             .ok_or("Cannot create a PulseAudio context.")?;
@@ -1857,7 +1857,7 @@ fn stream_properties(media_name: &str) -> Result<Proplist, String> {
     set_property(
         &mut properties,
         properties::APPLICATION_ICON_NAME,
-        "wildbuzzard-settings",
+        "buzzardos-settings",
     )?;
     set_property(&mut properties, properties::MEDIA_NAME, media_name)?;
     set_property(&mut properties, properties::MEDIA_ROLE, "test")?;

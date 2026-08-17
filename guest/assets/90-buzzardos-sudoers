@@ -1,0 +1,2 @@
+# Passwordless privilege applies only inside the rootless guest namespace.
+buzzard ALL=(ALL:ALL) NOPASSWD: ALL

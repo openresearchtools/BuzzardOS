@@ -172,7 +172,7 @@ subgid_start=$(awk -F: -v owner="$(id -un)" -v numeric="$runner_gid" \
     echo 'rootless import did not map guest root to the configured subordinate UID' >&2
     exit 1
 }
-[[ "$(stat -c %u "$mapped_rootfs/home/wildbuzzard")" == "$runner_uid" ]] || {
+[[ "$(stat -c %u "$mapped_rootfs/home/buzzard")" == "$runner_uid" ]] || {
     echo 'rootless import did not keep guest UID 1000 as the desktop host user' >&2
     exit 1
 }
@@ -255,7 +255,7 @@ mapped_rootfs="$roundtrip_root/Machines/imported/rootfs"
     echo 'flattened seed did not map guest root to the configured subordinate UID' >&2
     exit 1
 }
-[[ "$(stat -c %u "$mapped_rootfs/home/wildbuzzard")" == "$runner_uid" ]] || {
+[[ "$(stat -c %u "$mapped_rootfs/home/buzzard")" == "$runner_uid" ]] || {
     echo 'flattened seed did not keep guest UID 1000 as the desktop host user' >&2
     exit 1
 }
@@ -290,8 +290,8 @@ install -m0644 \
     "$guest_provenance/"
 install -m0644 "$project_dir/guest/third_party/trycua-cua/UPSTREAM.toml" \
     "$guest_provenance/TRYCUA_UPSTREAM.toml"
-install -m0644 "$project_dir/guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md" \
-    "$guest_provenance/TRYCUA_CHANGES.WILDBUZZARD.md"
+install -m0644 "$project_dir/guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md" \
+    "$guest_provenance/TRYCUA_CHANGES.BUZZARDOS.md"
 install -m0644 "$runtime_dir/default-rootfs.oci.json" "$guest_provenance/"
 (
     cd "$output_dir"

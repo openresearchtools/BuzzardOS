@@ -40,9 +40,9 @@ class AppdirXkbPayloadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.appdir = Path(self.temporary.name) / "AppDir"
-        self.host_root = self.appdir / "usr/share/wildbuzzard/xkb"
+        self.host_root = self.appdir / "usr/share/buzzardos/xkb"
         manifest = write_tree(self.host_root)
-        host_metadata = self.appdir / "usr/share/wildbuzzard"
+        host_metadata = self.appdir / "usr/share/buzzardos"
         (host_metadata / "xkb-data.manifest.sha256").write_text(
             manifest, encoding="utf-8", newline="\n"
         )
@@ -54,12 +54,12 @@ class AppdirXkbPayloadTests(unittest.TestCase):
         host_notice.write_text("fixture notice\n", encoding="utf-8")
 
         self.guest_revision = (
-            self.appdir / "usr/bin/wildbuzzard-guest-runtime/revision-1"
+            self.appdir / "usr/bin/buzzardos-guest-runtime/revision-1"
         )
         guest_root = self.guest_revision / "share/X11/xkb"
         guest_root.parent.mkdir(parents=True)
         shutil.copytree(self.host_root, guest_root)
-        guest_metadata = self.guest_revision / "share/wildbuzzard"
+        guest_metadata = self.guest_revision / "share/buzzardos"
         guest_metadata.mkdir(parents=True)
         shutil.copy2(
             host_metadata / "xkb-data.manifest.sha256",
@@ -170,7 +170,7 @@ class AppdirXkbPayloadTests(unittest.TestCase):
             self.assertEqual(kwargs["env"]["LD_LIBRARY_PATH"], str(Path(command[-1]).parent))
 
     def test_unsafe_manifest_path_is_never_followed(self) -> None:
-        manifest = self.appdir / "usr/share/wildbuzzard/xkb-data.manifest.sha256"
+        manifest = self.appdir / "usr/share/buzzardos/xkb-data.manifest.sha256"
         manifest.write_text(f"{'0' * 64}  ../../escape\n", encoding="utf-8")
         issues = self.audit()
         self.assertTrue(any("invalid row" in issue for issue in issues))

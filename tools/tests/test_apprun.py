@@ -19,14 +19,14 @@ class AppRunTests(unittest.TestCase):
     def test_empty_path_uses_proc_uid_and_executes_only_bundled_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             appdir = Path(temporary) / "AppDir"
-            launcher = appdir / "usr" / "bin" / "wildbuzzard"
+            launcher = appdir / "usr" / "bin" / "buzzardos"
             launcher.parent.mkdir(parents=True)
             shutil.copy2(APPRUN, appdir / "AppRun")
             launcher.write_text(
                 "#!/bin/sh\n"
                 "set -eu\n"
                 "printf '%s\\n' \"$GST_REGISTRY_1_0\" \"$PATH\" \"$@\" "
-                "> \"$WILDBUZZARD_APPRUN_CAPTURE\"\n",
+                "> \"$BUZZARDOS_APPRUN_CAPTURE\"\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o755)
@@ -39,7 +39,7 @@ class AppRunTests(unittest.TestCase):
                 text=True,
                 env={
                     "PATH": "",
-                    "WILDBUZZARD_APPRUN_CAPTURE": str(capture),
+                    "BUZZARDOS_APPRUN_CAPTURE": str(capture),
                 },
             )
 
@@ -47,7 +47,7 @@ class AppRunTests(unittest.TestCase):
             self.assertEqual(
                 capture.read_text(encoding="utf-8").splitlines(),
                 [
-                    f"/tmp/wildbuzzard-gstreamer-registry-{os.getuid()}.bin",
+                    f"/tmp/buzzardos-gstreamer-registry-{os.getuid()}.bin",
                     str(appdir / "usr" / "bin"),
                     "first",
                     "second argument",
@@ -72,7 +72,7 @@ class AppRunTests(unittest.TestCase):
         )
         self.assertLess(
             script.index("host_wayland_client="),
-            script.index('exec "$appdir/usr/bin/wildbuzzard"'),
+            script.index('exec "$appdir/usr/bin/buzzardos"'),
         )
 
 

@@ -93,17 +93,17 @@ use crate::x11::WindowInfo;
 /// Name of the opt-in env var that unlocks the experimental native-Wayland
 /// backend.
 pub const ENABLE_WAYLAND_ENV: &str = "CUA_DRIVER_RS_ENABLE_WAYLAND";
-const WILDBUZZARD_OUTPUT_STATE: &str = "/run/wildbuzzard-display-state/output-state.json";
-const WILDBUZZARD_POINTER_CLICK_STATE: &str = "wildbuzzard-cua-pointer-click.json";
+const BUZZARDOS_OUTPUT_STATE: &str = "/run/buzzardos-display-state/output-state.json";
+const BUZZARDOS_POINTER_CLICK_STATE: &str = "buzzardos-cua-pointer-click.json";
 
-fn wildbuzzard_output_state_required() -> bool {
-    std::env::var_os("WILDBUZZARD_MACHINE_ID").is_some()
-        || std::path::Path::new("/run/wildbuzzard-host").is_dir()
+fn buzzardos_output_state_required() -> bool {
+    std::env::var_os("BUZZARDOS_MACHINE_ID").is_some()
+        || std::path::Path::new("/run/buzzardos-host").is_dir()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct WildBuzzardOutputState {
+struct BuzzardOSOutputState {
     schema: u32,
     physical_width: u32,
     physical_height: u32,
@@ -114,11 +114,11 @@ struct WildBuzzardOutputState {
     geometry_generation: u64,
 }
 
-impl WildBuzzardOutputState {
+impl BuzzardOSOutputState {
     fn validate(self) -> anyhow::Result<Self> {
         if self.schema != 7 {
             anyhow::bail!(
-                "unsupported Wild Buzzard output-state schema {}; expected 7",
+                "unsupported Buzzard OS output-state schema {}; expected 7",
                 self.schema
             );
         }
@@ -134,7 +134,7 @@ impl WildBuzzardOutputState {
             || !(120..=960).contains(&self.guest_ui_scale_120)
             || self.geometry_generation == 0
         {
-            anyhow::bail!("Wild Buzzard output-state contains out-of-range geometry");
+            anyhow::bail!("Buzzard OS output-state contains out-of-range geometry");
         }
         let expected_width = u64::from(self.physical_width)
             .saturating_mul(120)
@@ -148,7 +148,7 @@ impl WildBuzzardOutputState {
             .max(1) as u32;
         if (self.logical_width, self.logical_height) != (expected_width, expected_height) {
             anyhow::bail!(
-                "Wild Buzzard output-state logical mode {}x{} is incoherent with native {}x{} physical pixels at guest UI scale {}/120; expected {}x{}",
+                "Buzzard OS output-state logical mode {}x{} is incoherent with native {}x{} physical pixels at guest UI scale {}/120; expected {}x{}",
                 self.logical_width,
                 self.logical_height,
                 self.physical_width,
@@ -186,65 +186,65 @@ pub struct CanonicalOutputMetadata {
     pub guest_ui_scale_120: u32,
     pub logical_width: u32,
     pub logical_height: u32,
-    /// Zero only outside Wild Buzzard, where no generation contract exists.
+    /// Zero only outside Buzzard OS, where no generation contract exists.
     pub geometry_generation: u64,
 }
 
-fn read_wildbuzzard_output_state() -> anyhow::Result<Option<WildBuzzardOutputState>> {
+fn read_buzzardos_output_state() -> anyhow::Result<Option<BuzzardOSOutputState>> {
     const LIMIT: u64 = 1024 * 1024;
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open(WILDBUZZARD_OUTPUT_STATE)
+        .open(BUZZARDOS_OUTPUT_STATE)
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if wildbuzzard_output_state_required() {
+            if buzzardos_output_state_required() {
                 anyhow::bail!(
-                    "Wild Buzzard output-state is missing; canonical screenshot and input geometry are unavailable"
+                    "Buzzard OS output-state is missing; canonical screenshot and input geometry are unavailable"
                 );
             }
             return Ok(None);
         }
         Err(error) => {
             return Err(anyhow::anyhow!(
-                "reading Wild Buzzard output-state failed: {error}"
+                "reading Buzzard OS output-state failed: {error}"
             ));
         }
     };
     let metadata = file
         .metadata()
-        .map_err(|error| anyhow::anyhow!("inspecting Wild Buzzard output-state failed: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("inspecting Buzzard OS output-state failed: {error}"))?;
     if !metadata.is_file()
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.mode() & 0o022 != 0
     {
         anyhow::bail!(
-            "Wild Buzzard output-state must be a session-owned regular file with no group/world write permission"
+            "Buzzard OS output-state must be a session-owned regular file with no group/world write permission"
         );
     }
     if metadata.len() > LIMIT {
-        anyhow::bail!("Wild Buzzard output-state exceeds the 1 MiB limit");
+        anyhow::bail!("Buzzard OS output-state exceeds the 1 MiB limit");
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(LIMIT + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| anyhow::anyhow!("reading Wild Buzzard output-state failed: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("reading Buzzard OS output-state failed: {error}"))?;
     if bytes.len() as u64 > LIMIT {
-        anyhow::bail!("Wild Buzzard output-state exceeds the 1 MiB limit");
+        anyhow::bail!("Buzzard OS output-state exceeds the 1 MiB limit");
     }
-    let state: WildBuzzardOutputState = serde_json::from_slice(&bytes)
-        .map_err(|error| anyhow::anyhow!("parsing Wild Buzzard output-state failed: {error}"))?;
+    let state: BuzzardOSOutputState = serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("parsing Buzzard OS output-state failed: {error}"))?;
     state.validate().map(Some)
 }
 
-fn wildbuzzard_output_state() -> Option<WildBuzzardOutputState> {
-    read_wildbuzzard_output_state().ok().flatten()
+fn buzzardos_output_state() -> Option<BuzzardOSOutputState> {
+    read_buzzardos_output_state().ok().flatten()
 }
 
 fn require_same_output_generation(
-    before: Option<WildBuzzardOutputState>,
-    after: Option<WildBuzzardOutputState>,
+    before: Option<BuzzardOSOutputState>,
+    after: Option<BuzzardOSOutputState>,
 ) -> anyhow::Result<()> {
     match (before, after) {
         (None, None) => Ok(()),
@@ -255,11 +255,11 @@ fn require_same_output_generation(
             after.geometry_generation
         ),
         (Some(before), None) => anyhow::bail!(
-            "stale_output_geometry: Wild Buzzard output generation {} disappeared during the operation",
+            "stale_output_geometry: Buzzard OS output generation {} disappeared during the operation",
             before.geometry_generation
         ),
         (None, Some(after)) => anyhow::bail!(
-            "stale_output_geometry: Wild Buzzard output generation {} appeared during the operation",
+            "stale_output_geometry: Buzzard OS output generation {} appeared during the operation",
             after.geometry_generation
         ),
     }
@@ -268,15 +268,15 @@ fn require_same_output_generation(
 fn with_stable_output_generation<T>(
     operation: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let before = read_wildbuzzard_output_state()?;
+    let before = read_buzzardos_output_state()?;
     let result = operation();
-    let after = read_wildbuzzard_output_state()?;
+    let after = read_buzzardos_output_state()?;
     require_same_output_generation(before, after)?;
     result
 }
 
-fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
-    let Some(state) = wildbuzzard_output_state() else {
+fn record_buzzardos_pointer_click(x: i32, y: i32, button: u8) {
+    let Some(state) = buzzardos_output_state() else {
         return;
     };
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
@@ -289,9 +289,9 @@ fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
     let physical_y = y.clamp(0, maximum_y);
     let logical_x = scale_signed_ratio(i64::from(physical_x), logical.0, state.physical_width);
     let logical_y = scale_signed_ratio(i64::from(physical_y), logical.1, state.physical_height);
-    let target = std::path::PathBuf::from(runtime).join(WILDBUZZARD_POINTER_CLICK_STATE);
+    let target = std::path::PathBuf::from(runtime).join(BUZZARDOS_POINTER_CLICK_STATE);
     let temporary = target.with_file_name(format!(
-        "{WILDBUZZARD_POINTER_CLICK_STATE}.{}.tmp",
+        "{BUZZARDOS_POINTER_CLICK_STATE}.{}.tmp",
         std::process::id()
     ));
     let value = serde_json::json!({
@@ -312,15 +312,15 @@ fn record_wildbuzzard_pointer_click(x: i32, y: i32, button: u8) {
     if let Err(error) = result {
         let _ = std::fs::remove_file(&temporary);
         tracing::debug!(
-            "could not record Wild Buzzard guest pointer click at {}: {error}",
+            "could not record Buzzard OS guest pointer click at {}: {error}",
             target.display()
         );
     }
 }
 
-/// Active Wild Buzzard guest UI scale in 1/120 units.
-pub(crate) fn wildbuzzard_guest_ui_scale_120() -> Option<u32> {
-    wildbuzzard_output_state().map(|state| state.guest_ui_scale_120)
+/// Active Buzzard OS guest UI scale in 1/120 units.
+pub(crate) fn buzzardos_guest_ui_scale_120() -> Option<u32> {
+    buzzardos_output_state().map(|state| state.guest_ui_scale_120)
 }
 
 fn scale_signed_ratio(value: i64, numerator: u32, denominator: u32) -> i64 {
@@ -396,13 +396,13 @@ pub(crate) fn physical_rect_to_canonical(
     (x, y, width, height)
 }
 
-/// Return Wild Buzzard's canonical guest-output physical extent when this
+/// Return Buzzard OS's canonical guest-output physical extent when this
 /// process is running in a machine, otherwise retain the compositor extent.
 ///
 /// This is exactly the dmabuf mode captured by screencopy. No image resize,
 /// downscale, or host-window chrome enters the CUA screenshot.
 pub fn canonical_output_dimensions(fallback_width: u32, fallback_height: u32) -> (u32, u32) {
-    wildbuzzard_output_state()
+    buzzardos_output_state()
         .map(|state| (state.physical_width, state.physical_height))
         .unwrap_or((fallback_width.max(1), fallback_height.max(1)))
 }
@@ -411,7 +411,7 @@ pub fn canonical_output_metadata(
     fallback_width: u32,
     fallback_height: u32,
 ) -> CanonicalOutputMetadata {
-    match wildbuzzard_output_state() {
+    match buzzardos_output_state() {
         Some(state) => state.metadata(),
         None => CanonicalOutputMetadata {
             physical_width: fallback_width.max(1),
@@ -426,14 +426,14 @@ pub fn canonical_output_metadata(
 }
 
 /// Return canonical metadata while preserving upstream CUA behavior outside
-/// Wild Buzzard. Inside a machine, `read_wildbuzzard_output_state` rejects a
+/// Buzzard OS. Inside a machine, `read_buzzardos_output_state` rejects a
 /// missing, malformed, untrusted, or incoherent state instead of silently
 /// fabricating generation-zero geometry.
 pub fn canonical_output_metadata_checked(
     fallback_width: u32,
     fallback_height: u32,
 ) -> anyhow::Result<CanonicalOutputMetadata> {
-    Ok(match read_wildbuzzard_output_state()? {
+    Ok(match read_buzzardos_output_state()? {
         Some(state) => state.metadata(),
         None => canonical_output_metadata(fallback_width, fallback_height),
     })
@@ -441,7 +441,7 @@ pub fn canonical_output_metadata_checked(
 
 fn normalize_capture_for_state(
     png: Vec<u8>,
-    state: WildBuzzardOutputState,
+    state: BuzzardOSOutputState,
 ) -> anyhow::Result<Vec<u8>> {
     let image = image::load_from_memory(&png)?;
     let actual = (image.width(), image.height());
@@ -451,7 +451,7 @@ fn normalize_capture_for_state(
         return Ok(png);
     }
     anyhow::bail!(
-        "stale_output_geometry: captured {}x{} but current Wild Buzzard output is \
+        "stale_output_geometry: captured {}x{} but current Buzzard OS output is \
          a native {}x{} physical dmabuf (guest logical mode {}x{}); refusing to \
          resample the screenshot",
         actual.0,
@@ -465,8 +465,8 @@ fn normalize_capture_for_state(
 
 fn normalize_capture_for_generation(
     png: Vec<u8>,
-    before: Option<WildBuzzardOutputState>,
-    after: Option<WildBuzzardOutputState>,
+    before: Option<BuzzardOSOutputState>,
+    after: Option<BuzzardOSOutputState>,
 ) -> anyhow::Result<Vec<u8>> {
     require_same_output_generation(before, after)?;
     match before {
@@ -475,14 +475,14 @@ fn normalize_capture_for_generation(
     }
 }
 
-/// Convert compositor/AT-SPI logical geometry into Wild Buzzard's canonical
+/// Convert compositor/AT-SPI logical geometry into Buzzard OS's canonical
 /// guest-output physical-pixel coordinate space.
 pub fn logical_rect_to_canonical(x: i32, y: i32, width: u32, height: u32) -> (i32, i32, u32, u32) {
-    logical_rect_to_canonical_for_state(wildbuzzard_output_state(), x, y, width, height)
+    logical_rect_to_canonical_for_state(buzzardos_output_state(), x, y, width, height)
 }
 
 fn logical_rect_to_canonical_for_state(
-    state: Option<WildBuzzardOutputState>,
+    state: Option<BuzzardOSOutputState>,
     x: i32,
     y: i32,
     width: u32,
@@ -511,11 +511,11 @@ pub(crate) fn physical_rect_to_logical(
     width: u32,
     height: u32,
 ) -> (i32, i32, u32, u32) {
-    physical_rect_to_logical_for_state(wildbuzzard_output_state(), x, y, width, height)
+    physical_rect_to_logical_for_state(buzzardos_output_state(), x, y, width, height)
 }
 
 fn physical_rect_to_logical_for_state(
-    state: Option<WildBuzzardOutputState>,
+    state: Option<BuzzardOSOutputState>,
     x: i32,
     y: i32,
     width: u32,
@@ -1361,27 +1361,27 @@ pub fn screenshot_bytes() -> anyhow::Result<Vec<u8>> {
         Ok(bytes) => Ok(bytes),
         Err(e) => {
             tracing::warn!("native screencopy failed, falling back to grim: {e}");
-            request_wildbuzzard_repaint();
+            request_buzzardos_repaint();
             capture_via_grim()
         }
     }
 }
 
-/// Wake Wild Buzzard's otherwise idle nested output so an in-guest
+/// Wake Buzzard OS's otherwise idle nested output so an in-guest
 /// screencopy request receives a newly committed frame. This is a private
 /// guest-runtime handshake: it neither captures nor exposes the host desktop.
-fn request_wildbuzzard_repaint() {
-    if std::env::var_os("WILDBUZZARD_MACHINE_ID").is_none()
-        && !std::path::Path::new("/run/wildbuzzard-host").is_dir()
+fn request_buzzardos_repaint() {
+    if std::env::var_os("BUZZARDOS_MACHINE_ID").is_none()
+        && !std::path::Path::new("/run/buzzardos-host").is_dir()
     {
         return;
     }
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
         return;
     };
-    let target = std::path::PathBuf::from(runtime).join("wildbuzzard-shell-repaint");
+    let target = std::path::PathBuf::from(runtime).join("buzzardos-shell-repaint");
     let temporary = target.with_file_name(format!(
-        "wildbuzzard-shell-repaint.{}.tmp",
+        "buzzardos-shell-repaint.{}.tmp",
         std::process::id()
     ));
     let generation = std::time::SystemTime::now()
@@ -1394,7 +1394,7 @@ fn request_wildbuzzard_repaint() {
     if let Err(error) = result {
         let _ = std::fs::remove_file(&temporary);
         tracing::debug!(
-            "could not request Wild Buzzard idle-output repaint at {}: {error}",
+            "could not request Buzzard OS idle-output repaint at {}: {error}",
             target.display()
         );
     }
@@ -1428,7 +1428,7 @@ fn capture_via_grim() -> anyhow::Result<Vec<u8>> {
     // The child now has an opportunity to register its screencopy request;
     // the shell keeps submitting frames for a bounded settling interval, so
     // this handshake is race-free even if grim has not flushed yet.
-    request_wildbuzzard_repaint();
+    request_buzzardos_repaint();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -1488,7 +1488,7 @@ fn capture_via_screencopy() -> anyhow::Result<Vec<u8>> {
     // Make the capture request visible to the nested compositor before asking the desktop
     // shell to damage the idle nested output.
     conn.flush()?;
-    request_wildbuzzard_repaint();
+    request_buzzardos_repaint();
     // Drain Buffer / Flags events; spin until Ready or Failed (or timeout).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut buffer: Option<WlBuffer> = None;
@@ -1667,7 +1667,7 @@ pub(crate) unsafe fn borrowed_fd(fd: i32) -> std::os::fd::OwnedFd {
 /// output-level path used by `get_window_state`'s vision payload.
 pub fn screenshot_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
-        let before = read_wildbuzzard_output_state()?;
+        let before = read_buzzardos_output_state()?;
         let bytes = screenshot_display_dispatch_unchecked()?;
         let bytes = normalize_capture_for_generation(bytes, before, before)?;
         let result = if let Some((x, y, width, height)) = window_geometry_logical(xid) {
@@ -1684,7 +1684,7 @@ pub fn screenshot_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
         } else {
             bytes
         };
-        let after = read_wildbuzzard_output_state()?;
+        let after = read_buzzardos_output_state()?;
         require_same_output_generation(before, after)?;
         Ok(result)
     } else {
@@ -1762,9 +1762,9 @@ pub fn screenshot_display_dispatch() -> anyhow::Result<Vec<u8>> {
 /// same-sized UI-scale transition.
 pub fn screenshot_display_dispatch_with_metadata(
 ) -> anyhow::Result<(Vec<u8>, CanonicalOutputMetadata)> {
-    let before = read_wildbuzzard_output_state()?;
+    let before = read_buzzardos_output_state()?;
     let bytes = screenshot_display_dispatch_unchecked()?;
-    let after = read_wildbuzzard_output_state()?;
+    let after = read_buzzardos_output_state()?;
     let bytes = normalize_capture_for_generation(bytes, before, after)?;
     let metadata = match before {
         Some(state) => state.metadata(),
@@ -1839,7 +1839,7 @@ fn checked_shell_helper_capture(
 /// crop with.
 pub fn screenshot_window_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
-        let before = read_wildbuzzard_output_state()?;
+        let before = read_buzzardos_output_state()?;
         if let Some((x, y, width, height)) = window_geometry_logical(xid) {
             let bytes = screenshot_display_dispatch_unchecked()?;
             let bytes = normalize_capture_for_generation(bytes, before, before)?;
@@ -1853,7 +1853,7 @@ pub fn screenshot_window_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
                 height,
                 &format!("Wayland window {xid}"),
             )?;
-            let after = read_wildbuzzard_output_state()?;
+            let after = read_buzzardos_output_state()?;
             require_same_output_generation(before, after)?;
             return Ok(result);
         }
@@ -2009,7 +2009,7 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
     // version 2 is available.  An unbound absolute pointer is mapped against
     // the compositor's whole output layout; nested fractional outputs can
     // consequently accept the request while leaving the active output seat at
-    // its previous coordinates.  Wild Buzzard exposes one canonical output,
+    // its previous coordinates.  Buzzard OS exposes one canonical output,
     // so output-bound motion is both unambiguous and directly observable.
     let vptr = match state.output.as_ref() {
         Some(output) if mgr.version() >= 2 => {
@@ -2321,7 +2321,7 @@ pub fn click(window_id: u64, x: i32, y: i32, count: u32, button: u8) -> anyhow::
 pub fn click_desktop(x: i32, y: i32, count: u32, button: u8) -> anyhow::Result<()> {
     with_stable_output_generation(|| {
         if is_inject_mode() {
-            record_wildbuzzard_pointer_click(x, y, button);
+            record_buzzardos_pointer_click(x, y, button);
             let btn = evdev_button(button as u32);
             return inject_send(&[format!("d {x} {y} {} {btn}", count.max(1))]);
         }
@@ -2351,7 +2351,7 @@ fn click_vptr(
     };
     let px = px.clamp(0, w as i32 - 1) as u32;
     let py = py.clamp(0, h as i32 - 1) as u32;
-    record_wildbuzzard_pointer_click(px as i32, py as i32, button);
+    record_buzzardos_pointer_click(px as i32, py as i32, button);
     let btn = evdev_pointer_button(button);
     for i in 0..count.max(1) {
         if i > 0 {
@@ -2483,7 +2483,7 @@ pub fn set_window_frame(
     width: u32,
     height: u32,
 ) -> anyhow::Result<(Option<WindowInfo>, bool, bool)> {
-    let output_before = read_wildbuzzard_output_state()?;
+    let output_before = read_buzzardos_output_state()?;
     if std::env::var_os("SWAYSOCK").is_none() {
         anyhow::bail!("Sway IPC is unavailable for setting another toplevel's frame");
     }
@@ -2530,7 +2530,7 @@ pub fn set_window_frame(
     let changed = observed
         .as_ref()
         .is_some_and(|window| (window.x, window.y, window.width, window.height) != before);
-    let output_after = read_wildbuzzard_output_state()?;
+    let output_after = read_buzzardos_output_state()?;
     require_same_output_generation(output_before, output_after)?;
     Ok((observed, confirmed, changed))
 }
@@ -3858,7 +3858,7 @@ pub fn list_windows_dispatch(filter_pid: Option<u32>) -> Vec<WindowInfo> {
 pub fn list_windows_dispatch_checked(
     filter_pid: Option<u32>,
 ) -> anyhow::Result<(Vec<WindowInfo>, Option<CanonicalOutputMetadata>)> {
-    let before = read_wildbuzzard_output_state()?;
+    let before = read_buzzardos_output_state()?;
     let mut windows = list_windows_dispatch_logical(filter_pid);
     for window in &mut windows {
         (window.x, window.y, window.width, window.height) = logical_rect_to_canonical_for_state(
@@ -3869,9 +3869,9 @@ pub fn list_windows_dispatch_checked(
             window.height,
         );
     }
-    let after = read_wildbuzzard_output_state()?;
+    let after = read_buzzardos_output_state()?;
     require_same_output_generation(before, after)?;
-    Ok((windows, before.map(WildBuzzardOutputState::metadata)))
+    Ok((windows, before.map(BuzzardOSOutputState::metadata)))
 }
 
 fn merge_atspi_windows(
@@ -4181,8 +4181,8 @@ mod tests {
         host_surface_scale_120: u32,
         guest_ui_scale_120: u32,
         geometry_generation: u64,
-    ) -> WildBuzzardOutputState {
-        WildBuzzardOutputState {
+    ) -> BuzzardOSOutputState {
+        BuzzardOSOutputState {
             schema: 7,
             physical_width,
             physical_height,
@@ -4244,11 +4244,11 @@ mod tests {
             "logical_height": 800,
             "geometry_generation": 1,
         });
-        assert!(serde_json::from_value::<WildBuzzardOutputState>(legacy).is_err());
+        assert!(serde_json::from_value::<BuzzardOSOutputState>(legacy).is_err());
 
         let mut exact = serde_json::to_value(output_state(1600, 1000, 150, 150, 1)).unwrap();
         exact["host_viewport_width"] = serde_json::json!(1280);
-        assert!(serde_json::from_value::<WildBuzzardOutputState>(exact).is_err());
+        assert!(serde_json::from_value::<BuzzardOSOutputState>(exact).is_err());
     }
 
     #[test]
@@ -4437,14 +4437,14 @@ mod tests {
     fn native_enrichment_keeps_unrepresented_accessible_layer_shell() {
         let native = window(42, Some(200), "Terminal");
         let terminal = window(200 << 16, Some(200), "Terminal");
-        let shell = window(78 << 16, Some(78), "wildbuzzard-shell");
+        let shell = window(78 << 16, Some(78), "buzzardos-shell");
 
         let enriched = enrich_native_windows(vec![native], vec![terminal, shell], false);
 
         assert_eq!(enriched.len(), 2);
         assert_eq!(enriched[0].pid, Some(200));
         assert_eq!(enriched[1].pid, Some(78));
-        assert_eq!(enriched[1].title, "wildbuzzard-shell");
+        assert_eq!(enriched[1].title, "buzzardos-shell");
     }
 
     #[test]

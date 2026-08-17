@@ -3,9 +3,9 @@
 set -euo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-manifest=${WILDBUZZARD_GO_SOURCE_MANIFEST:-"$project_dir/LICENSES/go-source-archives.tsv"}
+manifest=${BUZZARDOS_GO_SOURCE_MANIFEST:-"$project_dir/LICENSES/go-source-archives.tsv"}
 destination=${1:?usage: fetch-go-source-archives.sh DESTINATION}
-cache=${WILDBUZZARD_GO_SOURCE_CACHE:-"${TMPDIR:-/tmp}/wildbuzzard-go-source-cache-$(id -u)"}
+cache=${BUZZARDOS_GO_SOURCE_CACHE:-"${TMPDIR:-/tmp}/buzzardos-go-source-cache-$(id -u)"}
 
 for command_name in curl find id install mktemp realpath sha256sum tar unzip; do
     command -v "$command_name" >/dev/null 2>&1 || {
@@ -76,7 +76,7 @@ while IFS="$tab" read -r archive_id archive_name url expected_sha256 license_exp
     validate_archive_members "$cached"
     install -m 0644 "$cached" "$destination/archives/$archive_name"
 
-    extracted=$(mktemp -d "${TMPDIR:-/tmp}/wildbuzzard-go-source.XXXXXX")
+    extracted=$(mktemp -d "${TMPDIR:-/tmp}/buzzardos-go-source.XXXXXX")
     if [[ "$archive_name" == *.zip ]]; then
         unzip -q "$cached" -d "$extracted"
     else

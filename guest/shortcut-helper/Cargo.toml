@@ -1,5 +1,5 @@
 [package]
-name = "wildbuzzard-shortcut-helper"
+name = "buzzardos-shortcut-helper"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,15 +22,15 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-wildbuzzard-desktop-core = { path = "../desktop-core" }
+buzzardos-desktop-core = { path = "../desktop-core" }
 
 [dev-dependencies]
 tempfile.workspace = true
 
 [lib]
-name = "wildbuzzard_shortcut_helper"
+name = "buzzardos_shortcut_helper"
 path = "src/lib.rs"
 
 [[bin]]
-name = "wildbuzzard-shortcut-helper"
+name = "buzzardos-shortcut-helper"
 path = "src/main.rs"

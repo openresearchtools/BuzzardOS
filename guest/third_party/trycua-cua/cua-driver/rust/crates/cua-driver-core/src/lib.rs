@@ -1,4 +1,4 @@
-//! MCP JSON-RPC 2.0 server over stdio for the Wild Buzzard Linux driver.
+//! MCP JSON-RPC 2.0 server over stdio for the Buzzard OS Linux driver.
 //!
 //! Implements the Model Context Protocol (MCP) 2024-11-05 over stdio while
 //! retaining the upstream wire contract used by the shared Rust SDK.

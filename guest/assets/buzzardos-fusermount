@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+# libfuse2 invokes /usr/bin/fusermount with one end of a private Unix socket in
+# _FUSE_COMMFD. Bubblewrap's no-new-privileges contract correctly suppresses the
+# distribution helper's setuid bit, so delegate only this mount operation to a
+# guest-root systemd transient service. This wrapper remains alive while that
+# service duplicates the communication descriptor from /proc via pidfd_getfd.
+# No capability is inherited by the AppImage or its application process.
+caller=$$
+communication_fd=${_FUSE_COMMFD:--1}
+
+/usr/bin/systemd-run \
+    --system \
+    --wait \
+    --quiet \
+    --collect \
+    --service-type=exec \
+    --uid=0 \
+    --gid=0 \
+    /opt/buzzardos/runtime/current/libexec/buzzardos-fusermount-exec \
+    "$caller" \
+    "$communication_fd" \
+    -- \
+    "$@"

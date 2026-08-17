@@ -36,7 +36,7 @@ fi
 # lookalike `pulsesrc` or introduce the unbundled direct-ALSA capture plugin.
 unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SYSTEM_PATH GST_REGISTRY GST_PLUGIN_FEATURE_RANK
 export GST_PLUGIN_SYSTEM_PATH_1_0="$appdir/usr/lib/gstreamer-1.0"
-export GST_PLUGIN_SCANNER="$appdir/usr/libexec/wildbuzzard/gst-plugin-scanner"
+export GST_PLUGIN_SCANNER="$appdir/usr/libexec/buzzardos/gst-plugin-scanner"
 export GST_PLUGIN_SCANNER_1_0="$GST_PLUGIN_SCANNER"
 export SPA_PLUGIN_DIR="$appdir/usr/lib/spa-0.2"
 
@@ -58,10 +58,10 @@ case $real_uid in
 esac
 
 runtime_dir=${XDG_RUNTIME_DIR:-/tmp}
-export GST_REGISTRY_1_0="$runtime_dir/wildbuzzard-gstreamer-registry-$real_uid.bin"
+export GST_REGISTRY_1_0="$runtime_dir/buzzardos-gstreamer-registry-$real_uid.bin"
 desktop_file="$appdir/org.openresearchtools.buzzardos.desktop"
 if [ -f "$desktop_file" ]; then
     export GIO_LAUNCHED_DESKTOP_FILE="$desktop_file"
     export GIO_LAUNCHED_DESKTOP_FILE_PID=$$
 fi
-exec "$appdir/usr/bin/wildbuzzard" "$@"
+exec "$appdir/usr/bin/buzzardos" "$@"

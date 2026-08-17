@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 pub struct ResourceLocator {
     roots: Vec<PathBuf>,
     asset_roots: Vec<PathBuf>,
-    packaged: bool,
 }
 
 impl ResourceLocator {
@@ -16,29 +15,18 @@ impl ResourceLocator {
         let exe = env::current_exe().context("locating current executable")?;
         let mut roots = Vec::new();
         let mut asset_roots = Vec::new();
-        let packaged = env::var_os("APPIMAGE").is_some() || env::var_os("APPDIR").is_some();
-
-        if let Some(appdir) = env::var_os("APPDIR") {
-            let appdir = PathBuf::from(appdir);
-            roots.push(appdir.join("usr/libexec/wildbuzzard"));
-            asset_roots.push(appdir.join("usr/share/wildbuzzard"));
-        }
         if let Some(parent) = exe.parent() {
-            roots.push(parent.join("../libexec/wildbuzzard"));
+            roots.push(parent.join("../libexec/buzzardos"));
             roots.push(parent.to_path_buf());
-            asset_roots.push(parent.join("../share/wildbuzzard"));
+            asset_roots.push(parent.join("../share/buzzardos"));
         }
-        if !packaged && let Some(root) = env::var_os("WILDBUZZARD_RESOURCE_DIR") {
+        if let Some(root) = env::var_os("BUZZARDOS_RESOURCE_DIR") {
             let root = PathBuf::from(root);
             roots.insert(0, root.clone());
             asset_roots.insert(0, root);
         }
 
-        Ok(Self {
-            roots,
-            asset_roots,
-            packaged,
-        })
+        Ok(Self { roots, asset_roots })
     }
 
     pub fn helper(&self, name: &str) -> Result<PathBuf> {
@@ -53,14 +41,11 @@ impl ResourceLocator {
         if let Some(path) = self.find_executable(name) {
             return Ok(path);
         }
-        if self.packaged {
-            return self.helper(name);
-        }
         if let Some(path) = find_on_path(name) {
             return Ok(path);
         }
         bail!(
-            "cannot find '{name}'; portable releases bundle it, or set WILDBUZZARD_RESOURCE_DIR for a development build"
+            "cannot find required helper '{name}'; install the matching Buzzard OS package dependency, or set BUZZARDOS_RESOURCE_DIR for a development build"
         )
     }
 
@@ -78,8 +63,8 @@ impl ResourceLocator {
     /// Resolve a bundled, read-only directory without consulting host PATH.
     ///
     /// Release payloads keep non-executable data under
-    /// `usr/share/wildbuzzard`; development builds may place the same layout
-    /// under `WILDBUZZARD_RESOURCE_DIR`. The canonical result prevents a
+    /// `usr/share/buzzardos`; development builds may place the same layout
+    /// under `BUZZARDOS_RESOURCE_DIR`. The canonical result prevents a
     /// packaged symlink from redirecting a security-sensitive parser to
     /// mutable host data.
     pub fn asset_directory(&self, relative: impl AsRef<Path>) -> Result<PathBuf> {

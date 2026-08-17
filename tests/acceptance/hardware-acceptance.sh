@@ -8,10 +8,10 @@ task_uid=$(id -u)
 default_launcher="${TMPDIR:-/tmp}/buzzardos-build-$task_uid/out/BuzzardOS/BuzzardOS"
 launcher=${1:-${BUZZARDOS_LAUNCHER:-$default_launcher}}
 machine=${2:-acceptance}
-install_package=${WILDBUZZARD_ACCEPT_INSTALL_PACKAGE:-0}
-full_matrix=${WILDBUZZARD_ACCEPT_FULL_MATRIX:-0}
-integration_acceptance=${WILDBUZZARD_ACCEPT_INTEGRATIONS:-1}
-accept_image=${WILDBUZZARD_ACCEPT_IMAGE:-}
+install_package=${BUZZARDOS_ACCEPT_INSTALL_PACKAGE:-0}
+full_matrix=${BUZZARDOS_ACCEPT_FULL_MATRIX:-0}
+integration_acceptance=${BUZZARDOS_ACCEPT_INTEGRATIONS:-1}
+accept_image=${BUZZARDOS_ACCEPT_IMAGE:-}
 relocation_active=0
 relocation_original=
 relocation_target=
@@ -60,7 +60,7 @@ done
 portable_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd)
 launcher="$portable_dir/$(basename -- "$launcher")"
 runtime="$portable_dir/Machines/$machine/runtime.json"
-marker="wildbuzzard-acceptance-$(date +%s)-$$"
+marker="buzzardos-acceptance-$(date +%s)-$$"
 
 wb() {
     "$launcher" "$@"
@@ -274,7 +274,7 @@ wait_sway_output_matches_runtime() {
         # scale. Read the display gateway's atomic guest-output record rather
         # than inferring guest logical dimensions from host-window diagnostics.
         output_state=$(guest cat \
-            /run/wildbuzzard-display-state/output-state.json)
+            /run/buzzardos-display-state/output-state.json)
         expected=$(jq -c '{
             guest_ui_scale_120,
             logical_width,
@@ -341,22 +341,22 @@ guest() {
         setpriv --reuid=0 --regid=0 --clear-groups \
         setpriv --reuid=1000 --regid=1000 --clear-groups \
         env -i \
-        HOME=/home/wildbuzzard \
-        USER=wildbuzzard \
-        LOGNAME=wildbuzzard \
-        PATH=/opt/wildbuzzard/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        HOME=/home/buzzard \
+        USER=buzzard \
+        LOGNAME=buzzard \
+        PATH=/opt/buzzardos/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         XDG_RUNTIME_DIR=/run/user/1000 \
-        XDG_CONFIG_HOME=/home/wildbuzzard/.config \
-        XDG_DATA_HOME=/home/wildbuzzard/.local/share \
-        XDG_CACHE_HOME=/home/wildbuzzard/.cache \
-        XDG_CONFIG_DIRS=/etc/wildbuzzard/xdg:/etc/xdg \
+        XDG_CONFIG_HOME=/home/buzzard/.config \
+        XDG_DATA_HOME=/home/buzzard/.local/share \
+        XDG_CACHE_HOME=/home/buzzard/.cache \
+        XDG_CONFIG_DIRS=/etc/buzzardos/xdg:/etc/xdg \
         XDG_DATA_DIRS=/usr/local/share:/usr/share \
         XDG_SESSION_TYPE=wayland \
         XDG_CURRENT_DESKTOP=sway \
         XDG_SESSION_DESKTOP=sway \
         DISPLAY=:0 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        LD_LIBRARY_PATH=/run/wildbuzzard-host/driver/lib \
+        LD_LIBRARY_PATH=/run/buzzardos-host/driver/lib \
         "QT_QPA_PLATFORM=wayland;xcb" \
         QT_QPA_PLATFORMTHEME=gtk3 \
         QT_ACCESSIBILITY=1 \
@@ -370,7 +370,7 @@ guest() {
             shell_observed=0
             attempt=0
             while [ "$attempt" -lt 150 ]; do
-                candidate=$(pgrep -xo wildbuzzard-she 2>/dev/null || true)
+                candidate=$(pgrep -xo buzzardos-she 2>/dev/null || true)
                 if [ -n "$candidate" ] && [ -r "/proc/$candidate/environ" ]; then
                     shell_observed=1
                     wayland_display=$(
@@ -408,7 +408,7 @@ guest() {
 
 guest_spawn() {
     guest sh -c \
-        'exec setsid --fork "$@" </dev/null >/tmp/wildbuzzard-acceptance-app.log 2>&1' \
+        'exec setsid --fork "$@" </dev/null >/tmp/buzzardos-acceptance-app.log 2>&1' \
         sh "$@"
 }
 
@@ -491,7 +491,7 @@ appimage_fuse_mount_for_pid() {
     read -r mountpoint filesystem options <<<"$mount_record"
     case "$mountpoint" in
         /tmp/.mount_* | /run/user/1000/.mount_* | \
-            /home/wildbuzzard/.mount_* | /shared/.mount_*) ;;
+            /home/buzzard/.mount_* | /shared/.mount_*) ;;
         *)
             echo "AppImage executable is outside an approved runtime mount: $mount_record" >&2
             return 1
@@ -637,7 +637,7 @@ titlebar_drag_for_pid() {
     local sway_state output_state
     sway_state=$(sway_window_state_for_pid "$pid")
     output_state=$(guest cat \
-        /run/wildbuzzard-display-state/output-state.json)
+        /run/buzzardos-display-state/output-state.json)
     jq -ce -n \
         --argjson state "$sway_state" \
         --argjson output "$output_state" '
@@ -800,7 +800,7 @@ wb stop "$machine"
 wait_stopped
 [[ $(process_start_time "$portable_broker_pid") == \
     "$portable_broker_start_time" ]]
-[[ -x "$portable_dir/app/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
+[[ -x "$portable_dir/app/usr/libexec/buzzardos/gst-launch-1.0" ]]
 wb start "$machine" --detach
 wait_running
 refresh_pid
@@ -873,11 +873,11 @@ kill "$loopback_listener" 2>/dev/null || true
 wait "$loopback_listener" 2>/dev/null || true
 rm -f -- "$loopback_probe"
 
-[[ $(guest stat -c %a /run/wildbuzzard-host/wayland-0) == 0 ]]
-! guest test -e /run/wildbuzzard-host/window-control
+[[ $(guest stat -c %a /run/buzzardos-host/wayland-0) == 0 ]]
+! guest test -e /run/buzzardos-host/window-control
 ! test -e "$portable_dir/Machines/$machine/.window-control.sock"
 ! guest python3 -c \
-    'import socket; client = socket.socket(socket.AF_UNIX); client.connect("/run/wildbuzzard-host/wayland-0")' \
+    'import socket; client = socket.socket(socket.AF_UNIX); client.connect("/run/buzzardos-host/wayland-0")' \
     2>/dev/null
 ! guest test -e /run/user/1000/wayland-0
 ! guest test -S /run/docker.sock
@@ -936,39 +936,39 @@ session_environment=$(guest sh -c 'tr "\0" "\n" <"/proc/$1/environ"' sh "$compos
     <<<"$session_environment"
 grep -Fx 'WLR_RENDERER=gles2' <<<"$session_environment" >/dev/null
 if guest test -e /dev/nvidiactl; then
-    grep -Fx 'LD_LIBRARY_PATH=/run/wildbuzzard-host/driver/lib' \
+    grep -Fx 'LD_LIBRARY_PATH=/run/buzzardos-host/driver/lib' \
         <<<"$session_environment" >/dev/null
     grep -E '^WLR_RENDER_DRM_DEVICE=/dev/dri/renderD[0-9]+$' \
         <<<"$session_environment" >/dev/null
 fi
 
-printf '%s\n' "$marker" >"$portable_dir/shared/.wildbuzzard-acceptance"
-[[ $(guest cat /shared/.wildbuzzard-acceptance) == "$marker" ]]
-guest sh -c 'printf "%s\n" "$1" > /shared/.wildbuzzard-guest-created' sh "$marker"
-[[ $(stat -c %u "$portable_dir/shared/.wildbuzzard-guest-created") == "$(id -u)" ]]
-[[ $(stat -c %g "$portable_dir/shared/.wildbuzzard-guest-created") == "$(id -g)" ]]
-printf '%s-host-edit\n' "$marker" >"$portable_dir/shared/.wildbuzzard-guest-created"
-[[ $(guest cat /shared/.wildbuzzard-guest-created) == "$marker-host-edit" ]]
-guest mkdir -p /shared/.wildbuzzard-guest-directory
+printf '%s\n' "$marker" >"$portable_dir/shared/.buzzardos-acceptance"
+[[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
+guest sh -c 'printf "%s\n" "$1" > /shared/.buzzardos-guest-created' sh "$marker"
+[[ $(stat -c %u "$portable_dir/shared/.buzzardos-guest-created") == "$(id -u)" ]]
+[[ $(stat -c %g "$portable_dir/shared/.buzzardos-guest-created") == "$(id -g)" ]]
+printf '%s-host-edit\n' "$marker" >"$portable_dir/shared/.buzzardos-guest-created"
+[[ $(guest cat /shared/.buzzardos-guest-created) == "$marker-host-edit" ]]
+guest mkdir -p /shared/.buzzardos-guest-directory
 printf '%s-host-created\n' "$marker" \
-    >"$portable_dir/shared/.wildbuzzard-guest-directory/host-file"
-[[ $(guest cat /shared/.wildbuzzard-guest-directory/host-file) == "$marker-host-created" ]]
-guest sh -c "printf '%s\\n' '$marker' > /home/wildbuzzard/.wildbuzzard-persistence"
-guest sh -c "printf '%s\\n' '$marker' > /home/wildbuzzard/.config/wildbuzzard-acceptance.setting"
-guest install -d -m 0700 /home/wildbuzzard/.config/sway
+    >"$portable_dir/shared/.buzzardos-guest-directory/host-file"
+[[ $(guest cat /shared/.buzzardos-guest-directory/host-file) == "$marker-host-created" ]]
+guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.buzzardos-persistence"
+guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.config/buzzardos-acceptance.setting"
+guest install -d -m 0700 /home/buzzard/.config/sway
 guest sh -c 'printf "%s\n" "$1" \
-    > /home/wildbuzzard/.config/sway/wildbuzzard-acceptance.marker' \
+    > /home/buzzard/.config/sway/buzzardos-acceptance.marker' \
     sh "$marker"
 # Integration assets are installed when the machine is created, but normal
 # starts must not silently restore them over guest-root changes. This harmless
 # comment makes that durable-rootfs invariant observable across the restart
 # below.
 guest sudo -n sh -c \
-    'printf "%s\n" "# persistent guest OS edit: $1" >> /etc/wildbuzzard/sway-config' \
+    'printf "%s\n" "# persistent guest OS edit: $1" >> /etc/buzzardos/sway-config' \
     sh "$marker"
 compositor_start_time=$(guest awk '{print $22}' "/proc/$compositor_pid/stat")
 reload_output_state=$(guest cat \
-    /run/wildbuzzard-display-state/output-state.json)
+    /run/buzzardos-display-state/output-state.json)
 reload_output_before=$(jq -ce '{
     host_surface_scale_120,
     guest_ui_scale_120,
@@ -994,7 +994,7 @@ wait_sway_config_contains "# persistent guest OS edit: $marker"
     "$compositor_start_time" ]]
 wait_sway_output_matches_runtime
 reload_output_state=$(guest cat \
-    /run/wildbuzzard-display-state/output-state.json)
+    /run/buzzardos-display-state/output-state.json)
 reload_output_after=$(jq -ce '{
     host_surface_scale_120,
     guest_ui_scale_120,
@@ -1010,34 +1010,27 @@ wait_native_window_frame_after "$reload_frame_counters"
 [[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
     "$compositor_start_time" ]]
 wait_cua_capture_matches_runtime
-guest install -d -m 0700 /home/wildbuzzard/.local/bin
-guest sh -c 'cat > /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent' <<'AGENT'
+guest install -d -m 0700 /home/buzzard/.local/bin
+guest sh -c 'cat > /home/buzzard/.local/bin/buzzardos-acceptance-agent' <<'AGENT'
 #!/bin/sh
 set -eu
-capture=${XDG_RUNTIME_DIR:-/run/user/1000}/wildbuzzard-arbitrary-agent.png
+capture=${XDG_RUNTIME_DIR:-/run/user/1000}/buzzardos-arbitrary-agent.png
 grim "$capture"
 test -s "$capture"
 python3 -c 'import pyatspi; assert pyatspi.Registry.getDesktopCount() > 0; assert pyatspi.Registry.getDesktop(0).childCount > 0'
-cat /home/wildbuzzard/.wildbuzzard-persistence
+cat /home/buzzard/.buzzardos-persistence
 AGENT
-guest chmod 0700 /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent
-[[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
+guest chmod 0700 /home/buzzard/.local/bin/buzzardos-acceptance-agent
+[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 
-# The reference image uses pinned, unmodified upstream Sway 1.12 and wlroots
-# 0.20.2 commits.  Keep application compatibility in the runtime, but do not
+# The reference image uses the distribution's stock Sway and matching wlroots
+# dependency. Keep application compatibility in the runtime, but do not
 # confuse full-matrix test fixtures with applications shipped by the image.
-guest dpkg-query -W libwlroots-0.20 >/dev/null
+guest dpkg-query -W sway >/dev/null
 [[ $(guest sh -c 'command -v sway') == \
-    /opt/wildbuzzard/runtime/current/bin/sway ]]
-guest sway --version 2>&1 | grep -E '^sway version 1\.12' >/dev/null
-guest grep -Fxq \
-    'commit = "88869399f421d9180dd8b6ed0b5a1f4a3585d252"' \
-    /usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
-guest grep -Fxq \
-    'commit = "d783533489e1f75d6886c2ab5c5960090ef268f8"' \
-    /usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
-guest test -f /usr/share/doc/wildbuzzard-sway/LICENSE.sway
-guest test -f /usr/share/doc/wildbuzzard-sway/LICENSE.wlroots
+    /usr/bin/sway ]]
+guest sway --version 2>&1 | grep -E '^sway version [0-9]+' >/dev/null
+guest test -f /usr/share/doc/sway/copyright
 for required_command in \
     ffmpeg firefox-esr foot mousepad sway thunar wtype Xwayland; do
     guest sh -c 'command -v "$1"' sh "$required_command" >/dev/null
@@ -1051,7 +1044,7 @@ done
 for forbidden in \
     blender chromium dolphin gcc glxgears kwin_wayland labwc make \
     pavucontrol uxterm vkcube vulkaninfo wayfire waybar fuzzel \
-    wildbuzzard-electron-demo xeyes xterm; do
+    buzzardos-electron-demo xeyes xterm; do
     ! guest sh -c 'command -v "$1"' sh "$forbidden" >/dev/null 2>&1
 done
 for forbidden_package in \
@@ -1063,7 +1056,7 @@ for forbidden_desktop_entry in \
     /usr/share/applications/chromium.desktop \
     /usr/share/applications/org.kde.dolphin.desktop \
     /usr/share/applications/pavucontrol.desktop \
-    /usr/share/applications/wildbuzzard-electron-demo.desktop \
+    /usr/share/applications/buzzardos-electron-demo.desktop \
     /usr/share/applications/debian-uxterm.desktop \
     /usr/share/applications/debian-xterm.desktop; do
     ! guest test -e "$forbidden_desktop_entry"
@@ -1089,13 +1082,13 @@ wait_sway_output_matches_runtime
 guest cua-driver health_report '{}' | jq -e '.overall == "ok"' >/dev/null
 wait_cua_capture_matches_runtime
 guest pgrep -x sway >/dev/null
-guest pgrep -x wildbuzzard-she >/dev/null
+guest pgrep -x buzzardos-she >/dev/null
 guest pgrep -x mako >/dev/null
 guest pgrep -x pipewire >/dev/null
 guest pgrep -x pipewire-pulse >/dev/null
 guest pgrep -x wireplumber >/dev/null
 guest pgrep -f \
-    '^/usr/bin/python3 /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-output-sync$' \
+    '^/usr/bin/python3 /opt/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
     >/dev/null
 guest pgrep -f '^/usr/libexec/at-spi2-registryd ' >/dev/null
 guest python3 - <<'PY'
@@ -1140,7 +1133,7 @@ for forbidden in [
     "PulseAudio Volume Control",
     "UXTerm",
     "Volume Control",
-    "Wild Buzzard Electron",
+    "Buzzard OS Electron",
     "XTerm",
 ]:
     assert forbidden not in labels
@@ -1151,19 +1144,19 @@ actions = button.queryAction()
 action_names = [actions.getName(index) for index in range(actions.nActions)]
 assert actions.doAction(action_names.index("click"))
 PY
-! guest sh -c 'command -v wildbuzzard-window-control' >/dev/null
+! guest sh -c 'command -v buzzardos-window-control' >/dev/null
 
 # The native Rust shell is functional, not merely installed, and advertises
 # semantic AT-SPI actions while a D-Bus notification reaches mako.
-guest test -x /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell
-guest notify-send --app-name=wildbuzzard-acceptance \
-    "Wild Buzzard acceptance" "Notification is visible"
+guest test -x /opt/buzzardos/runtime/current/libexec/buzzardos-shell
+guest notify-send --app-name=buzzardos-acceptance \
+    "Buzzard OS acceptance" "Notification is visible"
 deadline=$((SECONDS + 10))
 while ((SECONDS < deadline)) &&
-    ! guest makoctl list | grep -q "Wild Buzzard acceptance"; do
+    ! guest makoctl list | grep -q "Buzzard OS acceptance"; do
     sleep 0.1
 done
-guest makoctl list | grep -q "Wild Buzzard acceptance"
+guest makoctl list | grep -q "Buzzard OS acceptance"
 guest makoctl dismiss --all
 
 for process_name in foot thunar; do
@@ -1185,8 +1178,8 @@ jq -e '.element_count > 10 and (.tree_markdown | length) > 100' \
 # Drive its titlebar and all four edges/corners with desktop-absolute CUA input;
 # including pid/window_id here would select window-local coordinates instead.
 guest grep -Fxq 'for_window [all] floating enable, border normal 8' \
-    /etc/wildbuzzard/sway-config
-guest grep -Fxq 'show_marks no' /etc/wildbuzzard/sway-config
+    /etc/buzzardos/sway-config
+guest grep -Fxq 'show_marks no' /etc/buzzardos/sway-config
 guest swaymsg -r -t get_tree | jq -e --argjson pid "$thunar_pid" '
     .. | objects |
     select(.pid? == $pid) |
@@ -1237,12 +1230,12 @@ assert_cua_ok drag \
 # is deliberately a manual observation: automated acceptance must never seize,
 # focus, type on, or otherwise interfere with the operator's host keyboard.
 guest sh -c 'printf "%s\n" "#!/bin/bash" "IFS= read -e -r cua_value" \
-    "printf \"%s\" \"\$cua_value\" > /home/wildbuzzard/.wildbuzzard-cua-input" \
-    "sleep 10" > /tmp/wildbuzzard-input-test; chmod 700 /tmp/wildbuzzard-input-test'
-guest rm -f /home/wildbuzzard/.wildbuzzard-cua-input
-guest_spawn foot --app-id wildbuzzard-acceptance /tmp/wildbuzzard-input-test
-wait_for_window wildbuzzard-acceptance >/dev/null
-cua_keyboard_session="wildbuzzard-keyboard-$marker"
+    "printf \"%s\" \"\$cua_value\" > /home/buzzard/.buzzardos-cua-input" \
+    "sleep 10" > /tmp/buzzardos-input-test; chmod 700 /tmp/buzzardos-input-test'
+guest rm -f /home/buzzard/.buzzardos-cua-input
+guest_spawn foot --app-id buzzardos-acceptance /tmp/buzzardos-input-test
+wait_for_window buzzardos-acceptance >/dev/null
+cua_keyboard_session="buzzardos-keyboard-$marker"
 assert_cua_ok start_session \
     "{\"session\":\"$cua_keyboard_session\",\"capture_scope\":\"desktop\"}"
 assert_cua_ok hotkey \
@@ -1257,10 +1250,10 @@ assert_cua_ok press_key \
     "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"key\":\"enter\",\"delivery_mode\":\"foreground\"}"
 deadline=$((SECONDS + 5))
 while ((SECONDS < deadline)) &&
-    ! guest test -e /home/wildbuzzard/.wildbuzzard-cua-input; do
+    ! guest test -e /home/buzzard/.buzzardos-cua-input; do
     sleep 0.1
 done
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-cua-input) == "${marker%?}z" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z" ]]
 assert_cua_ok end_session \
     "{\"session\":\"$cua_keyboard_session\"}"
 guest pkill -x foot >/dev/null 2>&1 || true
@@ -1279,7 +1272,7 @@ assert_cua_confirmed maximize_window \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
 thunar_maximized=$(sway_window_state_for_pid "$thunar_pid")
 thunar_output_state=$(guest cat \
-    /run/wildbuzzard-display-state/output-state.json)
+    /run/buzzardos-display-state/output-state.json)
 guest_logical_width=$(jq -er '.logical_width' <<<"$thunar_output_state")
 guest_logical_height=$(jq -er '.logical_height' <<<"$thunar_output_state")
 jq -e -n \
@@ -1289,7 +1282,7 @@ jq -e -n \
         $state.frame == $state.workspace and
         $state.workspace == {x:0, y:0, width:$width, height:($height - 42)} and
         $state.fullscreen_mode == 0 and
-        any($state.marks[]; startswith("__wildbuzzard_restore_v1_"))
+        any($state.marks[]; startswith("__buzzardos_restore_v1_"))
     ' >/dev/null
 
 # Stock Sway emits no IPC window event for floating resize motion. Shrink the
@@ -1345,7 +1338,7 @@ print(extents.x + extents.width // 2, extents.y + extents.height // 2)
 PY
 )
 task_output_state=$(guest cat \
-    /run/wildbuzzard-display-state/output-state.json)
+    /run/buzzardos-display-state/output-state.json)
 task_output_dimensions=$(jq -er \
     '[.logical_width, .logical_height,
       .physical_width, .physical_height] | @tsv' \
@@ -1392,14 +1385,14 @@ deadline=$((SECONDS + 5))
 while ((SECONDS < deadline)); do
     thunar_maximized=$(sway_window_state_for_pid "$thunar_pid")
     if jq -e '.frame == .workspace and
-        any(.marks[]; startswith("__wildbuzzard_restore_v1_"))' \
+        any(.marks[]; startswith("__buzzardos_restore_v1_"))' \
         <<<"$thunar_maximized" >/dev/null; then
         break
     fi
     sleep 0.05
 done
 jq -e '.frame == .workspace and
-    any(.marks[]; startswith("__wildbuzzard_restore_v1_"))' \
+    any(.marks[]; startswith("__buzzardos_restore_v1_"))' \
     <<<"$thunar_maximized" >/dev/null
 
 assert_cua_confirmed minimize_window \
@@ -1408,7 +1401,7 @@ thunar_minimized=$(sway_window_state_for_pid "$thunar_pid")
 jq -e '
     .workspace_name == "__i3_scratch" and
     .scratchpad_state == "fresh" and
-    any(.marks[]; startswith("__wildbuzzard_restore_v1_"))
+    any(.marks[]; startswith("__buzzardos_restore_v1_"))
 ' <<<"$thunar_minimized" >/dev/null
 assert_cua_confirmed restore_window \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
@@ -1416,7 +1409,7 @@ thunar_restored=$(sway_window_state_for_pid "$thunar_pid")
 jq -e -n --argjson before "$thunar_resized_normal" --argjson after "$thunar_restored" '
     $after.frame == $before.frame and
     $after.workspace_name != "__i3_scratch" and
-    ($after.marks | map(select(startswith("__wildbuzzard_restore_v1_"))) | length) == 0
+    ($after.marks | map(select(startswith("__buzzardos_restore_v1_"))) | length) == 0
 ' >/dev/null
 assert_cua_confirmed minimize_window \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
@@ -1453,7 +1446,7 @@ if [[ "$full_matrix" == 1 ]]; then
     # Start from a known non-Home location so the semantic action below must
     # produce an observable navigation, rather than passing because Dolphin
     # restored an already-Home session.
-    guest_spawn dolphin /home/wildbuzzard/Downloads
+    guest_spawn dolphin /home/buzzard/Downloads
     dolphin=$(wait_for_window dolphin)
     dolphin_pid=$(jq -er '.pid' <<<"$dolphin")
     dolphin_window=$(jq -er '.window_id' <<<"$dolphin")
@@ -1494,13 +1487,13 @@ if [[ "$full_matrix" == 1 ]]; then
     # mode 0644 on purpose: the guest watcher must recognize its AppImage magic
     # and authorize owner execution, after which this is an ordinary direct
     # exec/FUSE launch (never --appimage-extract-and-run).
-    electron_appimage=${WILDBUZZARD_ELECTRON_APPIMAGE:-}
+    electron_appimage=${BUZZARDOS_ELECTRON_APPIMAGE:-}
     [[ -f "$electron_appimage" ]] || {
-        echo "full matrix requires WILDBUZZARD_ELECTRON_APPIMAGE" >&2
+        echo "full matrix requires BUZZARDOS_ELECTRON_APPIMAGE" >&2
         exit 1
     }
-    electron_name="wildbuzzard-electron-acceptance-$$.AppImage"
-    electron_log_name="wildbuzzard-electron-acceptance-$$.log"
+    electron_name="buzzardos-electron-acceptance-$$.AppImage"
+    electron_log_name="buzzardos-electron-acceptance-$$.log"
     electron_acceptance_host_path="$portable_dir/shared/$electron_name"
     electron_acceptance_log_path="$portable_dir/shared/$electron_log_name"
     if [[ -e "$electron_acceptance_host_path" ||
@@ -1583,13 +1576,13 @@ if [[ "$full_matrix" == 1 ]]; then
     # Prove that screenshot-driven input reaches a canvas-like Xwayland client
     # with no useful semantic controls. xev records the real button event,
     # turning the Cua input route into an observable assertion.
-    guest sh -c 'cat > /tmp/wildbuzzard-xev-canvas' <<'XEV'
+    guest sh -c 'cat > /tmp/buzzardos-xev-canvas' <<'XEV'
 #!/bin/sh
-exec xev -event mouse >/tmp/wildbuzzard-xev-canvas.log 2>&1
+exec xev -event mouse >/tmp/buzzardos-xev-canvas.log 2>&1
 XEV
-    guest chmod 0700 /tmp/wildbuzzard-xev-canvas
-    guest rm -f /tmp/wildbuzzard-xev-canvas.log
-    guest_spawn /tmp/wildbuzzard-xev-canvas
+    guest chmod 0700 /tmp/buzzardos-xev-canvas
+    guest rm -f /tmp/buzzardos-xev-canvas.log
+    guest_spawn /tmp/buzzardos-xev-canvas
     canvas_info=
     deadline=$((SECONDS + 10))
     while ((SECONDS < deadline)); do
@@ -1608,7 +1601,7 @@ XEV
     canvas_logical_x=$((canvas_logical_x + canvas_width / 2))
     canvas_logical_y=$((canvas_logical_y + canvas_height / 2))
     canvas_output_state=$(guest cat \
-        /run/wildbuzzard-display-state/output-state.json)
+        /run/buzzardos-display-state/output-state.json)
     canvas_output_dimensions=$(jq -er \
         '[.logical_width, .logical_height,
           .physical_width, .physical_height] | @tsv' \
@@ -1621,10 +1614,10 @@ XEV
         "{\"scope\":\"desktop\",\"x\":$canvas_x,\"y\":$canvas_y,\"delivery_mode\":\"foreground\"}"
     deadline=$((SECONDS + 10))
     while ((SECONDS < deadline)) &&
-        ! guest grep -q 'ButtonPress event' /tmp/wildbuzzard-xev-canvas.log; do
+        ! guest grep -q 'ButtonPress event' /tmp/buzzardos-xev-canvas.log; do
         sleep 0.1
     done
-    guest grep -q 'ButtonPress event' /tmp/wildbuzzard-xev-canvas.log
+    guest grep -q 'ButtonPress event' /tmp/buzzardos-xev-canvas.log
     guest pkill -x xev >/dev/null 2>&1 || true
 
     # Start real GLX and Vulkan workloads and require the broker to observe an
@@ -1645,13 +1638,13 @@ XEV
         # never creates a mount placeholder in the persistent rootfs. Prove
         # that the session's additive Vulkan manifest exposes the selected
         # NVIDIA GPU while retaining the Mesa devices.
-        guest test -s /run/wildbuzzard-host/driver/nvidia_icd.json
+        guest test -s /run/buzzardos-host/driver/nvidia_icd.json
         guest env \
-            VK_ADD_DRIVER_FILES=/run/wildbuzzard-host/driver/nvidia_icd.json \
+            VK_ADD_DRIVER_FILES=/run/buzzardos-host/driver/nvidia_icd.json \
             vulkaninfo --summary |
             grep -F 'deviceName' |
             grep -F 'NVIDIA' >/dev/null
-        guest sh -c 'cat > /tmp/wildbuzzard-desktop-gpu-test.py <<'"'"'PY'"'"'
+        guest sh -c 'cat > /tmp/buzzardos-desktop-gpu-test.py <<'"'"'PY'"'"'
 import ctypes
 cuda = ctypes.CDLL("libcuda.so.1")
 assert cuda.cuInit(0) == 0
@@ -1660,39 +1653,39 @@ assert cuda.cuDeviceGetCount(ctypes.byref(count)) == 0
 assert count.value > 0
 ctypes.CDLL("libnvidia-encode.so.1")
 ctypes.CDLL("libnvcuvid.so.1")
-with open("/tmp/wildbuzzard-desktop-gpu-test.ok", "w", encoding="utf-8") as result:
+with open("/tmp/buzzardos-desktop-gpu-test.ok", "w", encoding="utf-8") as result:
     result.write(str(count.value))
 PY'
-        guest rm -f /tmp/wildbuzzard-desktop-gpu-test.ok
-        guest_spawn python3 /tmp/wildbuzzard-desktop-gpu-test.py
+        guest rm -f /tmp/buzzardos-desktop-gpu-test.ok
+        guest_spawn python3 /tmp/buzzardos-desktop-gpu-test.py
         deadline=$((SECONDS + 20))
         while ((SECONDS < deadline)) &&
-            ! guest test -s /tmp/wildbuzzard-desktop-gpu-test.ok; do
+            ! guest test -s /tmp/buzzardos-desktop-gpu-test.ok; do
             sleep 0.1
         done
-        guest grep -Eq '^[1-9][0-9]*$' /tmp/wildbuzzard-desktop-gpu-test.ok
-        guest rm -f /tmp/wildbuzzard-desktop-ffmpeg-encoders
+        guest grep -Eq '^[1-9][0-9]*$' /tmp/buzzardos-desktop-gpu-test.ok
+        guest rm -f /tmp/buzzardos-desktop-ffmpeg-encoders
         guest sh -c \
-            'ffmpeg -hide_banner -encoders > /tmp/wildbuzzard-desktop-ffmpeg-encoders 2>&1 &'
+            'ffmpeg -hide_banner -encoders > /tmp/buzzardos-desktop-ffmpeg-encoders 2>&1 &'
         deadline=$((SECONDS + 20))
         while ((SECONDS < deadline)) &&
-            ! guest test -s /tmp/wildbuzzard-desktop-ffmpeg-encoders; do
+            ! guest test -s /tmp/buzzardos-desktop-ffmpeg-encoders; do
             sleep 0.1
         done
-        guest grep nvenc /tmp/wildbuzzard-desktop-ffmpeg-encoders >/dev/null
+        guest grep nvenc /tmp/buzzardos-desktop-ffmpeg-encoders >/dev/null
         guest rm -f \
-            /tmp/wildbuzzard-desktop-codec.log \
-            /tmp/wildbuzzard-desktop-codec.mp4 \
-            /tmp/wildbuzzard-desktop-codec.ok
+            /tmp/buzzardos-desktop-codec.log \
+            /tmp/buzzardos-desktop-codec.mp4 \
+            /tmp/buzzardos-desktop-codec.ok
         guest sh -c \
-            'ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=256x256:rate=1 -frames:v 1 -c:v h264_nvenc -y /tmp/wildbuzzard-desktop-codec.mp4 >>/tmp/wildbuzzard-desktop-codec.log 2>&1 && ffmpeg -hide_banner -loglevel error -hwaccel cuda -i /tmp/wildbuzzard-desktop-codec.mp4 -f null - >>/tmp/wildbuzzard-desktop-codec.log 2>&1 && touch /tmp/wildbuzzard-desktop-codec.ok &'
+            'ffmpeg -hide_banner -loglevel error -f lavfi -i color=size=256x256:rate=1 -frames:v 1 -c:v h264_nvenc -y /tmp/buzzardos-desktop-codec.mp4 >>/tmp/buzzardos-desktop-codec.log 2>&1 && ffmpeg -hide_banner -loglevel error -hwaccel cuda -i /tmp/buzzardos-desktop-codec.mp4 -f null - >>/tmp/buzzardos-desktop-codec.log 2>&1 && touch /tmp/buzzardos-desktop-codec.ok &'
         deadline=$((SECONDS + 20))
         while ((SECONDS < deadline)) &&
-            ! guest test -e /tmp/wildbuzzard-desktop-codec.ok; do
+            ! guest test -e /tmp/buzzardos-desktop-codec.ok; do
             sleep 0.1
         done
-        guest test -s /tmp/wildbuzzard-desktop-codec.mp4
-        guest test -e /tmp/wildbuzzard-desktop-codec.ok
+        guest test -s /tmp/buzzardos-desktop-codec.mp4
+        guest test -e /tmp/buzzardos-desktop-codec.ok
     fi
 fi
 
@@ -1716,7 +1709,7 @@ wait_native_window_frame
 wb window "$machine" minimize
 sleep 1
 [[ $(jq -r '.state' "$runtime") == running ]]
-[[ -x "$portable_dir/app/usr/libexec/wildbuzzard/gst-launch-1.0" ]]
+[[ -x "$portable_dir/app/usr/libexec/buzzardos/gst-launch-1.0" ]]
 wb window "$machine" close
 wait_stopped
 wait_process_identity_gone "$portable_broker_pid" "$portable_broker_start_time"
@@ -1728,14 +1721,14 @@ wait_running
 refresh_pid
 [[ $(guest hostname) == "$machine" ]]
 [[ -z "$(guest systemctl --failed --no-legend --plain --no-pager)" ]]
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-persistence) == "$marker" ]]
-[[ $(guest cat /shared/.wildbuzzard-acceptance) == "$marker" ]]
-[[ $(guest cat /home/wildbuzzard/.config/wildbuzzard-acceptance.setting) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.config/buzzardos-acceptance.setting) == "$marker" ]]
 guest grep -Fxq "$marker" \
-    /home/wildbuzzard/.config/sway/wildbuzzard-acceptance.marker
+    /home/buzzard/.config/sway/buzzardos-acceptance.marker
 guest grep -Fxq "# persistent guest OS edit: $marker" \
-    /etc/wildbuzzard/sway-config
-[[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
+    /etc/buzzardos/sway-config
+[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 guest sh -c 'command -v wtype' >/dev/null
 if [[ "$install_package" == 1 ]]; then
     guest dpkg-query -W hello >/dev/null
@@ -1756,7 +1749,7 @@ wait_process_identity_gone \
 machine_config_hash=$(sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1)
 launcher_name=$(basename -- "$launcher")
 relocation_original=$portable_dir
-relocation_target="${portable_dir}.wildbuzzard-relocation-$$"
+relocation_target="${portable_dir}.buzzardos-relocation-$$"
 [[ ! -e "$relocation_target" ]]
 mv -- "$relocation_original" "$relocation_target"
 relocation_active=1
@@ -1768,9 +1761,9 @@ wb_without_host_path list | grep "^$machine"$'\t' >/dev/null
 wb_without_host_path start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-persistence) == "$marker" ]]
-[[ $(guest cat /shared/.wildbuzzard-acceptance) == "$marker" ]]
-[[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
+[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 relocated_machine_config_hash=$(
     sha256sum "$portable_dir/Machines/$machine/machine.json" | cut -d' ' -f1
 )
@@ -1794,8 +1787,8 @@ runtime="$portable_dir/Machines/$machine/runtime.json"
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-persistence) == "$marker" ]]
-[[ $(guest /home/wildbuzzard/.local/bin/wildbuzzard-acceptance-agent) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 
 # `stop` must not return while its detached broker is still cleaning up; an
 # immediate start is the regression test for that lifecycle boundary.
@@ -1803,7 +1796,7 @@ wb stop "$machine"
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-persistence) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
 
 # A guest-local poweroff stops Sway before namespace PID 1; the broker must
 # recognize that orderly sequence rather than report the display disconnect as
@@ -1813,7 +1806,7 @@ wait_stopped
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/wildbuzzard/.wildbuzzard-persistence) == "$marker" ]]
+[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
 
 # Exercise the native fractional-scale bridge around unmodified Sway/wlroots
 # without mutating the host monitor configuration. The test override replaces
@@ -1830,7 +1823,7 @@ wb window "$machine" close
 wait_stopped
 wait_process_identity_gone \
     "$fractional_baseline_broker_pid" "$fractional_baseline_broker_start_time"
-WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180 \
+BUZZARDOS_TEST_FRACTIONAL_SCALE_120=180 \
     "$launcher" start "$machine" --detach
 wait_running
 refresh_pid
@@ -1840,17 +1833,17 @@ fractional_override_broker_start_time=$(
 )
 wait_scaled_window_frame 180
 guest pgrep -f \
-    '^/usr/bin/python3 /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-output-sync$' \
+    '^/usr/bin/python3 /opt/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
     >/dev/null
 wait_sway_output_matches_runtime 180
-guest grim -t ppm /tmp/wildbuzzard-fractional-scale.ppm
+guest grim -t ppm /tmp/buzzardos-fractional-scale.ppm
 capture_dimensions=$(guest python3 -c \
-    'with open("/tmp/wildbuzzard-fractional-scale.ppm", "rb") as stream:
+    'with open("/tmp/buzzardos-fractional-scale.ppm", "rb") as stream:
          assert stream.readline().strip() == b"P6"
          print(stream.readline().decode("ascii").strip())')
 [[ "$capture_dimensions" == \
     "$(jq -r '.display.presentation.width' "$runtime") $(jq -r '.display.presentation.height' "$runtime")" ]]
-guest rm -f /tmp/wildbuzzard-fractional-scale.ppm
+guest rm -f /tmp/buzzardos-fractional-scale.ppm
 wb window "$machine" maximize
 wait_maximized true
 wait_scaled_window_frame 180
@@ -1868,8 +1861,8 @@ wait_running
 refresh_pid
 wait_native_window_frame
 
-rm -f -- "$portable_dir/shared/.wildbuzzard-acceptance"
-rm -f -- "$portable_dir/shared/.wildbuzzard-guest-created"
-rm -f -- "$portable_dir/shared/.wildbuzzard-guest-directory/host-file"
-rmdir -- "$portable_dir/shared/.wildbuzzard-guest-directory"
+rm -f -- "$portable_dir/shared/.buzzardos-acceptance"
+rm -f -- "$portable_dir/shared/.buzzardos-guest-created"
+rm -f -- "$portable_dir/shared/.buzzardos-guest-directory/host-file"
+rmdir -- "$portable_dir/shared/.buzzardos-guest-directory"
 echo "Buzzard OS hardware acceptance passed for '$machine'"

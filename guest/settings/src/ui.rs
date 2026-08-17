@@ -8,6 +8,10 @@ use crate::model::{
 use crate::sound::{SoundConnection, SoundController, SoundService, UserVolumePercent};
 use crate::updater::{self as updater_client, UpdateRequest};
 use crate::{ChangeBus, ChangeSection};
+use buzzardos_desktop_core::{
+    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode, UpdateProgress,
+    UpdateProgressPhase, UpdateProgressUnit, UpdateState, UpdateStatus,
+};
 use gtk::gdk;
 use gtk::prelude::*;
 use gtk4 as gtk;
@@ -17,10 +21,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use wildbuzzard_desktop_core::{
-    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode, UpdateProgress,
-    UpdateProgressPhase, UpdateProgressUnit, UpdateState, UpdateStatus,
-};
 
 const COMPACT_BREAKPOINT: i32 = 720;
 const PAGE_MARGIN: i32 = 24;
@@ -62,7 +62,7 @@ pub(crate) fn build_fatal_window(
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .title("Settings")
-        .icon_name("wildbuzzard-settings")
+        .icon_name("buzzardos-settings")
         .default_width(560)
         .default_height(320)
         .build();
@@ -85,7 +85,7 @@ pub(crate) fn build_window(
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .title("Settings")
-        .icon_name("wildbuzzard-settings")
+        .icon_name("buzzardos-settings")
         .default_width(850)
         .default_height(620)
         .build();
@@ -824,7 +824,7 @@ fn build_time_location_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWin
 
     let zones = Rc::new(
         load_time_zones(Path::new(ZONE_TAB_PATH)).unwrap_or_else(|error| {
-            eprintln!("wildbuzzard-settings: cannot load time-zone locations: {error}");
+            eprintln!("buzzardos-settings: cannot load time-zone locations: {error}");
             vec!["Etc/UTC".to_owned()]
         }),
     );
@@ -1502,7 +1502,7 @@ fn show_error(parent: &gtk::ApplicationWindow, title: &str, detail: &str) {
 fn apply_current_process_theme(mode: ThemeMode) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_theme_name(Some(mode.gtk_theme_name()));
-        // WildBuzzard-Dark is already the explicit dark theme. Asking GTK for
+        // BuzzardOS-Dark is already the explicit dark theme. Asking GTK for
         // a dark *variant* of that name can fall back to Adwaita-dark, which
         // reintroduces its blue accent instead of the Cinnamon palette.
         settings.set_gtk_application_prefer_dark_theme(false);

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::Result;
+use buzzardos_desktop_core::{DesktopItemKind, XdgPaths, discover_applications};
 #[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
-use wildbuzzard_desktop_core::{DesktopItemKind, XdgPaths, discover_applications};
 
 pub const PANEL_HEIGHT: i32 = 42;
 pub const APPLICATIONS_BUTTON_WIDTH: i32 = 126;
@@ -358,17 +358,17 @@ pub fn scan_applications() -> Result<Vec<Application>> {
 #[cfg(test)]
 pub fn scan_application_directories(directories: &[PathBuf]) -> Result<Vec<Application>> {
     Ok(adapt_catalog(
-        wildbuzzard_desktop_core::desktop_entry::discover_application_directories(
+        buzzardos_desktop_core::desktop_entry::discover_application_directories(
             directories,
             &["sway".to_owned()],
         ),
     ))
 }
 
-fn adapt_catalog(catalog: wildbuzzard_desktop_core::ApplicationCatalog) -> Vec<Application> {
+fn adapt_catalog(catalog: buzzardos_desktop_core::ApplicationCatalog) -> Vec<Application> {
     for diagnostic in catalog.diagnostics {
         eprintln!(
-            "wildbuzzard-shell: ignored desktop entry {}: {}",
+            "buzzardos-shell: ignored desktop entry {}: {}",
             diagnostic.path.display(),
             diagnostic.message
         );

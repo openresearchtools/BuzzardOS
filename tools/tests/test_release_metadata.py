@@ -186,23 +186,21 @@ class RootfsTreeTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"fixture")
 
-            shell = temporary_path / "wildbuzzard-shell"
-            settings = temporary_path / "wildbuzzard-settings"
-            shortcut_helper = temporary_path / "wildbuzzard-shortcut-helper"
-            clipboard_agent = temporary_path / "wildbuzzard-clipboard-agent"
-            cua_driver = temporary_path / "cua-driver"
+            shell = temporary_path / "buzzardos-shell"
+            settings = temporary_path / "buzzardos-settings"
+            shortcut_helper = temporary_path / "buzzardos-shortcut-helper"
+            clipboard_agent = temporary_path / "buzzardos-clipboard-agent"
             for executable in [
                 shell,
                 settings,
                 shortcut_helper,
                 clipboard_agent,
-                cua_driver,
             ]:
                 executable.write_bytes(b"fixture")
                 executable.chmod(0o755)
-            runtime = temporary_path / "runtime"
-            (runtime / "bin").mkdir(parents=True)
-            for executable in [runtime / "bin/sway", runtime / "bin/swaymsg"]:
+            for relative in ["usr/bin/sway", "usr/bin/swaymsg", "usr/bin/buzzardcua"]:
+                executable = rootfs / relative
+                executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_bytes(b"fixture")
                 executable.chmod(0o755)
             subprocess.run(
@@ -213,8 +211,6 @@ class RootfsTreeTests(unittest.TestCase):
                     str(settings),
                     str(shortcut_helper),
                     str(clipboard_agent),
-                    str(cua_driver),
-                    str(runtime),
                 ],
                 check=True,
             )
@@ -225,7 +221,7 @@ class RootfsTreeTests(unittest.TestCase):
             def canonical_owner(path: Path) -> os.stat_result:
                 metadata = original_lstat(path)
                 if path == canonical_rootfs or path.is_relative_to(
-                    canonical_rootfs / "opt/wildbuzzard/runtime"
+                    canonical_rootfs / "opt/buzzardos/runtime"
                 ):
                     fields = list(metadata)
                     fields[4] = 0
@@ -239,21 +235,23 @@ class RootfsTreeTests(unittest.TestCase):
                 record = release_metadata.inspect_rootfs(rootfs)
 
             self.assertGreater(record["counts"]["regular_files"], 0)
-            runtime_current = rootfs / "opt/wildbuzzard/runtime/current"
+            runtime_current = rootfs / "opt/buzzardos/runtime/current"
             self.assertTrue(
-                (runtime_current / "libexec/wildbuzzard-settings").is_file()
+                (runtime_current / "libexec/buzzardos-settings").is_file()
             )
             self.assertTrue(
-                (runtime_current / "libexec/wildbuzzard-clipboard-agent").is_file()
+                (runtime_current / "libexec/buzzardos-clipboard-agent").is_file()
             )
             self.assertTrue(
-                (rootfs / "usr/libexec/wildbuzzard-shortcut-helper").is_file()
+                (rootfs / "usr/libexec/buzzardos-shortcut-helper").is_file()
             )
-            self.assertTrue((runtime_current / "libexec/wildbuzzard-shell").is_file())
-            self.assertTrue((runtime_current / "bin/cua-driver").is_file())
-            self.assertFalse((rootfs / "usr/bin/wildbuzzard-shell").exists())
-            self.assertFalse((rootfs / "usr/bin/wildbuzzard-settings").exists())
-            self.assertFalse((rootfs / "usr/bin/wildbuzzard-cua-driver").exists())
+            self.assertTrue((runtime_current / "libexec/buzzardos-shell").is_file())
+            self.assertTrue((rootfs / "usr/bin/sway").is_file())
+            self.assertTrue((rootfs / "usr/bin/swaymsg").is_file())
+            self.assertTrue((rootfs / "usr/bin/buzzardcua").is_file())
+            self.assertFalse((rootfs / "usr/bin/buzzardos-shell").exists())
+            self.assertFalse((rootfs / "usr/bin/buzzardos-settings").exists())
+            self.assertFalse((rootfs / "usr/bin/buzzardos-cua-driver").exists())
 
 
 class BundleInventoryTests(unittest.TestCase):
@@ -284,7 +282,7 @@ class BundleInventoryTests(unittest.TestCase):
             ["git", "-C", str(ROOT), "rev-parse", "HEAD^{commit}"], text=True
         ).strip()
         with tempfile.TemporaryDirectory() as temporary:
-            bundle = Path(temporary) / "WildBuzzard"
+            bundle = Path(temporary) / "BuzzardOS"
             for relative in [
                 "runtime",
                 "licenses/appimage/usr-share-doc",
@@ -312,7 +310,7 @@ class BundleInventoryTests(unittest.TestCase):
                 "oci/base-images.lock.toml": "base-images.lock.toml",
                 "oci/desktop/SWAY_UPSTREAM.toml": "SWAY_UPSTREAM.toml",
                 "guest/third_party/trycua-cua/UPSTREAM.toml": "TRYCUA_UPSTREAM.toml",
-                "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md": "TRYCUA_CHANGES.WILDBUZZARD.md",
+                "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md": "TRYCUA_CHANGES.BUZZARDOS.md",
                 "LICENSES/release-components.toml": "release-components.toml",
                 "LICENSES/generated/oci-packages.tsv": "oci-packages.tsv",
             }
@@ -329,7 +327,7 @@ class BundleInventoryTests(unittest.TestCase):
                 )
             rootfs_manifest = {
                 "schema": 1,
-                "kind": "wildbuzzard-flat-rootfs",
+                "kind": "buzzardos-flat-rootfs",
                 "platform": {"os": "linux", "architecture": "amd64"},
                 "source": {"commit": commit},
                 "archive": rootfs_record,
@@ -348,7 +346,7 @@ class BundleInventoryTests(unittest.TestCase):
             )
             appimage_manifest = {
                 "schema": 1,
-                "kind": "wildbuzzard-appimage",
+                "kind": "buzzardos-appimage",
                 "platform": {"os": "linux", "architecture": "amd64"},
                 "source": {"commit": commit, "corresponding_source": {}},
                 "artifact": {
@@ -357,7 +355,7 @@ class BundleInventoryTests(unittest.TestCase):
                     "sha256": release_metadata.sha256_file(appimage),
                 },
             }
-            (bundle / "provenance/appimage/WildBuzzard-AppImage-linux-x86_64.json").write_text(
+            (bundle / "provenance/appimage/BuzzardOS-AppImage-linux-x86_64.json").write_text(
                 json.dumps(appimage_manifest) + "\n", encoding="utf-8"
             )
 
@@ -575,7 +573,7 @@ class ReleaseScriptPrivilegeTests(unittest.TestCase):
         self.assertIn('"$launcher" --storage-dir "$roundtrip_root" import', script)
         self.assertIn('"$launcher" --storage-dir "$roundtrip_root" delete', script)
         self.assertIn('stat -c %u "$mapped_rootfs/etc/passwd"', script)
-        self.assertIn('stat -c %u "$mapped_rootfs/home/wildbuzzard"', script)
+        self.assertIn('stat -c %u "$mapped_rootfs/home/buzzard"', script)
         self.assertIn('"$guest_licenses/usr-share-doc"', script)
         self.assertIn('"$guest_licenses/usr-share-common-licenses"', script)
         self.assertLess(

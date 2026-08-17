@@ -26,7 +26,7 @@ pub fn load_application_icons(applications: &[Application]) -> BTreeMap<String, 
         .filter_map(|name| match load_icon(name) {
             Some(icon) => Some((name.to_owned(), icon)),
             None => {
-                eprintln!("wildbuzzard-shell: no usable icon for {name}");
+                eprintln!("buzzardos-shell: no usable icon for {name}");
                 None
             }
         })
@@ -35,7 +35,7 @@ pub fn load_application_icons(applications: &[Application]) -> BTreeMap<String, 
 
 pub fn load_icon(name: &str) -> Option<AppIcon> {
     let Some(path) = resolve_icon(name) else {
-        eprintln!("wildbuzzard-shell: icon theme has no file for {name}");
+        eprintln!("buzzardos-shell: icon theme has no file for {name}");
         return None;
     };
     let icon = match path.extension().and_then(|extension| extension.to_str()) {
@@ -44,10 +44,7 @@ pub fn load_icon(name: &str) -> Option<AppIcon> {
         _ => None,
     };
     if icon.is_none() {
-        eprintln!(
-            "wildbuzzard-shell: could not decode icon {}",
-            path.display()
-        );
+        eprintln!("buzzardos-shell: could not decode icon {}", path.display());
     }
     icon
 }
@@ -88,7 +85,7 @@ fn resolve_icon(name: &str) -> Option<PathBuf> {
         names.push("applications-engineering-symbolic".to_owned());
     }
     for root in roots {
-        for theme in ["WildBuzzard", "hicolor", "Adwaita", "default", ""] {
+        for theme in ["BuzzardOS", "hicolor", "Adwaita", "default", ""] {
             for size in [
                 "48x48", "64x64", "32x32", "128x128", "256x256", "scalable", "symbolic",
             ] {

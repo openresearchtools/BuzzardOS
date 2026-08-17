@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use buzzardos_desktop_core::{UpdateState, UpdateStatus, atomic_write_json, read_bounded};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use wildbuzzard_desktop_core::{UpdateState, UpdateStatus, atomic_write_json, read_bounded};
 
-pub const UPDATER_STATE_DIRECTORY: &str = "/var/lib/wildbuzzard-updater";
-pub const UPDATER_STATE_PATH: &str = "/var/lib/wildbuzzard-updater/state.json";
+pub const UPDATER_STATE_DIRECTORY: &str = "/var/lib/buzzardos-updater";
+pub const UPDATER_STATE_PATH: &str = "/var/lib/buzzardos-updater/state.json";
 const NOTIFICATION_SCHEMA_VERSION: u32 = 1;
 const MAX_NOTIFICATION_RECORD_BYTES: usize = 16 * 1024;
 
@@ -61,9 +61,7 @@ impl UpdateTracker {
             match load_notification_record(&notification_path) {
                 Ok(record) => (record.map(|record| record.plan_generation), true),
                 Err(error) => {
-                    eprintln!(
-                        "wildbuzzard-shell: update notification record was preserved: {error}"
-                    );
+                    eprintln!("buzzardos-shell: update notification record was preserved: {error}");
                     (None, false)
                 }
             };
@@ -130,13 +128,13 @@ fn load_state_or_default(path: &Path) -> UpdateState {
         Ok(_) => match UpdateState::load(path) {
             Ok(state) => state,
             Err(error) => {
-                eprintln!("wildbuzzard-shell: updater state was preserved: {error}");
+                eprintln!("buzzardos-shell: updater state was preserved: {error}");
                 UpdateState::default()
             }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => UpdateState::default(),
         Err(error) => {
-            eprintln!("wildbuzzard-shell: cannot inspect updater state: {error}");
+            eprintln!("buzzardos-shell: cannot inspect updater state: {error}");
             UpdateState::default()
         }
     }
@@ -186,7 +184,7 @@ fn reap_notification_process(child: Child) -> Result<(), String> {
     let child = Arc::new(Mutex::new(Some(child)));
     let waiter = Arc::clone(&child);
     match std::thread::Builder::new()
-        .name("wildbuzzard-notification-reaper".into())
+        .name("buzzardos-notification-reaper".into())
         .spawn(move || {
             if let Ok(mut slot) = waiter.lock()
                 && let Some(mut child) = slot.take()
@@ -212,8 +210,8 @@ fn reap_notification_process(child: Child) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzzardos_desktop_core::{UpdateAction, UpdatePackage};
     use std::cell::Cell;
-    use wildbuzzard_desktop_core::{UpdateAction, UpdatePackage};
 
     fn available(generation: &str) -> UpdateState {
         let package = UpdatePackage {

@@ -72,14 +72,11 @@ PROGRESS_UNITS = {"bytes", "packages", "steps"}
 ACTIONS = {"upgrade", "install"}
 
 REQUIRED_RUNTIME_FILES = {
-    "bin/sway",
-    "bin/swaymsg",
-    "bin/cua-driver",
-    "libexec/wildbuzzard-shell",
-    "libexec/wildbuzzard-settings",
-    "libexec/wildbuzzard-shortcut-helper",
-    "libexec/wildbuzzard-clipboard-agent",
-    "libexec/wildbuzzard-updater",
+    "libexec/buzzardos-shell",
+    "libexec/buzzardos-settings",
+    "libexec/buzzardos-shortcut-helper",
+    "libexec/buzzardos-clipboard-agent",
+    "libexec/buzzardos-updater",
 }
 
 
@@ -109,10 +106,10 @@ class RepositoryRefreshError(UpdaterError):
 
 @dataclasses.dataclass(frozen=True)
 class Paths:
-    state_dir: Path = Path("/var/lib/wildbuzzard-updater")
-    log_dir: Path = Path("/var/log/wildbuzzard-updater")
-    lock_path: Path = Path("/run/lock/wildbuzzard-updater.lock")
-    runtime_root: Path = Path("/opt/wildbuzzard/runtime")
+    state_dir: Path = Path("/var/lib/buzzardos-updater")
+    log_dir: Path = Path("/var/log/buzzardos-updater")
+    lock_path: Path = Path("/run/lock/buzzardos-updater.lock")
+    runtime_root: Path = Path("/opt/buzzardos/runtime")
     dpkg_info: Path = Path("/var/lib/dpkg/info")
     reboot_required: Path = Path("/run/reboot-required")
     reboot_packages: Path = Path("/run/reboot-required.pkgs")
@@ -712,11 +709,9 @@ def inspect_runtime_gate(paths: Paths) -> tuple[bool, str | None, str | None]:
         manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
         if readiness["manifest_sha256"] != manifest_digest:
             raise RuntimeGateError("protected runtime readiness does not bind the installed manifest")
-        owners = _dpkg_runtime_owners(paths)
-        if owners:
-            raise RuntimeGateError(
-                "protected runtime is still owned by dpkg packages: " + ", ".join(owners[:8])
-            )
+        # The protected guest desktop payload is deliberately dpkg-owned.
+        # APT is the supported update mechanism for Buzzard OS guest
+        # components, so package ownership here is expected.
         return True, revision, None
     except (OSError, ValueError, json.JSONDecodeError, UpdaterError) as error:
         return (
@@ -1584,7 +1579,7 @@ class UpdateEngine:
                 except BaseException as error:  # worker boundary must persist evidence
                     self._record_worker_failure(operation, error)
 
-            thread = threading.Thread(target=worker, name=f"wildbuzzard-updater-{operation}")
+            thread = threading.Thread(target=worker, name=f"buzzardos-updater-{operation}")
             thread.daemon = True
             self._operation = thread
             thread.start()

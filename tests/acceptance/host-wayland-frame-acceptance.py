@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Drive and verify Wild Buzzard's real host Wayland application frame.
+"""Drive and verify Buzzard OS's real host Wayland application frame.
 
 This is intentionally a hardware/session acceptance test rather than a unit
 test.  It uses GNOME Mutter's own ScreenCast and RemoteDesktop D-Bus APIs so
@@ -263,7 +263,7 @@ def wait_until(
 def host_frame() -> Any:
     for app in Atspi.get_desktop(0):
         try:
-            if app.get_name() != "wildbuzzard-display":
+            if app.get_name() != "buzzardos-display":
                 continue
             for index in range(app.get_child_count()):
                 child = app.get_child_at_index(index)
@@ -271,7 +271,7 @@ def host_frame() -> Any:
                     return child
         except Exception:
             continue
-    fail("wildbuzzard-display host frame is absent from host AT-SPI")
+    fail("buzzardos-display host frame is absent from host AT-SPI")
 
 
 def frame_size() -> tuple[int, int]:
@@ -870,7 +870,7 @@ def main() -> int:
         },
     )
     print(
-        "Wild Buzzard native host Wayland frame acceptance passed; "
+        "Buzzard OS native host Wayland frame acceptance passed; "
         f"artifacts: {artifact_dir}"
     )
     return 0

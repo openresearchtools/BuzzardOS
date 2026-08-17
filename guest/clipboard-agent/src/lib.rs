@@ -19,22 +19,22 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use buzzardos_clipboard_protocol::{
+    Frame, IO_TIMEOUT_SECONDS, Kind, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS,
+    MAX_TEXT_BYTES, Mime, PNG_MIME, ProtocolError, Status, TEXT_MIME, read_frame, write_frame,
+};
 use image::codecs::png::{PngDecoder, PngEncoder};
 use image::codecs::webp::WebPDecoder;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 use rustix::fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
-use wildbuzzard_clipboard_protocol::{
-    Frame, IO_TIMEOUT_SECONDS, Kind, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS,
-    MAX_TEXT_BYTES, Mime, PNG_MIME, ProtocolError, Status, TEXT_MIME, read_frame, write_frame,
-};
 use wl_clipboard_rs::{copy, paste, utils};
 use zeroize::Zeroize;
 
-const RUNTIME_DIRECTORY: &str = "/run/wildbuzzard-host";
-const SOCKET_PATH: &str = "/run/wildbuzzard-host/clipboard-agent.sock";
-const READY_PATH: &str = "/run/wildbuzzard-host/clipboard-ready";
+const RUNTIME_DIRECTORY: &str = "/run/buzzardos-host";
+const SOCKET_PATH: &str = "/run/buzzardos-host/clipboard-agent.sock";
+const READY_PATH: &str = "/run/buzzardos-host/clipboard-ready";
 const EXPECTED_HOST_PEER_UID: u32 = 1000;
 const EXPECTED_HOST_PEER_GID: u32 = 1000;
 const PRE_REQUEST_IDLE_SECONDS: u64 = IO_TIMEOUT_SECONDS + 1;
@@ -46,13 +46,13 @@ const WORKER_ADDRESS_SPACE_BYTES: u64 = 768 * 1024 * 1024;
 const WORKER_CPU_SECONDS: u64 = IO_TIMEOUT_SECONDS + 1;
 const WORKER_OPEN_FILES: u64 = 64;
 const WORKER_NONCE: [u8; 16] = *b"WB-CLIP-WORKER1!";
-const WORKER_ENVIRONMENT: &str = "WILDBUZZARD_CLIPBOARD_INTERNAL_WORKER";
+const WORKER_ENVIRONMENT: &str = "BUZZARDOS_CLIPBOARD_INTERNAL_WORKER";
 const WORKER_ENVIRONMENT_VALUE: &str = "fixed-v1";
 
 /// Exact private mode used only by the parent clipboard agent. It accepts one
 /// fixed clipboard-protocol frame over stdin; it is not a command, path, or
 /// generic RPC interface.
-pub const INTERNAL_WORKER_ARGUMENT: &str = "--wildbuzzard-internal-clipboard-worker-v1";
+pub const INTERNAL_WORKER_ARGUMENT: &str = "--buzzardos-internal-clipboard-worker-v1";
 
 const SUPPORTED_IMAGE_FORMATS: [ImageFormat; 5] = [
     ImageFormat::Png,

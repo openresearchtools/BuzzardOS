@@ -1,5 +1,5 @@
 [package]
-name = "wildbuzzard-settings"
+name = "buzzardos-settings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ libpulse-binding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-wildbuzzard-desktop-core = { path = "../desktop-core" }
+buzzardos-desktop-core = { path = "../desktop-core" }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -24,5 +24,5 @@ tempfile.workspace = true
 unsafe_code = "forbid"
 
 [[bin]]
-name = "wildbuzzard-settings"
+name = "buzzardos-settings"
 path = "src/main.rs"

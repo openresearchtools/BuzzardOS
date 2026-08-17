@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock};
 use crate::atspi::ElementCache;
 use cursor_overlay::CursorRegistry;
 
-// The Wild Buzzard guest cursor animation can occupy a 96×84 region extending
+// The Buzzard OS guest cursor animation can occupy a 96×84 region extending
 // right/down from its hotspot. A 128-pixel corridor safely covers that measured
 // footprint at all animation headings and fractional scales.
 const CURSOR_EVIDENCE_MASK_RADIUS: i32 = 128;
@@ -161,7 +161,7 @@ fn visual_observation_payload_masked(
             });
             if let Some(summary) = guest_output_difference_summary(before, after, cursor_masks) {
                 eprintln!(
-                    "[wildbuzzard-cua] screenshot comparison path={path} masks={cursor_masks:?} \
+                    "[buzzardos-cua] screenshot comparison path={path} masks={cursor_masks:?} \
                      difference={summary}"
                 );
                 result["difference"] = summary;
@@ -279,7 +279,7 @@ async fn observe_guest_output_change_masked(
         }
     }
     if let (Ok(directory), Some(before), Some(after)) = (
-        std::env::var("WILDBUZZARD_CUA_EVIDENCE_DIR"),
+        std::env::var("BUZZARDOS_CUA_EVIDENCE_DIR"),
         before.as_ref(),
         after.as_ref(),
     ) {
@@ -7046,7 +7046,7 @@ impl Tool for GetDesktopStateTool {
         let out_file = input.screenshot_out_file;
 
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            // Vision-only: capture the complete guest display. Wild Buzzard's
+            // Vision-only: capture the complete guest display. Buzzard OS's
             // capture boundary preserves the native backing buffer exactly.
             let (png, geometry) = if crate::wayland::is_wayland() {
                 crate::wayland::screenshot_display_dispatch_with_metadata()?
@@ -7059,7 +7059,7 @@ impl Tool for GetDesktopStateTool {
                 )
             };
             let (shot_w, shot_h) = crate::capture::png_dimensions_pub(&png)?;
-            // Wild Buzzard returns native physical dmabuf pixels. Querying the
+            // Buzzard OS returns native physical dmabuf pixels. Querying the
             // X11 root window here would
             // fail with "$DISPLAY variable not set" and abort the tool even
             // though the screenshot already succeeded.

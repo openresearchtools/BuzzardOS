@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use buzzardos_desktop_core::FileObservation;
 use glib::{KeyFile, KeyFileFlags};
 use image::{DynamicImage, GenericImageView, ImageEncoder, RgbaImage, imageops};
 use sha2::{Digest, Sha256};
@@ -13,7 +14,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use wildbuzzard_desktop_core::FileObservation;
 
 const ELF_HEADER_SIZE: usize = 64;
 const TYPE2_MARKER: &[u8] = b"AI\x02";

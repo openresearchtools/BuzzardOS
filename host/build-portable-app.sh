@@ -5,19 +5,19 @@ set -euo pipefail
 host_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(CDPATH= cd -- "$host_dir/.." && pwd)
 task_uid=$(id -u)
-build_root=${WILDBUZZARD_BUILD_ROOT:-"${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid"}
-build_dir=${WILDBUZZARD_BUILD_DIR:-"$build_root/portable-app"}
+build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-build-$task_uid"}
+build_dir=${BUZZARDOS_BUILD_DIR:-"$build_root/portable-app"}
 appdir="$build_dir/BuzzardOS.app"
 tools_dir="$build_dir/tools"
-output_dir=${WILDBUZZARD_OUTPUT_DIR:-"$build_root/out"}
+output_dir=${BUZZARDOS_OUTPUT_DIR:-"$build_root/out"}
 final_output="$output_dir/app"
-gtk_sdk=${WILDBUZZARD_GTK_SDK:-"$build_root/gtk-sdk"}
+gtk_sdk=${BUZZARDOS_GTK_SDK:-"$build_root/gtk-sdk"}
 gtk_sdk_pkgconfig="$gtk_sdk/usr/lib/x86_64-linux-gnu/pkgconfig"
 gtk_sdk_lib="$gtk_sdk/usr/lib/x86_64-linux-gnu"
 host_target_dir="$build_dir/cargo-host"
 guest_target_dir="$build_dir/cargo-guest"
 cua_target_dir="$build_dir/cargo-cua"
-guest_compositor_runtime=${WILDBUZZARD_GUEST_RUNTIME_PAYLOAD:-}
+guest_compositor_runtime=${BUZZARDOS_GUEST_RUNTIME_PAYLOAD:-}
 
 crane_version=v0.21.8
 crane_sha256=59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67
@@ -173,7 +173,7 @@ if re.fullmatch(
 ) is None:
     raise SystemExit("pinned XKB package version is invalid")
 PY
-    observed=$(mktemp "${TMPDIR:-/tmp}/wildbuzzard-xkb-manifest.XXXXXX")
+    observed=$(mktemp "${TMPDIR:-/tmp}/buzzardos-xkb-manifest.XXXXXX")
     if ! write_xkb_manifest "$xkb_root" "$observed" ||
         ! cmp -s -- "$observed" "$manifest"; then
         rm -f -- "$observed"
@@ -265,7 +265,7 @@ complete_host_library_closure() {
             find "$app_root/usr/lib" -maxdepth 1 -type f -print0
             find "$app_root/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -print0
             find "$app_root/usr/lib/spa-0.2" -type f -print0
-            find "$app_root/usr/libexec/wildbuzzard" -maxdepth 1 \
+            find "$app_root/usr/libexec/buzzardos" -maxdepth 1 \
                 -type f ! -name tar.real -print0
         )
         if (( copied == 0 )); then
@@ -323,7 +323,7 @@ PY
 }
 
 [[ -n "$guest_compositor_runtime" ]] || {
-    echo "WILDBUZZARD_GUEST_RUNTIME_PAYLOAD must name the pinned sway-runtime-artifact directory" >&2
+    echo "BUZZARDOS_GUEST_RUNTIME_PAYLOAD must name the pinned sway-runtime-artifact directory" >&2
     exit 1
 }
 guest_compositor_runtime=$(realpath -- "$guest_compositor_runtime")
@@ -348,13 +348,13 @@ if find "$guest_compositor_runtime" -mindepth 1 ! -type d ! -type f -print -quit
 fi
 verify_xkb_payload \
     "$guest_compositor_runtime/share/X11/xkb" \
-    "$guest_compositor_runtime/share/wildbuzzard/xkb-data.manifest.sha256" \
-    "$guest_compositor_runtime/share/wildbuzzard/xkb-data.version" \
+    "$guest_compositor_runtime/share/buzzardos/xkb-data.manifest.sha256" \
+    "$guest_compositor_runtime/share/buzzardos/xkb-data.version" \
     "$guest_compositor_runtime/share/doc/xkb-data/copyright"
 verify_pinned_libxkbcommon \
     "$guest_compositor_runtime/lib/libxkbcommon.so.0" \
-    "$guest_compositor_runtime/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
-    "$guest_compositor_runtime/share/wildbuzzard/libxkbcommon0.version" \
+    "$guest_compositor_runtime/share/buzzardos/libxkbcommon0.manifest.sha256" \
+    "$guest_compositor_runtime/share/buzzardos/libxkbcommon0.version" \
     "$guest_compositor_runtime/share/doc/libxkbcommon0/copyright"
 
 cargo_pkg_config_path=${PKG_CONFIG_PATH:-}
@@ -381,7 +381,7 @@ else
         printf 'Using staged GTK SDK: %s\n' "$gtk_sdk"
     else
         echo "build dependency missing: GTK >= 4.14 development files" >&2
-        echo "install them or set WILDBUZZARD_GTK_SDK to a staged /usr tree" >&2
+        echo "install them or set BUZZARDOS_GTK_SDK to a staged /usr tree" >&2
         exit 1
     fi
 fi
@@ -399,11 +399,11 @@ download_verified() {
 }
 
 stage_release_license_payload() {
-    local license_destination="$appdir/usr/share/doc/wildbuzzard/licenses"
-    local mpl_destination="$appdir/usr/share/doc/wildbuzzard/sources/mpl"
-    local go_destination="$appdir/usr/share/doc/wildbuzzard/sources/go"
-    local slirp_destination="$appdir/usr/share/doc/wildbuzzard/sources/slirp4netns"
-    local project_destination="$appdir/usr/share/doc/wildbuzzard/sources/project"
+    local license_destination="$appdir/usr/share/doc/buzzardos/licenses"
+    local mpl_destination="$appdir/usr/share/doc/buzzardos/sources/mpl"
+    local go_destination="$appdir/usr/share/doc/buzzardos/sources/go"
+    local slirp_destination="$appdir/usr/share/doc/buzzardos/sources/slirp4netns"
+    local project_destination="$appdir/usr/share/doc/buzzardos/sources/project"
 
     # Snapshot licensing inputs only after linuxdeploy has finished mutating the
     # AppDir. Remove the previous snapshot first so a deleted source record can
@@ -415,36 +415,36 @@ stage_release_license_payload() {
         "$slirp_destination" \
         "$project_destination"
     install -d -m755 \
-        "$appdir/usr/share/doc/wildbuzzard" \
-        "$appdir/usr/share/doc/wildbuzzard-cua" \
-        "$appdir/usr/share/doc/wildbuzzard/rust" \
+        "$appdir/usr/share/doc/buzzardos" \
+        "$appdir/usr/share/doc/buzzardos-cua" \
+        "$appdir/usr/share/doc/buzzardos/rust" \
         "$license_destination" \
         "$mpl_destination" \
         "$go_destination" \
         "$slirp_destination" \
         "$project_destination"
     install -m644 "$project_dir/LICENSE" \
-        "$appdir/usr/share/doc/wildbuzzard/LICENSE"
+        "$appdir/usr/share/doc/buzzardos/LICENSE"
     install -m644 "$project_dir/NOTICE" \
-        "$appdir/usr/share/doc/wildbuzzard/NOTICE"
+        "$appdir/usr/share/doc/buzzardos/NOTICE"
     install -m644 "$project_dir/THIRD_PARTY_NOTICES.md" \
-        "$appdir/usr/share/doc/wildbuzzard/THIRD_PARTY_NOTICES.md"
+        "$appdir/usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md"
     cp -a "$project_dir/LICENSES/." "$license_destination/"
 
     # Fetch against the manifest inside the snapshot, not the mutable source
     # path. The subsequent artifact audit also rejects a source-tree change
     # that races this build.
-    WILDBUZZARD_MPL_SOURCE_MANIFEST="$license_destination/mpl-sources.tsv" \
+    BUZZARDOS_MPL_SOURCE_MANIFEST="$license_destination/mpl-sources.tsv" \
         "$project_dir/tools/fetch-mpl-sources.sh" "$mpl_destination"
     install -d -m755 "$build_dir/go-source-tmp" "$tools_dir/go-source-cache"
     LC_ALL=C \
     TMPDIR="$build_dir/go-source-tmp" \
-    WILDBUZZARD_GO_SOURCE_MANIFEST="$license_destination/go-source-archives.tsv" \
-    WILDBUZZARD_GO_SOURCE_CACHE="$tools_dir/go-source-cache" \
+    BUZZARDOS_GO_SOURCE_MANIFEST="$license_destination/go-source-archives.tsv" \
+    BUZZARDOS_GO_SOURCE_CACHE="$tools_dir/go-source-cache" \
         "$project_dir/tools/fetch-go-source-archives.sh" "$go_destination"
     install -d -m755 "$tools_dir/slirp-source-cache"
-    WILDBUZZARD_SLIRP_SOURCE_MANIFEST="$license_destination/slirp4netns-sources.tsv" \
-    WILDBUZZARD_SLIRP_SOURCE_CACHE="$tools_dir/slirp-source-cache" \
+    BUZZARDOS_SLIRP_SOURCE_MANIFEST="$license_destination/slirp4netns-sources.tsv" \
+    BUZZARDOS_SLIRP_SOURCE_CACHE="$tools_dir/slirp-source-cache" \
         "$project_dir/tools/fetch-slirp4netns-sources.sh" "$slirp_destination"
 
     rm -rf -- "$build_dir/project-source"
@@ -453,28 +453,28 @@ stage_release_license_payload() {
     cp -a "$build_dir/project-source/." "$project_destination/"
 
     install -m644 "$project_dir/guest/third_party/trycua-cua/LICENSE.md" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md"
+        "$appdir/usr/share/doc/buzzardos-cua/LICENSE.trycua-cua.md"
     install -m644 "$project_dir/guest/third_party/trycua-cua/UPSTREAM.toml" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/UPSTREAM.toml"
-    install -m644 "$project_dir/guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md"
+        "$appdir/usr/share/doc/buzzardos-cua/UPSTREAM.toml"
+    install -m644 "$project_dir/guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md" \
+        "$appdir/usr/share/doc/buzzardos-cua/CHANGES.BUZZARDOS.md"
     install -m644 "$project_dir/guest/third_party/trycua-cua/CITATION.cff" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/CITATION.cff"
+        "$appdir/usr/share/doc/buzzardos-cua/CITATION.cff"
     install -m644 \
         "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/Inter-OFL.txt"
+        "$appdir/usr/share/doc/buzzardos-cua/Inter-OFL.txt"
     install -m644 \
         "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml" \
-        "$appdir/usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml"
+        "$appdir/usr/share/doc/buzzardos-cua/virtual-keyboard-unstable-v1.xml"
     install -m644 "$rust_notice" \
-        "$appdir/usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html"
+        "$appdir/usr/share/doc/buzzardos/rust/COPYRIGHT-library.html"
 }
 
 rm -rf "$appdir"
 mkdir -p \
     "$appdir/usr/bin" \
     "$appdir/usr/lib" \
-    "$appdir/usr/libexec/wildbuzzard" \
+    "$appdir/usr/libexec/buzzardos" \
     "$tools_dir" \
     "$output_dir"
 PKG_CONFIG_PATH="$cargo_pkg_config_path" \
@@ -515,11 +515,11 @@ PATH="$zig_dir:$cargo_zigbuild_root/bin:$PATH" \
 CARGO_TARGET_DIR="$guest_target_dir" \
     cargo zigbuild \
         --manifest-path "$project_dir/guest/Cargo.toml" \
-        --package wildbuzzard-shell \
+        --package buzzardos-shell \
         --release \
         --locked \
         --target x86_64-unknown-linux-gnu.2.31
-guest_shell="$guest_target_dir/x86_64-unknown-linux-gnu/release/wildbuzzard-shell"
+guest_shell="$guest_target_dir/x86_64-unknown-linux-gnu/release/buzzardos-shell"
 maximum_glibc=$(
     readelf --version-info "$guest_shell" |
         sed -n 's/.*Name: \(GLIBC_[0-9.]*\).*/\1/p' |
@@ -539,11 +539,11 @@ PATH="$zig_dir:$cargo_zigbuild_root/bin:$PATH" \
 CARGO_TARGET_DIR="$guest_target_dir" \
     cargo zigbuild \
         --manifest-path "$project_dir/guest/Cargo.toml" \
-        --package wildbuzzard-clipboard-agent \
+        --package buzzardos-clipboard-agent \
         --release \
         --locked \
         --target x86_64-unknown-linux-gnu.2.31
-guest_clipboard_agent="$guest_target_dir/x86_64-unknown-linux-gnu/release/wildbuzzard-clipboard-agent"
+guest_clipboard_agent="$guest_target_dir/x86_64-unknown-linux-gnu/release/buzzardos-clipboard-agent"
 maximum_glibc=$(
     readelf --version-info "$guest_clipboard_agent" |
         sed -n 's/.*Name: \(GLIBC_[0-9.]*\).*/\1/p' |
@@ -566,11 +566,11 @@ RUSTFLAGS="$cargo_rustflags" \
 CARGO_TARGET_DIR="$guest_target_dir" \
     cargo zigbuild \
         --manifest-path "$project_dir/guest/Cargo.toml" \
-        --package wildbuzzard-settings \
+        --package buzzardos-settings \
         --release \
         --locked \
         --target x86_64-unknown-linux-gnu.2.31
-guest_settings="$guest_target_dir/x86_64-unknown-linux-gnu/release/wildbuzzard-settings"
+guest_settings="$guest_target_dir/x86_64-unknown-linux-gnu/release/buzzardos-settings"
 maximum_glibc=$(
     readelf --version-info "$guest_settings" |
         sed -n 's/.*Name: \(GLIBC_[0-9.]*\).*/\1/p' |
@@ -593,11 +593,11 @@ RUSTFLAGS="$cargo_rustflags" \
 CARGO_TARGET_DIR="$guest_target_dir" \
     cargo zigbuild \
         --manifest-path "$project_dir/guest/Cargo.toml" \
-        --package wildbuzzard-shortcut-helper \
+        --package buzzardos-shortcut-helper \
         --release \
         --locked \
         --target x86_64-unknown-linux-gnu.2.31
-guest_shortcut_helper="$guest_target_dir/x86_64-unknown-linux-gnu/release/wildbuzzard-shortcut-helper"
+guest_shortcut_helper="$guest_target_dir/x86_64-unknown-linux-gnu/release/buzzardos-shortcut-helper"
 maximum_glibc=$(
     readelf --version-info "$guest_shortcut_helper" |
         sed -n 's/.*Name: \(GLIBC_[0-9.]*\).*/\1/p' |
@@ -635,11 +635,11 @@ if [[ -n "$maximum_glibc" ]] &&
     exit 1
 fi
 
-install -m755 "$host_target_dir/release/wildbuzzard" "$appdir/usr/bin/wildbuzzard"
-install -m755 "$host_target_dir/release/wildbuzzard-broker" "$appdir/usr/bin/wildbuzzard-broker"
-install -m755 "$host_target_dir/release/wildbuzzard-display" "$appdir/usr/bin/wildbuzzard-display"
-install -m755 "$(command -v bwrap)" "$appdir/usr/libexec/wildbuzzard/bwrap"
-install -m755 "$(command -v unshare)" "$appdir/usr/libexec/wildbuzzard/unshare"
+install -m755 "$host_target_dir/release/buzzardos" "$appdir/usr/bin/buzzardos"
+install -m755 "$host_target_dir/release/buzzardos-broker" "$appdir/usr/bin/buzzardos-broker"
+install -m755 "$host_target_dir/release/buzzardos-display" "$appdir/usr/bin/buzzardos-display"
+install -m755 "$(command -v bwrap)" "$appdir/usr/libexec/buzzardos/bwrap"
+install -m755 "$(command -v unshare)" "$appdir/usr/libexec/buzzardos/unshare"
 
 # Export must work on the oldest supported glibc rather than inheriting the
 # disposable builder's GNU tar ABI.  Keep tar and its three libraries in a
@@ -670,7 +670,7 @@ tar_extract=$(mktemp -d "$build_dir/tar-runtime-extract.XXXXXX")
 for tar_component in tar libacl1 libselinux1 libpcre2-8-0; do
     dpkg-deb --extract "$tar_packages/$tar_component"*.deb "$tar_extract/$tar_component"
 done
-tar_runtime_dir="$appdir/usr/libexec/wildbuzzard"
+tar_runtime_dir="$appdir/usr/libexec/buzzardos"
 tar_library_dir="$tar_runtime_dir/tar-libs"
 install -d -m755 "$tar_library_dir"
 install -m755 "$tar_extract/tar/bin/tar" "$tar_runtime_dir/tar.real"
@@ -689,12 +689,12 @@ printf '%s  %s\n' "$tar_libacl_sha256" "$tar_library_dir/libacl.so.1" | sha256su
 printf '%s  %s\n' "$tar_libselinux_sha256" "$tar_library_dir/libselinux.so.1" | sha256sum --check --status
 printf '%s  %s\n' "$tar_libpcre2_sha256" "$tar_library_dir/libpcre2-8.so.0" | sha256sum --check --status
 for tar_component in tar libacl1 libselinux1 libpcre2-8-0; do
-    install -d -m755 "$appdir/usr/share/doc/wildbuzzard/tar-runtime/$tar_component"
+    install -d -m755 "$appdir/usr/share/doc/buzzardos/tar-runtime/$tar_component"
     install -m644 "$tar_extract/$tar_component/usr/share/doc/$tar_component/copyright" \
-        "$appdir/usr/share/doc/wildbuzzard/tar-runtime/$tar_component/copyright"
+        "$appdir/usr/share/doc/buzzardos/tar-runtime/$tar_component/copyright"
 done
 tar_source_cache="$tar_packages/sources"
-tar_source_destination="$appdir/usr/share/doc/wildbuzzard/sources/tar-runtime"
+tar_source_destination="$appdir/usr/share/doc/buzzardos/sources/tar-runtime"
 install -d -m755 "$tar_source_cache" "$tar_source_destination"
 while IFS=$'\t' read -r source_package filename url checksum; do
     [[ -n "$source_package" && "${source_package:0:1}" != '#' ]] || continue
@@ -710,16 +710,16 @@ awk -F '\t' '!/^#/ && NF == 4 {print $4 "  " $2}' \
     > "$tar_source_destination/SHA256SUMS"
 rm -rf -- "$tar_extract"
 install -m755 "$(command -v gst-launch-1.0)" \
-    "$appdir/usr/libexec/wildbuzzard/gst-launch-1.0"
+    "$appdir/usr/libexec/buzzardos/gst-launch-1.0"
 install -m755 "$(command -v pw-dump)" \
-    "$appdir/usr/libexec/wildbuzzard/pw-dump"
+    "$appdir/usr/libexec/buzzardos/pw-dump"
 gst_plugin_scanner=/usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner
 [[ -x "$gst_plugin_scanner" ]] || {
     echo "build dependency missing: $gst_plugin_scanner" >&2
     exit 1
 }
 install -m755 "$gst_plugin_scanner" \
-    "$appdir/usr/libexec/wildbuzzard/gst-plugin-scanner"
+    "$appdir/usr/libexec/buzzardos/gst-plugin-scanner"
 
 # Host audio/microphone/camera bridges run entirely outside the guest. Bundle
 # the GStreamer launcher, the exact plugins used by the fixed pipelines, and
@@ -791,8 +791,8 @@ download_verified \
     "https://github.com/google/go-containerregistry/releases/download/$crane_version/go-containerregistry_Linux_x86_64.tar.gz" \
     "$crane_archive" \
     "$crane_sha256"
-tar -xzf "$crane_archive" -C "$appdir/usr/libexec/wildbuzzard" crane
-chmod 755 "$appdir/usr/libexec/wildbuzzard/crane"
+tar -xzf "$crane_archive" -C "$appdir/usr/libexec/buzzardos" crane
+chmod 755 "$appdir/usr/libexec/buzzardos/crane"
 
 slirp_packages="$tools_dir/slirp4netns-$slirp_package_version"
 mkdir -p "$slirp_packages"
@@ -809,13 +809,13 @@ printf '%s  %s\n' "$slirp_binary_sha256" "$slirp_binary" |
         echo "slirp4netns package payload differs from the audited binary" >&2
         exit 1
     }
-install -m755 "$slirp_binary" "$appdir/usr/libexec/wildbuzzard/slirp4netns"
+install -m755 "$slirp_binary" "$appdir/usr/libexec/buzzardos/slirp4netns"
 install -d -m755 "$appdir/usr/share/doc/slirp4netns"
 install -m644 "$slirp_extract/usr/share/doc/slirp4netns/copyright" \
     "$appdir/usr/share/doc/slirp4netns/copyright"
 rm -rf -- "$slirp_extract"
 
-# Wild Buzzard generates and validates NVIDIA CDI itself. Bundle the pinned
+# Buzzard OS generates and validates NVIDIA CDI itself. Bundle the pinned
 # toolkit base and libnvidia-container payload so runtime behavior never
 # depends on host nvidia-ctk/nvidia-container-cli packages or PATH.
 nvidia_packages="$tools_dir/nvidia-container-toolkit-$nvidia_toolkit_version"
@@ -843,11 +843,11 @@ for package in \
     dpkg-deb --extract "$package" "$nvidia_extract"
 done
 install -m755 "$nvidia_extract/usr/bin/nvidia-ctk" \
-    "$appdir/usr/libexec/wildbuzzard/nvidia-ctk"
+    "$appdir/usr/libexec/buzzardos/nvidia-ctk"
 install -m755 "$nvidia_extract/usr/bin/nvidia-cdi-hook" \
-    "$appdir/usr/libexec/wildbuzzard/nvidia-cdi-hook"
+    "$appdir/usr/libexec/buzzardos/nvidia-cdi-hook"
 install -m755 "$nvidia_extract/usr/bin/nvidia-container-cli" \
-    "$appdir/usr/libexec/wildbuzzard/nvidia-container-cli"
+    "$appdir/usr/libexec/buzzardos/nvidia-container-cli"
 install -m755 "$nvidia_extract/usr/lib/x86_64-linux-gnu/libnvidia-container.so.1.19.1" \
     "$appdir/usr/lib/libnvidia-container.so.1.19.1"
 install -m755 "$nvidia_extract/usr/lib/x86_64-linux-gnu/libnvidia-container-go.so.1.19.1" \
@@ -892,18 +892,18 @@ chmod 755 "$linuxdeploy"
 export APPIMAGE_EXTRACT_AND_RUN=1
 linuxdeploy_args=(
     --appdir "$appdir" \
-    --executable "$appdir/usr/bin/wildbuzzard" \
-    --executable "$appdir/usr/bin/wildbuzzard-broker" \
-    --executable "$appdir/usr/bin/wildbuzzard-display" \
-    --executable "$appdir/usr/libexec/wildbuzzard/bwrap" \
-    --executable "$appdir/usr/libexec/wildbuzzard/unshare" \
-    --executable "$appdir/usr/libexec/wildbuzzard/gst-launch-1.0" \
-    --executable "$appdir/usr/libexec/wildbuzzard/pw-dump" \
-    --executable "$appdir/usr/libexec/wildbuzzard/gst-plugin-scanner" \
-    --executable "$appdir/usr/libexec/wildbuzzard/slirp4netns" \
-    --executable "$appdir/usr/libexec/wildbuzzard/nvidia-ctk" \
-    --executable "$appdir/usr/libexec/wildbuzzard/nvidia-cdi-hook" \
-    --executable "$appdir/usr/libexec/wildbuzzard/nvidia-container-cli" \
+    --executable "$appdir/usr/bin/buzzardos" \
+    --executable "$appdir/usr/bin/buzzardos-broker" \
+    --executable "$appdir/usr/bin/buzzardos-display" \
+    --executable "$appdir/usr/libexec/buzzardos/bwrap" \
+    --executable "$appdir/usr/libexec/buzzardos/unshare" \
+    --executable "$appdir/usr/libexec/buzzardos/gst-launch-1.0" \
+    --executable "$appdir/usr/libexec/buzzardos/pw-dump" \
+    --executable "$appdir/usr/libexec/buzzardos/gst-plugin-scanner" \
+    --executable "$appdir/usr/libexec/buzzardos/slirp4netns" \
+    --executable "$appdir/usr/libexec/buzzardos/nvidia-ctk" \
+    --executable "$appdir/usr/libexec/buzzardos/nvidia-cdi-hook" \
+    --executable "$appdir/usr/libexec/buzzardos/nvidia-container-cli" \
     --desktop-file "$appdir/org.openresearchtools.buzzardos.desktop" \
     --icon-file "$appdir/buzzardos.png"
 )
@@ -919,7 +919,7 @@ LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 
 # linuxdeploy may infer and copy GStreamer's direct ALSA plugin while walking
 # transitive launcher dependencies, even though it is intentionally absent
-# from `gst_plugins`. Wild Buzzard microphone capture must have no packaged
+# from `gst_plugins`. Buzzard OS microphone capture must have no packaged
 # raw-device bypass around the host desktop's PipeWire-Pulse recording
 # accounting path. Remove both locations linuxdeploy has used, then fail the
 # build if a future layout reintroduces the plugin anywhere in the AppDir.
@@ -933,7 +933,7 @@ if [[ -n "$unexpected_alsa_plugin" ]]; then
 fi
 
 # linuxdeploy intentionally treats libpipewire as a host integration library
-# and refuses to deploy it. Wild Buzzard's release contract is stricter: the
+# and refuses to deploy it. Buzzard OS's release contract is stricter: the
 # portable application carries the client ABI while still connecting to the user's running
 # host service. Install the pinned build-environment client library explicitly.
 install -m755 /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0 \
@@ -943,25 +943,25 @@ install -m755 /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0 \
 # same immutable xkeyboard-config files.  Stage a stable AppDir path directly
 # from the already-verified Sway runtime artifact; never consult host
 # /usr/share/X11/xkb at application runtime.
-host_xkb_root="$appdir/usr/share/wildbuzzard/xkb"
+host_xkb_root="$appdir/usr/share/buzzardos/xkb"
 install -d -m755 \
-    "$appdir/usr/share/wildbuzzard" \
+    "$appdir/usr/share/buzzardos" \
     "$host_xkb_root" \
     "$appdir/usr/share/doc/xkb-data"
 cp -a -- "$guest_compositor_runtime/share/X11/xkb/." "$host_xkb_root/"
 install -m644 \
-    "$guest_compositor_runtime/share/wildbuzzard/xkb-data.manifest.sha256" \
-    "$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256"
+    "$guest_compositor_runtime/share/buzzardos/xkb-data.manifest.sha256" \
+    "$appdir/usr/share/buzzardos/xkb-data.manifest.sha256"
 install -m644 \
-    "$guest_compositor_runtime/share/wildbuzzard/xkb-data.version" \
-    "$appdir/usr/share/wildbuzzard/xkb-data.version"
+    "$guest_compositor_runtime/share/buzzardos/xkb-data.version" \
+    "$appdir/usr/share/buzzardos/xkb-data.version"
 install -m644 \
     "$guest_compositor_runtime/share/doc/xkb-data/copyright" \
     "$appdir/usr/share/doc/xkb-data/copyright"
 verify_xkb_payload \
     "$host_xkb_root" \
-    "$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256" \
-    "$appdir/usr/share/wildbuzzard/xkb-data.version" \
+    "$appdir/usr/share/buzzardos/xkb-data.manifest.sha256" \
+    "$appdir/usr/share/buzzardos/xkb-data.version" \
     "$appdir/usr/share/doc/xkb-data/copyright"
 
 # linuxdeploy resolved the host build's libxkbcommon. Replace every such copy
@@ -973,31 +973,31 @@ install -m755 \
     "$guest_compositor_runtime/lib/libxkbcommon.so.0" \
     "$appdir/usr/lib/libxkbcommon.so.0"
 install -m644 \
-    "$guest_compositor_runtime/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
-    "$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256"
+    "$guest_compositor_runtime/share/buzzardos/libxkbcommon0.manifest.sha256" \
+    "$appdir/usr/share/buzzardos/libxkbcommon0.manifest.sha256"
 install -m644 \
-    "$guest_compositor_runtime/share/wildbuzzard/libxkbcommon0.version" \
-    "$appdir/usr/share/wildbuzzard/libxkbcommon0.version"
+    "$guest_compositor_runtime/share/buzzardos/libxkbcommon0.version" \
+    "$appdir/usr/share/buzzardos/libxkbcommon0.version"
 install -d -m755 "$appdir/usr/share/doc/libxkbcommon0"
 install -m644 \
     "$guest_compositor_runtime/share/doc/libxkbcommon0/copyright" \
     "$appdir/usr/share/doc/libxkbcommon0/copyright"
 verify_pinned_libxkbcommon \
     "$appdir/usr/lib/libxkbcommon.so.0" \
-    "$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
-    "$appdir/usr/share/wildbuzzard/libxkbcommon0.version" \
+    "$appdir/usr/share/buzzardos/libxkbcommon0.manifest.sha256" \
+    "$appdir/usr/share/buzzardos/libxkbcommon0.version" \
     "$appdir/usr/share/doc/libxkbcommon0/copyright"
 complete_host_library_closure "$appdir" "$appdir/usr/lib"
 verify_elf_relocation_closure \
-    "$appdir/usr/bin/wildbuzzard-display" \
-    "wildbuzzard-display" \
+    "$appdir/usr/bin/buzzardos-display" \
+    "buzzardos-display" \
     "$appdir/usr/lib"
 display_ldd=$(LD_LIBRARY_PATH="$appdir/usr/lib" \
-    ldd -r -- "$appdir/usr/bin/wildbuzzard-display")
+    ldd -r -- "$appdir/usr/bin/buzzardos-display")
 grep -Fq \
     "libxkbcommon.so.0 => $appdir/usr/lib/libxkbcommon.so.0" \
     <<<"$display_ldd" || {
-    echo "wildbuzzard-display did not resolve the pinned AppDir libxkbcommon" >&2
+    echo "buzzardos-display did not resolve the pinned AppDir libxkbcommon" >&2
     exit 1
 }
 
@@ -1017,12 +1017,12 @@ install -d -m755 "$guest_runtime_root"
     "$guest_cua_driver" \
     "$guest_compositor_runtime"
 guest_revision=$(tr -d '\n' <"$project_dir/guest/ASSET_REVISION")
-guest_revision_source="$guest_runtime_root/opt/wildbuzzard/runtime/$guest_revision"
+guest_revision_source="$guest_runtime_root/opt/buzzardos/runtime/$guest_revision"
 [[ -d "$guest_revision_source" && ! -L "$guest_revision_source" ]] || {
     echo "guest runtime assembler did not create revision $guest_revision" >&2
     exit 1
 }
-guest_runtime_destination="$appdir/usr/bin/wildbuzzard-guest-runtime"
+guest_runtime_destination="$appdir/usr/bin/buzzardos-guest-runtime"
 install -d -m755 "$guest_runtime_destination"
 cp -a -- "$guest_revision_source" "$guest_runtime_destination/$guest_revision"
 if find "$guest_runtime_destination" -mindepth 1 -type l -print -quit | grep -q .; then
@@ -1031,17 +1031,17 @@ if find "$guest_runtime_destination" -mindepth 1 -type l -print -quit | grep -q 
 fi
 verify_xkb_payload \
     "$guest_runtime_destination/$guest_revision/share/X11/xkb" \
-    "$guest_runtime_destination/$guest_revision/share/wildbuzzard/xkb-data.manifest.sha256" \
-    "$guest_runtime_destination/$guest_revision/share/wildbuzzard/xkb-data.version" \
+    "$guest_runtime_destination/$guest_revision/share/buzzardos/xkb-data.manifest.sha256" \
+    "$guest_runtime_destination/$guest_revision/share/buzzardos/xkb-data.version" \
     "$guest_runtime_destination/$guest_revision/share/doc/xkb-data/copyright"
 verify_pinned_libxkbcommon \
     "$guest_runtime_destination/$guest_revision/lib/libxkbcommon.so.0" \
-    "$guest_runtime_destination/$guest_revision/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
-    "$guest_runtime_destination/$guest_revision/share/wildbuzzard/libxkbcommon0.version" \
+    "$guest_runtime_destination/$guest_revision/share/buzzardos/libxkbcommon0.manifest.sha256" \
+    "$guest_runtime_destination/$guest_revision/share/buzzardos/libxkbcommon0.version" \
     "$guest_runtime_destination/$guest_revision/share/doc/libxkbcommon0/copyright"
 cmp -s -- \
-    "$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256" \
-    "$guest_runtime_destination/$guest_revision/share/wildbuzzard/xkb-data.manifest.sha256" || {
+    "$appdir/usr/share/buzzardos/xkb-data.manifest.sha256" \
+    "$guest_runtime_destination/$guest_revision/share/buzzardos/xkb-data.manifest.sha256" || {
     echo "host and guest pinned XKB manifests differ" >&2
     exit 1
 }
@@ -1063,13 +1063,13 @@ cmp -s -- \
     echo "host and guest pinned libxkbcommon notices differ" >&2
     exit 1
 }
-install -d -m755 "$appdir/usr/share/doc/wildbuzzard-sway"
+install -d -m755 "$appdir/usr/share/doc/buzzardos-sway"
 install -m644 "$project_dir/LICENSES/upstream/sway-1.12-LICENSE" \
-    "$appdir/usr/share/doc/wildbuzzard-sway/LICENSE.sway"
+    "$appdir/usr/share/doc/buzzardos-sway/LICENSE.sway"
 install -m644 "$project_dir/LICENSES/upstream/wlroots-0.20.2-LICENSE" \
-    "$appdir/usr/share/doc/wildbuzzard-sway/LICENSE.wlroots"
+    "$appdir/usr/share/doc/buzzardos-sway/LICENSE.wlroots"
 install -m644 "$project_dir/oci/desktop/SWAY_UPSTREAM.toml" \
-    "$appdir/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml"
+    "$appdir/usr/share/doc/buzzardos-sway/UPSTREAM.toml"
 
 stage_release_license_payload
 python3 "$project_dir/tools/license_audit.py" \
@@ -1083,5 +1083,5 @@ rm -rf -- "$final_output"
 mv -- "$appdir" "$final_output"
 find "$final_output" -type d -exec chmod 0755 {} +
 test -x "$final_output/AppRun"
-test -x "$final_output/usr/bin/wildbuzzard"
+test -x "$final_output/usr/bin/buzzardos"
 printf 'Built dependency-complete portable application directory: %s\n' "$final_output"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Create and verify Wild Buzzard release payload metadata."""
+"""Create and verify Buzzard OS release payload metadata."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ from typing import BinaryIO, Iterable
 ROOT = Path(__file__).resolve().parent.parent
 SHA256_DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
 GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
-ROOTFS_ARCHIVE_NAME = "WildBuzzard-rootfs-linux-x86_64.tar.zst"
-ROOTFS_MANIFEST_NAME = "WildBuzzard-rootfs-linux-x86_64.json"
-APPIMAGE_NAME = "WildBuzzard-x86_64.AppImage"
+ROOTFS_ARCHIVE_NAME = "BuzzardOS-rootfs-linux-x86_64.tar.zst"
+ROOTFS_MANIFEST_NAME = "BuzzardOS-rootfs-linux-x86_64.json"
+APPIMAGE_NAME = "BuzzardOS-x86_64.AppImage"
 BUNDLE_MANIFEST = PurePosixPath("provenance/bundle-files.json")
 BUNDLE_CHECKSUMS = PurePosixPath("SHA256SUMS")
 SECURITY_CAPABILITY_XATTR = "security.capability"
@@ -437,7 +437,7 @@ def inspect_rootfs(rootfs: Path) -> dict[str, object]:
         raise MetadataError("rootfs is not a directory")
     if (root_metadata.st_uid, root_metadata.st_gid) != (0, 0):
         raise MetadataError("canonical rootfs root must be owned by numeric 0:0")
-    runtime_root = rootfs / "opt/wildbuzzard/runtime"
+    runtime_root = rootfs / "opt/buzzardos/runtime"
     runtime_metadata = runtime_root.lstat()
     if (
         not stat.S_ISDIR(runtime_metadata.st_mode)
@@ -475,14 +475,14 @@ def inspect_rootfs(rootfs: Path) -> dict[str, object]:
 
     required = [
         "lib/systemd/systemd",
-        "opt/wildbuzzard/runtime/current/bin/sway",
-        "opt/wildbuzzard/runtime/current/bin/swaymsg",
-        "opt/wildbuzzard/runtime/current/bin/cua-driver",
-        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-clipboard-agent",
-        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-init",
-        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-settings",
-        "opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell",
-        "usr/libexec/wildbuzzard-shortcut-helper",
+        "usr/bin/sway",
+        "usr/bin/swaymsg",
+        "usr/bin/buzzardcua",
+        "opt/buzzardos/runtime/current/libexec/buzzardos-clipboard-agent",
+        "opt/buzzardos/runtime/current/libexec/buzzardos-init",
+        "opt/buzzardos/runtime/current/libexec/buzzardos-settings",
+        "opt/buzzardos/runtime/current/libexec/buzzardos-shell",
+        "usr/libexec/buzzardos-shortcut-helper",
         "var/lib/dpkg/status",
     ]
     missing = [relative for relative in required if not (rootfs / relative).is_file()]
@@ -650,7 +650,7 @@ def inspect_zstd_archive(archive: Path) -> dict[str, object]:
         raise MetadataError(f"zstd decompression failed with status {status}: {error}")
     return {
         "name": archive.name,
-        "media_type": "application/vnd.wildbuzzard.rootfs.v1.tar+zstd",
+        "media_type": "application/vnd.buzzardos.rootfs.v1.tar+zstd",
         "size": metadata.st_size,
         "sha256": sha256_file(archive),
         "uncompressed_size": reader.size,
@@ -767,7 +767,7 @@ def create_rootfs_manifest(args: argparse.Namespace) -> None:
         ROOT / "oci/base-images.lock.toml",
         ROOT / "oci/desktop/SWAY_UPSTREAM.toml",
         ROOT / "guest/third_party/trycua-cua/UPSTREAM.toml",
-        ROOT / "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md",
+        ROOT / "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md",
         ROOT / "LICENSES/release-components.toml",
         ROOT / "LICENSES/generated/oci-packages.tsv",
     ]
@@ -793,7 +793,7 @@ def create_rootfs_manifest(args: argparse.Namespace) -> None:
             raise MetadataError(f"flat rootfs archive metadata differs from rootfs: {field}")
     record = {
         "schema": 1,
-        "kind": "wildbuzzard-flat-rootfs",
+        "kind": "buzzardos-flat-rootfs",
         "platform": {"os": "linux", "architecture": "amd64"},
         "source": {
             "repository": "https://github.com/openresearchtools/BuzzardOS",
@@ -818,7 +818,7 @@ def verify_rootfs_manifest(args: argparse.Namespace) -> None:
     if (
         not isinstance(manifest, dict)
         or manifest.get("schema") != 1
-        or manifest.get("kind") != "wildbuzzard-flat-rootfs"
+        or manifest.get("kind") != "buzzardos-flat-rootfs"
         or manifest.get("platform") != {"os": "linux", "architecture": "amd64"}
     ):
         raise MetadataError("rootfs manifest identity or schema is unsupported")
@@ -840,7 +840,7 @@ def create_appimage_manifest(args: argparse.Namespace) -> None:
     if not (appdir / "AppRun").is_file():
         raise MetadataError("extracted AppImage has no AppRun")
     source = inspect_source_evidence(
-        appdir / "usr/share/doc/wildbuzzard/sources/project", args.source_commit
+        appdir / "usr/share/doc/buzzardos/sources/project", args.source_commit
     )
     notices = sum(
         1 for path in (appdir / "usr/share/doc").glob("*/copyright") if path.is_file()
@@ -849,7 +849,7 @@ def create_appimage_manifest(args: argparse.Namespace) -> None:
         args.output.resolve(),
         {
             "schema": 1,
-            "kind": "wildbuzzard-appimage",
+            "kind": "buzzardos-appimage",
             "platform": {"os": "linux", "architecture": "amd64"},
             "source": {
                 "repository": "https://github.com/openresearchtools/BuzzardOS",
@@ -959,7 +959,7 @@ def verify_bundle_layout(root: Path, source_commit: str, complete: bool) -> None
         provenance_names.add("bundle-files.json")
     require_exact_directory(root / "provenance", provenance_names, "provenance groups")
     require_exact_directory(
-        root / "provenance/appimage", {"WildBuzzard-AppImage-linux-x86_64.json"},
+        root / "provenance/appimage", {"BuzzardOS-AppImage-linux-x86_64.json"},
         "AppImage provenance group",
     )
     require_exact_directory(
@@ -967,7 +967,7 @@ def verify_bundle_layout(root: Path, source_commit: str, complete: bool) -> None
         {
             "ROOTFS_SHA256SUMS",
             "SWAY_UPSTREAM.toml",
-            "TRYCUA_CHANGES.WILDBUZZARD.md",
+            "TRYCUA_CHANGES.BUZZARDOS.md",
             "TRYCUA_UPSTREAM.toml",
             ROOTFS_MANIFEST_NAME,
             "base-images.lock.toml",
@@ -1001,7 +1001,7 @@ def verify_bundle_layout(root: Path, source_commit: str, complete: bool) -> None
         "oci/base-images.lock.toml": "base-images.lock.toml",
         "oci/desktop/SWAY_UPSTREAM.toml": "SWAY_UPSTREAM.toml",
         "guest/third_party/trycua-cua/UPSTREAM.toml": "TRYCUA_UPSTREAM.toml",
-        "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md": "TRYCUA_CHANGES.WILDBUZZARD.md",
+        "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md": "TRYCUA_CHANGES.BUZZARDOS.md",
         "LICENSES/release-components.toml": "release-components.toml",
         "LICENSES/generated/oci-packages.tsv": "oci-packages.tsv",
     }
@@ -1028,12 +1028,12 @@ def verify_bundle_layout(root: Path, source_commit: str, complete: bool) -> None
         raise MetadataError("guest ROOTFS_SHA256SUMS is incomplete or incorrect")
 
     appimage_manifest = read_json(
-        root / "provenance/appimage/WildBuzzard-AppImage-linux-x86_64.json"
+        root / "provenance/appimage/BuzzardOS-AppImage-linux-x86_64.json"
     )
     if (
         not isinstance(appimage_manifest, dict)
         or appimage_manifest.get("schema") != 1
-        or appimage_manifest.get("kind") != "wildbuzzard-appimage"
+        or appimage_manifest.get("kind") != "buzzardos-appimage"
         or appimage_manifest.get("platform") != {"os": "linux", "architecture": "amd64"}
     ):
         raise MetadataError("AppImage provenance manifest is invalid")
@@ -1050,7 +1050,7 @@ def verify_bundle_layout(root: Path, source_commit: str, complete: bool) -> None
     ):
         raise MetadataError("bundled AppImage differs from its provenance")
     appimage_corresponding_source = inspect_source_evidence(
-        root / "licenses/appimage/usr-share-doc/wildbuzzard/sources/project",
+        root / "licenses/appimage/usr-share-doc/buzzardos/sources/project",
         source_commit,
     )
     if appimage_source.get("corresponding_source") != appimage_corresponding_source:
@@ -1069,7 +1069,7 @@ def create_bundle_manifest(args: argparse.Namespace) -> None:
     verify_bundle_layout(root, args.source_commit, complete=False)
     record = {
         "schema": 1,
-        "kind": "wildbuzzard-portable-bundle",
+        "kind": "buzzardos-portable-bundle",
         "source": {
             "repository": "https://github.com/openresearchtools/BuzzardOS",
             "commit": args.source_commit,
@@ -1106,7 +1106,7 @@ def verify_bundle(args: argparse.Namespace) -> None:
     if (
         not isinstance(manifest, dict)
         or manifest.get("schema") != 1
-        or manifest.get("kind") != "wildbuzzard-portable-bundle"
+        or manifest.get("kind") != "buzzardos-portable-bundle"
     ):
         raise MetadataError("portable bundle manifest identity or schema is unsupported")
     source = manifest.get("source")

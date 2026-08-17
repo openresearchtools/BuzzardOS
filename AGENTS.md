@@ -11,20 +11,26 @@ those features must update that plan and this specification together.
 
 ## Product
 
-Buzzard OS is a rootless, persistent Linux desktop-machine launcher
-distributed as one extracted, relocatable application folder. The top-level
-`BuzzardOS` executable behaves like Blender's portable launcher: it resolves
-all bundled code from sibling `app/` and all durable data from sibling
-`Machines/` and `shared/`. It is not an AppImage and does not require FUSE.
+Buzzard OS is a rootless, persistent Linux desktop-machine manager installed
+on Debian-family hosts as a normal, versioned Debian package. The host package
+is named `buzzardos`; its application-menu name, window titles, metadata, and
+other human-facing identity are `Buzzard OS`. It is updated by APT and is not
+distributed as an AppImage or an extracted portable application folder.
 
-The complete portable download carries a digest-verified, already-flattened
-rootfs seed. First machine creation materializes that seed once into a flat
-mutable root filesystem using the recipient host's subordinate-ID mapping, and
-every later launch boots that same rootfs. An explicitly configured OCI image
-remains an alternative creation source and is pulled and flattened once. The
-guest runs systemd as PID 1 and a complete desktop session. Stock Sway, using
-wlroots' nested Wayland backend, composites the entire guest desktop into
-exactly one native host Wayland window.
+Each machine is created in a user-selected directory. That directory contains
+the complete machine metadata, cache, and mutable flat rootfs. A small JSON registry under
+`$XDG_CONFIG_HOME/buzzardos/` records the registered machine UUID, display
+name, and machine directory. The registry is an index, not
+the source of machine state: a machine directory remains self-describing and
+can be re-registered after moving it. `--machine-dir` selects the exact machine
+directory for create/import/clone and remains an override for scripting and recovery.
+
+Machine creation consumes an explicitly selected local or remote OCI source.
+The reference guest image is assembled by installing Buzzard OS's two guest
+Debian packages into a normal Debian rootfs. The guest runs systemd as PID 1
+and a complete desktop session. The distribution-provided Sway and wlroots
+packages, using wlroots' nested Wayland backend, composite the entire guest
+desktop into exactly one native host Wayland window.
 
 Buzzard OS is not an ephemeral application container:
 
@@ -37,13 +43,11 @@ Buzzard OS is not an ephemeral application container:
 - The nested compositor is the guest display, input, screenshot, and
   accessibility boundary.
 
-All human-facing product names are `Buzzard OS`. Existing lowercase
-`wildbuzzard` executable names, environment variables, private runtime paths,
-theme-directory identifiers, D-Bus interfaces, and FreeDesktop extension keys
-are stable internal compatibility IDs for already-persistent machines. They
-are not shown as branding and must remain accepted during migration; changing
-one requires a versioned dual-read/atomic-write migration rather than a blind
-rename.
+All human-facing product names are `Buzzard OS`. This is a new application;
+there is no released legacy installation, machine registry, or persistent
+rootfs compatibility contract. New package, executable, desktop, D-Bus,
+theme, and diagnostic identities use Buzzard OS naming directly. Upstream
+names appear only where required for attribution.
 
 ## Repository and build boundaries
 
@@ -51,8 +55,9 @@ The source tree mirrors the three independently understandable deployment
 parts:
 
 ```text
-host/                 native host application and portable-folder packaging
-guest/                guest shell, managed rootfs assets, and pinned CUA fork
+host/                 native host application and Debian package payload
+guest/                guest desktop package and pinned Buzzard CUA fork
+packaging/            reproducible binary-Debian-package assembly
 oci/                  local Debian OCI assembly consuming guest outputs
 tests/acceptance/     hardware/session/CUA journeys and fixtures
 tools/                local tests and licensing gates
@@ -60,17 +65,16 @@ LICENSES/             machine-readable dependency and asset evidence
 ```
 
 - `host/` and `guest/` are separate locked Cargo workspaces. Host crates do not
-  belong to the OCI build context. The portable app builder may build guest
-  outputs only because it carries them as managed migration assets for
-  persistent rootfses.
+  belong to the OCI build context. Guest desktop and Buzzard CUA outputs enter
+  the reference image only through their built `.deb` files.
 - `guest/asset-manifest.tsv` is the authoritative mapping of guest source files
-  to rootfs destinations and modes. OCI installation and the host migration
-  table must be contract-tested against it.
+  to package destinations and modes. The guest desktop package and OCI
+  installation must be contract-tested against it.
 - `oci/compose.yaml` and `oci/build-local.sh` are local developer build entry
   points. They must not authenticate to or push a registry. The manually
   dispatched release-assets workflow builds the same OCI definition only as a
   disposable GitHub-runner intermediate and never publishes that image.
-- Cargo targets, AppDirs, OCI archives, downloaded acceptance applications,
+- Cargo targets, Debian packages, OCI archives, downloaded acceptance applications,
   screenshots, and other generated artifacts are built outside the repository
   by default and are never committed.
 - Distribution assembly runs on a disposable GitHub-hosted Linux x86-64
@@ -78,38 +82,50 @@ LICENSES/             machine-readable dependency and asset evidence
   workflow is artifact-only and has no trigger for pushes or pull requests.
   It uploads its results for inspection and must never create a GitHub
   Release.
-- The workflow never pushes an OCI image, GHCR image, or GitHub Package. It
-  builds the reference OCI locally in the runner, verifies and flattens it,
-  and discards the OCI intermediate when the runner is destroyed.
+- The workflow never pushes an OCI image, GHCR image, GitHub Package, or APT
+  repository. It builds the three `.deb` files and reference OCI locally in
+  the runner for verification and discards intermediates with the runner.
 
-## Distribution artifacts and future publication
+## Debian packages and future APT publication
 
-The checked-in artifact workflow emits exactly one primary file:
+The build emits exactly three independently versioned amd64 binary packages:
 
 ```text
-BuzzardOS-portable-linux-x86_64.tar.xz
+buzzardos_<version>_amd64.deb
+buzzardos-guest-desktop_<version>_amd64.deb
+buzzardcua_<version>_amd64.deb
 ```
 
-- The archive root is exactly `BuzzardOS/`. It contains the executable
-  launcher, dependency installer, dependency-complete `app/`, a verified OCI
-  seed, empty `Machines/`, and `shared/`. First launch atomically creates the
-  `default` machine from the seed.
-- On first launch the OCI seed is materialized through that host's subordinate
-  ID mapping into `Machines/default/rootfs/`. The OCI archive is install media,
-  not the running rootfs; normal operation introduces no overlay.
+- `buzzardos` contains the host manager, broker, display application, desktop
+  file, AppStream metadata, icon, and Buzzard-owned helper payload. It declares
+  its distro-owned runtime dependencies and must install and run on Ubuntu
+  24.04 LTS, Debian 13, and Ubuntu 26.04.
+- `buzzardos-guest-desktop` contains the Buzzard OS shell, Settings, clipboard
+  agent, guest services, session glue, configuration, themes, and desktop
+  integration. It depends on the distro `sway` package and compatible distro
+  wlroots ABI package; it never ships a private compositor build.
+- `buzzardcua` contains the reviewed Linux fork formerly described as TryCua
+  Cua Driver. Its product, package, executable, service-facing, and diagnostic
+  identity is `Buzzard CUA`; upstream attribution remains explicit.
 
-The bundle keeps licensing evidence in two explicit groups: host/application
-payload evidence and guest/rootfs payload evidence. Each group contains the
-notices and corresponding-source/provenance records for the exact payload it
-describes. The runner-generated manifest binds the portable application, OCI rootfs
-archive, source commit, OCI source descriptors, package inventory, and hashes.
+The root `VERSION` file is authoritative for `buzzardos` and
+`buzzardos-guest-desktop`. `guest/BUZZARDCUA_VERSION` is authoritative for
+`buzzardcua`. A built package's `--version`, Debian control metadata,
+AppStream release metadata, and artifact filename must agree. Package upgrades
+must preserve registered machines and mutable rootfses; uninstalling a package
+must not delete them.
 
-`.github/workflows/build-release-assets.yml` is manually dispatched and
-artifact-only. It has no push or pull-request trigger, no release/prerelease
-mode, no publisher job, and no write permission. A successful run uploads
-exactly one short-lived Actions artifact named for the file above. It
-must never create or modify a GitHub Release, tag, environment, package, or
-registry object.
+During development the OCI definition installs the locally built guest `.deb`
+files with APT/dpkg and then installs their declared dependencies from the
+pinned Debian snapshot. Future publication may place the same packages in a
+separately reviewed signed APT repository. Repository signing, key rotation,
+release channels, rollback policy, and upload credentials are not inferred or
+implemented by the current artifact workflow.
+
+`.github/workflows/build-release-assets.yml` remains manually dispatched and
+artifact-only. It has no push or pull-request trigger, no publisher job, and
+no write permission. It must never create or modify a GitHub Release, tag,
+environment, package, registry object, or APT repository.
 
 GitHub Release or prerelease publishing may be designed only through a later,
 separately reviewed explicit change. That future change must add its own strict
@@ -119,93 +135,59 @@ inferred from the current artifact workflow. Artifact assembly currently
 retains the under-2-GiB file guard so the output remains eligible for such
 a future review.
 
-## Portable on-disk layout
+## Host state and rootless contract
 
-All Buzzard OS files live inside one relocatable directory:
+Installed application files follow Debian filesystem policy under `/usr` and
+are owned by dpkg. Mutable machines are never stored under `/usr`, `/var/lib`,
+Docker/Podman storage, or a hidden global Buzzard OS data directory. A machine
+directory has this shape:
 
 ```text
-BuzzardOS/
-├── BuzzardOS                        # executable user entry point
-├── Install-Dependencies             # Debian/Ubuntu uidmap setup and verification
-├── app/
-│   ├── usr/bin/
-│   ├── usr/lib/
-│   ├── usr/libexec/
-│   ├── runtime/default-rootfs.oci.tar.zst
-│   ├── licenses/{host,guest}/
-│   └── provenance/
-├── Machines/
-│   └── <machine-name>/
-│       ├── machine.json
-│       ├── runtime.json
-│       ├── machine.lock
-│       └── rootfs/
-└── shared/
+<user-selected-machine-directory>/
+├── machine.json
+├── runtime.json
+├── machine.lock
+├── cache/
+└── rootfs/
 ```
 
-- `Machines/<machine-name>/rootfs/` is the complete, flat, directly writable guest
-  operating system.
-- `app/runtime/` contains the verified canonical-ID OCI seed used to create new
-  machines offline. It is install media, never the mounted or running rootfs,
-  and is always present in the complete portable artifact.
-- `shared/` is user-managed host/guest storage mounted read/write at `/shared`
-  in every guest.
-- Disposable download and OCI work files live under `Machines/.cache/` and
-  are never part of a machine export.
-- Machine metadata stores portable relative references and never embeds the
-  portable folder's original absolute path.
-
-The top-level launcher derives the portable root from its own real directory,
-exports `BUZZARDOS_PORTABLE_DIR`, and executes the private binary under
-`app/usr/bin/`. `--storage-dir` may explicitly select another portable root.
-
-Do not use `~/.wb`, XDG data directories, Docker/Podman storage, hidden host
-state, or system-wide machine directories. Copying the portable folder must
-move the application, machines, shared files, and cache together without rewriting
-metadata.
-
-## Self-contained portable application and rootless host contract
-
-The extracted `BuzzardOS/` directory is the complete user-facing application. End users must
-not install Buzzard OS's pull, extraction, namespace, network, GPU-injection,
-or packaging helpers themselves. Release helpers are bundled and resolved
-relative to `app/`, never from host `PATH`.
+The application asks for the machine directory during each create/import
+operation. Sharing is optional. A machine may configure zero or more explicit
+host files or directories; each is mounted as a separate entry below
+`/shared`. The GUI provides repeatable Add File, Add Folder, and Remove
+controls, while CLI `--share` is repeatable. It never imposes one storage
+location or one global shared directory for all machines. Removing the host
+package leaves machine and shared data untouched.
 
 Normal host prerequisites are limited to:
 
 - Linux kernel support for the required unprivileged namespaces and mounts.
 - Configured subordinate UID/GID ranges and trusted host
   `newuidmap`/`newgidmap` authorization gates.
-- The bundled namespace helper uses the distro-owned `newuidmap` and
+- The host package uses the distro-owned `unshare`, `newuidmap`, and
   `newgidmap` gates to authorize the exact subordinate-ID map. Buzzard OS does
   not install or use LXC and never disables Ubuntu's global AppArmor policy.
   When Ubuntu's unprivileged-user-namespace AppArmor gate is active, the
-  dependency installer adds only an exact-path `userns` profile for the
-  bundled namespace helper. Moving the portable folder requires rerunning the
-  installer; it never changes the global sysctl or grants a wildcard path.
+  package may add only an exact executable-path `userns` profile for its
+  installed namespace entry point. It never changes the global sysctl or
+  grants a wildcard path.
 - A host Wayland session.
 - A working host GPU kernel driver and permission to selected devices.
 - For optional audio, microphone, and camera integration, a working host
   PipeWire session, its standard PulseAudio-compatible recording service, and
-  permission to the explicitly enabled device. Buzzard OS bundles its
-  PipeWire/GStreamer/PulseAudio client stack; users do not install or configure
-  Buzzard OS-specific host services or helpers.
+  permission to the explicitly enabled device. Those host clients are normal
+  declared Debian dependencies.
 - No host FUSE or AppImage runtime is required for Buzzard OS itself. Guest
   AppImages remain supported inside the isolated guest.
-- Machine export uses the bundled, checksum-pinned Debian bullseye GNU tar and
-  its private libacl/libselinux/libpcre2 closure. It must remain compatible
-  with the declared GLIBC 2.31 host floor and must never copy the disposable
-  build host's newer tar or libraries into the artifact.
-- The native host application is built in the pinned Ubuntu 24.04 environment
-  and every bundled ELF object is recursively required to need no newer than
-  GLIBC 2.39. The final folder is also relocation-checked on pinned Debian 13;
-  a newer build-host library may never silently raise this floor.
+- Machine export uses the distro GNU tar declared by the host package.
+- The native host application is built on Ubuntu 24.04. Its package is
+  install-tested on Ubuntu 24.04, Debian 13, and Ubuntu 26.04; a dependency or
+  symbol floor unavailable on any of those targets fails release acceptance.
 
-The product remains rootless. It does not install a Buzzard OS setuid
-helper, daemon, package, or system service. Host packages installed by the
-explicit dependency script remain distro-owned authorization gates; they do
-not run Buzzard OS or own its portable state. Unsupported host security
-policy must produce a precise diagnostic instead of weakening isolation.
+The product remains rootless. The Buzzard OS package installs no setuid helper,
+privileged daemon, or system service. Distro packages such as `uidmap` remain
+the authorization gates. Unsupported host security policy must produce a
+precise diagnostic instead of weakening isolation.
 
 ## Machine portability and OCI exchange
 
@@ -226,11 +208,11 @@ policy must produce a precise diagnostic instead of weakening isolation.
   stopped and exclusively locked. It enters the exact machine ID namespace,
   snapshots the flat rootfs as one canonical OCI layer, preserves numeric
   guest IDs, hardlinks, symlinks, modes, timestamps, xattrs, ACLs, capabilities
-  and sparse files, excludes runtime mounts and `shared/`, writes all OCI blobs
+  and sparse files, excludes runtime mounts and every configured host share, writes all OCI blobs
   content-addressed, verifies the completed archive, and commits it atomically
   without replacing an existing file.
 - Restore mode preserves a Buzzard OS export's guest machine identity and
-  rejects a duplicate identity in the same portable root. Clone mode and the
+  rejects a duplicate identity in the machine registry. Clone mode and the
   `BuzzardOS clone SOURCE NEW_NAME` convenience command assign a new host
   metadata UUID and remove `/etc/machine-id`, the random seed, and SSH host keys
   inside private staging before the atomic machine-directory commit. On first
@@ -238,7 +220,7 @@ policy must produce a precise diagnostic instead of weakening isolation.
   present, creates only missing default host keys before systemd starts.
   Generic OCI images without a Buzzard OS identity annotation always receive
   fresh destination-local identity.
-- Portable annotations retain machine intent but never pin destination-host
+- OCI annotations retain machine intent but never pin destination-host
   GPU nodes, PipeWire node names, camera nodes, monitor details, runtime
   sockets, or active capture. Imported port rules start disabled and imported
   device sharing starts off until the destination user enables it.
@@ -247,11 +229,11 @@ policy must produce a precise diagnostic instead of weakening isolation.
 
 ## Components
 
-### `wildbuzzard`
+### `buzzardos`
 
 The launcher:
 
-- Owns portable machine configuration and lifecycle.
+- Owns registered per-machine configuration and lifecycle.
 - Pulls and digest-verifies OCI images with bundled functionality.
 - Applies OCI layers correctly, including whiteouts, modes, links, xattrs, and
   ownership metadata.
@@ -266,14 +248,15 @@ The launcher:
 - Reports measured renderer, device, dmabuf, explicit-sync, presentation, and
   fallback diagnostics without inventing a zero-copy result.
 
-### `wildbuzzard-broker`
+### `buzzardos-broker`
 
 The broker:
 
 - Creates user, PID, mount, network, IPC, UTS, and cgroup namespaces.
 - Makes guest systemd namespace PID 1.
 - Mounts the persistent rootfs directly as `/` read/write.
-- Mounts sibling `shared/` at `/shared` read/write.
+- Creates an empty private `/shared` and mounts only the machine's explicit
+  host file/folder shares below it with their configured access mode.
 - Creates only ephemeral guest mounts such as `/proc`, `/run`, `/tmp`, and the
   required `/dev` view.
 - Passes one filtered host Wayland connection to the nested compositor without
@@ -298,9 +281,9 @@ It validates every path and machine identifier, rejects traversal and symlink
 escapes, passes only explicit mounts/devices, and never accepts arbitrary
 mounts or commands from mutable machine metadata.
 
-### `wildbuzzard-display`
+### `buzzardos-display`
 
-`wildbuzzard-display` is a complete native host Wayland application, not a
+`buzzardos-display` is a complete native host Wayland application, not a
 decoration strip retrofitted onto a guest-owned toplevel. It owns the only host
 `xdg_toplevel` before the machine starts, while it boots, while it runs, after
 it stops, and when startup fails. The guest compositor's output is an embedded
@@ -444,7 +427,7 @@ before those bytes become a host clipboard value.
 ### Complete desktop protocol boundary
 
 The filtered display gateway is a complete virtual-monitor and input backend
-for the pinned wlroots Wayland backend. It is not a permanently minimal
+for the distribution-provided wlroots Wayland backend. It is not a permanently minimal
 allowlist that gains ordinary desktop capabilities only after applications
 break.
 
@@ -455,7 +438,7 @@ Protocol responsibilities are classified explicitly:
   accessibility, activation, clipboard, drag-and-drop, input-method, relative
   pointer, pointer constraints, gestures, tablet, touch, presentation, dmabuf,
   explicit-sync, color-management, and Xwayland integration as supported by
-  the pinned guest stack. These protocols do not expose the host.
+  the distro-resolved guest stack. These protocols do not expose the host.
 - The gateway translates every safe host capability required to make
   Sway's one nested output behave like a complete physical monitor and
   input seat. This includes native logical/physical modes, refresh and
@@ -492,7 +475,7 @@ GPU identity is acceptable. Mixed-scale, mixed-refresh, mixed-color-space,
 rotated, SDR/HDR, iGPU/dGPU, and hot-plugged monitor transitions must not
 require restarting the machine or rebuilding the application.
 
-The release protocol inventory is checked against the pinned Sway, wlroots,
+The release protocol inventory is checked against the resolved distro Sway, wlroots,
 Wayland, wayland-protocols, GTK, and host-compositor interfaces. Automated
 contract tests fail when the nested backend begins requiring an unclassified
 protocol or when a required translated capability lacks a handler. This is a
@@ -510,19 +493,14 @@ The reference image is a Debian-family desktop with:
 - The fixed GStreamer/PipeWire elements required by the private, host-gated
   media endpoints. These elements connect only to the guest PipeWire service.
 - A private AT-SPI registry and accessibility tree.
-- Unmodified upstream Sway 1.12, pinned to source commit
-  `88869399f421d9180dd8b6ed0b5a1f4a3585d252`, and upstream wlroots 0.20.2,
-  pinned to source commit `d783533489e1f75d6886c2ab5c5960090ef268f8`.
-  The final image
-  contains their licenses but no compositor source or build toolchain.
-- One normalized `xkb-data` tree resolved from the same immutable Debian
-  snapshot as the pinned Sway build. The guest uses only
-  `/opt/wildbuzzard/runtime/current/share/X11/xkb`; the host display uses only
-  the byte-identical extracted-app tree at `usr/share/wildbuzzard/xkb`. Both copies
-  use the same sway-builder `libxkbcommon.so.0`, are bound to canonical file
-  manifests and package versions, contain no symlinks or special files, carry
-  the Debian package copyrights, and must never silently fall back to a host
-  or mutable guest XKB data/library directory.
+- Unmodified Sway, wlroots, `libxkbcommon`, and `xkb-data` installed from the
+  guest distribution's configured APT repositories. Buzzard OS does not fetch,
+  fork, compile, or privately ship those projects. The reference-image build
+  records their exact resolved Debian package versions.
+- The guest uses the distro-owned `/usr/share/X11/xkb` and
+  `libxkbcommon.so.0`. The host display uses its host distro equivalents. The
+  paired keyboard protocol binds the canonical compiled keymap digest rather
+  than requiring byte-identical host and guest package payloads.
 - Human keyboard layout changes are paired host/guest transactions, never a
   Sway-only mutation. RMLVO validation is identical in Settings, output-sync,
   and the host parser: ASCII component syntax and byte limits are exact,
@@ -541,7 +519,8 @@ The reference image is a Debian-family desktop with:
   through typed Status requests before physical input resumes.
 - Xwayland for legacy X11 applications.
 - Buzzard OS's native Rust desktop shell.
-- TryCua Cua Driver running as the interactive user.
+- Buzzard CUA running as the interactive user from the separately versioned
+  `buzzardcua` package.
 - GTK, Qt/KDE, Electron, Chromium, Vulkan, and OpenGL application support.
 - Exactly four preinstalled, user-facing general applications: Firefox ESR,
   the customized Thunar file manager, Mousepad, and Foot. `ffmpeg` remains a
@@ -560,8 +539,8 @@ Buzzard OS Electron demo, or private wlroots fork. Removing `x11-apps` and
 XTerm/UXTerm does not remove Xwayland support. Removing Mesa/Vulkan diagnostic
 tools does not remove the graphics runtime or drivers. Users may install or
 replace desktop software inside their persistent machine. That cannot alter
-the host, but replacing the reference compositor or boot assets may make Wild
-Buzzard integration diagnostics fail.
+the host, but replacing the reference compositor or boot assets may make Buzzard
+OS integration diagnostics fail.
 
 The persistent rootfs remains `nosuid` and the guest retains Linux
 `no_new_privs`. Native AppImage execution must not solve FUSE authorization by
@@ -680,7 +659,7 @@ private guest D-Bus session
   and completes a bounded same-client sync after releases and zero modifiers;
   session teardown fail-stops if that boundary cannot be proven. A failed roundtrip first drains the local pressed-key
   ledger on the same keyboard. If that connection is dead, it closes the
-  virtual keyboard so pinned wlroots releases its compositor-side pressed set
+  virtual keyboard so wlroots releases its compositor-side pressed set
   on that same device before Sway removes it, then reconnects and publishes a
   zero modifier state. Recovery never replays a press on a replacement device.
   SDK shutdown resets but does not terminate the reusable process-global owner;
@@ -703,7 +682,7 @@ private guest D-Bus session
   hook or clearly labelled interactive human step; the test fails rather than
   silently substituting guest input.
 
-### Buzzard OS CUA Driver fork
+### Buzzard CUA fork
 
 The repository carries the required Linux driver sources as an auditable fork
 of [`trycua/cua`](https://github.com/trycua/cua), pinned to an exact upstream
@@ -714,7 +693,7 @@ commit. It is not downloaded unpinned during a release build.
 - Keep Buzzard OS modifications identifiable in source and changelog files.
   Do not claim upstream endorsement and do not remove third-party notices.
 - Vendor only the packages and transitive source/assets actually required by
-  the in-guest Cua Driver and MCP/CLI contract. Record and comply with every
+  the in-guest Buzzard CUA and MCP/CLI contract. Record and comply with every
   vendored third-party license; optional components with additional license
   obligations are not silently included.
 - CUA product telemetry is removed from the fork: there is no telemetry
@@ -883,15 +862,16 @@ Media sharing is default-deny and independently revocable:
   internal mapping and guest source. When disabled, the guest has no host
   device node, host PipeWire socket, capture process, reusable stream endpoint,
   or other route to that input.
-- The extracted application bundles the client libraries, GStreamer launcher, plugins, and
-  bridge code. It uses the already-running desktop PipeWire service in the
+- The host package declares the client libraries, GStreamer launcher, plugins,
+  and installs Buzzard OS bridge code. It uses the already-running desktop PipeWire service in the
   same way as a native application; it never asks the user to install global
   bridge packages.
 
 The guest receives no host filesystem or desktop-service access except:
 
 - its persistent rootfs mounted as `/`;
-- portable `shared/` mounted at `/shared`;
+- only the machine's explicitly configured optional file/folder shares mounted
+  as separate entries below `/shared`;
 - selected GPU/device and matching driver resources;
 - the one filtered Wayland connection;
 - the fixed per-machine clipboard-agent endpoint, which can receive only a
@@ -907,13 +887,14 @@ Docker/Podman sockets, or the real host Wayland socket.
 
 Creation:
 
-1. Validate the machine name and portable paths.
-2. Select the verified bundled OCI seed by default, or resolve, pull,
-   and digest-verify an explicitly requested OCI image/layout/archive.
+1. Validate the machine name, exact selected machine directory, and optional
+   repeatable host file/folder shares.
+2. Resolve and digest-verify the explicitly requested OCI image/layout/archive.
 3. Apply the OCI layers on the same filesystem into a
    staging directory, using the recipient host's full subordinate-ID mapping.
 4. Install versioned guest boot/session assets.
-5. Atomically rename into `Machines/<name>/`.
+5. Atomically rename the staging tree to the exact user-selected machine
+   directory, then register its UUID/name/path in the JSON index.
 6. Never replace an existing machine implicitly.
 
 Start:
@@ -937,7 +918,7 @@ Stop:
 4. Tear down namespaces and ephemeral mounts.
 5. Detach the guest output and return the same native application window to
    `Stopped`.
-6. Leave every rootfs and `shared/` change intact.
+6. Leave every rootfs and external shared-path change intact.
 
 Normal start never repulls the image. Rebase/update is explicit and never
 discards local changes without informed user action.
@@ -950,10 +931,11 @@ captured artifacts demonstrate every requirement below. A coding agent must
 not stop after compilation, unit tests, process-start checks, or API exit
 status while any safe in-scope acceptance scenario remains untested.
 
-- The extracted portable application runs without separately installed Buzzard OS helpers.
+- The three versioned `.deb` packages install cleanly and upgrade through dpkg/APT.
 - The final OCI already contains every managed guest asset and both compiled
-  guest executables before the launcher performs any persistent-rootfs
-  migration. Its installed manifest, paths, modes, Sway/wlroots pins, CUA
+  guest executables as dpkg-owned files. The host launcher never injects,
+  migrates, or overwrites guest package payloads during import or start. Its
+  installed manifest, paths, modes, distro Sway/wlroots packages, CUA
   attribution, and required commands pass `oci/verify-image.sh`.
 - Download the current official x86-64 LM Studio AppImage outside the
   repository, verify its vendor-published digest, copy it into `/shared` with
@@ -978,12 +960,12 @@ status while any safe in-scope acceptance scenario remains untested.
   host desktop recording/privacy indication and disappear on disable. After
   disablement, attempts from the guest to reconnect to the old endpoint fail
   and no host capture process remains.
-- The released extracted application passes the same media tests with host PATH stripped;
-  its GStreamer/PipeWire executables, plugins, libraries, and licenses resolve
-  only from the mounted AppDir.
-- All machine state is beside the top-level `BuzzardOS` executable, including `shared/`, never
-  `~/.wb`.
-- Copying the portable folder needs no metadata rewrite.
+- The installed host package passes the same media tests with only its declared
+  Debian dependencies and dpkg-owned Buzzard OS helpers.
+- Machine data is stored only in each user-selected machine directory; the XDG
+  JSON file is an index and never contains rootfs data.
+- Moving a stopped machine requires only re-registering its new directory;
+  guest ownership is not rewritten.
 - A guest file and installed package survive full stop/start.
 - systemd is namespace PID 1 and the interactive user can run services and
   passwordless guest sudo.
@@ -1051,8 +1033,8 @@ status while any safe in-scope acceptance scenario remains untested.
     verify exactly one correctly titled task per window;
   - browse a real page in Firefox ESR, interact with page controls, scroll,
     type text, change tabs, and confirm its complete accessibility tree;
-  - create, rename, copy, move, and delete test files in `Files` and `Shared`,
-    and verify `/shared` changes from both guest and portable host folder;
+  - create, rename, copy, move, and delete test files in `Files` and every
+    configured shared entry, and verify changes from both guest and the selected host path;
   - use a terminal to run normal commands and a passwordless guest
     `sudo apt install`, then prove the installed package persists after a full
     Stop/Start cycle;
@@ -1071,16 +1053,18 @@ status while any safe in-scope acceptance scenario remains untested.
   decorations, blur/stretching, and incorrect focus before declaring success.
 - AT-SPI enumerates and invokes shell, GTK, Qt/KDE, Electron/Chromium, and
   compatible Xwayland controls.
-- The vendored TryCua fork is pinned, reproducible, carries its MIT license and
+- The vendored Buzzard CUA fork is pinned, reproducible, carries its upstream
+  MIT license and
   upstream attribution, records local modifications, and passes license
   inventory checks.
 - The default network and desktop-service isolation boundaries hold.
 - Vulkan/OpenGL render on every selected GPU; NVIDIA CUDA and codec injection
   work when selected.
 - NVIDIA acceptance is performed on a host that does not provide
-  `nvidia-ctk`, `nvidia-container-cli`, or libnvidia-container through `PATH`
-  or runtime linker search paths. The extracted app's pinned bundled toolkit must
-  generate and apply its private CDI result successfully.
+  `nvidia-ctk`, `nvidia-container-cli`, or libnvidia-container through an
+  undeclared `PATH` or runtime linker search path. The host package's declared
+  NVIDIA helper payload must generate and apply its private CDI result
+  successfully.
 - Run `nvidia-smi -L` and a compiled CUDA compute probe inside the guest, then
   run the architecture-matching CUDA artifact from
   `openresearchtools/llama-cpp-arm64-builds` release `b10276`. On x86_64 the
@@ -1088,7 +1072,7 @@ status while any safe in-scope acceptance scenario remains untested.
   `llama-b10276-bin-ubuntu-cuda13-x64.tar.gz`, SHA-256
   `4747dd212618ed5eecef318a3538b9e9ee4c3fb2808b226420aa8152a2fe0724`;
   on ARM64 use the corresponding ARM64 CUDA artifact and its published digest.
-  Download it once into portable `cache/` for the hardware test only; do not
+  Download it once into the acceptance machine's `cache/` for the hardware test only; do not
   bundle llama.cpp or a model in the released app/reference image.
 - With a small test GGUF in the dedicated acceptance machine, require
   llama.cpp device enumeration to report the selected NVIDIA GPU, run a real

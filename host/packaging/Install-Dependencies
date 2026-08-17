@@ -60,7 +60,7 @@ if [ "$gid" -ge "$subgid_start" ] && [ "$gid" -lt $((subgid_start + 65536)) ]; t
 fi
 
 portable_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-unshare="$portable_dir/app/usr/libexec/wildbuzzard/unshare"
+unshare="$portable_dir/app/usr/libexec/buzzardos/unshare"
 [ -x "$unshare" ] || fail "the bundled namespace helper is missing: $unshare"
 
 # Ubuntu enables a global AppArmor gate for unprivileged user namespaces. Do

@@ -7,14 +7,14 @@ fn main() {
         eprintln!("clipboard-agent fatal: internal_panic");
     }));
     let arguments: Vec<_> = std::env::args_os().collect();
-    if wildbuzzard_clipboard_agent::is_internal_worker_invocation(&arguments) {
-        std::process::exit(wildbuzzard_clipboard_agent::internal_worker_entrypoint());
+    if buzzardos_clipboard_agent::is_internal_worker_invocation(&arguments) {
+        std::process::exit(buzzardos_clipboard_agent::internal_worker_entrypoint());
     }
     if arguments.len() != 1 {
         eprintln!("clipboard-agent startup failed: unexpected_arguments");
         std::process::exit(2);
     }
-    if let Err(error) = wildbuzzard_clipboard_agent::run() {
+    if let Err(error) = buzzardos_clipboard_agent::run() {
         eprintln!("clipboard-agent startup failed: {}", error.category());
         std::process::exit(1);
     }

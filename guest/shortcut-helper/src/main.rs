@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use buzzardos_desktop_core::{DesktopDirectory, RegistrationId, XdgPaths};
+use buzzardos_shortcut_helper::{
+    LaunchStatus, RegistrationFlags, RegistrationStore, install_thunar_actions, validate_appimage,
+};
 use gio::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use wildbuzzard_desktop_core::{DesktopDirectory, RegistrationId, XdgPaths};
-use wildbuzzard_shortcut_helper::{
-    LaunchStatus, RegistrationFlags, RegistrationStore, install_thunar_actions, validate_appimage,
-};
 
 #[cfg(feature = "chooser")]
-use wildbuzzard_shortcut_helper::{RelinkOutcome, choose_relink, launch_with_relink};
+use buzzardos_shortcut_helper::{RelinkOutcome, choose_relink, launch_with_relink};
 
 fn main() {
     match run(std::env::args_os().skip(1).collect()) {
@@ -40,7 +40,7 @@ fn main() {
 fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
     let (command, rest) = arguments
         .split_first()
-        .context("usage: wildbuzzard-shortcut-helper COMMAND [ARGUMENTS]")?;
+        .context("usage: buzzardos-shortcut-helper COMMAND [ARGUMENTS]")?;
     let command = command
         .to_str()
         .context("command name must be valid UTF-8")?;
@@ -211,8 +211,8 @@ struct DesktopItemJson {
     name: String,
     display_name: String,
     path: PathBuf,
-    identity: wildbuzzard_desktop_core::FileIdentity,
-    kind: wildbuzzard_desktop_core::DesktopItemKind,
+    identity: buzzardos_desktop_core::FileIdentity,
+    kind: buzzardos_desktop_core::DesktopItemKind,
     size: u64,
 }
 

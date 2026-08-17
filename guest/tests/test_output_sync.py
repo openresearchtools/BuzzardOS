@@ -19,8 +19,8 @@ from unittest import mock
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SYSTEM_XKB_ROOT = "/usr/share/X11/xkb"
-SCRIPT = REPOSITORY / "guest/assets/wildbuzzard-output-sync"
-LOADER = SourceFileLoader("wildbuzzard_output_sync", str(SCRIPT))
+SCRIPT = REPOSITORY / "guest/assets/buzzardos-output-sync"
+LOADER = SourceFileLoader("buzzardos_output_sync", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None
 OUTPUT_SYNC = importlib.util.module_from_spec(SPEC)
@@ -244,7 +244,7 @@ class OutputScaleContractTests(unittest.TestCase):
             OUTPUT_SYNC.compile_keymap(
                 dict(OUTPUT_SYNC.DEFAULT_KEYBOARD),
                 SYSTEM_XKB_ROOT,
-                "/missing/wildbuzzard/libxkbcommon.so.0",
+                "/missing/buzzardos/libxkbcommon.so.0",
                 require_packaged=False,
             )
 
@@ -253,13 +253,13 @@ class OutputScaleContractTests(unittest.TestCase):
             OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
         ):
             listener, path = OUTPUT_SYNC.control_listener(
-                "wildbuzzard-keyboard-settings.sock"
+                "buzzardos-keyboard-settings.sock"
             )
             try:
                 metadata = OUTPUT_SYNC.os.lstat(path)
                 self.assertTrue(stat.S_ISSOCK(metadata.st_mode))
                 self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o600)
-                self.assertTrue(path.endswith("wildbuzzard-keyboard-settings.sock"))
+                self.assertTrue(path.endswith("buzzardos-keyboard-settings.sock"))
             finally:
                 listener.close()
                 OUTPUT_SYNC.os.unlink(path)
@@ -309,8 +309,8 @@ class OutputScaleContractTests(unittest.TestCase):
                 "xkb_active_layout_name": "English (US)",
             },
             {
-                "identifier": "1:2:wayland-keyboard-wildbuzzard-seat",
-                "name": "wayland-keyboard-wildbuzzard-seat",
+                "identifier": "1:2:wayland-keyboard-buzzardos-seat",
+                "name": "wayland-keyboard-buzzardos-seat",
                 "type": "keyboard",
                 "xkb_active_layout_name": "English (UK)",
             },
@@ -318,13 +318,13 @@ class OutputScaleContractTests(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout=__import__("json").dumps(inventory).encode())
         with mock.patch.object(OUTPUT_SYNC.subprocess, "run", return_value=completed):
             identifier, active_name = OUTPUT_SYNC.nested_physical_keyboard()
-        self.assertEqual(identifier, "1:2:wayland-keyboard-wildbuzzard-seat")
+        self.assertEqual(identifier, "1:2:wayland-keyboard-buzzardos-seat")
         self.assertEqual(active_name, "English (UK)")
 
     def test_keyboard_target_requires_exactly_one_nested_physical_device(self):
         matching = {
-            "identifier": "1:2:wayland-keyboard-wildbuzzard-seat",
-            "name": "wayland-keyboard-wildbuzzard-seat",
+            "identifier": "1:2:wayland-keyboard-buzzardos-seat",
+            "name": "wayland-keyboard-buzzardos-seat",
             "type": "keyboard",
             "xkb_active_layout_name": "English (US)",
         }
@@ -414,14 +414,14 @@ class OutputScaleContractTests(unittest.TestCase):
             with mock.patch.object(
                 OUTPUT_SYNC,
                 "nested_physical_keyboard",
-                return_value=("1:2:wayland-keyboard-wildbuzzard-seat", "English (US)"),
+                return_value=("1:2:wayland-keyboard-buzzardos-seat", "English (US)"),
             ), mock.patch.object(OUTPUT_SYNC.subprocess, "run", side_effect=swaymsg):
                 self.assertEqual(OUTPUT_SYNC.apply_sway_keymap(snapshot), "English (US)")
             self.assertEqual(observed, [contents])
             self.assertEqual(Path(snapshot["path"]).read_bytes(), b"hostile replacement")
             OUTPUT_SYNC.remove_managed_keymap(snapshot["path"])
 
-    def test_snapshot_read_fails_closed_on_replacement_during_opened_read(self):
+    def test_snapshot_read_stays_bound_to_opened_inode_during_path_replacement(self):
         contents = b"xkb_keymap { // opened inode\n};"
         digest = OUTPUT_SYNC.keyboard_digest(contents)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
@@ -447,8 +447,7 @@ class OutputScaleContractTests(unittest.TestCase):
                 return real_read(descriptor, length)
 
             with mock.patch.object(OUTPUT_SYNC.os, "read", side_effect=replace_then_read):
-                with self.assertRaisesRegex(ValueError, "changed while it was being read"):
-                    OUTPUT_SYNC.read_keymap_snapshot(snapshot)
+                self.assertEqual(OUTPUT_SYNC.read_keymap_snapshot(snapshot), contents)
             self.assertEqual(Path(snapshot["path"]).read_bytes(), b"different inode")
             OUTPUT_SYNC.remove_managed_keymap(snapshot["path"])
 
@@ -1116,13 +1115,13 @@ class OutputScaleContractTests(unittest.TestCase):
             acknowledge.assert_called_once()
 
     def test_desktop_services_supervises_output_sync_with_bounded_backoff(self):
-        services = (REPOSITORY / "guest/assets/wildbuzzard-desktop-services").read_text()
+        services = (REPOSITORY / "guest/assets/buzzardos-desktop-services").read_text()
         self.assertIn("start_output_sync_supervisor", services)
         self.assertIn("while :; do", services)
         self.assertIn("sleep 0.2", services)
         self.assertIn("sleep 2", services)
         self.assertNotIn(
-            'start_service output-sync "$runtime/libexec/wildbuzzard-output-sync"',
+            'start_service output-sync "$runtime/libexec/buzzardos-output-sync"',
             services,
         )
 

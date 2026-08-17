@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use buzzardos_desktop_core::{
+    DesktopDirectory, DesktopItem, DesktopLayout, DesktopPosition, XdgPaths,
+};
 use gio::prelude::AppInfoExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use wildbuzzard_desktop_core::{
-    DesktopDirectory, DesktopItem, DesktopLayout, DesktopPosition, XdgPaths,
-};
 
 use crate::model::Rect;
 
@@ -50,7 +50,7 @@ impl DesktopModel {
                     // shell can still lay items out in memory, but must not
                     // replace a document it cannot interpret.
                     eprintln!(
-                        "wildbuzzard-shell: desktop layout at {} was preserved and is read-only: {error}",
+                        "buzzardos-shell: desktop layout at {} was preserved and is read-only: {error}",
                         layout_path.display()
                     );
                     (DesktopLayout::default(), false)
@@ -107,7 +107,7 @@ impl DesktopModel {
     pub fn rescan(&mut self) -> Result<bool> {
         let mut items = self.directory.list().context("listing XDG Desktop")?;
         for item in &mut items {
-            if item.kind == wildbuzzard_desktop_core::DesktopItemKind::Launcher {
+            if item.kind == buzzardos_desktop_core::DesktopItemKind::Launcher {
                 item.display_name = launcher_display_name(item);
             }
         }

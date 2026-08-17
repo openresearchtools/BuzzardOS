@@ -1,4 +1,4 @@
-# Wild Buzzard CUA Driver source subset
+# Buzzard CUA source subset
 
 This directory contains the source required to build and validate Wild
 Buzzard's Linux CUA Driver for the private Sway/Wayland/Xwayland guest session.
@@ -10,7 +10,7 @@ above this directory:
 - `../UPSTREAM.toml` pins the exact upstream repository, tag, and commit;
 - `../LICENSE.md` preserves the upstream MIT license and copyright notice;
 - `../CITATION.cff` preserves upstream citation metadata;
-- `../CHANGES.WILDBUZZARD.md` identifies Wild Buzzard changes;
+- `../CHANGES.BUZZARDOS.md` identifies Buzzard OS changes;
 - `../LINUX_SCOPE.toml` records the reviewed source boundary.
 
 This is deliberately not a cross-platform Cua distribution. macOS and Windows
@@ -40,8 +40,8 @@ cargo test --locked --workspace --all-targets
 ```
 
 Set `CARGO_TARGET_DIR` to a path outside the repository. Interactive tests are
-marked `#[ignore]` and require the Wild Buzzard guest's Sway, AT-SPI, and
+marked `#[ignore]` and require the Buzzard OS guest's Sway, AT-SPI, and
 application fixtures. See `rust/crates/cua-driver/tests/README.md`.
 
 The source fork is not endorsed by Cua AI, Inc. Its MIT terms remain separate
-from Wild Buzzard's own project license.
+from Buzzard OS's own project license.

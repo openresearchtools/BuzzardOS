@@ -1,9 +1,9 @@
 [workspace]
 members = [
     "crates/wb-core",
-    "crates/wildbuzzard",
-    "crates/wildbuzzard-broker",
-    "crates/wildbuzzard-display",
+    "crates/buzzardos",
+    "crates/buzzardos-broker",
+    "crates/buzzardos-display",
 ]
 resolver = "2"
 
@@ -36,7 +36,7 @@ wayland-protocols = { version = "0.32", features = ["client", "server", "staging
 wayland-server = "0.31"
 xkbcommon = "0.8"
 zstd = { version = "0.13", features = ["zstdmt"] }
-wildbuzzard-clipboard-protocol = { path = "../clipboard-protocol" }
+buzzardos-clipboard-protocol = { path = "../clipboard-protocol" }
 
 [profile.release]
 lto = "thin"

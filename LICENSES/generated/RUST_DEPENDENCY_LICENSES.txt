@@ -1,4 +1,4 @@
-Wild Buzzard locked Rust dependency license and notice files
+Buzzard OS locked Rust dependency license and notice files
 Generated from the x86_64 Linux normal/build release graphs.
 Package versions and crates.io checksums are in the adjacent TSV files.
 

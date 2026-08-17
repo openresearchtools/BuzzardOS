@@ -1,13 +1,13 @@
 [General]
-ColorScheme=WildBuzzard-Dark
-Name=WildBuzzard-Dark
+ColorScheme=BuzzardOS-Dark
+Name=BuzzardOS-Dark
 shadeSortColumn=true
 
 [KDE]
 contrast=4
 
 [Icons]
-Theme=WildBuzzard
+Theme=BuzzardOS
 
 [Colors:Button]
 BackgroundAlternate=58,58,58

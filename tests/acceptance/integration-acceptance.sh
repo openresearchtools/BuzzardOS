@@ -17,7 +17,7 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 artifact_dir=${3:-"$portable_dir/acceptance/integrations-$stamp"}
 fixture="$project_dir/tests/acceptance/integration-echo-fixture.py"
 gnome_microphone_probe="$project_dir/tests/acceptance/gnome-microphone-indicator-probe.js"
-guest_fixture="/shared/.wildbuzzard-integration-acceptance-$stamp-$$.py"
+guest_fixture="/shared/.buzzardos-integration-acceptance-$stamp-$$.py"
 host_fixture="$shared/$(basename -- "$guest_fixture")"
 original_config="$artifact_dir/machine.original.json"
 settings_file="$artifact_dir/integrations.requested.json"
@@ -45,13 +45,13 @@ guest() {
         setpriv --reuid=0 --regid=0 --clear-groups \
         setpriv --reuid=1000 --regid=1000 --clear-groups \
         env -i \
-        HOME=/home/wildbuzzard \
-        USER=wildbuzzard \
-        LOGNAME=wildbuzzard \
+        HOME=/home/buzzard \
+        USER=buzzard \
+        LOGNAME=buzzard \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        LD_LIBRARY_PATH=/run/wildbuzzard-host/driver/lib \
+        LD_LIBRARY_PATH=/run/buzzardos-host/driver/lib \
         "$@"
 }
 
@@ -139,12 +139,12 @@ cleanup() {
     rm -f -- "$host_fixture"
     if [[ -n ${container_pid:-} ]]; then
         guest rm -f \
-            /tmp/wildbuzzard-integration-acceptance-echo.json \
-            /tmp/wildbuzzard-integration-acceptance-audio.raw \
-            /tmp/wildbuzzard-integration-acceptance-audio.log \
-            /tmp/wildbuzzard-integration-acceptance-mic.raw \
-            /tmp/wildbuzzard-integration-acceptance-camera.raw \
-            /tmp/wildbuzzard-integration-acceptance-guest-echo.log \
+            /tmp/buzzardos-integration-acceptance-echo.json \
+            /tmp/buzzardos-integration-acceptance-audio.raw \
+            /tmp/buzzardos-integration-acceptance-audio.log \
+            /tmp/buzzardos-integration-acceptance-mic.raw \
+            /tmp/buzzardos-integration-acceptance-camera.raw \
+            /tmp/buzzardos-integration-acceptance-guest-echo.log \
             >/dev/null 2>&1 || true
     fi
     return "$saved_status"
@@ -584,8 +584,8 @@ assert_media_disabled() {
         .integrations.host_camera.host_pid == null and
         .integrations.host_camera.guest_pid == null
     ' "all media bridges to be absent"
-    wait_guest_node wildbuzzard_host_microphone false
-    wait_guest_node wildbuzzard_host_camera false
+    wait_guest_node buzzardos_host_microphone false
+    wait_guest_node buzzardos_host_camera false
     if pw-dump | jq -e '
         any(.[];
             ((.info.props?["application.name"]? // "") | contains("Buzzard OS Guest Audio")) or
@@ -634,8 +634,8 @@ wait_file "$host_ready"
 host_target_tcp=$(jq -er '.tcp_port' "$host_ready")
 host_target_udp=$(jq -er '.udp_port' "$host_ready")
 
-guest_ready=/tmp/wildbuzzard-integration-acceptance-echo.json
-guest_echo_pid=$(guest_background /tmp/wildbuzzard-integration-acceptance-guest-echo.log \
+guest_ready=/tmp/buzzardos-integration-acceptance-echo.json
+guest_echo_pid=$(guest_background /tmp/buzzardos-integration-acceptance-guest-echo.log \
     python3 "$guest_fixture" server --address 0.0.0.0 --tcp-port 0 --udp-port 0 \
     --prefix guest --ready "$guest_ready")
 wait_guest_file "$guest_ready"
@@ -690,8 +690,8 @@ assert_host_endpoint_closed udp "$host_forward_udp"
 assert_guest_endpoint_closed tcp "$guest_reverse_tcp"
 assert_guest_endpoint_closed udp "$guest_reverse_udp"
 for identifier in "$id_host_udp" "$id_guest_tcp" "$id_guest_udp"; do
-    guest test ! -e "/run/wildbuzzard-host/reverse/forward-$identifier.sock"
-    guest test ! -e "/run/wildbuzzard-host/reverse/reverse-$identifier.sock"
+    guest test ! -e "/run/buzzardos-host/reverse/forward-$identifier.sock"
+    guest test ! -e "/run/buzzardos-host/reverse/reverse-$identifier.sock"
 done
 assert_container_unchanged
 
@@ -758,7 +758,7 @@ wait_gnome_microphone_accounting baseline false gnome-microphone-baseline.json
 write_settings '[]' false true false "$host_mic_name"
 wait_runtime '.integrations.host_microphone.enabled and .integrations.host_microphone.active and (.integrations.host_microphone.host_pid != null) and (.integrations.host_microphone.guest_pid != null)' \
     "microphone bridge activation"
-wait_guest_node wildbuzzard_host_microphone true
+wait_guest_node buzzardos_host_microphone true
 mic_host_pid=$(jq -er '.integrations.host_microphone.host_pid' "$runtime")
 mic_guest_pid=$(jq -er '.integrations.host_microphone.guest_pid' "$runtime")
 wait_host_microphone_stream \
@@ -766,10 +766,10 @@ wait_host_microphone_stream \
 record_microphone_runtime_evidence enabled "$mic_host_pid" "$host_mic_name"
 wait_gnome_microphone_accounting enabled true gnome-microphone-enabled.json
 bounded_guest 4 gst-launch-1.0 -q \
-    pipewiresrc target-object=wildbuzzard_host_microphone num-buffers=48 do-timestamp=true \
+    pipewiresrc target-object=buzzardos_host_microphone num-buffers=48 do-timestamp=true \
     ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2 \
-    ! filesink location=/tmp/wildbuzzard-integration-acceptance-mic.raw
-mic_metrics=$(raw_metrics /tmp/wildbuzzard-integration-acceptance-mic.raw)
+    ! filesink location=/tmp/buzzardos-integration-acceptance-mic.raw
+mic_metrics=$(raw_metrics /tmp/buzzardos-integration-acceptance-mic.raw)
 printf '%s\n' "$mic_metrics" | jq . >"$artifact_dir/microphone-samples.json"
 jq -e '.bytes > 4096 and .nonzero_bytes > 1024' <<<"$mic_metrics" >/dev/null ||
     fail "microphone bridge produced no measurable guest samples: $mic_metrics"
@@ -803,7 +803,7 @@ assert_container_unchanged
 write_settings '[]' false false true "" "$host_camera_name"
 wait_runtime '.integrations.host_camera.enabled and .integrations.host_camera.active and (.integrations.host_camera.host_pid != null) and (.integrations.host_camera.guest_pid != null)' \
     "camera bridge activation"
-wait_guest_node wildbuzzard_host_camera true
+wait_guest_node buzzardos_host_camera true
 guest busctl --user get-property \
     org.freedesktop.portal.Desktop \
     /org/freedesktop/portal/desktop \
@@ -815,10 +815,10 @@ camera_guest_pid=$(jq -er '.integrations.host_camera.guest_pid' "$runtime")
 camera_host_start=$(host_process_start "$camera_host_pid")
 camera_guest_start=$(guest_process_start "$camera_guest_pid")
 bounded_guest 4 gst-launch-1.0 -q \
-    pipewiresrc target-object=wildbuzzard_host_camera num-buffers=3 do-timestamp=true \
+    pipewiresrc target-object=buzzardos_host_camera num-buffers=3 do-timestamp=true \
     ! videoconvert ! video/x-raw,format=BGRA \
-    ! filesink location=/tmp/wildbuzzard-integration-acceptance-camera.raw
-camera_metrics=$(guest python3 - /tmp/wildbuzzard-integration-acceptance-camera.raw <<'PY'
+    ! filesink location=/tmp/buzzardos-integration-acceptance-camera.raw
+camera_metrics=$(guest python3 - /tmp/buzzardos-integration-acceptance-camera.raw <<'PY'
 import json, pathlib, sys
 payload = pathlib.Path(sys.argv[1]).read_bytes()
 rgb = [payload[index] for index in range(len(payload)) if index % 4 != 3]
@@ -852,7 +852,7 @@ audio_host_pid=$(jq -er '.integrations.guest_audio_output.host_pid' "$runtime")
 audio_guest_pid=$(jq -er '.integrations.guest_audio_output.guest_pid' "$runtime")
 audio_host_start=$(host_process_start "$audio_host_pid")
 audio_guest_start=$(guest_process_start "$audio_guest_pid")
-guest_audio_generator_pid=$(guest_background /tmp/wildbuzzard-integration-acceptance-audio.log \
+guest_audio_generator_pid=$(guest_background /tmp/buzzardos-integration-acceptance-audio.log \
     gst-launch-1.0 -q audiotestsrc is-live=true wave=sine volume=0.2 \
     ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=2 \
     ! pipewiresink sync=false)
@@ -860,8 +860,8 @@ bounded_guest 4 gst-launch-1.0 -q \
     pipewiresrc num-buffers=48 do-timestamp=true \
     stream-properties=props,stream.capture.sink=true,stream.monitor=true \
     ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2 \
-    ! filesink location=/tmp/wildbuzzard-integration-acceptance-audio.raw
-audio_metrics=$(raw_metrics /tmp/wildbuzzard-integration-acceptance-audio.raw)
+    ! filesink location=/tmp/buzzardos-integration-acceptance-audio.raw
+audio_metrics=$(raw_metrics /tmp/buzzardos-integration-acceptance-audio.raw)
 jq -e '.bytes > 4096 and .nonzero_bytes > 1024' <<<"$audio_metrics" >/dev/null ||
     fail "guest output monitor produced no measurable samples: $audio_metrics"
 pw-dump | jq -e '

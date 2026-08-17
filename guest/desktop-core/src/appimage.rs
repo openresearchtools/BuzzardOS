@@ -27,11 +27,11 @@ impl RegistrationId {
     }
 
     pub fn desktop_file_id(self) -> String {
-        format!("wildbuzzard-appimage-{}.desktop", self.0)
+        format!("buzzardos-appimage-{}.desktop", self.0)
     }
 
     pub fn icon_name(self) -> String {
-        format!("wildbuzzard-appimage-{}", self.0)
+        format!("buzzardos-appimage-{}", self.0)
     }
 
     pub fn registration_filename(self) -> String {
@@ -455,7 +455,7 @@ mod tests {
     fn random_ids_are_canonical_and_generate_safe_stable_names() {
         let id = RegistrationId::generate();
         assert_eq!(id.to_string().parse::<RegistrationId>().unwrap(), id);
-        assert!(id.desktop_file_id().starts_with("wildbuzzard-appimage-"));
+        assert!(id.desktop_file_id().starts_with("buzzardos-appimage-"));
         assert!(id.desktop_file_id().ends_with(".desktop"));
         assert!(!id.desktop_file_id().contains('/'));
         assert!(

@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+normal_dir=$1
+wants_dir="$normal_dir/multi-user.target.wants"
+mkdir -p "$wants_dir"
+ln -sf /usr/lib/systemd/system/buzzardos-desktop.service \
+    "$wants_dir/buzzardos-desktop.service"
+ln -sf /usr/lib/systemd/system/buzzardos-runtime-ready.service \
+    "$wants_dir/buzzardos-runtime-ready.service"
+ln -sf /usr/lib/systemd/system/buzzardos-updater.service \
+    "$wants_dir/buzzardos-updater.service"
+
+timer_wants="$1/timers.target.wants"
+mkdir -p "$timer_wants"
+ln -sf /usr/lib/systemd/system/buzzardos-updater.timer \
+    "$timer_wants/buzzardos-updater.timer"

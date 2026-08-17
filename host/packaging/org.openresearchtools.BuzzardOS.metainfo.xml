@@ -18,7 +18,7 @@
   <launchable type="desktop-id">org.openresearchtools.buzzardos.desktop</launchable>
   <url type="homepage">https://github.com/openresearchtools/BuzzardOS</url>
   <provides>
-    <binary>BuzzardOS</binary>
+    <binary>buzzardos</binary>
   </provides>
   <content_rating type="oars-1.1" />
   <releases>

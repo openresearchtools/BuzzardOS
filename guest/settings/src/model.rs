@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use buzzardos_desktop_core::{
+    BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
+    ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files, effective_user_id,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -8,19 +12,15 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
-use wildbuzzard_desktop_core::{
-    BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
-    ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files, effective_user_id,
-};
 
-pub const OUTPUT_STATE_PATH: &str = "/run/wildbuzzard-display-state/output-state.json";
-pub const UPDATE_STATE_PATH: &str = "/var/lib/wildbuzzard-updater/state.json";
+pub const OUTPUT_STATE_PATH: &str = "/run/buzzardos-display-state/output-state.json";
+pub const UPDATE_STATE_PATH: &str = "/var/lib/buzzardos-updater/state.json";
 const MAX_RUNTIME_STATE_BYTES: usize = 1024 * 1024;
 const MAX_SCALE_MESSAGE_BYTES: usize = 4096;
 const MAX_KEYBOARD_MESSAGE_BYTES: usize = 4096;
 const MAX_ACTIVE_LAYOUT_NAME_BYTES: usize = 256;
-const SCALE_SOCKET_NAME: &str = "wildbuzzard-display-scale.sock";
-const KEYBOARD_SOCKET_NAME: &str = "wildbuzzard-keyboard-settings.sock";
+const SCALE_SOCKET_NAME: &str = "buzzardos-display-scale.sock";
+const KEYBOARD_SOCKET_NAME: &str = "buzzardos-keyboard-settings.sock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageId {
@@ -769,8 +769,8 @@ pub fn load_update_view(path: &Path) -> UpdateView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzzardos_desktop_core::{SolidColor, UpdateStatus};
     use std::os::unix::fs::symlink;
-    use wildbuzzard_desktop_core::{SolidColor, UpdateStatus};
 
     fn xdg(root: &Path) -> XdgPaths {
         XdgPaths::from_bases(
@@ -835,7 +835,7 @@ mod tests {
         assert!(
             fs::read_to_string(store.paths.config_home.join("gtk-4.0/settings.ini"))
                 .unwrap()
-                .contains("gtk-theme-name=WildBuzzard-Light")
+                .contains("gtk-theme-name=BuzzardOS-Light")
         );
     }
 

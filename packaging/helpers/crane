@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Compatibility adapter for the two digest/pull operations used by Buzzard OS.
+# The host package depends on distro skopeo instead of shipping another OCI
+# client or requiring a container daemon.
+set -eu
+
+operation=${1:-}
+[ "$#" -gt 0 ] && shift
+platform=linux/amd64
+format=
+positionals=
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --platform)
+            [ "$#" -ge 2 ] || exit 2
+            platform=$2
+            shift 2
+            ;;
+        --format)
+            [ "$#" -ge 2 ] || exit 2
+            format=$2
+            shift 2
+            ;;
+        --cache_path)
+            [ "$#" -ge 2 ] || exit 2
+            # Skopeo manages its own transport cache. Keep accepting the
+            # legacy private-helper option until the Rust caller is migrated.
+            shift 2
+            ;;
+        --*)
+            echo "unsupported OCI adapter option: $1" >&2
+            exit 2
+            ;;
+        *)
+            positionals="$positionals
+$1"
+            shift
+            ;;
+    esac
+done
+
+os=${platform%%/*}
+arch=${platform#*/}
+if [ "$os" = "$platform" ] || [ -z "$os" ] || [ -z "$arch" ]; then
+    echo "invalid OCI platform: $platform" >&2
+    exit 2
+fi
+
+set -f
+old_ifs=$IFS
+IFS='
+'
+# The values were collected one argument per line; registry references and
+# paths cannot contain newlines because the Rust caller rejects them.
+# shellcheck disable=SC2086
+set -- $positionals
+IFS=$old_ifs
+set +f
+
+case "$operation" in
+    digest)
+        [ "$#" -eq 1 ] || {
+            echo 'usage: crane digest --platform OS/ARCH IMAGE' >&2
+            exit 2
+        }
+        exec skopeo inspect \
+            --override-os "$os" \
+            --override-arch "$arch" \
+            --format '{{.Digest}}' \
+            "docker://$1"
+        ;;
+    pull)
+        [ "$format" = oci ] || {
+            echo 'OCI adapter supports only --format oci' >&2
+            exit 2
+        }
+        [ "$#" -eq 2 ] || {
+            echo 'usage: crane pull --platform OS/ARCH --format oci IMAGE ARCHIVE' >&2
+            exit 2
+        }
+        exec skopeo copy \
+            --override-os "$os" \
+            --override-arch "$arch" \
+            "docker://$1" \
+            "oci-archive:$2"
+        ;;
+    *)
+        echo 'OCI adapter supports only digest and pull' >&2
+        exit 2
+        ;;
+esac

@@ -14,54 +14,48 @@ command -v "$container_engine" >/dev/null 2>&1 || {
 }
 
 "$container_engine" run --rm --entrypoint /bin/sh "$image" -ec '
-    test "$(stat -c "%u:%g:%a" /home/wildbuzzard)" = "1000:1000:700"
-    test "$(stat -c "%u:%g:%a" /home/wildbuzzard/.config)" = "1000:1000:700"
+    test "$(stat -c "%u:%g:%a" /home/buzzard)" = "1000:1000:700"
+    test "$(stat -c "%u:%g:%a" /home/buzzard/.config)" = "1000:1000:700"
     for command in \
         Xwayland dbus-daemon dbus-run-session ffmpeg firefox-esr \
         foot fusermount3 \
-        gsettings grim mako mousepad pipewire setpriv systemctl \
+        buzzardcua gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
         unsquashfs \
         thunar wireplumber wtype
     do
         command -v "$command" >/dev/null
     done
-    runtime_root=/opt/wildbuzzard/runtime
+    runtime_root=/opt/buzzardos/runtime
     runtime_revision=$(readlink "$runtime_root/current")
     runtime="$runtime_root/$runtime_revision"
     for required in \
-        "$runtime/bin/sway" \
-        "$runtime/bin/swaymsg" \
-        "$runtime/bin/cua-driver" \
-        "$runtime/libexec/wildbuzzard-init" \
-        "$runtime/libexec/wildbuzzard-session" \
-        "$runtime/libexec/wildbuzzard-sway-session" \
-        "$runtime/libexec/wildbuzzard-shell" \
-        "$runtime/libexec/wildbuzzard-settings" \
-        "$runtime/libexec/wildbuzzard-shortcut-helper" \
-        "$runtime/libexec/wildbuzzard-clipboard-agent" \
-        "$runtime/libexec/wildbuzzard-updater" \
-        "$runtime/libexec/wildbuzzard-appimage-ready" \
-        "$runtime/libexec/wildbuzzard-fusermount" \
-        "$runtime/libexec/wildbuzzard-fusermount-exec" \
-        "$runtime/libexec/wildbuzzard-integration-agent" \
-        "$runtime/lib/libxkbcommon.so.0" \
-        "$runtime/share/X11/xkb/rules/evdev" \
-        "$runtime/share/X11/xkb/rules/evdev.lst" \
-        "$runtime/share/X11/xkb/symbols/us" \
-        "$runtime/share/wildbuzzard/xkb-data.manifest.sha256" \
-        "$runtime/share/wildbuzzard/xkb-data.version" \
-        "$runtime/share/wildbuzzard/libxkbcommon0.manifest.sha256" \
-        "$runtime/share/wildbuzzard/libxkbcommon0.version" \
-        "$runtime/share/doc/xkb-data/copyright" \
-        "$runtime/share/doc/libxkbcommon0/copyright" \
-        /usr/libexec/wildbuzzard-shortcut-helper \
-        /etc/wildbuzzard/sway-config \
-        /usr/lib/wildbuzzard/guest-assets.manifest.json \
-        /usr/lib/wildbuzzard/guest-assets.version
+        "$runtime/libexec/buzzardos-init" \
+        "$runtime/libexec/buzzardos-session" \
+        "$runtime/libexec/buzzardos-sway-session" \
+        "$runtime/libexec/buzzardos-shell" \
+        "$runtime/libexec/buzzardos-settings" \
+        "$runtime/libexec/buzzardos-shortcut-helper" \
+        "$runtime/libexec/buzzardos-clipboard-agent" \
+        "$runtime/libexec/buzzardos-updater" \
+        "$runtime/libexec/buzzardos-appimage-ready" \
+        "$runtime/libexec/buzzardos-fusermount" \
+        "$runtime/libexec/buzzardos-fusermount-exec" \
+        "$runtime/libexec/buzzardos-integration-agent" \
+        /usr/bin/buzzardcua \
+        /usr/bin/sway \
+        /usr/bin/swaymsg \
+        /usr/share/X11/xkb/rules/evdev \
+        /usr/share/X11/xkb/rules/evdev.lst \
+        /usr/share/X11/xkb/symbols/us \
+        /usr/libexec/buzzardos-shortcut-helper \
+        /etc/buzzardos/sway-config \
+        /usr/lib/buzzardos/guest-assets.manifest.json \
+        /usr/lib/buzzardos/guest-assets.version
     do
         test -s "$required"
     done
 	dpkg-query -W \
+	    buzzardcua buzzardos-guest-desktop sway \
 	    at-spi2-core dconf-gsettings-backend ffmpeg firefox-esr foot fuse3 \
 	    gsettings-desktop-schemas libfuse2t64 mousepad squashfs-tools \
 	    fonts-noto-color-emoji fonts-noto-core fonts-noto-cjk \
@@ -73,53 +67,45 @@ command -v "$container_engine" >/dev/null 2>&1 || {
 	    libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 \
 	    libxkbcommon0 libxrandr2 python3-apt python3-gi python3-pyatspi \
 	    pipewire wireplumber xkb-data xwayland >/dev/null
-	test "$(cat "$runtime/share/wildbuzzard/xkb-data.version")" = \
-	    "$(dpkg-query -W -f="\${Version}" xkb-data)"
-	test "$(cat "$runtime/share/wildbuzzard/libxkbcommon0.version")" = \
-	    "$(dpkg-query -W -f="\${Version}" libxkbcommon0)"
 	/usr/bin/python3 -c "import apt, gi"
-	settings_root=/tmp/wildbuzzard-gsettings-verifier
+	settings_root=/tmp/buzzardos-gsettings-verifier
 	rm -rf "$settings_root"
 	install -d -m 0700 -o 1000 -g 1000 \
 	    "$settings_root/config" "$settings_root/runtime"
 	setpriv --reuid=1000 --regid=1000 --clear-groups \
 	    env \
-	        HOME=/home/wildbuzzard \
+	        HOME=/home/buzzard \
 	        XDG_CONFIG_HOME="$settings_root/config" \
 	        XDG_RUNTIME_DIR="$settings_root/runtime" \
 	        dbus-run-session -- sh -ec "
 	            gsettings list-keys org.gnome.desktop.interface | grep -Fxq gtk-theme
 	            gsettings list-keys org.gnome.desktop.interface | grep -Fxq icon-theme
 	            gsettings list-keys org.gnome.desktop.interface | grep -Fxq color-scheme
-	            gsettings set org.gnome.desktop.interface gtk-theme WildBuzzard
-	            gsettings set org.gnome.desktop.interface icon-theme WildBuzzard
+	            gsettings set org.gnome.desktop.interface gtk-theme BuzzardOS-Dark
+	            gsettings set org.gnome.desktop.interface icon-theme BuzzardOS
 	            gsettings set org.gnome.desktop.interface color-scheme prefer-dark
-	            gsettings get org.gnome.desktop.interface gtk-theme | grep -Fq WildBuzzard
-	            gsettings get org.gnome.desktop.interface icon-theme | grep -Fq WildBuzzard
+	            gsettings get org.gnome.desktop.interface gtk-theme | grep -Fq BuzzardOS-Dark
+	            gsettings get org.gnome.desktop.interface icon-theme | grep -Fq BuzzardOS
 	            gsettings get org.gnome.desktop.interface color-scheme | grep -Fq prefer-dark
 	        "
 	rm -rf "$settings_root"
-	case "$("$runtime/bin/sway" --version)" in
+	case "$(/usr/bin/sway --version)" in
 	    "sway version 1.12"*) ;;
-	    *) echo "unexpected Sway version: $("$runtime/bin/sway" --version)" >&2; exit 1 ;;
+	    *) echo "unexpected distro Sway version: $(/usr/bin/sway --version)" >&2; exit 1 ;;
 	esac
-	sway_relocations=$(LD_LIBRARY_PATH="$runtime/lib" ldd -r -- "$runtime/bin/sway" 2>&1)
+	sway_relocations=$(ldd -r -- /usr/bin/sway 2>&1)
 	! printf '%s\n' "$sway_relocations" | grep -Eiq \
 	    "not found|undefined symbol|relocation error|symbol lookup error"
-	printf '%s\n' "$sway_relocations" | grep -F "$runtime/lib/libwlroots" >/dev/null
-	printf '%s\n' "$sway_relocations" | grep -F "$runtime/lib/libxkbcommon.so.0" >/dev/null
-	xkb_relocations=$(LD_LIBRARY_PATH="$runtime/lib" \
-	    ldd -r -- "$runtime/lib/libxkbcommon.so.0" 2>&1)
-	! printf '%s\n' "$xkb_relocations" | grep -Eiq \
-	    "not found|undefined symbol|relocation error|symbol lookup error"
-	ldd "$runtime/libexec/wildbuzzard-shell" | grep -F "not found" && exit 1 || true
-	ldd "$runtime/libexec/wildbuzzard-settings" | grep -F "not found" && exit 1 || true
-	ldd "$runtime/libexec/wildbuzzard-settings" | grep -F "libpulse.so.0" >/dev/null
-	ldd "$runtime/libexec/wildbuzzard-shortcut-helper" | grep -F "not found" && exit 1 || true
-	ldd "$runtime/libexec/wildbuzzard-clipboard-agent" | grep -F "not found" && exit 1 || true
-	test -s /usr/local/share/applications/footclient.desktop
-	test -s /usr/share/applications/org.openresearchtools.WildBuzzard.Settings1.desktop
-	test -s /usr/lib/systemd/system/wildbuzzard-desktop.service
+	printf '%s\n' "$sway_relocations" | grep -F "libwlroots" >/dev/null
+	printf '%s\n' "$sway_relocations" | grep -F "libxkbcommon.so.0" >/dev/null
+	ldd "$runtime/libexec/buzzardos-shell" | grep -F "not found" && exit 1 || true
+	ldd "$runtime/libexec/buzzardos-settings" | grep -F "not found" && exit 1 || true
+	ldd "$runtime/libexec/buzzardos-settings" | grep -F "libpulse.so.0" >/dev/null
+	ldd "$runtime/libexec/buzzardos-shortcut-helper" | grep -F "not found" && exit 1 || true
+	ldd "$runtime/libexec/buzzardos-clipboard-agent" | grep -F "not found" && exit 1 || true
+	test -s /usr/share/buzzardos/applications/footclient.desktop
+	test -s /usr/share/applications/org.openresearchtools.BuzzardOS.Settings1.desktop
+	test -s /usr/lib/systemd/system/buzzardos-desktop.service
     for library in \
         libasound.so.2 \
         libatk-1.0.so.0 \
@@ -167,7 +153,7 @@ from pathlib import Path
 
 root = Path("/")
 manifest = json.loads(
-    (root / "usr/lib/wildbuzzard/guest-assets.manifest.json").read_text()
+    (root / "usr/lib/buzzardos/guest-assets.manifest.json").read_text()
 )
 assert manifest["schema"] == 1
 assert len(manifest["assets"]) >= 47
@@ -175,9 +161,9 @@ for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
     assert path.stat().st_mode & 0o7777 == record["mode"], relative
-assert (root / "usr/lib/wildbuzzard/guest-assets.version").read_text().strip()
+assert (root / "usr/lib/buzzardos/guest-assets.version").read_text().strip()
 
-runtime_root = root / "opt/wildbuzzard/runtime"
+runtime_root = root / "opt/buzzardos/runtime"
 root_metadata = runtime_root.lstat()
 assert stat.S_ISDIR(root_metadata.st_mode) and not stat.S_ISLNK(root_metadata.st_mode)
 assert root_metadata.st_uid == 0 and not (stat.S_IMODE(root_metadata.st_mode) & 0o022)
@@ -197,18 +183,9 @@ assert runtime_manifest["schema_version"] == 1
 assert runtime_manifest["revision"] == revision
 runtime_files = runtime_manifest["files"]
 required_runtime = {
-    "bin/sway", "bin/swaymsg", "bin/cua-driver",
-    "libexec/wildbuzzard-shell", "libexec/wildbuzzard-settings",
-    "libexec/wildbuzzard-shortcut-helper", "libexec/wildbuzzard-clipboard-agent",
-    "libexec/wildbuzzard-updater",
-    "share/X11/xkb/rules/evdev", "share/X11/xkb/rules/evdev.lst",
-    "share/X11/xkb/symbols/us",
-    "share/doc/xkb-data/copyright",
-    "lib/libxkbcommon.so.0", "share/doc/libxkbcommon0/copyright",
-    "share/wildbuzzard/libxkbcommon0.manifest.sha256",
-    "share/wildbuzzard/libxkbcommon0.version",
-    "share/wildbuzzard/xkb-data.manifest.sha256",
-    "share/wildbuzzard/xkb-data.version",
+    "libexec/buzzardos-shell", "libexec/buzzardos-settings",
+    "libexec/buzzardos-shortcut-helper", "libexec/buzzardos-clipboard-agent",
+    "libexec/buzzardos-updater",
 }
 assert required_runtime <= set(runtime_files)
 seen = set()
@@ -229,51 +206,17 @@ for path in revision_dir.rglob("*"):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == record["sha256"], relative
     seen.add(relative)
 assert seen == set(runtime_files)
-xkb_root = revision_dir / "share/X11/xkb"
-xkb_manifest_path = revision_dir / "share/wildbuzzard/xkb-data.manifest.sha256"
-recorded_xkb = {}
-for line in xkb_manifest_path.read_text(encoding="utf-8").splitlines():
-    digest, separator, relative = line.partition("  ")
-    assert separator == "  "
-    assert re.fullmatch(r"[0-9a-f]{64}", digest)
-    assert re.fullmatch(r"[A-Za-z0-9._+/@~-]+", relative)
-    assert ".." not in relative and relative not in recorded_xkb
-    recorded_xkb[relative] = digest
-observed_xkb = {}
-for path in xkb_root.rglob("*"):
-    metadata = path.lstat()
-    assert not stat.S_ISLNK(metadata.st_mode)
-    if stat.S_ISDIR(metadata.st_mode):
-        continue
-    assert stat.S_ISREG(metadata.st_mode)
-    relative = path.relative_to(xkb_root).as_posix()
-    observed_xkb[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-assert recorded_xkb == observed_xkb
-library = revision_dir / "lib/libxkbcommon.so.0"
-library_manifest = (
-    revision_dir / "share/wildbuzzard/libxkbcommon0.manifest.sha256"
-).read_text(encoding="utf-8")
-match = re.fullmatch(
-    r"([0-9a-f]{64})  lib/libxkbcommon\.so\.0\n", library_manifest
-)
-assert match is not None
-assert hashlib.sha256(library.read_bytes()).hexdigest() == match.group(1)
-for listing in (root / "var/lib/dpkg/info").glob("*.list"):
-    assert b"/opt/wildbuzzard/runtime/" not in listing.read_bytes(), listing
+desktop_listing = root / "var/lib/dpkg/info/buzzardos-guest-desktop.list"
+assert desktop_listing.is_file()
+assert b"/opt/buzzardos/runtime/" in desktop_listing.read_bytes()
 PY
-    test -s /usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md
+    test -s /usr/share/doc/buzzardcua/LICENSE.trycua-cua.md
     grep -F 10279552e2bbe479e367a082f78b1b98ee85a697 \
-        /usr/share/doc/wildbuzzard-cua/UPSTREAM.toml
-    grep -F 88869399f421d9180dd8b6ed0b5a1f4a3585d252 \
-        /usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
-    grep -F d783533489e1f75d6886c2ab5c5960090ef268f8 \
-        /usr/share/doc/wildbuzzard-sway/UPSTREAM.toml
-    test -s /usr/share/doc/wildbuzzard-sway/LICENSE.sway
-    test -s /usr/share/doc/wildbuzzard-sway/LICENSE.wlroots
+        /usr/share/doc/buzzardcua/UPSTREAM.toml
 	for forbidden in \
 	    blender gcc g++ make meson ninja cargo rustc kwin_wayland \
 	    wayfire labwc waybar fuzzel \
-	    wildbuzzard-electron-demo
+	    buzzardos-electron-demo
     do
         ! command -v "$forbidden" >/dev/null 2>&1
     done

@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-INIT = ROOT / "guest/assets/wildbuzzard-init"
+INIT = ROOT / "guest/assets/buzzardos-init"
 BWRAP = shutil.which("bwrap")
 HOST_KEY_TYPES = ("rsa", "ecdsa", "ed25519")
 
@@ -25,7 +25,7 @@ class GuestInitTests(unittest.TestCase):
         machine_id: bytes = b"fixture-machine-id\n",
         ssh_keygen_available: bool = True,
     ) -> tuple[list[str], dict[str, bytes]]:
-        with tempfile.TemporaryDirectory(prefix="wildbuzzard-init-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="buzzardos-init-") as temporary:
             sandbox = Path(temporary)
             etc = sandbox / "etc"
             ssh = etc / "ssh"
@@ -39,11 +39,11 @@ class GuestInitTests(unittest.TestCase):
             (etc / "machine-id").write_bytes(machine_id)
             (etc / "passwd").write_text(
                 "root:x:0:0:root:/root:/bin/sh\n"
-                "wildbuzzard:x:1000:1000:Buzzard OS:/home/wildbuzzard:/bin/sh\n",
+                "buzzardos:x:1000:1000:Buzzard OS:/home/buzzard:/bin/sh\n",
                 encoding="utf-8",
             )
             (etc / "group").write_text(
-                "root:x:0:\n" "wildbuzzard:x:1000:\n",
+                "root:x:0:\n" "buzzardos:x:1000:\n",
                 encoding="utf-8",
             )
 

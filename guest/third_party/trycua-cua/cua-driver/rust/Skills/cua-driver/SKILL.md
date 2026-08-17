@@ -1,6 +1,6 @@
 ---
 name: cua-driver
-description: Drive a GUI app inside Wild Buzzard's private Linux Sway/Wayland/Xwayland desktop via the cua-driver CLI or MCP server; snapshot its AT-SPI tree, act through snapshot-bound element tokens, Sway window geometry, or canonical guest-output pixels, and verify from fresh guest state.
+description: Drive a GUI app inside Buzzard OS's private Linux Sway/Wayland/Xwayland desktop via the cua-driver CLI or MCP server; snapshot its AT-SPI tree, act through snapshot-bound element tokens, Sway window geometry, or canonical guest-output pixels, and verify from fresh guest state.
 version: 0.17.0 # x-release-please-version
 metadata:
   openclaw:
@@ -927,7 +927,7 @@ Linux AT-SPI, Sway, Wayland, Xwayland, and input-route errors are documented in
 
 **User:** "Open the Downloads folder in the system file manager."
 
-1. `launch_app({name: "thunar", args: ["/home/wildbuzzard/Downloads"]})`.
+1. `launch_app({name: "thunar", args: ["/home/buzzard/Downloads"]})`.
    Returns `{pid, windows: [{window_id, title, ...}]}` through the Linux guest
    application launcher and Sway window inventory.
 2. `get_window_state({pid, window_id})` → verify the expected window

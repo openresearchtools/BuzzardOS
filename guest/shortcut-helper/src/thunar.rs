@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Idempotent projection of Wild Buzzard's fixed AppImage actions into
+//! Idempotent projection of Buzzard OS's fixed AppImage actions into
 //! Thunar's user-owned custom-action file.
 //!
 //! Thunar resolves one `Thunar/uca.xml` through the XDG configuration search
 //! path rather than merging system and user files.  Once a user edits any
 //! custom action, their user file shadows the system file.  This module
-//! therefore replaces only actions identified by Wild Buzzard's two fixed
+//! therefore replaces only actions identified by Buzzard OS's two fixed
 //! IDs while preserving every other byte in a valid user document.
 
+use buzzardos_desktop_core::{atomic_write, read_bounded};
 use roxmltree::{Document, Node};
 use serde::Serialize;
 use std::fs;
@@ -16,16 +17,15 @@ use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
-use wildbuzzard_desktop_core::{atomic_write, read_bounded};
 
 const MAX_UCA_BYTES: usize = 1024 * 1024;
-const TEMPLATE_PATH: &str = "/etc/wildbuzzard/xdg/Thunar/uca.xml";
-const APPLICATIONS_ID: &str = "wildbuzzard-appimage-add-applications-v1";
-const DESKTOP_ID: &str = "wildbuzzard-appimage-add-desktop-v1";
+const TEMPLATE_PATH: &str = "/etc/buzzardos/xdg/Thunar/uca.xml";
+const APPLICATIONS_ID: &str = "buzzardos-appimage-add-applications-v1";
+const DESKTOP_ID: &str = "buzzardos-appimage-add-desktop-v1";
 const MANAGED_IDS: [&str; 2] = [APPLICATIONS_ID, DESKTOP_ID];
 const APPLICATIONS_COMMAND: &str =
-    "/usr/libexec/wildbuzzard-shortcut-helper register-applications %f";
-const DESKTOP_COMMAND: &str = "/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f";
+    "/usr/libexec/buzzardos-shortcut-helper register-applications %f";
+const DESKTOP_COMMAND: &str = "/usr/libexec/buzzardos-shortcut-helper register-desktop %f";
 const PATTERNS: &str = "*.AppImage;*.appimage";
 const RANGE: &str = "1-1";
 
@@ -56,7 +56,7 @@ pub enum ThunarActionInstallError {
         source: std::io::Error,
     },
     #[error(transparent)]
-    Persistence(#[from] wildbuzzard_desktop_core::persistence::PersistenceError),
+    Persistence(#[from] buzzardos_desktop_core::persistence::PersistenceError),
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> ThunarActionInstallError {
@@ -164,7 +164,7 @@ impl ManagedTemplate {
                 .any(|action| !MANAGED_IDS.contains(&action.id.as_str()))
         {
             return Err(ThunarActionInstallError::InvalidTemplate(
-                "template must contain exactly the two fixed Wild Buzzard actions".into(),
+                "template must contain exactly the two fixed Buzzard OS actions".into(),
             ));
         }
         validate_template_action(
@@ -388,8 +388,8 @@ mod tests {
   <action>
     <icon>application-x-executable</icon>
     <name>Add to Applications</name>
-    <unique-id>wildbuzzard-appimage-add-applications-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-applications %f</command>
+    <unique-id>buzzardos-appimage-add-applications-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-applications %f</command>
     <description>Register this AppImage in the Applications menu</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>
@@ -398,8 +398,8 @@ mod tests {
   <action>
     <icon>user-desktop</icon>
     <name>Add Desktop Shortcut</name>
-    <unique-id>wildbuzzard-appimage-add-desktop-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f</command>
+    <unique-id>buzzardos-appimage-add-desktop-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-desktop %f</command>
     <description>Create a desktop shortcut linked to this AppImage</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>

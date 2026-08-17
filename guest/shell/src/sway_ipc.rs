@@ -7,16 +7,16 @@
 //! controls never have to guess by title, app-id, PID, or focus.
 
 use anyhow::{Context, Result};
+use buzzardos_desktop_core::{SolidColor, ThemePalette};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
-use wildbuzzard_desktop_core::{SolidColor, ThemePalette};
 
 const SCRATCHPAD_WORKSPACE: &str = "__i3_scratch";
-const RESTORE_MARK_PREFIX: &str = "__wildbuzzard_restore_v1_";
+const RESTORE_MARK_PREFIX: &str = "__buzzardos_restore_v1_";
 const IPC_MAGIC: &[u8; 6] = b"i3-ipc";
 const IPC_SUBSCRIBE: u32 = 2;
 const IPC_EVENT_MASK: u32 = 1 << 31;
@@ -751,14 +751,14 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
     let mut subscription = EventSubscription::connect(&["window", "workspace", "output"])?;
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
-        .name("wildbuzzard-sway-events".to_owned())
+        .name("buzzardos-sway-events".to_owned())
         .spawn(move || {
             loop {
                 match subscription.next_event(Duration::from_secs(24 * 60 * 60)) {
                     Ok(()) if sender.send(()).is_err() => break,
                     Ok(()) => {}
                     Err(error) => {
-                        eprintln!("wildbuzzard-shell: Sway event subscription ended: {error:#}");
+                        eprintln!("buzzardos-shell: Sway event subscription ended: {error:#}");
                         break;
                     }
                 }
@@ -771,7 +771,7 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wildbuzzard_desktop_core::ThemeMode;
+    use buzzardos_desktop_core::ThemeMode;
 
     #[test]
     fn decoration_commands_change_only_typed_palette_values() {
@@ -807,7 +807,7 @@ mod tests {
                 "foreign_toplevel_identifier":"visible-id",
                 "rect":{"x":0,"y":25,"width":1707,"height":1000},
                 "deco_rect":{"x":0,"y":0,"width":1707,"height":25},
-                "marks":["__wildbuzzard_restore_v1_7_200_100_900_700"],
+                "marks":["__buzzardos_restore_v1_7_200_100_900_700"],
                 "scratchpad_state":"none",
                 "focused":true,
                 "visible":true
@@ -860,7 +860,7 @@ mod tests {
                 "id":19,"foreign_toplevel_identifier":"xwayland-id",
                 "rect":{"x":1600,"y":25,"width":1280,"height":833},
                 "deco_rect":{"x":0,"y":0,"width":1280,"height":25},
-                "marks":["__wildbuzzard_restore_v1_19_1720_90_800_600"],
+                "marks":["__buzzardos_restore_v1_19_1720_90_800_600"],
                 "scratchpad_state":"none","fullscreen_mode":0
               }]
             }]

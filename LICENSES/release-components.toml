@@ -16,7 +16,7 @@ name = "MPL-2.0 Rust dependency source availability"
 packages = ["option-ext 0.2.0", "uniffi 0.31.0", "uniffi_core 0.31.0", "uniffi_internal_macros 0.31.0", "uniffi_macros 0.31.0", "uniffi_meta 0.31.0", "uniffi_pipeline 0.31.0"]
 license = "MPL-2.0"
 evidence = ["LICENSES/generated/cargo-cua.tsv", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.txt", "LICENSES/mpl-sources.tsv", "tools/fetch-mpl-sources.sh"]
-source_code_form = "Every portable host application and OCI image contains the checksum-verified original .crate Source Code Form archives under /usr/share/doc/wildbuzzard/sources/mpl/. The manifest and fetcher reproduce the exact archive set from immutable crates.io content URLs."
+source_code_form = "Every portable host application and OCI image contains the checksum-verified original .crate Source Code Form archives under /usr/share/doc/buzzardos/sources/mpl/. The manifest and fetcher reproduce the exact archive set from immutable crates.io content URLs."
 status = "exact-source-code-form-bundled-and-checksummed"
 
 [[component]]
@@ -26,7 +26,7 @@ name = "Rust standard library and compiler runtime"
 version = "1.96.0"
 license = "Apache-2.0 OR MIT AND bundled-third-party-terms"
 evidence = ["LICENSES/rust-runtime.toml"]
-bundle_notice = ["host-app:/usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html", "oci:/usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html"]
+bundle_notice = ["host-app:/usr/share/doc/buzzardos/rust/COPYRIGHT-library.html", "oci:/usr/share/doc/buzzardos/rust/COPYRIGHT-library.html"]
 status = "pinned-toolchain-and-verified-standard-library-notice-bundle"
 
 [[component]]
@@ -36,20 +36,20 @@ name = "Go standard library and compiler runtime in downloaded helpers"
 versions = ["1.26.3", "1.26.5"]
 license = "BSD-3-Clause plus per-file and bundled-third-party terms"
 evidence = ["LICENSES/go-runtime.toml", "LICENSES/go-source-archives.tsv", "tools/fetch-go-source-archives.sh", "LICENSES/upstream/go-runtime/go-1.26-LICENSE", "LICENSES/upstream/go-runtime/go-1.26-PATENTS"]
-bundle_notice = ["host-app:/usr/share/doc/wildbuzzard/licenses/upstream/go-runtime/go-1.26-LICENSE", "host-app:/usr/share/doc/wildbuzzard/licenses/upstream/go-runtime/go-1.26-PATENTS", "host-app:/usr/share/doc/wildbuzzard/sources/go/"]
+bundle_notice = ["host-app:/usr/share/doc/buzzardos/licenses/upstream/go-runtime/go-1.26-LICENSE", "host-app:/usr/share/doc/buzzardos/licenses/upstream/go-runtime/go-1.26-PATENTS", "host-app:/usr/share/doc/buzzardos/sources/go/"]
 status = "exact-go-source-and-all-bundled-notices-shipped"
 
 [[component]]
 id = "trycua-cua-driver"
 surface = ["source", "host-app", "oci"]
 name = "Buzzard OS CUA Driver fork"
-version = "0.17.0"
+version = "0.17.0+buzzard1"
 source = "https://github.com/trycua/cua"
 source_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
 source_tag = "cua-driver-rs-v0.17.0"
 license = "MIT"
-evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/CITATION.cff", "guest/third_party/trycua-cua/UPSTREAM.toml", "guest/third_party/trycua-cua/LINUX_SCOPE.toml", "guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md", "guest/third_party/trycua-cua/README.WILDBUZZARD.md"]
-bundle_notice = ["host-app:/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md", "host-app:/usr/share/doc/wildbuzzard-cua/CITATION.cff", "host-app:/usr/share/doc/wildbuzzard-cua/UPSTREAM.toml", "host-app:/usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md", "oci:/usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md", "oci:/usr/share/doc/wildbuzzard-cua/CITATION.cff", "oci:/usr/share/doc/wildbuzzard-cua/UPSTREAM.toml", "oci:/usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md"]
+evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/CITATION.cff", "guest/third_party/trycua-cua/UPSTREAM.toml", "guest/third_party/trycua-cua/LINUX_SCOPE.toml", "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md", "guest/third_party/trycua-cua/README.BUZZARDOS.md"]
+bundle_notice = ["deb:/usr/share/doc/buzzardcua/LICENSE.trycua-cua.md", "deb:/usr/share/doc/buzzardcua/CITATION.cff", "deb:/usr/share/doc/buzzardcua/UPSTREAM.toml", "deb:/usr/share/doc/buzzardcua/CHANGES.BUZZARDOS.md"]
 vendored_scope_observation = "Reviewed Linux subset: eight Cargo workspace packages and five Linux/shared skill files. Every selected package inherits MIT metadata. Reviewed macOS/Windows-only build resources, guides, test modules, harnesses, and direct dependencies are absent and regression-tested. Shared wire-contract source retains serialized platform-labelled compatibility variants; the Linux clipboard dependency retains platform-targeted transitive lockfile metadata, but no non-Linux backend package is selected or built."
 status = "reviewed-linux-only-source-scope-and-attribution-recorded"
 
@@ -77,51 +77,49 @@ status = "recorded-inline"
 id = "sway"
 surface = ["oci"]
 name = "Sway"
-version = "1.12"
+version = "distribution package version recorded in the OCI inventory"
 source = "https://github.com/swaywm/sway"
-source_commit = "88869399f421d9180dd8b6ed0b5a1f4a3585d252"
+package = "sway"
 license = "MIT"
-evidence = ["oci/desktop/SWAY_UPSTREAM.toml", "LICENSES/upstream/sway-1.12-LICENSE"]
-bundle_notice = ["oci:/usr/share/doc/wildbuzzard-sway/LICENSE.sway", "oci:/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml"]
-status = "recorded"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
+bundle_notice = ["oci:/usr/share/doc/sway/copyright"]
+status = "distro-owned-package-and-notice"
 
 [[component]]
 id = "xkeyboard-config-data"
 surface = ["host-app", "oci"]
 name = "xkeyboard-config compiled rules and symbols"
-version = "resolved exactly from the pinned Debian sid snapshot and recorded in xkb-data.version"
+version = "resolved from the host or guest distribution package"
 source = "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config"
 package = "xkb-data"
 license = "Expat AND HPND-sell-variant"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-bundle_notice = ["host-app:/usr/share/doc/xkb-data/copyright", "oci:/usr/share/doc/xkb-data/copyright"]
-artifact_evidence = ["host-app:/usr/share/wildbuzzard/xkb-data.manifest.sha256", "host-app:/usr/share/wildbuzzard/xkb-data.version", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/xkb-data.manifest.sha256", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/xkb-data.version"]
-status = "pinned-normalized-host-and-guest-byte-identical-data-with-package-notice"
+bundle_notice = ["host:/usr/share/doc/xkb-data/copyright", "oci:/usr/share/doc/xkb-data/copyright"]
+status = "distro-owned-package-and-notice"
 
 [[component]]
 id = "libxkbcommon-keymap-runtime"
 surface = ["host-app", "oci"]
 name = "libxkbcommon keymap compiler runtime"
-version = "resolved exactly from the pinned Debian sid snapshot and recorded in libxkbcommon0.version"
+version = "resolved from the host or guest distribution package"
 source = "https://github.com/xkbcommon/libxkbcommon"
 package = "libxkbcommon0"
 license = "MIT"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-bundle_notice = ["host-app:/usr/share/doc/libxkbcommon0/copyright", "oci:/usr/share/doc/libxkbcommon0/copyright"]
-artifact_evidence = ["host-app:/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256", "host-app:/usr/share/wildbuzzard/libxkbcommon0.version", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/libxkbcommon0.manifest.sha256", "oci:/opt/wildbuzzard/runtime/current/share/wildbuzzard/libxkbcommon0.version"]
-status = "pinned-host-and-guest-byte-identical-library-with-package-notice"
+bundle_notice = ["host:/usr/share/doc/libxkbcommon0/copyright", "oci:/usr/share/doc/libxkbcommon0/copyright"]
+status = "distro-owned-package-and-notice"
 
 [[component]]
 id = "wlroots"
 surface = ["oci"]
 name = "wlroots"
-version = "0.20.2"
+version = "distribution package version recorded in the OCI inventory"
 source = "https://gitlab.freedesktop.org/wlroots/wlroots"
-source_commit = "d783533489e1f75d6886c2ab5c5960090ef268f8"
+package = "resolved dependency of sway"
 license = "MIT"
-evidence = ["oci/desktop/SWAY_UPSTREAM.toml", "LICENSES/upstream/wlroots-0.20.2-LICENSE"]
-bundle_notice = ["oci:/usr/share/doc/wildbuzzard-sway/LICENSE.wlroots", "oci:/usr/share/doc/wildbuzzard-sway/UPSTREAM.toml"]
-status = "recorded"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
+bundle_notice = ["oci:/usr/share/doc/<resolved-wlroots-package>/copyright"]
+status = "distro-owned-package-and-notice"
 
 [[component]]
 id = "crane"
@@ -136,7 +134,7 @@ sha256 = "59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67"
 license = "Apache-2.0"
 binary_sha256 = "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7"
 evidence = ["LICENSES/upstream/go-containerregistry-v0.21.8-LICENSE", "LICENSES/crane-dependencies.toml"]
-bundle_notice = ["host-app:/usr/share/doc/wildbuzzard/licenses/upstream/go-containerregistry-v0.21.8-LICENSE", "host-app:/usr/share/doc/wildbuzzard/licenses/upstream/crane-dependencies/"]
+bundle_notice = ["host-app:/usr/share/doc/buzzardos/licenses/upstream/go-containerregistry-v0.21.8-LICENSE", "host-app:/usr/share/doc/buzzardos/licenses/upstream/crane-dependencies/"]
 status = "exact-binary-and-module-notices-bundled"
 
 [[component]]
@@ -153,7 +151,7 @@ license = "GPL-2.0-or-later AND LGPL-2.1-only AND MIT"
 dynamic_dependencies = ["glibc", "GLib", "libslirp", "libseccomp"]
 evidence = ["LICENSES/slirp4netns-sources.tsv", "tools/fetch-slirp4netns-sources.sh"]
 bundle_notice = ["host-app:/usr/share/doc/slirp4netns/copyright"]
-corresponding_source = "The signed Ubuntu .dsc, exact upstream source archive, and exact Debian packaging archive are checksum-verified and bundled under /usr/share/doc/wildbuzzard/sources/slirp4netns/. The executable is dynamically linked, so recipients can replace modified LGPL libraries without relinking Buzzard OS. Its dynamic dependency binaries and exact package notices are covered by the portable host-package artifact gate."
+corresponding_source = "The signed Ubuntu .dsc, exact upstream source archive, and exact Debian packaging archive are checksum-verified and bundled under /usr/share/doc/buzzardos/sources/slirp4netns/. The executable is dynamically linked, so recipients can replace modified LGPL libraries without relinking Buzzard OS. Its dynamic dependency binaries and exact package notices are covered by the portable host-package artifact gate."
 status = "exact-binary-notice-and-corresponding-source-bundled-dynamic-link"
 
 [[component]]
@@ -166,7 +164,7 @@ download = "Exact binary and source package URLs are recorded in LICENSES/packag
 license = "GPL-3.0-or-later AND LGPL-2.1-or-later AND Public-Domain AND BSD-3-Clause"
 binary_sha256 = "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38"
 evidence = ["LICENSES/tar-runtime-sources.tsv", "host/build-portable-app.sh"]
-bundle_notice = ["host-app:/usr/share/doc/wildbuzzard/tar-runtime/", "host-app:/usr/share/doc/wildbuzzard/sources/tar-runtime/"]
+bundle_notice = ["host-app:/usr/share/doc/buzzardos/tar-runtime/", "host-app:/usr/share/doc/buzzardos/sources/tar-runtime/"]
 corresponding_source = "The exact Debian source package inputs for tar and every bundled private library are checksum-verified and included beside the application notices."
 status = "exact-binaries-notices-and-corresponding-source-bundled"
 
@@ -181,7 +179,7 @@ source_tag = "v1.19.1"
 artifacts = ["nvidia-container-toolkit-base_1.19.1-1_amd64.deb"]
 sha256 = "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"
 license = "Apache-2.0"
-bundle_notice = ["host-app:/usr/share/doc/nvidia-container-toolkit-base/copyright", "host-app:/usr/share/doc/wildbuzzard/sources/go/"]
+bundle_notice = ["host-app:/usr/share/doc/nvidia-container-toolkit-base/copyright", "host-app:/usr/share/doc/buzzardos/sources/go/"]
 evidence = ["LICENSES/nvidia-go-dependencies.toml", "LICENSES/go-source-archives.tsv", "tools/fetch-go-source-archives.sh"]
 status = "exact-go-module-sources-expressions-and-notices-shipped"
 
@@ -234,7 +232,7 @@ license = "per-package Debian copyright"
 direct_packages = ["bubblewrap", "util-linux", "gstreamer1.0-tools", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "libpulse0", "libpipewire-0.3-0t64", "libspa-0.2-modules", "pipewire-bin"]
 configured_notice_loop_packages = ["bubblewrap", "util-linux", "gstreamer1.0-tools", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "libpulse0", "libpipewire-0.3-0t64", "libspa-0.2-modules", "pipewire-bin"]
 observed_versions_2026_08_09 = ["bubblewrap=0.11.1-1ubuntu0.1", "util-linux=2.41.3-3ubuntu2", "gstreamer1.0-tools=1.28.2-1", "gstreamer1.0-pipewire=1.6.2-1ubuntu1.1", "gstreamer1.0-plugins-base=1.28.2-1", "gstreamer1.0-plugins-good=1.28.2-2ubuntu0.1", "gstreamer1.0-plugins-bad=1.28.2-1ubuntu1.1", "libpulse0=1:17.0+dfsg1-2ubuntu4", "libpipewire-0.3-0t64=1.6.2-1ubuntu1.1", "libspa-0.2-modules=1.6.2-1ubuntu1.1", "pipewire-bin=1.6.2-1ubuntu1.1"]
-artifact_evidence = ["host-app:/usr/share/doc/wildbuzzard/host-package-closure.tsv"]
+artifact_evidence = ["host-app:/usr/share/doc/buzzardos/host-package-closure.tsv"]
 status = "artifact-gated-exact-build-id-package-version-and-copyright-closure"
 
 [[component]]
@@ -244,7 +242,7 @@ name = "Debian sid base and apt dependency closure"
 version = "local minimal image built 2026-08-11"
 source = "docker.io/library/debian:sid plus Debian sid repositories"
 license = "per-package Debian copyright"
-image_reference = "localhost/wildbuzzard-desktop:verification-20260811"
+image_reference = "localhost/buzzardos-desktop:verification-20260811"
 image_manifest_digest = "sha256:103a9e57c9204e937a1a61ab03f5c242da7cb098ba9d0d3204068d597f8facf9"
 image_config_digest = "sha256:2763b22300740f6ce16d333f654f3738c42b272a375b847f648f1b11d7b1b479"
 archive_sha256 = "0c91ec6694f306b2d1161a2123f31823b36c520c3c2aa62ae515c20e38f10fcb"

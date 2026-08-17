@@ -1221,7 +1221,7 @@ fn directory_names(directory: &File, display: &Path) -> Result<Vec<OsString>, De
     loop {
         // POSIX distinguishes end-of-directory from failure by leaving errno
         // at zero. Clear it immediately before every readdir call.
-        // SAFETY: Wild Buzzard's guest target is Linux and errno is thread-local.
+        // SAFETY: Buzzard OS's guest target is Linux and errno is thread-local.
         unsafe { *libc::__errno_location() = 0 };
         // SAFETY: stream is valid until closed below.
         let entry = unsafe { libc::readdir(stream) };
@@ -1482,7 +1482,7 @@ fn c_string(name: &OsStr) -> Result<CString, DesktopFileError> {
 }
 
 fn temporary_name(purpose: &str) -> Result<OsString, DesktopFileError> {
-    let name = OsString::from(format!(".wildbuzzard-{purpose}-{}", Uuid::new_v4()));
+    let name = OsString::from(format!(".buzzardos-{purpose}-{}", Uuid::new_v4()));
     validate_name(&name)?;
     Ok(name)
 }

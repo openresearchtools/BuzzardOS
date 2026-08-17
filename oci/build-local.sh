@@ -5,9 +5,9 @@ set -euo pipefail
 oci_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(CDPATH= cd -- "$oci_dir/.." && pwd)
 task_uid=$(id -u)
-build_root=${WILDBUZZARD_BUILD_ROOT:-"${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid"}
-output_dir=${WILDBUZZARD_OCI_OUTPUT_DIR:-"$build_root/oci"}
-image=${WILDBUZZARD_OCI_TAG:-buzzardos-desktop:local}
+build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-build-$task_uid"}
+output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/oci"}
+image=${BUZZARDOS_OCI_TAG:-buzzardos-desktop:local}
 container_engine=${BUZZARDOS_CONTAINER_ENGINE:-auto}
 output_dir=$(realpath -m -- "$output_dir")
 case "$output_dir/" in
@@ -41,7 +41,7 @@ done
 mkdir -p "$output_dir"
 
 if [[ "$container_engine" == docker ]]; then
-    export WILDBUZZARD_OCI_TAG=$image
+    export BUZZARDOS_OCI_TAG=$image
     docker compose --project-directory "$project_dir" \
         -f "$oci_dir/compose.yaml" \
         build desktop
@@ -73,7 +73,7 @@ printf 'Verified %s (unpacked image bytes: %s)\n' "$image" "$unpacked_size"
 printf 'Recorded image identity and installed package inventory under %s\n' \
     "$output_dir"
 
-if [[ ${WILDBUZZARD_EXPORT_ARCHIVE:-0} == 1 ]]; then
+if [[ ${BUZZARDOS_EXPORT_ARCHIVE:-0} == 1 ]]; then
     archive="$output_dir/buzzardos-desktop-amd64.oci.tar"
     temporary="$archive.tmp"
     trap 'rm -f -- "$temporary"' EXIT

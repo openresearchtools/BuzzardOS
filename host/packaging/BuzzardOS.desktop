@@ -2,7 +2,7 @@
 Type=Application
 Name=Buzzard OS
 Comment=Persistent rootless desktop machine
-Exec=BuzzardOS
+Exec=buzzardos
 Icon=buzzardos
 StartupWMClass=org.openresearchtools.buzzardos
 Terminal=false

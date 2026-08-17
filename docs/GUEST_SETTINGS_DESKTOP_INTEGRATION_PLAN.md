@@ -12,7 +12,7 @@ guest Settings application.
 
 ## 1. Settings application
 
-`wildbuzzard-settings` is a standalone, adaptive Rust/GTK4 application. It is
+`buzzardos-settings` is a standalone, adaptive Rust/GTK4 application. It is
 an ordinary Sway-managed window and exposes native GTK accessibility objects
 to the private guest AT-SPI bus. It uses no libadwaita, Electron, browser UI,
 GNOME Control Center, or permanent GUI process.
@@ -120,14 +120,16 @@ use the accessible Cinnamon-orange accent and warm graphite/light neutrals;
 no default blue selection is allowed. Unfocused Thunar content and menu bars
 must retain the selected theme rather than reverting to white.
 
-Theme and background colour persist in `~/.config/wildbuzzard/settings.json`.
+Theme and background colour persist in `~/.config/buzzardos/settings.json`.
 Switching Light/Dark selects its recommended solid background; choosing a
 custom colour then persists that explicit colour.
 
 ## 6. Debian updates
 
-The Updates page manages packages inside the persistent Debian rootfs only.
-It never checks, downloads, or replaces the extracted host application.
+The Updates page manages packages inside the persistent Debian rootfs only,
+including `buzzardos-guest-desktop` and `buzzardcua` when their configured APT
+repository offers newer versions. The host `buzzardos` package is updated by
+the host's own APT transaction and is never replaced from inside a guest.
 
 `Check for updates` starts one fixed fresh updater worker. The worker refreshes
 APT metadata and creates an exact candidate plan. The scrollable list shows
@@ -144,8 +146,10 @@ download speed, the current package/install count, completion, or the bounded
 failure reason.
 
 The system-bus service is guest-root-owned and callable only by guest root or
-the interactive UID 1000 user. It protects Buzzard OS's managed runtime
-payload from package replacement. Updates are never installed automatically.
+the interactive UID 1000 user. It permits only the exact APT plan resolved
+from configured repositories; there is no arbitrary package or command
+surface. Buzzard OS guest files are dpkg-owned and updated only as versioned
+packages. Updates are never installed automatically.
 
 ## 7. Desktop and application discovery
 
@@ -217,9 +221,9 @@ setting gains access to host D-Bus, host files outside explicit shares, host
 clipboard, host window policy, or another machine. Every managed read/write
 rejects unsafe types and symlink escapes and uses bounded data.
 
-Acceptance must rebuild the managed guest binaries/assets and the extracted
-portable application, launch an actual persistent machine, and then verify at
-minimum:
+Acceptance must rebuild all three Debian packages, install `buzzardos` on the
+host, install `buzzardos-guest-desktop` and `buzzardcua` in a reference image,
+launch an actual persistent machine, and then verify at minimum:
 
 - all five Settings pages at normal and small window sizes;
 - scaling persistence and pixel-aligned input;

@@ -1,6 +1,6 @@
-# Wild Buzzard Linux CUA Driver agent skill
+# Buzzard OS Linux CUA Driver agent skill
 
-This skill teaches an in-guest agent to operate applications on Wild Buzzard's
+This skill teaches an in-guest agent to operate applications on Buzzard OS's
 private Linux Sway/Wayland/Xwayland desktop through `cua-driver` CLI or MCP.
 
 It covers the snapshot-action-verify loop, exact Sway window addressing,
@@ -29,18 +29,18 @@ Run `cua-driver doctor` to inspect those routes.
 
 ## Install the Linux skill
 
-The Wild Buzzard guest image carries the version-matched files. A source-built
+The Buzzard OS guest image carries the version-matched files. A source-built
 driver can install them into a detected agent directory with:
 
 ```bash
 cua-driver skills install
 ```
 
-The Wild Buzzard fork intentionally rejects `--all-platforms`; macOS and
+The Buzzard OS fork intentionally rejects `--all-platforms`; macOS and
 Windows guides do not belong to this auditable Linux source subset.
 
 ## License
 
 These vendored upstream sources retain the MIT license recorded in
-`../../../../LICENSE.md`. Wild Buzzard modifications and origin metadata are
+`../../../../LICENSE.md`. Buzzard OS modifications and origin metadata are
 recorded beside that license.

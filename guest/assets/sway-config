@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-# Wild Buzzard exposes one classic stacking desktop. The native Rust shell
+# Buzzard OS exposes one classic stacking desktop. The native Rust shell
 # owns the desktop, Applications menu, and bottom taskbar through layer-shell;
 # Sway owns guest application placement, focus, resize, and decorations.
 set $mod Mod4
@@ -28,7 +28,7 @@ client.urgent #9b2c2c #9b2c2c #ffffff #f07a7a #9b2c2c
 client.placeholder #282828 #282828 #b8b8b8 #545454 #282828
 client.background #181818
 
-# wildbuzzard-output-sync installs the persisted, validated XKB keymap after
+# buzzardos-output-sync installs the persisted, validated XKB keymap after
 # Sway creates the private nested keyboard. Sway's safe default is used only
 # until that session-private service confirms the managed map.
 
@@ -42,7 +42,7 @@ for_window [all] floating enable, border normal 8
 # Stock Sway scopes an unqualified mouse binding to the titlebar. Focus the
 # exact container under the pointer, then ask the shell to open its normal
 # accessible window-controls menu. Application content keeps button 3.
-bindsym button3 focus, exec --no-startup-id /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-shell --request-focused-window-menu
+bindsym button3 focus, exec --no-startup-id /opt/buzzardos/runtime/current/libexec/buzzardos-shell --request-focused-window-menu
 
 # Conventional guest shortcuts. There is deliberately no compositor root menu,
 # workspace bar, launcher, or host lifecycle action in this configuration.
@@ -56,7 +56,7 @@ bindsym $mod+Up focus up
 bindsym $mod+Right focus right
 
 workspace 1
-exec_always --no-startup-id /opt/wildbuzzard/runtime/current/libexec/wildbuzzard-desktop-services
+exec_always --no-startup-id /opt/buzzardos/runtime/current/libexec/buzzardos-desktop-services
 
-include /run/wildbuzzard-host/initial-output.conf
-include /home/wildbuzzard/.config/sway/config.d/*
+include /run/buzzardos-host/initial-output.conf
+include /home/buzzard/.config/sway/config.d/*

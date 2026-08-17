@@ -13,6 +13,12 @@ use accesskit::{
 };
 use accesskit_unix::Adapter as A11yAdapter;
 use anyhow::{Context, Result};
+use buzzardos_desktop_core::{
+    CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind, RegistrationId,
+    Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
+    read_bounded,
+};
+use buzzardos_shortcut_helper::{HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore};
 use fontdue::{Font, FontSettings};
 use gio::prelude::*;
 use icons::{AppIcon, load_application_icons, load_icon};
@@ -71,12 +77,6 @@ use wayland_protocols::wp::{
     },
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
-use wildbuzzard_desktop_core::{
-    CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind, RegistrationId,
-    Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
-    read_bounded,
-};
-use wildbuzzard_shortcut_helper::{HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore};
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
 
 use crate::desktop::DesktopModel;
@@ -84,13 +84,13 @@ use crate::updates::{UPDATER_STATE_DIRECTORY, UPDATER_STATE_PATH, UpdateTracker}
 use crate::watch::DirectoryWatcher;
 
 const SHELL_NAME: &str = "Buzzard OS Desktop";
-const REPAINT_REQUEST: &str = "wildbuzzard-shell-repaint";
-const REPAINT_ACKNOWLEDGEMENT: &str = "wildbuzzard-shell-repaint-ack";
+const REPAINT_REQUEST: &str = "buzzardos-shell-repaint";
+const REPAINT_ACKNOWLEDGEMENT: &str = "buzzardos-shell-repaint-ack";
 const SHELL_READY: &str = "shell-ready";
-const SHELL_CONTROL_SOCKET: &str = "wildbuzzard-shell-control.sock";
+const SHELL_CONTROL_SOCKET: &str = "buzzardos-shell-control.sock";
 const REQUEST_FOCUSED_WINDOW_MENU: &str = "--request-focused-window-menu";
-const HOST_POINTER_CLICK_STATE: &str = "/run/wildbuzzard-display-state/pointer-click.json";
-const CUA_POINTER_CLICK_STATE: &str = "wildbuzzard-cua-pointer-click.json";
+const HOST_POINTER_CLICK_STATE: &str = "/run/buzzardos-display-state/pointer-click.json";
+const CUA_POINTER_CLICK_STATE: &str = "buzzardos-cua-pointer-click.json";
 const POINTER_CLICK_MAX_AGE: Duration = Duration::from_secs(3);
 const OUTPUT_SETTLE_REPAINT_FRAMES: u8 = 90;
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
@@ -103,12 +103,12 @@ const APPLICATION_CONTEXT_HEIGHT: u32 = 12 + 2 * MENU_ROW_HEIGHT as u32;
 const DESKTOP_CONTEXT_WIDTH: u32 = 272;
 const DESKTOP_DIALOG_WIDTH: u32 = 430;
 const DESKTOP_DIALOG_HEIGHT: u32 = 190;
-const DESKTOP_CLIPBOARD_MIME: &str = "application/x-wildbuzzard-desktop-operation+json";
+const DESKTOP_CLIPBOARD_MIME: &str = "application/x-buzzardos-desktop-operation+json";
 const URI_LIST_MIME: &str = "text/uri-list";
 const MAX_DESKTOP_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const DOUBLE_CLICK_MILLIS: u32 = 400;
 const DRAG_THRESHOLD: f64 = 6.0;
-const SETTINGS_DESKTOP_ENTRY_ID: &str = "org.openresearchtools.WildBuzzard.Settings1.desktop";
+const SETTINGS_DESKTOP_ENTRY_ID: &str = "org.openresearchtools.BuzzardOS.Settings1.desktop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSurface {
@@ -211,13 +211,13 @@ enum DesktopPointerGesture {
 fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(OsStr::new(REQUEST_FOCUSED_WINDOW_MENU)) {
         if let Err(error) = request_focused_window_menu() {
-            eprintln!("wildbuzzard-shell: titlebar menu request failed: {error:#}");
+            eprintln!("buzzardos-shell: titlebar menu request failed: {error:#}");
             std::process::exit(1);
         }
         return;
     }
     if let Err(error) = run() {
-        eprintln!("wildbuzzard-shell: {error:#}");
+        eprintln!("buzzardos-shell: {error:#}");
         std::process::exit(1);
     }
 }
@@ -467,7 +467,7 @@ impl SettingsTracker {
 
     fn report_error(&mut self, error: String) {
         if self.last_error.as_ref() != Some(&error) {
-            eprintln!("wildbuzzard-shell: {error}");
+            eprintln!("buzzardos-shell: {error}");
             self.last_error = Some(error);
         }
     }
@@ -546,7 +546,7 @@ fn apply_runtime_theme(config_home: &std::path::Path, mode: ThemeMode) -> Result
         GSettingsAvailability::Available => {
             for (key, value) in [
                 ("gtk-theme", mode.gtk_theme_name()),
-                ("icon-theme", "WildBuzzard"),
+                ("icon-theme", "BuzzardOS"),
                 ("color-scheme", mode.color_scheme_preference()),
             ] {
                 run_required(
@@ -561,10 +561,10 @@ fn apply_runtime_theme(config_home: &std::path::Path, mode: ThemeMode) -> Result
             }
         }
         GSettingsAvailability::MissingSchema => eprintln!(
-            "wildbuzzard-shell: theme compatibility warning: org.gnome.desktop.interface is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install gsettings-desktop-schemas dconf-gsettings-backend"
+            "buzzardos-shell: theme compatibility warning: org.gnome.desktop.interface is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install gsettings-desktop-schemas dconf-gsettings-backend"
         ),
         GSettingsAvailability::MissingTool => eprintln!(
-            "wildbuzzard-shell: theme compatibility warning: gsettings is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend"
+            "buzzardos-shell: theme compatibility warning: gsettings is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend"
         ),
     }
     sway_ipc::apply_theme(mode.palette()).context("updating Sway decoration palette")?;
@@ -607,12 +607,12 @@ fn run() -> Result<()> {
     let config_home = PathBuf::from(
         std::env::var_os("XDG_CONFIG_HOME").context("XDG_CONFIG_HOME is unavailable")?,
     );
-    let settings_path = config_home.join("wildbuzzard/settings.json");
+    let settings_path = config_home.join("buzzardos/settings.json");
     let initial_settings = match load_settings(&settings_path) {
         Ok(settings) => settings,
         Err(error) => {
             eprintln!(
-                "wildbuzzard-shell: persisted settings are unusable and were preserved: {error:#}"
+                "buzzardos-shell: persisted settings are unusable and were preserved: {error:#}"
             );
             Settings::default()
         }
@@ -640,7 +640,7 @@ fn run() -> Result<()> {
         &qh,
         desktop_surface,
         Layer::Background,
-        Some("wildbuzzard-desktop"),
+        Some("buzzardos-desktop"),
         None,
     );
     desktop.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -657,7 +657,7 @@ fn run() -> Result<()> {
         &qh,
         panel_surface,
         Layer::Top,
-        Some("wildbuzzard-panel"),
+        Some("buzzardos-panel"),
         None,
     );
     panel.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -674,7 +674,7 @@ fn run() -> Result<()> {
         &qh,
         menu_surface,
         Layer::Overlay,
-        Some("wildbuzzard-applications-menu"),
+        Some("buzzardos-applications-menu"),
         None,
     );
     menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
@@ -694,7 +694,7 @@ fn run() -> Result<()> {
         &qh,
         context_surface,
         Layer::Overlay,
-        Some("wildbuzzard-application-context"),
+        Some("buzzardos-application-context"),
         None,
     );
     context.set_anchor(Anchor::TOP | Anchor::LEFT);
@@ -745,7 +745,7 @@ fn run() -> Result<()> {
             .join("update-notification.json"),
     );
     if let Err(error) = update_tracker.reload() {
-        eprintln!("wildbuzzard-shell: startup updater state was preserved: {error}");
+        eprintln!("buzzardos-shell: startup updater state was preserved: {error}");
     }
     let applications = scan_applications().unwrap_or_default();
     let application_icons = load_application_icons(&applications);
@@ -846,9 +846,9 @@ fn run() -> Result<()> {
     shell.rebuild_desktop_targets()?;
     shell.set_desktop_input_region()?;
     shell.accessibility = Some(Accessibility::new(shell.accessibility_tree()));
-    let shell_ready = std::env::var_os("WILDBUZZARD_STATUS_DIR")
+    let shell_ready = std::env::var_os("BUZZARDOS_STATUS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/wildbuzzard-host"))
+        .unwrap_or_else(|| PathBuf::from("/run/buzzardos-host"))
         .join(SHELL_READY);
     let mut ready_published = false;
 
@@ -865,7 +865,7 @@ fn run() -> Result<()> {
                 })?;
                 ready_published = true;
                 eprintln!(
-                    "wildbuzzard-shell: ready at {}x{} logical pixels",
+                    "buzzardos-shell: ready at {}x{} logical pixels",
                     shell.desktop_size.0, shell.desktop_size.1
                 );
             }
@@ -1080,7 +1080,7 @@ impl Shell {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: reading shell-control socket failed: {error}");
+                    eprintln!("buzzardos-shell: reading shell-control socket failed: {error}");
                     break;
                 }
             }
@@ -1102,7 +1102,7 @@ impl Shell {
                     self.dirty = true;
                     self.repaint_frames = OUTPUT_SETTLE_REPAINT_FRAMES;
                     eprintln!(
-                        "wildbuzzard-shell: applied appearance settings generation {generation}"
+                        "buzzardos-shell: applied appearance settings generation {generation}"
                     );
                 }
                 Err(error) => self.settings_tracker.reject(format!(
@@ -1144,7 +1144,7 @@ impl Shell {
             Ok(true) => self.application_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
             Ok(false) => {}
             Err(error) => {
-                eprintln!("wildbuzzard-shell: application watch failed: {error:#}");
+                eprintln!("buzzardos-shell: application watch failed: {error:#}");
                 self.application_rescan_after = Some(Instant::now());
             }
         }
@@ -1167,7 +1167,7 @@ impl Shell {
             match DirectoryWatcher::new(&self.application_watch_roots) {
                 Ok(watcher) => self.application_watcher = watcher,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming application watch failed: {error:#}")
+                    eprintln!("buzzardos-shell: rearming application watch failed: {error:#}")
                 }
             }
         }
@@ -1175,7 +1175,7 @@ impl Shell {
             Ok(true) => self.desktop_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
             Ok(false) => {}
             Err(error) => {
-                eprintln!("wildbuzzard-shell: desktop watch failed: {error:#}");
+                eprintln!("buzzardos-shell: desktop watch failed: {error:#}");
                 self.desktop_rescan_after = Some(Instant::now());
             }
         }
@@ -1188,17 +1188,17 @@ impl Shell {
                 Ok(changed) => {
                     if changed {
                         if let Err(error) = self.rebuild_desktop_targets() {
-                            eprintln!("wildbuzzard-shell: rebuilding desktop failed: {error:#}");
+                            eprintln!("buzzardos-shell: rebuilding desktop failed: {error:#}");
                         }
                         self.dirty = true;
                     }
                 }
-                Err(error) => eprintln!("wildbuzzard-shell: desktop rescan failed: {error:#}"),
+                Err(error) => eprintln!("buzzardos-shell: desktop rescan failed: {error:#}"),
             }
             match DirectoryWatcher::new(&[self.desktop_model.directory_path().to_path_buf()]) {
                 Ok(watcher) => self.desktop_watcher = watcher,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming desktop watch failed: {error:#}")
+                    eprintln!("buzzardos-shell: rearming desktop watch failed: {error:#}")
                 }
             }
         }
@@ -1206,7 +1206,7 @@ impl Shell {
             Ok(true) => self.update_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
             Ok(false) => {}
             Err(error) => {
-                eprintln!("wildbuzzard-shell: updater-state watch failed: {error:#}");
+                eprintln!("buzzardos-shell: updater-state watch failed: {error:#}");
                 self.update_rescan_after = Some(Instant::now());
             }
         }
@@ -1219,13 +1219,13 @@ impl Shell {
                 Ok(true) => self.dirty = true,
                 Ok(false) => {}
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: updater state was preserved: {error}")
+                    eprintln!("buzzardos-shell: updater state was preserved: {error}")
                 }
             }
             match DirectoryWatcher::new(std::slice::from_ref(&self.update_watch_root)) {
                 Ok(watcher) => self.update_watcher = watcher,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming updater-state watch failed: {error:#}")
+                    eprintln!("buzzardos-shell: rearming updater-state watch failed: {error:#}")
                 }
             }
             if !self.update_watch_root.is_dir() {
@@ -1600,7 +1600,7 @@ impl Shell {
             .then(|| self.single_selected_path())
             .flatten()
             .filter(|path| self.selected_item_kind(path) == Some(DesktopItemKind::AppImage))
-            .filter(|path| wildbuzzard_shortcut_helper::validate_appimage(path).is_ok())
+            .filter(|path| buzzardos_shortcut_helper::validate_appimage(path).is_ok())
             .map(|path| {
                 RegistrationStore::discover()
                     .and_then(|store| store.find_by_target(&path))
@@ -1763,7 +1763,7 @@ impl Shell {
         self.menu.commit();
         self.dirty = true;
         eprintln!(
-            "wildbuzzard-shell: opened controls for {} ({})",
+            "buzzardos-shell: opened controls for {} ({})",
             title, identifier
         );
     }
@@ -2102,7 +2102,7 @@ impl Shell {
                 clipboard_copy::ClipboardType::Regular,
                 clipboard_copy::Seat::All,
             ) {
-                eprintln!("wildbuzzard-shell: clearing completed cut clipboard failed: {error}");
+                eprintln!("buzzardos-shell: clearing completed cut clipboard failed: {error}");
             }
         }
         let _ = self.refresh_desktop_items();
@@ -2373,7 +2373,7 @@ impl Shell {
                 if let Some(home) = std::env::var_os("HOME") {
                     spawn("thunar", [home]);
                 } else {
-                    eprintln!("wildbuzzard-shell: HOME is unavailable; Files was not opened");
+                    eprintln!("buzzardos-shell: HOME is unavailable; Files was not opened");
                 }
                 self.hide_menu();
             }
@@ -2384,7 +2384,7 @@ impl Shell {
             ShellAction::OpenDesktopItem(path, kind) => {
                 if let Err(error) = open_desktop_item(&path, kind) {
                     eprintln!(
-                        "wildbuzzard-shell: opening desktop item {} failed: {error:#}",
+                        "buzzardos-shell: opening desktop item {} failed: {error:#}",
                         path.display()
                     );
                 }
@@ -2408,7 +2408,7 @@ impl Shell {
                     .cloned()
                     && let Err(error) = add_application_desktop_shortcut(&application)
                 {
-                    eprintln!("wildbuzzard-shell: add desktop shortcut failed: {error:#}");
+                    eprintln!("buzzardos-shell: add desktop shortcut failed: {error:#}");
                 }
                 let _ = self.desktop_model.rescan();
                 self.desktop_model.show_first_page();
@@ -2423,7 +2423,7 @@ impl Shell {
                     .cloned()
                     && let Err(error) = remove_application_desktop_shortcut(&application)
                 {
-                    eprintln!("wildbuzzard-shell: remove desktop shortcut failed: {error:#}");
+                    eprintln!("buzzardos-shell: remove desktop shortcut failed: {error:#}");
                 }
                 let _ = self.desktop_model.rescan();
                 let _ = self.rebuild_desktop_targets();
@@ -2473,7 +2473,7 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::focus(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: focus failed: {error:#}");
+                    eprintln!("buzzardos-shell: focus failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2481,7 +2481,7 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::bring_into_view(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: bring into view failed: {error:#}");
+                    eprintln!("buzzardos-shell: bring into view failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2489,14 +2489,14 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::minimize(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: minimize failed: {error:#}");
+                    eprintln!("buzzardos-shell: minimize failed: {error:#}");
                 }
                 self.hide_menu();
             }
             ShellAction::ToggleMaximizeWindow(id) => {
                 if let Some(toplevel) = self.exact_toplevels.get(&id) {
                     if let Err(error) = sway_ipc::toggle_maximize(&toplevel.identifier) {
-                        eprintln!("wildbuzzard-shell: maximize/restore failed: {error:#}");
+                        eprintln!("buzzardos-shell: maximize/restore failed: {error:#}");
                     }
                 }
                 self.hide_menu();
@@ -2505,7 +2505,7 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::close(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: close failed: {error:#}");
+                    eprintln!("buzzardos-shell: close failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2519,7 +2519,7 @@ impl Shell {
             }
             ShellAction::ShowDesktop => {
                 if let Err(error) = sway_ipc::minimize_all_visible() {
-                    eprintln!("wildbuzzard-shell: show desktop failed: {error:#}");
+                    eprintln!("buzzardos-shell: show desktop failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2769,7 +2769,7 @@ impl Shell {
     fn scroll_desktop(&mut self, amount: f64) {
         if self.desktop_model.scroll_page(amount) {
             if let Err(error) = self.rebuild_desktop_targets() {
-                eprintln!("wildbuzzard-shell: changing desktop page failed: {error:#}");
+                eprintln!("buzzardos-shell: changing desktop page failed: {error:#}");
             }
             self.dirty = true;
         }
@@ -4120,10 +4120,7 @@ impl LayerShellHandler for Shell {
             let desktop_size_changed = self.desktop_size != size;
             self.desktop_size = size;
             self.desktop_configured = true;
-            eprintln!(
-                "wildbuzzard-shell: desktop configured {}x{}",
-                size.0, size.1
-            );
+            eprintln!("buzzardos-shell: desktop configured {}x{}", size.0, size.1);
             if self.menu_open && desktop_size_changed {
                 match self.menu_kind {
                     MenuKind::Applications => {
@@ -4136,12 +4133,12 @@ impl LayerShellHandler for Shell {
                 }
             }
             if desktop_size_changed && let Err(error) = self.rebuild_desktop_targets() {
-                eprintln!("wildbuzzard-shell: desktop reflow failed: {error:#}");
+                eprintln!("buzzardos-shell: desktop reflow failed: {error:#}");
             }
         } else if layer == &self.panel {
             self.panel_size = size;
             self.panel_configured = true;
-            eprintln!("wildbuzzard-shell: panel configured {}x{}", size.0, size.1);
+            eprintln!("buzzardos-shell: panel configured {}x{}", size.0, size.1);
         } else if layer == &self.menu {
             self.menu_size = size;
             self.menu_configured = true;
@@ -4440,7 +4437,7 @@ where
         .stderr(Stdio::null())
         .spawn()
     {
-        eprintln!("wildbuzzard-shell: launching {program} failed: {error}");
+        eprintln!("buzzardos-shell: launching {program} failed: {error}");
     }
 }
 
@@ -4453,7 +4450,7 @@ fn launch_application(application: &Application) {
         });
     if let Err(error) = result {
         eprintln!(
-            "wildbuzzard-shell: launching {} from {} failed: {error:#}",
+            "buzzardos-shell: launching {} from {} failed: {error:#}",
             application.name,
             application.source.display()
         );
@@ -4463,7 +4460,7 @@ fn launch_application(application: &Application) {
 fn managed_appimage_registration_id(application: &Application) -> Option<RegistrationId> {
     let value = application
         .id
-        .strip_prefix("wildbuzzard-appimage-")?
+        .strip_prefix("buzzardos-appimage-")?
         .strip_suffix(".desktop")?;
     RegistrationId::from_str(value).ok()
 }
@@ -4490,7 +4487,7 @@ fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
     // prevents an application path changed after the menu scan from being
     // projected without passing the same FreeDesktop validation again.
     let paths = XdgPaths::discover()?;
-    let current = wildbuzzard_desktop_core::discover_applications(&paths)
+    let current = buzzardos_desktop_core::discover_applications(&paths)
         .applications
         .into_iter()
         .find(|candidate| {
@@ -4525,7 +4522,7 @@ fn open_desktop_item(path: &std::path::Path, kind: DesktopItemKind) -> Result<()
                 let id = registration.id.to_string();
                 spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)]);
             } else {
-                let validated = wildbuzzard_shortcut_helper::validate_appimage(path)?;
+                let validated = buzzardos_shortcut_helper::validate_appimage(path)?;
                 validated.authorize_owner_execute()?;
                 let _ = validated.spawn_exact()?;
             }
@@ -5336,12 +5333,12 @@ mod scale_tests {
     use crate::model::Application;
     use crate::model::Rect as ShellRect;
     use crate::sway_ipc::Rect;
+    use buzzardos_desktop_core::{BackgroundChoice, Settings, ThemeMode};
     use gio::prelude::FileExt;
     use std::ffi::OsStr;
     use std::fs;
     use std::path::PathBuf;
     use std::time::Instant;
-    use wildbuzzard_desktop_core::{BackgroundChoice, Settings, ThemeMode};
 
     #[test]
     fn fractional_client_buffers_use_protocol_round_half_away() {
@@ -5451,7 +5448,7 @@ mod scale_tests {
     #[test]
     fn startup_reads_persisted_theme_without_rewriting_it() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("wildbuzzard");
+        let directory = temp.path().join("buzzardos");
         fs::create_dir(&directory).unwrap();
         let path = directory.join("settings.json");
         let mut settings = Settings {
@@ -5480,7 +5477,7 @@ mod scale_tests {
         assert_eq!(
             gsettings_availability(
                 &schema,
-                OsStr::new("/definitely/missing/wildbuzzard-gsettings")
+                OsStr::new("/definitely/missing/buzzardos-gsettings")
             )
             .unwrap(),
             GSettingsAvailability::MissingTool
@@ -5491,7 +5488,7 @@ mod scale_tests {
     #[test]
     fn settings_tracker_accepts_only_new_generations_and_preserves_last_confirmed() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("wildbuzzard");
+        let directory = temp.path().join("buzzardos");
         fs::create_dir(&directory).unwrap();
         let path = directory.join("settings.json");
         let mut tracker = SettingsTracker::new(path.clone(), Settings::default());

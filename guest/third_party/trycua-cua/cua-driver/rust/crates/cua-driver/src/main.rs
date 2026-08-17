@@ -92,7 +92,7 @@ fn configure_startup_permission_mode(
         .is_ok_and(|mode| mode == cua_driver_core::authorization::PermissionMode::Unrestricted)
     {
         eprintln!(
-            "DANGER: Cua Driver is running in unrestricted mode. Runtime approval prompts are disabled; prompt injection or unintended input may act with every capability allowed by the built-in, managed, and user policy ceilings. Use only in a disposable or fully trusted environment."
+            "DANGER: Buzzard CUA is running in unrestricted mode. Runtime approval prompts are disabled; prompt injection or unintended input may act with every capability allowed by the built-in, managed, and user policy ceilings. Use only in a disposable or fully trusted environment."
         );
     }
     Ok(())
@@ -122,7 +122,7 @@ fn run_cursor_theme_command(args: &[String]) -> ! {
                 "cua-driver: cursor-theme compiler is unavailable at {}: {error}",
                 sidecar.display()
             );
-            eprintln!("Reinstall Cua Driver so the matching authoring sidecar is present.");
+            eprintln!("Reinstall Buzzard CUA so the matching authoring sidecar is present.");
             std::process::exit(1);
         }
     };

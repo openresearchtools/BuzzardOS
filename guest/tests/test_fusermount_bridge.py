@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-EXECUTOR = ASSETS / "wildbuzzard-fusermount-exec"
+EXECUTOR = ASSETS / "buzzardos-fusermount-exec"
 
 
 class FusermountBridgeContractTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class FusermountBridgeContractTests(unittest.TestCase):
         cls.ValidationError = cls.bridge["ValidationError"]
 
     def test_wrapper_passes_only_caller_pid_fd_and_argument_separator(self) -> None:
-        wrapper = (ASSETS / "wildbuzzard-fusermount").read_text()
+        wrapper = (ASSETS / "buzzardos-fusermount").read_text()
         self.assertIn("caller=$$", wrapper)
         self.assertIn("communication_fd=${_FUSE_COMMFD:--1}", wrapper)
         self.assertIn("/usr/bin/systemd-run", wrapper)
@@ -48,7 +48,7 @@ class FusermountBridgeContractTests(unittest.TestCase):
             ),
             (["-u", "-q", "-z", "--", "/shared/.mount_CCCCCC"], -1, "unmount"),
             (
-                ["--auto-unmount", "--", "/home/wildbuzzard/.mount_DDDDDD"],
+                ["--auto-unmount", "--", "/home/buzzard/.mount_DDDDDD"],
                 9,
                 "auto-unmount",
             ),

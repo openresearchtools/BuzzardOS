@@ -1,4 +1,4 @@
-//! Regression gate for Wild Buzzard's reviewed Linux-only TryCua source scope.
+//! Regression gate for Buzzard OS's reviewed Linux-only TryCua source scope.
 
 #![cfg(target_os = "linux")]
 

@@ -2,26 +2,26 @@ schema = 1
 audited_at = "2026-08-10"
 
 [[asset]]
-id = "wildbuzzard-project-assets"
+id = "buzzardos-project-assets"
 paths = ["guest/assets/**", "host/packaging/AppRun", "host/packaging/BuzzardOS", "host/packaging/Install-Dependencies", "host/packaging/BuzzardOS.desktop", "host/packaging/buzzardos-tar", "host/packaging/generate-icons.sh"]
-exclude = ["guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**", "guest/assets/icons/WildBuzzard/**"]
+exclude = ["guest/assets/themes/BuzzardOS-Dark/**", "guest/assets/themes/BuzzardOS-Light/**", "guest/assets/themes/BuzzardOS-Shared/**", "guest/assets/icons/BuzzardOS/**"]
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE"]
 status = "covered-by-repository-license"
 
 [[asset]]
-id = "wildbuzzard-metainfo"
+id = "buzzardos-metainfo"
 paths = ["host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml"]
 license = "CC0-1.0"
 evidence = ["host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml:metadata_license"]
 status = "declared-inline"
 
 [[asset]]
-id = "wildbuzzard-application-icons"
+id = "buzzardos-application-icons"
 paths = [
   "host/packaging/icons/**",
-  "guest/assets/icons/WildBuzzard/scalable/apps/**",
-  "guest/assets/icons/WildBuzzard/symbolic/apps/**",
+  "guest/assets/icons/BuzzardOS/scalable/apps/**",
+  "guest/assets/icons/BuzzardOS/symbolic/apps/**",
 ]
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE", "NOTICE", "host/packaging/icons/README.md"]
@@ -29,25 +29,25 @@ provenance = "The native application icon uses the user-approved original Low Gl
 status = "project-authored-and-licensed"
 
 [[asset]]
-id = "wildbuzzard-graphite-gtk-theme"
-paths = ["guest/assets/themes/WildBuzzard-Dark/**", "guest/assets/themes/WildBuzzard-Light/**", "guest/assets/themes/WildBuzzard-Shared/**"]
+id = "buzzardos-graphite-gtk-theme"
+paths = ["guest/assets/themes/BuzzardOS-Dark/**", "guest/assets/themes/BuzzardOS-Light/**", "guest/assets/themes/BuzzardOS-Shared/**"]
 license = "AGPL-3.0-or-later"
 runtime_import = "resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained.css"
-evidence = ["NOTICE", "LICENSE", "guest/assets/themes/WildBuzzard-Dark/gtk-3.0/gtk.css", "guest/assets/themes/WildBuzzard-Light/gtk-3.0/gtk.css", "guest/assets/themes/WildBuzzard-Shared/gtk-3.0/geometry.css"]
+evidence = ["NOTICE", "LICENSE", "guest/assets/themes/BuzzardOS-Dark/gtk-3.0/gtk.css", "guest/assets/themes/BuzzardOS-Light/gtk-3.0/gtk.css", "guest/assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css"]
 notes = "Independently authored project CSS shared by conservative dark and light palette variants. The palette was selected by visual observation of common creative-tool interfaces; no third-party stylesheet or artwork was copied. GTK 3 imports the guest's separately packaged Adwaita resource rather than copying it."
 status = "project-authored-and-licensed"
 
 [[asset]]
-id = "wildbuzzard-folder-icon-theme"
+id = "buzzardos-folder-icon-theme"
 paths = [
-  "guest/assets/icons/WildBuzzard/index.theme",
-  "guest/assets/icons/WildBuzzard/scalable/mimetypes/**",
-  "guest/assets/icons/WildBuzzard/scalable/places/**",
-  "guest/assets/icons/WildBuzzard/symbolic/mimetypes/**",
-  "guest/assets/icons/WildBuzzard/symbolic/places/**",
+  "guest/assets/icons/BuzzardOS/index.theme",
+  "guest/assets/icons/BuzzardOS/scalable/mimetypes/**",
+  "guest/assets/icons/BuzzardOS/scalable/places/**",
+  "guest/assets/icons/BuzzardOS/symbolic/mimetypes/**",
+  "guest/assets/icons/BuzzardOS/symbolic/places/**",
 ]
 license = "AGPL-3.0-or-later"
-evidence = ["NOTICE", "LICENSE", "guest/assets/icons/WildBuzzard/index.theme"]
+evidence = ["NOTICE", "LICENSE", "guest/assets/icons/BuzzardOS/index.theme"]
 notes = "Independently authored simple folder SVG geometry and symbolic paths. A warm orange palette was requested by the product design; no Mint-Y SVG path data or artwork was copied."
 status = "project-authored-and-licensed"
 

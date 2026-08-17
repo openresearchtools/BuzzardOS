@@ -22,7 +22,7 @@ from email.utils import formatdate
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import updater_core as updater
-import wildbuzzard_updater as updater_service
+import buzzardos_updater as updater_service
 
 
 REVISION = "test-runtime-1"
@@ -639,7 +639,7 @@ class UpdaterInterfaceTests(unittest.TestCase):
         command = updater_service._transient_worker_command(
             "install",
             GENERATION,
-            "wildbuzzard-update-install-0123456789abcdef",
+            "buzzardos-update-install-0123456789abcdef",
         )
         self.assertEqual(command[0], "/usr/bin/systemd-run")
         self.assertIn("--property=Type=exec", command)
@@ -655,11 +655,11 @@ class UpdaterInterfaceTests(unittest.TestCase):
             updater_service._transient_worker_command(
                 "install",
                 GENERATION,
-                "wildbuzzard-update-install-bad;name",
+                "buzzardos-update-install-bad;name",
             )
 
     def test_dbus_introspection_exposes_only_fixed_methods(self):
-        script = Path(__file__).resolve().parent / "wildbuzzard_updater.py"
+        script = Path(__file__).resolve().parent / "buzzardos_updater.py"
         result = subprocess.run(
             ["/usr/bin/python3", str(script), "--print-introspection"],
             check=True,
@@ -700,7 +700,7 @@ class SignedLocalAptTests(unittest.TestCase):
                 "Package: wb-updater-fixture\n"
                 "Version: 2.0-1\n"
                 "Architecture: all\n"
-                "Maintainer: Wild Buzzard Tests <test@example.invalid>\n"
+                "Maintainer: Buzzard OS Tests <test@example.invalid>\n"
                 "Description: signed updater fixture\n",
                 encoding="utf-8",
             )
@@ -738,8 +738,8 @@ class SignedLocalAptTests(unittest.TestCase):
                 )
             release = release_root / "Release"
             release.write_text(
-                "Origin: Wild Buzzard Test\n"
-                "Label: Wild Buzzard Test\n"
+                "Origin: Buzzard OS Test\n"
+                "Label: Buzzard OS Test\n"
                 "Suite: stable\n"
                 "Codename: stable\n"
                 "Architectures: amd64\n"
@@ -758,7 +758,7 @@ class SignedLocalAptTests(unittest.TestCase):
                     "--passphrase",
                     "",
                     "--quick-gen-key",
-                    "Wild Buzzard Test <test@example.invalid>",
+                    "Buzzard OS Test <test@example.invalid>",
                     "rsa2048",
                     "sign",
                     "0",
@@ -789,7 +789,7 @@ class SignedLocalAptTests(unittest.TestCase):
                 capture_output=True,
                 env=environment,
             ).stdout
-            keyring = root / "etc/apt/keyrings/wildbuzzard-test.gpg"
+            keyring = root / "etc/apt/keyrings/buzzardos-test.gpg"
             keyring.write_bytes(exported)
             (root / "etc/apt/sources.list").write_text(
                 f"deb [signed-by={keyring}] file:{repo} stable main\n",
@@ -801,7 +801,7 @@ class SignedLocalAptTests(unittest.TestCase):
                 "Priority: optional\n"
                 "Section: misc\n"
                 "Installed-Size: 1\n"
-                "Maintainer: Wild Buzzard Tests <test@example.invalid>\n"
+                "Maintainer: Buzzard OS Tests <test@example.invalid>\n"
                 "Architecture: all\n"
                 "Version: 1.0-1\n"
                 "Description: installed updater fixture\n",

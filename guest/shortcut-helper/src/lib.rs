@@ -20,4 +20,4 @@ pub use store::{
 };
 pub use thunar::{ThunarActionInstall, ThunarActionInstallError, install_thunar_actions};
 
-pub const HELPER_EXECUTABLE: &str = "/usr/libexec/wildbuzzard-shortcut-helper";
+pub const HELPER_EXECUTABLE: &str = "/usr/libexec/buzzardos-shortcut-helper";

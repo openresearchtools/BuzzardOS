@@ -3,6 +3,9 @@
 !LICENSE
 !NOTICE
 !THIRD_PARTY_NOTICES.md
+!VERSION
+!packaging/
+!packaging/**
 !LICENSES/
 !LICENSES/**
 !guest/
@@ -13,6 +16,7 @@
 clipboard-protocol/target/
 clipboard-protocol/target/**
 !guest/ASSET_REVISION
+!guest/BUZZARDCUA_VERSION
 !guest/asset-manifest.tsv
 !guest/install-rootfs-assets.sh
 !guest/desktop-core/

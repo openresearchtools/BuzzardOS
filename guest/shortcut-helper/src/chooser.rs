@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::{LaunchResult, LaunchStatus, RegistrationStore, StoreError};
+use buzzardos_desktop_core::{AppImageRegistration, RegistrationId};
 use gtk::prelude::*;
 use gtk4 as gtk;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 use thiserror::Error;
-use wildbuzzard_desktop_core::{AppImageRegistration, RegistrationId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelinkOutcome {

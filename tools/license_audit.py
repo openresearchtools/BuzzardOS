@@ -37,7 +37,7 @@ CUA_MANIFEST = CUA_ROOT / "cua-driver/rust/Cargo.toml"
 CUA_LOCK = CUA_ROOT / "cua-driver/rust/Cargo.lock"
 TARGET = "x86_64-unknown-linux-gnu"
 OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
-HOST_CLOSURE_MANIFEST = "usr/share/doc/wildbuzzard/host-package-closure.tsv"
+HOST_CLOSURE_MANIFEST = "usr/share/doc/buzzardos/host-package-closure.tsv"
 HOST_CLOSURE_HEADER = (
     "# Buzzard OS portable host package copyright closure v3",
     "# appdir_path\tpayload_sha256\tpackage\tversion\tcopyright_sha256",
@@ -48,34 +48,34 @@ DEBIAN_BINARY_PACKAGE_PATTERN = re.compile(
 )
 
 NON_DPKG_APPDIR_ELFS = {
-    "usr/bin/wildbuzzard",
-    "usr/bin/wildbuzzard-broker",
-    "usr/bin/wildbuzzard-cua-driver",
-    "usr/bin/wildbuzzard-display",
-    "usr/bin/wildbuzzard-settings",
-    "usr/bin/wildbuzzard-shortcut-helper",
-    "usr/bin/wildbuzzard-shell",
+    "usr/bin/buzzardos",
+    "usr/bin/buzzardos-broker",
+    "usr/bin/buzzardos-cua-driver",
+    "usr/bin/buzzardos-display",
+    "usr/bin/buzzardos-settings",
+    "usr/bin/buzzardos-shortcut-helper",
+    "usr/bin/buzzardos-shell",
     "usr/lib/libxkbcommon.so.0",
     "usr/lib/libnvidia-container-go.so.1.19.1",
     "usr/lib/libnvidia-container.so.1.19.1",
-    "usr/libexec/wildbuzzard/crane",
-    "usr/libexec/wildbuzzard/nvidia-cdi-hook",
-    "usr/libexec/wildbuzzard/nvidia-container-cli",
-    "usr/libexec/wildbuzzard/nvidia-ctk",
-    "usr/libexec/wildbuzzard/slirp4netns",
-    "usr/libexec/wildbuzzard/tar.real",
-    "usr/libexec/wildbuzzard/tar-libs/libacl.so.1",
-    "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1",
-    "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0",
+    "usr/libexec/buzzardos/crane",
+    "usr/libexec/buzzardos/nvidia-cdi-hook",
+    "usr/libexec/buzzardos/nvidia-container-cli",
+    "usr/libexec/buzzardos/nvidia-ctk",
+    "usr/libexec/buzzardos/slirp4netns",
+    "usr/libexec/buzzardos/tar.real",
+    "usr/libexec/buzzardos/tar-libs/libacl.so.1",
+    "usr/libexec/buzzardos/tar-libs/libselinux.so.1",
+    "usr/libexec/buzzardos/tar-libs/libpcre2-8.so.0",
 }
 NON_DPKG_APPDIR_MIRRORS = {
-    "usr/bin/nvidia-cdi-hook": "usr/libexec/wildbuzzard/nvidia-cdi-hook",
-    "usr/bin/nvidia-container-cli": "usr/libexec/wildbuzzard/nvidia-container-cli",
-    "usr/bin/nvidia-ctk": "usr/libexec/wildbuzzard/nvidia-ctk",
-    "usr/bin/slirp4netns": "usr/libexec/wildbuzzard/slirp4netns",
+    "usr/bin/nvidia-cdi-hook": "usr/libexec/buzzardos/nvidia-cdi-hook",
+    "usr/bin/nvidia-container-cli": "usr/libexec/buzzardos/nvidia-container-cli",
+    "usr/bin/nvidia-ctk": "usr/libexec/buzzardos/nvidia-ctk",
+    "usr/bin/slirp4netns": "usr/libexec/buzzardos/slirp4netns",
 }
 NON_DPKG_APPDIR_ELFS.update(NON_DPKG_APPDIR_MIRRORS)
-GUEST_RUNTIME_APPDIR_PREFIX = "usr/bin/wildbuzzard-guest-runtime/"
+GUEST_RUNTIME_APPDIR_PREFIX = "usr/bin/buzzardos-guest-runtime/"
 
 
 def is_non_dpkg_appdir_elf(relative: str) -> bool:
@@ -390,7 +390,7 @@ def merged_notice_bundle(graph_contents: Iterable[dict[str, dict]]) -> str:
                 raise AuditError(f"SHA-256 collision while merging license text {digest}")
             target["users"].extend(entry["users"])
     output = [
-        "Wild Buzzard locked Rust dependency license and notice files\n",
+        "Buzzard OS locked Rust dependency license and notice files\n",
         "Generated from the x86_64 Linux normal/build release graphs.\n",
         "Package versions and crates.io checksums are in the adjacent TSV files.\n",
     ]
@@ -497,8 +497,7 @@ def validate_provenance() -> None:
         CUA_ROOT / "LICENSE.md",
         CUA_ROOT / "CITATION.cff",
         CUA_ROOT / "UPSTREAM.toml",
-        CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        ROOT / "oci/desktop/SWAY_UPSTREAM.toml",
+        CUA_ROOT / "CHANGES.BUZZARDOS.md",
     ]
     for path in required:
         if not path.is_file() or path.stat().st_size == 0:
@@ -507,11 +506,6 @@ def validate_provenance() -> None:
     expected_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
     if upstream.get("upstream_commit") != expected_commit or upstream.get("license") != "MIT":
         raise AuditError("TryCua upstream commit/license record changed unexpectedly")
-    sway = read_toml(ROOT / "oci/desktop/SWAY_UPSTREAM.toml")
-    if sway.get("sway", {}).get("commit") != "88869399f421d9180dd8b6ed0b5a1f4a3585d252":
-        raise AuditError("Sway source pin changed without a license record update")
-    if sway.get("wlroots", {}).get("commit") != "d783533489e1f75d6886c2ab5c5960090ef268f8":
-        raise AuditError("wlroots source pin changed without a license record update")
     validate_upstream_sources()
     validate_build_pins()
     validate_package_inputs()
@@ -676,34 +670,13 @@ def require_literals(path: Path, literals: Iterable[str]) -> None:
 
 def validate_build_pins() -> None:
     require_literals(
-        ROOT / "host/build-portable-app.sh",
-        [
-            "crane_version=v0.21.8",
-            "crane_sha256=59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67",
-            "slirp_package_version=1.3.3-1",
-            "slirp_deb_sha256=dda3ca5101c58e9585bfd6e7b9d26831090327120cfb5092172ead355f968dd4",
-            "slirp_binary_sha256=20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
-            "linuxdeploy_version=1-alpha-20251107-1",
-            "linuxdeploy_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d",
-            "zig_version=0.14.1",
-            "zig_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
-            "cargo_zigbuild_version=0.21.8",
-            "nvidia_toolkit_version=1.19.1-1",
-            "nvidia_toolkit_base_sha256=b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132",
-            "nvidia_container_tools_sha256=5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268",
-            "nvidia_container_library_sha256=d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b",
-        ],
-    )
-    require_literals(
         ROOT / "oci/desktop/Containerfile",
         [
             "# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720",
-            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS shell-builder",
-            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS cua-builder",
-            "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b AS sway-builder",
+            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS deb-builder",
             "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b",
-            "ARG SWAY_COMMIT=88869399f421d9180dd8b6ed0b5a1f4a3585d252",
-            "ARG WLROOTS_COMMIT=d783533489e1f75d6886c2ab5c5960090ef268f8",
+            "packaging/build-debs.sh guest cua",
+            "sway",
             "ARG CUDA_CUDART_VERSION=13.1.80-1",
             "ARG CUDA_CUBLAS_VERSION=13.2.2.2-1",
         ],
@@ -717,21 +690,8 @@ def containerfile_apt_blocks() -> list[list[str]]:
         r"apt-get\s+-o\s+\S+\s+install\s+--yes\s+--no-install-recommends\s+"
         r"(.*?)\s+&&"
     )
-    return [shlex.split(match) for match in pattern.findall(normalized)]
-
-
-def portable_app_notice_loop_packages() -> list[str]:
-    contents = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
-    normalized = re.sub(r"\\\r?\n", " ", contents)
-    match = re.search(
-        r"for package in\s+(.*?)\s*;\s*do\s+"
-        r'copyright="/usr/share/doc/\$package/copyright"',
-        normalized,
-        re.DOTALL,
-    )
-    if match is None:
-        raise AuditError("cannot locate the portable-app host-package notice loop")
-    return shlex.split(match.group(1))
+    blocks = [shlex.split(match) for match in pattern.findall(normalized)]
+    return [block for block in blocks if not all(item.startswith("/tmp/") for item in block)]
 
 
 def validate_package_inputs() -> None:
@@ -800,12 +760,6 @@ def validate_package_inputs() -> None:
             "Containerfile base images changed without updating LICENSES/package-inputs.toml"
         )
 
-    configured = data.get("portable_host_payload", {}).get("notice_loop_packages", [])
-    if portable_app_notice_loop_packages() != configured:
-        raise AuditError(
-            "host/build-portable-app.sh notice packages changed without updating "
-            "LICENSES/package-inputs.toml"
-        )
 
 
 def source_notice_hashes() -> set[str]:
@@ -1500,13 +1454,13 @@ def inspect_pinned_libxkbcommon(
 
 def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     issues: list[str] = []
-    host_root = appdir / "usr/share/wildbuzzard/xkb"
-    host_manifest = appdir / "usr/share/wildbuzzard/xkb-data.manifest.sha256"
+    host_root = appdir / "usr/share/buzzardos/xkb"
+    host_manifest = appdir / "usr/share/buzzardos/xkb-data.manifest.sha256"
     host_inventory, host_issues = inspect_xkb_payload(
         host_root, host_manifest, "AppDir host"
     )
     issues.extend(host_issues)
-    host_version = appdir / "usr/share/wildbuzzard/xkb-data.version"
+    host_version = appdir / "usr/share/buzzardos/xkb-data.version"
     host_notice = appdir / "usr/share/doc/xkb-data/copyright"
     if (
         not host_version.is_file()
@@ -1521,7 +1475,7 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     if not host_notice.is_file() or host_notice.is_symlink():
         issues.append("AppDir xkb-data copyright is missing or is a symlink")
 
-    guest_runtime_root = appdir / "usr/bin/wildbuzzard-guest-runtime"
+    guest_runtime_root = appdir / "usr/bin/buzzardos-guest-runtime"
     revisions = (
         sorted(
             path
@@ -1537,7 +1491,7 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     guest_revision = revisions[0]
     guest_inventory, guest_issues = inspect_xkb_payload(
         guest_revision / "share/X11/xkb",
-        guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+        guest_revision / "share/buzzardos/xkb-data.manifest.sha256",
         "AppDir guest",
     )
     issues.extend(guest_issues)
@@ -1546,12 +1500,12 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     for host_path, guest_path, description in [
         (
             host_manifest,
-            guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+            guest_revision / "share/buzzardos/xkb-data.manifest.sha256",
             "manifest",
         ),
         (
             host_version,
-            guest_revision / "share/wildbuzzard/xkb-data.version",
+            guest_revision / "share/buzzardos/xkb-data.version",
             "version",
         ),
         (
@@ -1571,15 +1525,15 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
 
     host_library_digest, host_library_issues = inspect_pinned_libxkbcommon(
         appdir / "usr/lib/libxkbcommon.so.0",
-        appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
-        appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
+        appdir / "usr/share/buzzardos/libxkbcommon0.manifest.sha256",
+        appdir / "usr/share/buzzardos/libxkbcommon0.version",
         appdir / "usr/share/doc/libxkbcommon0/copyright",
         "AppDir host",
     )
     guest_library_digest, guest_library_issues = inspect_pinned_libxkbcommon(
         guest_revision / "lib/libxkbcommon.so.0",
-        guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
-        guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+        guest_revision / "share/buzzardos/libxkbcommon0.manifest.sha256",
+        guest_revision / "share/buzzardos/libxkbcommon0.version",
         guest_revision / "share/doc/libxkbcommon0/copyright",
         "AppDir guest",
     )
@@ -1589,13 +1543,13 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
         issues.append("AppDir host and guest libxkbcommon payloads differ")
     for host_path, guest_path, description in [
         (
-            appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
-            guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
+            appdir / "usr/share/buzzardos/libxkbcommon0.manifest.sha256",
+            guest_revision / "share/buzzardos/libxkbcommon0.manifest.sha256",
             "manifest",
         ),
         (
-            appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
-            guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+            appdir / "usr/share/buzzardos/libxkbcommon0.version",
+            guest_revision / "share/buzzardos/libxkbcommon0.version",
             "version",
         ),
         (
@@ -1669,7 +1623,7 @@ def archive_notice_members(path: Path) -> dict[str, bytes]:
 
 def audit_appdir_go_sources(appdir: Path) -> list[str]:
     issues: list[str] = []
-    root = appdir / "usr/share/doc/wildbuzzard/sources/go"
+    root = appdir / "usr/share/doc/buzzardos/sources/go"
     records = go_source_archive_records()
     expected_archives = {record[1] for record in records}
     archive_directory = root / "archives"
@@ -1739,38 +1693,38 @@ def audit_appdir(appdir: Path) -> list[str]:
     issues: list[str] = []
     issues.extend(audit_appdir_xkb_payload(appdir))
     required = {
-        "usr/share/doc/wildbuzzard/LICENSE": ROOT / "LICENSE",
-        "usr/share/doc/wildbuzzard/NOTICE": ROOT / "NOTICE",
-        "usr/share/doc/wildbuzzard/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/wildbuzzard-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/wildbuzzard-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md": CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        "usr/share/doc/wildbuzzard-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
-        "usr/libexec/wildbuzzard/tar": ROOT / "host/packaging/buzzardos-tar",
+        "usr/share/doc/buzzardos/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+        "usr/share/doc/buzzardos-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
+        "usr/share/doc/buzzardos-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
+        "usr/share/doc/buzzardos-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
+        "usr/share/doc/buzzardos-cua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
+        "usr/share/doc/buzzardos-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
+        "usr/share/doc/buzzardos-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
+        "usr/libexec/buzzardos/tar": ROOT / "host/packaging/buzzardos-tar",
     }
     for source in sorted(path for path in LICENSES.rglob("*") if path.is_file()):
         relative = source.relative_to(LICENSES).as_posix()
-        required[f"usr/share/doc/wildbuzzard/licenses/{relative}"] = source
+        required[f"usr/share/doc/buzzardos/licenses/{relative}"] = source
     for destination, source in required.items():
         verify_copy(appdir, destination, source, issues, "AppDir")
 
     expected_hashes = {
-        "usr/libexec/wildbuzzard/crane": "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7",
-        "usr/libexec/wildbuzzard/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
-        "usr/libexec/wildbuzzard/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
-        "usr/libexec/wildbuzzard/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
-        "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1": "1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16",
-        "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0": "bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e",
+        "usr/libexec/buzzardos/crane": "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7",
+        "usr/libexec/buzzardos/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
+        "usr/libexec/buzzardos/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
+        "usr/libexec/buzzardos/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
+        "usr/libexec/buzzardos/tar-libs/libselinux.so.1": "1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16",
+        "usr/libexec/buzzardos/tar-libs/libpcre2-8.so.0": "bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e",
     }
     nvidia_data = read_toml(LICENSES / "nvidia-go-dependencies.toml")
     for binary in nvidia_data.get("binary", []):
-        expected_hashes[f"usr/libexec/wildbuzzard/{binary['name']}"] = binary["sha256"]
+        expected_hashes[f"usr/libexec/buzzardos/{binary['name']}"] = binary["sha256"]
     for destination, expected in expected_hashes.items():
         verify_hash(appdir, destination, expected, issues, "AppDir")
     for package in ("tar", "libacl1", "libselinux1", "libpcre2-8-0"):
-        notice = appdir / f"usr/share/doc/wildbuzzard/tar-runtime/{package}/copyright"
+        notice = appdir / f"usr/share/doc/buzzardos/tar-runtime/{package}/copyright"
         if not notice.is_file() or not notice.read_bytes():
             issues.append(f"AppDir pinned tar runtime notice is missing: {package}")
     source_records = []
@@ -1782,11 +1736,11 @@ def audit_appdir(appdir: Path) -> list[str]:
             if len(fields) != 4 or SHA256_PATTERN.fullmatch(fields[3]) is None:
                 raise AuditError("invalid tar runtime source manifest row")
             source_records.append((fields[1], fields[3]))
-    tar_source_root = appdir / "usr/share/doc/wildbuzzard/sources/tar-runtime"
+    tar_source_root = appdir / "usr/share/doc/buzzardos/sources/tar-runtime"
     for filename, checksum in source_records:
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/tar-runtime/{filename}",
+            f"usr/share/doc/buzzardos/sources/tar-runtime/{filename}",
             checksum,
             issues,
             "AppDir",
@@ -1824,7 +1778,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
     verify_hash(
         appdir,
-        "usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html",
+        "usr/share/doc/buzzardos/rust/COPYRIGHT-library.html",
         rust_runtime["standard_library_notice_sha256"],
         issues,
         "AppDir",
@@ -1832,12 +1786,12 @@ def audit_appdir(appdir: Path) -> list[str]:
     for name, version, checksum, _url in mpl_source_records():
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/mpl/{name}-{version}.crate",
+            f"usr/share/doc/buzzardos/sources/mpl/{name}-{version}.crate",
             checksum,
             issues,
             "AppDir",
         )
-    slirp_source_root = appdir / "usr/share/doc/wildbuzzard/sources/slirp4netns"
+    slirp_source_root = appdir / "usr/share/doc/buzzardos/sources/slirp4netns"
     expected_slirp_checksums = "".join(
         f"{checksum}  {name}\n"
         for name, _url, checksum in sorted(slirp4netns_source_records())
@@ -1845,7 +1799,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     for name, _url, checksum in slirp4netns_source_records():
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/slirp4netns/{name}",
+            f"usr/share/doc/buzzardos/sources/slirp4netns/{name}",
             checksum,
             issues,
             "AppDir",
@@ -1856,7 +1810,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     expected_mpl_archives = {
         f"{name}-{version}.crate" for name, version, _checksum, _url in mpl_source_records()
     }
-    mpl_directory = appdir / "usr/share/doc/wildbuzzard/sources/mpl"
+    mpl_directory = appdir / "usr/share/doc/buzzardos/sources/mpl"
     actual_mpl_archives = (
         {path.name for path in mpl_directory.iterdir() if path.is_file()}
         if mpl_directory.is_dir()
@@ -1866,7 +1820,7 @@ def audit_appdir(appdir: Path) -> list[str]:
         issues.append("AppDir MPL source archive set differs from the locked graph")
     issues.extend(audit_appdir_go_sources(appdir))
 
-    crane_path = appdir / "usr/libexec/wildbuzzard/crane"
+    crane_path = appdir / "usr/libexec/buzzardos/crane"
     if crane_path.is_file():
         actual_crane = go_build_modules(crane_path)
         actual_crane.discard(("github.com/google/go-containerregistry", "(devel)"))
@@ -1879,7 +1833,7 @@ def audit_appdir(appdir: Path) -> list[str]:
 
     expected_nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     for binary, expected_modules in expected_nvidia.items():
-        binary_path = appdir / "usr/libexec/wildbuzzard" / binary
+        binary_path = appdir / "usr/libexec/buzzardos" / binary
         if binary_path.is_file() and go_build_modules(binary_path) != expected_modules:
             issues.append(f"AppDir {binary} Go dependency inventory differs from the audited set")
 
@@ -1947,28 +1901,25 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
                 f"OCI package has no copyright file: {name}={package.get('Version', '?')}"
             )
     required = {
-        "usr/share/doc/wildbuzzard/LICENSE": ROOT / "LICENSE",
-        "usr/share/doc/wildbuzzard/NOTICE": ROOT / "NOTICE",
-        "usr/share/doc/wildbuzzard/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/wildbuzzard/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
-        "usr/share/doc/wildbuzzard/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
-        "usr/share/doc/wildbuzzard/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
-        "usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/wildbuzzard-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/wildbuzzard-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md": CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        "usr/share/doc/wildbuzzard-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
-        "usr/share/doc/wildbuzzard-sway/LICENSE.sway": LICENSES / "upstream/sway-1.12-LICENSE",
-        "usr/share/doc/wildbuzzard-sway/LICENSE.wlroots": LICENSES / "upstream/wlroots-0.20.2-LICENSE",
-        "usr/share/doc/wildbuzzard-sway/UPSTREAM.toml": ROOT / "oci/desktop/SWAY_UPSTREAM.toml",
+        "usr/share/doc/buzzardos-guest-desktop/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos-guest-desktop/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos-guest-desktop/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+        "usr/share/doc/buzzardos-guest-desktop/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
+        "usr/share/doc/buzzardos-guest-desktop/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
+        "usr/share/doc/buzzardos-guest-desktop/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
+        "usr/share/doc/buzzardcua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
+        "usr/share/doc/buzzardcua/CITATION.cff": CUA_ROOT / "CITATION.cff",
+        "usr/share/doc/buzzardcua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
+        "usr/share/doc/buzzardcua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
+        "usr/share/doc/buzzardcua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
+        "usr/share/doc/buzzardcua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
     }
     for destination, source in required.items():
         verify_copy(rootfs, destination, source, issues, "OCI")
     rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
     verify_hash(
         rootfs,
-        "usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html",
+        "usr/share/doc/buzzardos-guest-desktop/rust/COPYRIGHT-library.html",
         rust_runtime["standard_library_notice_sha256"],
         issues,
         "OCI",
@@ -1976,7 +1927,7 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
     for name, version, checksum, _url in mpl_source_records():
         verify_hash(
             rootfs,
-            f"usr/share/doc/wildbuzzard/sources/mpl/{name}-{version}.crate",
+            f"usr/share/doc/buzzardos-guest-desktop/sources/mpl/{name}-{version}.crate",
             checksum,
             issues,
             "OCI",

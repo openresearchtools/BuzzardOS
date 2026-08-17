@@ -45,12 +45,12 @@ class AppDirHostClosureTests(unittest.TestCase):
         )
 
     def test_verification_uses_only_appdir_bytes(self) -> None:
-        excluded = self.appdir / "usr/bin/wildbuzzard"
+        excluded = self.appdir / "usr/bin/buzzardos"
         excluded.parent.mkdir(parents=True)
         excluded.write_bytes(b"\x7fELFexcluded-project-binary")
         guest_runtime = (
             self.appdir
-            / "usr/bin/wildbuzzard-guest-runtime/0.1.0+assets.57/bin/cua-driver"
+            / "usr/bin/buzzardos-guest-runtime/0.1.0+assets.57/bin/cua-driver"
         )
         guest_runtime.parent.mkdir(parents=True)
         guest_runtime.write_bytes(b"\x7fELFguest-runtime-with-separate-provenance")
@@ -121,7 +121,7 @@ class AppDirHostClosureTests(unittest.TestCase):
 
     def test_v1_manifest_is_rejected(self) -> None:
         self.manifest.write_text(
-            "# Wild Buzzard AppImage build-host package copyright closure v1\n"
+            "# Buzzard OS AppImage build-host package copyright closure v1\n"
             "# appdir_path\tpackage\tversion\tcopyright_sha256\n",
             encoding="utf-8",
         )

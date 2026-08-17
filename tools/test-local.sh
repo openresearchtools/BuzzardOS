@@ -4,8 +4,8 @@ set -euo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 task_uid=$(id -u)
-build_root=${WILDBUZZARD_BUILD_ROOT:-"${TMPDIR:-/tmp}/wildbuzzard-build-$task_uid"}
-test_root=${WILDBUZZARD_TEST_DIR:-"$build_root/tests"}
+build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-build-$task_uid"}
+test_root=${BUZZARDOS_TEST_DIR:-"$build_root/tests"}
 test_root=$(realpath -m -- "$test_root")
 case "$test_root/" in
     "$project_dir/"*)
@@ -58,38 +58,31 @@ python3 -m unittest discover -s "$project_dir/oci/tests" -v
 python3 -m unittest discover -s "$project_dir/tools/tests" -v
 for script in \
     "$project_dir/guest/install-rootfs-assets.sh" \
-    "$project_dir/guest/assets/wildbuzzard-init" \
-    "$project_dir/guest/assets/wildbuzzard-fusermount"; do
+    "$project_dir/guest/assets/buzzardos-init" \
+    "$project_dir/guest/assets/buzzardos-fusermount"; do
     sh -n "$script"
 done
 for script in \
-    "$project_dir/host/build-portable-app.sh" \
     "$project_dir/host/packaging/generate-icons.sh" \
+    "$project_dir/packaging/build-debs.sh" \
     "$project_dir/oci/build-local.sh" \
     "$project_dir/oci/verify-image.sh" \
-    "$project_dir/tools/build-release-rootfs.sh" \
-    "$project_dir/tools/assemble-release-assets.sh" \
     "$project_dir/tests/acceptance/hardware-acceptance.sh"; do
     bash -n "$script"
 done
 
 asset_root=$(mktemp -d "$test_root/guest-assets.XXXXXX")
 cleanup() {
-    rm -r -- "$asset_root"
+    rm -rf -- "$asset_root"
 }
 trap cleanup EXIT
 mkdir "$asset_root/rootfs"
-mkdir -p "$asset_root/runtime/bin"
-cp /bin/true "$asset_root/runtime/bin/sway"
-cp /bin/true "$asset_root/runtime/bin/swaymsg"
 "$project_dir/guest/install-rootfs-assets.sh" \
     "$asset_root/rootfs" \
     /bin/true \
     /bin/true \
     /bin/true \
-    /bin/true \
-    /bin/true \
-    "$asset_root/runtime"
+    /bin/true
 python3 - "$asset_root/rootfs" <<'PY'
 import json
 from pathlib import Path
@@ -97,26 +90,23 @@ import sys
 
 root = Path(sys.argv[1])
 manifest = json.loads(
-    (root / "usr/lib/wildbuzzard/guest-assets.manifest.json").read_text()
+    (root / "usr/lib/buzzardos/guest-assets.manifest.json").read_text()
 )
 assert manifest["schema"] == 1
 for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
     assert path.stat().st_mode & 0o7777 == record["mode"], relative
-revision = (root / "opt/wildbuzzard/runtime/current").readlink()
-runtime = root / "opt/wildbuzzard/runtime" / revision
+revision = (root / "opt/buzzardos/runtime/current").readlink()
+runtime = root / "opt/buzzardos/runtime" / revision
 runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
 assert runtime_manifest["revision"] == str(revision)
 for required in (
-    "bin/sway",
-    "bin/swaymsg",
-    "bin/cua-driver",
-    "libexec/wildbuzzard-shell",
-    "libexec/wildbuzzard-settings",
-    "libexec/wildbuzzard-shortcut-helper",
-    "libexec/wildbuzzard-clipboard-agent",
-    "libexec/wildbuzzard-updater",
+    "libexec/buzzardos-shell",
+    "libexec/buzzardos-settings",
+    "libexec/buzzardos-shortcut-helper",
+    "libexec/buzzardos-clipboard-agent",
+    "libexec/buzzardos-updater",
 ):
     assert (runtime / required).is_file(), required
 PY

@@ -1,0 +1,271 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+if [ "${BUZZARDOS_SERVICES_LOCKED:-0}" != 1 ]; then
+    export BUZZARDOS_SERVICES_LOCKED=1
+    exec flock -n /run/user/1000/buzzardos-desktop-services.lock "$0"
+fi
+
+status_dir=${BUZZARDOS_STATUS_DIR:-/run/buzzardos-host}
+: "${BUZZARDOS_SESSION_TOKEN:?missing Buzzard OS session token}"
+rm -f \
+    "$status_dir/desktop-ready" \
+    "$status_dir/shell-ready" \
+    "$status_dir/cua-ready" \
+    "$status_dir/clipboard-ready" \
+    "$status_dir/clipboard-agent.sock" \
+    "$status_dir/cua-health.json.tmp" \
+    "$status_dir/cua-desktop-state.json.tmp" \
+    "$status_dir/cua-ready.png" \
+    "$status_dir/cua-ready.png.tmp"
+
+# Sway sets WAYLAND_DISPLAY and SWAYSOCK for its exec command. Publish the
+# private guest-compositor endpoints to D-Bus activation only after Sway is running so
+# activated applications can never inherit the display gateway connection.
+dbus-update-activation-environment \
+    DBUS_SESSION_BUS_ADDRESS \
+    CUA_DRIVER_RS_ENABLE_WAYLAND \
+    CUA_DRIVER_RS_TELEMETRY_ENABLED \
+    DISPLAY \
+    ELECTRON_OZONE_PLATFORM_HINT \
+    GTK_MODULES \
+    HOME \
+    LD_LIBRARY_PATH \
+    MOZ_ENABLE_WAYLAND \
+    NO_AT_BRIDGE \
+    QT_ACCESSIBILITY \
+    QT_QPA_PLATFORM \
+    QT_QPA_PLATFORMTHEME \
+    SWAYSOCK \
+    USER \
+    WAYLAND_DISPLAY \
+    XKB_CONFIG_ROOT \
+    XDG_CONFIG_DIRS \
+    XDG_CURRENT_DESKTOP \
+    XDG_RUNTIME_DIR \
+    XDG_SESSION_DESKTOP \
+    XDG_SESSION_TYPE
+
+service_pids=
+last_service_pid=
+
+start_service() {
+    log_name=$1
+    shift
+    "$@" >>"$status_dir/$log_name.log" 2>&1 &
+    last_service_pid=$!
+    service_pids="$service_pids $last_service_pid"
+}
+
+start_optional_service() {
+    executable=$1
+    log_name=$2
+    shift 2
+    if command -v "$executable" >/dev/null 2>&1; then
+        start_service "$log_name" "$executable" "$@"
+    else
+        echo "$executable is not installed" >"$status_dir/$log_name.log"
+    fi
+}
+
+start_output_sync_supervisor() {
+    (
+        output_sync_child=
+        stop_output_sync() {
+            if [ -n "$output_sync_child" ]; then
+                kill "$output_sync_child" 2>/dev/null || true
+                wait "$output_sync_child" 2>/dev/null || true
+            fi
+            exit 0
+        }
+        trap stop_output_sync INT TERM HUP
+        failures=0
+        while :; do
+            started=$(date +%s)
+            "$runtime/libexec/buzzardos-output-sync" \
+                >>"$status_dir/output-sync.log" 2>&1 &
+            output_sync_child=$!
+            set +e
+            wait "$output_sync_child"
+            status=$?
+            set -e
+            output_sync_child=
+            stopped=$(date +%s)
+            if [ $((stopped - started)) -ge 10 ]; then
+                failures=1
+            elif [ "$failures" -lt 5 ]; then
+                failures=$((failures + 1))
+            else
+                failures=5
+            fi
+            printf '%s\n' \
+                "buzzardos-desktop-services: output-sync exited with status $status; consecutive failure level $failures of 5" \
+                >>"$status_dir/output-sync.log"
+            case "$failures" in
+                1) sleep 0.2 ;;
+                2) sleep 0.5 ;;
+                *) sleep 2 ;;
+            esac
+        done
+    ) &
+    last_service_pid=$!
+    service_pids="$service_pids $last_service_pid"
+}
+
+cleanup() {
+    rm -f \
+        "$status_dir/desktop-ready" \
+        "$status_dir/shell-ready" \
+        "$status_dir/cua-ready" \
+        "$status_dir/clipboard-ready" \
+        "$status_dir/clipboard-agent.sock" \
+        "$status_dir/cua-health.json.tmp" \
+        "$status_dir/cua-desktop-state.json.tmp" \
+        "$status_dir/cua-ready.png" \
+        "$status_dir/cua-ready.png.tmp"
+    # The list is populated only from numeric child PIDs created above.
+    # shellcheck disable=SC2086
+    kill $service_pids 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# These are guest-private services. No host PipeWire or portal socket is
+# mounted, and none of them participates in the visible host presentation.
+start_optional_service pipewire pipewire
+attempt=0
+while [ "$attempt" -lt 200 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+done
+if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+    echo "private PipeWire socket did not become ready" >&2
+    exit 1
+fi
+start_optional_service pipewire-pulse pipewire-pulse
+start_optional_service wireplumber wireplumber
+runtime=/opt/buzzardos/runtime/current
+
+start_service appimage-ready "$runtime/libexec/buzzardos-appimage-ready"
+appimage_ready_pid=$last_service_pid
+start_service clipboard-agent "$runtime/libexec/buzzardos-clipboard-agent"
+clipboard_pid=$last_service_pid
+start_service integration "$runtime/libexec/buzzardos-integration-agent"
+start_optional_service /usr/libexec/xdg-desktop-portal-wlr xdg-desktop-portal-wlr
+start_optional_service /usr/libexec/xdg-desktop-portal xdg-desktop-portal
+
+start_service mako mako
+start_service shell "$runtime/libexec/buzzardos-shell"
+shell_pid=$last_service_pid
+start_output_sync_supervisor
+output_sync_pid=$last_service_pid
+
+if [ -x /usr/bin/buzzardcua ]; then
+    start_service buzzardcua /usr/bin/buzzardcua serve \
+        --dangerously-bypass-approvals \
+        --no-overlay
+    cua_pid=$last_service_pid
+else
+    echo "required Buzzard CUA is not installed" >"$status_dir/buzzardcua.log"
+    exit 1
+fi
+
+# This is the broker's readiness contract. It is published only after the
+# shell has rendered configured desktop/panel surfaces and initialized its
+# accessibility adapter, and after the in-guest CUA daemon answers a real
+# health request and completes a real full-output screenshot. Merely forking
+# either process or detecting a screencopy protocol global is not readiness.
+cua_socket=$HOME/.cache/cua-driver/cua-driver.sock
+attempt=0
+while [ "$attempt" -lt 450 ]; do
+    if ! kill -0 "$shell_pid" 2>/dev/null; then
+        echo "Buzzard OS shell exited before becoming ready" >&2
+        exit 1
+    fi
+    if ! kill -0 "$cua_pid" 2>/dev/null; then
+        echo "Buzzard CUA exited before becoming ready" >&2
+        exit 1
+    fi
+    if ! kill -0 "$appimage_ready_pid" 2>/dev/null; then
+        echo "native AppImage authorization service exited before readiness" >&2
+        exit 1
+    fi
+    if ! kill -0 "$clipboard_pid" 2>/dev/null; then
+        echo "guest clipboard agent exited before becoming ready" >&2
+        exit 1
+    fi
+    if ! kill -0 "$output_sync_pid" 2>/dev/null; then
+        echo "guest output/keyboard Settings service exited before readiness" >&2
+        exit 1
+    fi
+    if [ -f "$status_dir/shell-ready" ] && \
+        [ -f "$status_dir/clipboard-ready" ] && \
+        [ -S "$status_dir/clipboard-agent.sock" ] && \
+        [ -S "$XDG_RUNTIME_DIR/buzzardos-display-scale.sock" ] && \
+        [ -S "$XDG_RUNTIME_DIR/buzzardos-keyboard-settings.sock" ] && \
+        [ -f "$XDG_RUNTIME_DIR/buzzardos-output-sync-ready.json" ] && \
+        [ -S "$cua_socket" ]; then
+        if timeout 5 /usr/bin/buzzardcua health_report '{}' \
+            >"$status_dir/cua-health.json.tmp" 2>>"$status_dir/buzzardcua.log" &&
+            grep -Eq '"overall"[[:space:]]*:[[:space:]]*"ok"' \
+                "$status_dir/cua-health.json.tmp" &&
+            timeout 10 /usr/bin/buzzardcua get_desktop_state \
+                "{\"screenshot_out_file\":\"$status_dir/cua-ready.png.tmp\"}" \
+                >"$status_dir/cua-desktop-state.json.tmp" \
+                2>>"$status_dir/buzzardcua.log" &&
+            python3 - "$status_dir/cua-desktop-state.json.tmp" \
+                "$status_dir/cua-ready.png.tmp" \
+                2>>"$status_dir/buzzardcua.log" <<'PY'
+import json
+import struct
+import sys
+
+state_path, png_path = sys.argv[1:]
+try:
+    with open(state_path, "r", encoding="utf-8") as stream:
+        state = json.load(stream)
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"CUA readiness state is not valid JSON: {error}") from None
+if not isinstance(state, dict):
+    raise SystemExit("CUA readiness state is not a JSON object")
+with open(png_path, "rb") as stream:
+    header = stream.read(24)
+if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
+    raise SystemExit("CUA readiness capture is not a PNG")
+width, height = struct.unpack(">II", header[16:24])
+reported = (
+    state.get("screenshot_width"),
+    state.get("screenshot_height"),
+    state.get("screen_width"),
+    state.get("screen_height"),
+)
+if width < 1 or height < 1 or reported != (width, height, width, height):
+    raise SystemExit(
+        f"CUA readiness capture geometry mismatch: png={width}x{height}, "
+        f"reported={reported}"
+    )
+if state.get("screenshot_mime_type") != "image/png":
+    raise SystemExit("CUA readiness capture has the wrong MIME type")
+PY
+        then
+            mv "$status_dir/cua-health.json.tmp" "$status_dir/cua-health.json"
+            mv "$status_dir/cua-ready.png.tmp" "$status_dir/cua-ready.png"
+            rm -f "$status_dir/cua-desktop-state.json.tmp"
+            touch "$status_dir/cua-ready"
+            desktop_ready_tmp=$(mktemp "$status_dir/.desktop-ready.XXXXXX")
+            chmod 0600 "$desktop_ready_tmp"
+            printf '%s\n' "$BUZZARDOS_SESSION_TOKEN" >"$desktop_ready_tmp"
+            mv -f "$desktop_ready_tmp" "$status_dir/desktop-ready"
+            break
+        fi
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+if [ ! -f "$status_dir/desktop-ready" ]; then
+    echo "desktop shell, clipboard agent, and Buzzard CUA did not become ready" >&2
+    exit 1
+fi
+
+wait

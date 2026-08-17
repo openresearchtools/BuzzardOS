@@ -4,8 +4,8 @@
   <action>
     <icon>application-x-executable</icon>
     <name>Add to Applications</name>
-    <unique-id>wildbuzzard-appimage-add-applications-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-applications %f</command>
+    <unique-id>buzzardos-appimage-add-applications-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-applications %f</command>
     <description>Register this AppImage in the Applications menu</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>
@@ -14,8 +14,8 @@
   <action>
     <icon>user-desktop</icon>
     <name>Add Desktop Shortcut</name>
-    <unique-id>wildbuzzard-appimage-add-desktop-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f</command>
+    <unique-id>buzzardos-appimage-add-desktop-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-desktop %f</command>
     <description>Create a desktop shortcut linked to this AppImage</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>

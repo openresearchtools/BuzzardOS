@@ -1,7 +1,7 @@
 schema = 1
 reviewed_at = "2026-08-09"
 target_os = "linux"
-target_desktop = "Wild Buzzard private Sway/Wayland/Xwayland session"
+target_desktop = "Buzzard OS private Sway/Wayland/Xwayland session"
 status = "reviewed-linux-only-source-subset"
 
 workspace_members = [
@@ -39,8 +39,8 @@ retained_shared_contract = "Shared Rust contract, SDK, daemon, browser, policy, 
 upstream_record = "UPSTREAM.toml"
 license = "LICENSE.md"
 citation = "CITATION.cff"
-downstream_changes = "CHANGES.WILDBUZZARD.md"
+downstream_changes = "CHANGES.BUZZARDOS.md"
 
 [enforcement]
 test = "cua-driver/rust/crates/cua-driver/tests/linux_vendored_scope_test.rs"
-command = "CARGO_TARGET_DIR=${TMPDIR:-/tmp}/wildbuzzard-build-$(id -u)/tests/cua-target cargo test --locked -p cua-driver --test linux_vendored_scope_test"
+command = "CARGO_TARGET_DIR=${TMPDIR:-/tmp}/buzzardos-build-$(id -u)/tests/cua-target cargo test --locked -p cua-driver --test linux_vendored_scope_test"
