@@ -83,6 +83,7 @@ impl IdMap {
             format!("0:{}:{GUEST_ID_COUNT}", self.subgid_start).into(),
             "--map-group".into(),
             GUEST_USER_ID.to_string().into(),
+            "--mount".into(),
             "--setuid".into(),
             "0".into(),
             "--setgid".into(),
@@ -185,6 +186,7 @@ mod tests {
                 .windows(2)
                 .any(|pair| { pair == ["--map-group", "1000"] })
         );
+        assert!(arguments.iter().any(|argument| argument == "--mount"));
     }
 
     #[test]

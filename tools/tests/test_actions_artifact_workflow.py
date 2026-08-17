@@ -122,6 +122,13 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("--map-user 1000", self.dependency_installer)
         self.assertIn('--map-groups "0:$subgid_start:65536"', self.dependency_installer)
         self.assertIn("--map-group 1000", self.dependency_installer)
+        self.assertIn(
+            "apparmor_restrict_unprivileged_userns", self.dependency_installer
+        )
+        self.assertIn("flags=(unconfined)", self.dependency_installer)
+        self.assertIn("'  userns,'", self.dependency_installer)
+        self.assertIn('profile_path="/etc/apparmor.d/', self.dependency_installer)
+        self.assertNotIn('/app/usr/libexec/wildbuzzard/**', self.dependency_installer)
         self.assertNotIn(
             "apparmor_restrict_unprivileged_userns=0", self.dependency_installer
         )

@@ -5,13 +5,14 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
+use nix::mount::{MsFlags, mount};
 use nix::unistd::{Gid, Uid, chown};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -33,7 +34,10 @@ const DEFAULT_ROOTFS_OCI_MANIFEST: &str = "default-rootfs.oci.json";
 const MAX_GUEST_ID: u64 = 65_535;
 const MAX_OCI_PAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OCI_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OCI_SPARSE_EXTENTS: u64 = 1_000_000;
 const MAX_ROOTFS_MANIFEST_BYTES: u64 = 1024 * 1024;
+const NAMESPACE_LAUNCHER_RELATIVE_ENV: &str = "WILDBUZZARD_NAMESPACE_LAUNCHER_RELATIVE";
+const NAMESPACE_PORTABLE_BIND_ENV: &str = "WILDBUZZARD_NAMESPACE_PORTABLE_BIND";
 const GUEST_ASSETS_REVISION: &str = include_str!("../../../../guest/ASSET_REVISION");
 const GUEST_ASSETS_MANIFEST: &str = "usr/lib/wildbuzzard/guest-assets.manifest.json";
 const GUEST_RUNTIME_ROOT: &str = "opt/wildbuzzard/runtime";
@@ -691,6 +695,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    enter_namespace_portable_bind()?;
     if let Some(Commands::ApplyImage {
         archive,
         expected_digest,
@@ -1489,21 +1494,33 @@ fn export_machine(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe().context("locating launcher for OCI export")?;
+    let namespace = PortableNamespaceContext::discover("OCI export")?;
+    let rootfs = namespace.relative(&machine_dir.join("rootfs"), "machine rootfs")?;
+    let machine_config = namespace.relative(
+        &machine_dir.join(MachineConfig::FILE),
+        "machine configuration",
+    )?;
+    // Build inside the portable cache, then copy through the already-open
+    // host-user temporary file. This keeps arbitrary export destinations
+    // usable even when their parent directories are private to the host UID.
+    let staged_output = work.path().join("export.oci.tar.zst");
+    let namespace_output = namespace.new_file(&staged_output, "staged OCI export")?;
+    let namespace_work = namespace.relative(work.path(), "OCI export work directory")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     command
         .args(id_map.namespace_args())
-        .arg(launcher)
+        .arg(&namespace.launcher)
         .arg("__export-oci")
         .arg("--rootfs")
-        .arg(machine_dir.join("rootfs"))
+        .arg(rootfs)
         .arg("--machine-config")
-        .arg(machine_dir.join(MachineConfig::FILE))
+        .arg(machine_config)
         .arg("--output")
-        .arg(temporary.path())
+        .arg(namespace_output)
         .arg("--work-dir")
-        .arg(work.path());
+        .arg(namespace_work);
     if let Some(source_date_epoch) = generic_seed_source_date_epoch {
         command
             .arg("--generic-seed")
@@ -1516,21 +1533,44 @@ fn export_machine(
             namespace_program.display()
         )
     });
-    let cleanup_result = cleanup_export_stage(&resources, work.path(), &paths.cache());
-    let status = match (status_result, cleanup_result) {
-        (Ok(status), Ok(())) => status,
-        (Err(start_error), Ok(())) => return Err(start_error),
-        (Ok(status), Err(cleanup_error)) => {
-            bail!(
-                "OCI export namespace exited with {status}; export staging cleanup failed: {cleanup_error:#}"
-            )
-        }
-        (Err(start_error), Err(cleanup_error)) => {
-            bail!("{start_error:#}; export staging cleanup also failed: {cleanup_error:#}")
+    let status = match status_result {
+        Ok(status) => status,
+        Err(start_error) => {
+            return match cleanup_export_stage(&resources, work.path(), &paths.cache()) {
+                Ok(()) => Err(start_error),
+                Err(cleanup_error) => Err(anyhow::anyhow!(
+                    "{start_error:#}; export staging cleanup also failed: {cleanup_error:#}"
+                )),
+            };
         }
     };
     if !status.success() {
-        bail!("OCI export namespace exited with {status}");
+        return match cleanup_export_stage(&resources, work.path(), &paths.cache()) {
+            Ok(()) => Err(anyhow::anyhow!("OCI export namespace exited with {status}")),
+            Err(cleanup_error) => Err(anyhow::anyhow!(
+                "OCI export namespace exited with {status}; export staging cleanup failed: {cleanup_error:#}"
+            )),
+        };
+    }
+    let copy_result = (|| -> Result<()> {
+        let mut source = File::open(&staged_output)
+            .with_context(|| format!("opening staged export {}", staged_output.display()))?;
+        temporary.as_file().set_len(0)?;
+        let mut destination = temporary.as_file();
+        destination.seek(SeekFrom::Start(0))?;
+        std::io::copy(&mut source, &mut destination)
+            .context("copying namespace export to destination filesystem")?;
+        destination.flush()?;
+        Ok(())
+    })();
+    let cleanup_result = cleanup_export_stage(&resources, work.path(), &paths.cache());
+    match (copy_result, cleanup_result) {
+        (Ok(()), Ok(())) => {}
+        (Err(copy_error), Ok(())) => return Err(copy_error),
+        (Ok(()), Err(cleanup_error)) => return Err(cleanup_error),
+        (Err(copy_error), Err(cleanup_error)) => {
+            bail!("{copy_error:#}; export staging cleanup also failed: {cleanup_error:#}")
+        }
     }
     temporary
         .as_file()
@@ -1779,6 +1819,7 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
             "--xattrs",
             "--xattrs-include=*",
             "--sparse",
+            "--sparse-version=0.1",
             "--one-file-system",
             "--atime-preserve=system",
             "--exclude=./proc/*",
@@ -1801,9 +1842,7 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
     let writer = DigestingWriter::new(file);
     let mut encoder = zstd::stream::write::Encoder::new(writer, 15)
         .context("initializing OCI layer zstd encoder")?;
-    encoder
-        .multithread(zstd_worker_count())
-        .context("enabling multithreaded OCI layer compression")?;
+    enable_zstd_multithreading(&mut encoder);
     let mut diff = Sha256::new();
     let mut buffer = [0_u8; 256 * 1024];
     loop {
@@ -1854,6 +1893,7 @@ fn copy_rootfs_for_generic_seed(
             "--xattrs",
             "--xattrs-include=*",
             "--sparse",
+            "--sparse-version=0.1",
             "--one-file-system",
             "--atime-preserve=system",
             "--exclude=./proc/*",
@@ -1978,7 +2018,9 @@ fn write_compressed_layout_archive(
 ) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
+        .create(true)
         .truncate(true)
+        .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(output)
         .with_context(|| format!("opening export output {}", output.display()))?;
@@ -2010,14 +2052,17 @@ fn write_compressed_layout_archive(
         .context("layout tar stdout was not piped")?;
     let mut encoder = zstd::stream::write::Encoder::new(file, 19)
         .context("initializing OCI archive compressor")?;
-    encoder
-        .multithread(zstd_worker_count())
-        .context("enabling multithreaded OCI archive compression")?;
+    enable_zstd_multithreading(&mut encoder);
     std::io::copy(&mut BufReader::new(stdout), &mut encoder)
         .context("compressing OCI layout archive")?;
     let file = encoder
         .finish()
         .context("finishing OCI archive compression")?;
+    // The namespace root maps to a subordinate host ID. The outer host-user
+    // process copies this file from its mode-0700 portable cache into the
+    // user-selected atomic destination, so the completed staging file must be
+    // readable without making the cache directory itself public.
+    file.set_permissions(fs::Permissions::from_mode(0o644))?;
     file.sync_all().context("syncing OCI archive")?;
     let status = child.wait().context("waiting for OCI layout tar")?;
     if !status.success() {
@@ -2031,6 +2076,13 @@ fn zstd_worker_count() -> u32 {
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
         .min(8) as u32
+}
+
+fn enable_zstd_multithreading<W: Write>(encoder: &mut zstd::stream::write::Encoder<'_, W>) {
+    // Some supported hosts provide a libzstd build without pthread support.
+    // Worker selection is only a performance hint: the encoder remains valid
+    // and deterministic with its default single worker after this call fails.
+    let _ = encoder.multithread(zstd_worker_count());
 }
 
 fn reject_rootfs_submounts(rootfs: &Path) -> Result<()> {
@@ -2112,12 +2164,14 @@ fn reset_cloned_machine_identity_in_stage(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe()?;
+    let namespace = PortableNamespaceContext::discover("clone identity reset")?;
+    let rootfs = namespace.relative(rootfs, "cloned rootfs")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     let status = command
         .args(id_map.namespace_args())
-        .arg(launcher)
+        .arg(&namespace.launcher)
         .arg("__reset-clone-identity")
         .arg("--rootfs")
         .arg(rootfs)
@@ -2209,17 +2263,20 @@ fn cleanup_failed_machine_stage(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe().context("locating launcher for staging cleanup")?;
+    let namespace = PortableNamespaceContext::discover("machine staging cleanup")?;
+    let namespace_staging = namespace.relative(staging, "machine staging directory")?;
+    let namespace_machines = namespace.relative(machines, "Machines directory")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     let status = command
         .args(id_map.namespace_args())
-        .arg(launcher)
+        .arg(&namespace.launcher)
         .arg("__cleanup-staging")
         .arg("--staging")
-        .arg(staging)
+        .arg(namespace_staging)
         .arg("--machines")
-        .arg(machines)
+        .arg(namespace_machines)
         .stdin(Stdio::null())
         .status()
         .with_context(|| {
@@ -2248,17 +2305,20 @@ fn cleanup_export_stage(resources: &ResourceLocator, staging: &Path, cache: &Pat
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe().context("locating launcher for export cleanup")?;
+    let namespace = PortableNamespaceContext::discover("export staging cleanup")?;
+    let namespace_staging = namespace.relative(staging, "export staging directory")?;
+    let namespace_cache = namespace.relative(cache, "portable cache")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     let status = command
         .args(id_map.namespace_args())
-        .arg(launcher)
+        .arg(&namespace.launcher)
         .arg("__cleanup-export-staging")
         .arg("--staging")
-        .arg(staging)
+        .arg(namespace_staging)
         .arg("--cache")
-        .arg(cache)
+        .arg(namespace_cache)
         .stdin(Stdio::null())
         .status()
         .with_context(|| {
@@ -2289,17 +2349,20 @@ fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe()?;
+    let namespace = PortableNamespaceContext::discover("machine deletion")?;
+    let machine_dir = namespace.relative(&machine_dir, "machine directory")?;
+    let machines = namespace.relative(&paths.machines(), "Machines directory")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     let status = command
         .args(id_map.namespace_args())
-        .arg(launcher)
+        .arg(&namespace.launcher)
         .arg("__delete-machine")
         .arg("--machine")
         .arg(&machine_dir)
         .arg("--machines")
-        .arg(paths.machines())
+        .arg(machines)
         .stdin(Stdio::null())
         .status()?;
     drop(lock);
@@ -3068,7 +3131,12 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
         if !resolved.starts_with(&canonical_rootfs) {
             bail!("bundled rootfs /{required} escapes through a symlink");
         }
-        let metadata = fs::metadata(&resolved)
+        // Access through the caller-supplied path rather than the absolute
+        // canonical result. Namespace helpers deliberately inherit a working
+        // directory inside the portable folder so a subordinate guest-root
+        // identity never has to retraverse a private host ancestor such as a
+        // mode-0700 home directory.
+        let metadata = fs::metadata(&path)
             .with_context(|| format!("inspecting bundled rootfs file /{required}"))?;
         if !metadata.is_file() {
             bail!("bundled rootfs /{required} must resolve to a regular file");
@@ -3088,9 +3156,38 @@ fn apply_image_in_user_namespace(
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
     let launcher = std::env::current_exe().context("locating launcher for OCI extraction")?;
+    let portable_root = std::env::var_os("BUZZARDOS_PORTABLE_DIR")
+        .context("portable root is unavailable for OCI extraction")?;
+    let portable_root = PathBuf::from(portable_root)
+        .canonicalize()
+        .context("resolving portable root for OCI extraction")?;
+    let launcher = namespace_relative_path(&portable_root, &launcher, "launcher")?;
+    let archive = namespace_relative_path(&portable_root, archive, "OCI archive")?;
+    let rootfs = namespace_relative_path(&portable_root, rootfs, "rootfs")?;
+    let work_dir = namespace_relative_path(&portable_root, work_dir, "OCI work directory")?;
+    let app_dir = std::env::var_os("APPDIR")
+        .context("portable application directory is unavailable for OCI extraction")?;
+    let app_dir = namespace_relative_path(
+        &portable_root,
+        &PathBuf::from(app_dir),
+        "portable application directory",
+    )?;
+    let namespace_library_path = format!(
+        "{}:{}",
+        app_dir.join("usr/lib").display(),
+        app_dir.join("usr/lib/x86_64-linux-gnu").display()
+    );
+    let namespace_bind = tempfile::Builder::new()
+        .prefix("wildbuzzard-portable-")
+        .tempdir_in(std::env::temp_dir())
+        .context("creating private portable namespace bind point")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     let status = command
+        .current_dir(&portable_root)
+        .env(NAMESPACE_LAUNCHER_RELATIVE_ENV, &launcher)
+        .env(NAMESPACE_PORTABLE_BIND_ENV, namespace_bind.path())
+        .env("LD_LIBRARY_PATH", namespace_library_path)
         .args(id_map.namespace_args())
         .arg(launcher)
         .arg("__apply-image")
@@ -3116,6 +3213,140 @@ fn apply_image_in_user_namespace(
         );
     }
     Ok(())
+}
+
+fn enter_namespace_portable_bind() -> Result<()> {
+    let Some(target) = std::env::var_os(NAMESPACE_PORTABLE_BIND_ENV) else {
+        return Ok(());
+    };
+    let target = PathBuf::from(target);
+    let metadata = fs::symlink_metadata(&target).with_context(|| {
+        format!(
+            "inspecting private portable namespace bind point {}",
+            target.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("private portable namespace bind point must be a real directory");
+    }
+    mount(
+        Some(Path::new(".")),
+        &target,
+        None::<&str>,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        None::<&str>,
+    )
+    .with_context(|| {
+        format!(
+            "binding portable root into private namespace at {}",
+            target.display()
+        )
+    })?;
+    std::env::set_current_dir(&target).with_context(|| {
+        format!(
+            "entering private portable namespace root {}",
+            target.display()
+        )
+    })
+}
+
+fn namespace_relative_path(portable_root: &Path, path: &Path, kind: &str) -> Result<PathBuf> {
+    let resolved = path
+        .canonicalize()
+        .with_context(|| format!("resolving {kind} {}", path.display()))?;
+    let relative = resolved.strip_prefix(portable_root).with_context(|| {
+        format!(
+            "{kind} {} is outside portable root {}",
+            resolved.display(),
+            portable_root.display()
+        )
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("{kind} has an unsafe portable-relative path");
+    }
+    Ok(relative.to_path_buf())
+}
+
+struct PortableNamespaceContext {
+    portable_root: PathBuf,
+    launcher: PathBuf,
+    app_dir: PathBuf,
+    library_path: String,
+    bind_point: tempfile::TempDir,
+}
+
+impl PortableNamespaceContext {
+    fn discover(kind: &str) -> Result<Self> {
+        let portable_root = std::env::var_os("BUZZARDOS_PORTABLE_DIR")
+            .with_context(|| format!("portable root is unavailable for {kind}"))?;
+        let portable_root = PathBuf::from(portable_root)
+            .canonicalize()
+            .with_context(|| format!("resolving portable root for {kind}"))?;
+        let launcher =
+            std::env::current_exe().with_context(|| format!("locating launcher for {kind}"))?;
+        let launcher = namespace_relative_path(&portable_root, &launcher, "launcher")?;
+        let app_dir = std::env::var_os("APPDIR")
+            .with_context(|| format!("portable application directory is unavailable for {kind}"))?;
+        let app_dir = namespace_relative_path(
+            &portable_root,
+            &PathBuf::from(app_dir),
+            "portable application directory",
+        )?;
+        let library_path = format!(
+            "{}:{}",
+            app_dir.join("usr/lib").display(),
+            app_dir.join("usr/lib/x86_64-linux-gnu").display()
+        );
+        let bind_point = tempfile::Builder::new()
+            .prefix("wildbuzzard-portable-")
+            .tempdir_in(std::env::temp_dir())
+            .with_context(|| {
+                format!("creating private portable namespace bind point for {kind}")
+            })?;
+        Ok(Self {
+            portable_root,
+            launcher,
+            app_dir,
+            library_path,
+            bind_point,
+        })
+    }
+
+    fn relative(&self, path: &Path, kind: &str) -> Result<PathBuf> {
+        namespace_relative_path(&self.portable_root, path, kind)
+    }
+
+    fn new_file(&self, path: &Path, kind: &str) -> Result<PathBuf> {
+        let name = path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .context("new private namespace file has no name")?;
+        if path.exists() {
+            bail!("{kind} already exists: {}", path.display());
+        }
+        let parent = path
+            .parent()
+            .context("new private namespace file has no parent")?
+            .canonicalize()
+            .with_context(|| format!("resolving {kind} parent"))?;
+        let relative_parent =
+            namespace_relative_path(&self.portable_root, &parent, &format!("{kind} parent"))?;
+        Ok(relative_parent.join(name))
+    }
+
+    fn configure(&self, command: &mut Command) {
+        command
+            .current_dir(&self.portable_root)
+            .env(NAMESPACE_LAUNCHER_RELATIVE_ENV, &self.launcher)
+            .env(NAMESPACE_PORTABLE_BIND_ENV, self.bind_point.path())
+            .env("BUZZARDOS_PORTABLE_DIR", ".")
+            .env("APPDIR", &self.app_dir)
+            .env("LD_LIBRARY_PATH", &self.library_path);
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3683,6 +3914,292 @@ fn read_layer_pax_records(layer_tar: &Path) -> Result<BTreeMap<u64, PaxRecords>>
     Ok(records)
 }
 
+#[derive(Debug)]
+enum GnuSparseMap {
+    Pax(Vec<(u64, u64)>),
+    EmbeddedV1,
+}
+
+#[derive(Debug)]
+struct GnuSparseMetadata {
+    path: PathBuf,
+    real_size: u64,
+    map: GnuSparseMap,
+}
+
+fn parse_sparse_decimal(value: &[u8], description: &str) -> Result<u64> {
+    if value.is_empty() || value.len() > 20 || !value.iter().all(u8::is_ascii_digit) {
+        bail!("OCI GNU sparse {description} is not an unsigned decimal integer");
+    }
+    std::str::from_utf8(value)
+        .context("OCI GNU sparse decimal value is not ASCII")?
+        .parse()
+        .with_context(|| format!("OCI GNU sparse {description} overflows u64"))
+}
+
+fn validate_sparse_extents(extents: &[(u64, u64)], real_size: u64) -> Result<()> {
+    if extents.len() as u64 > MAX_OCI_SPARSE_EXTENTS {
+        bail!("OCI GNU sparse map exceeds {MAX_OCI_SPARSE_EXTENTS} extents");
+    }
+    let mut previous_end = 0_u64;
+    for &(offset, length) in extents {
+        let end = offset
+            .checked_add(length)
+            .context("OCI GNU sparse extent overflows u64")?;
+        if offset < previous_end || end > real_size {
+            bail!("OCI GNU sparse extents overlap, are out of order, or exceed the real size");
+        }
+        previous_end = end;
+    }
+    Ok(())
+}
+
+fn parse_pax_sparse_map(value: &[u8], real_size: u64) -> Result<Vec<(u64, u64)>> {
+    let fields = value.split(|byte| *byte == b',').collect::<Vec<_>>();
+    if fields.is_empty() || fields.len() % 2 != 0 {
+        bail!("OCI GNU sparse 0.1 map must contain offset/length pairs");
+    }
+    if fields.len() as u64 / 2 > MAX_OCI_SPARSE_EXTENTS {
+        bail!("OCI GNU sparse map exceeds {MAX_OCI_SPARSE_EXTENTS} extents");
+    }
+    let mut extents = Vec::with_capacity(fields.len() / 2);
+    for pair in fields.chunks_exact(2) {
+        extents.push((
+            parse_sparse_decimal(pair[0], "extent offset")?,
+            parse_sparse_decimal(pair[1], "extent length")?,
+        ));
+    }
+    validate_sparse_extents(&extents, real_size)?;
+    Ok(extents)
+}
+
+fn parse_gnu_sparse_metadata(
+    pax: &PaxRecords,
+    archive_path: &Path,
+) -> Result<Option<GnuSparseMetadata>> {
+    let sparse_keys = pax
+        .keys()
+        .filter(|key| key.starts_with(b"GNU.sparse."))
+        .collect::<Vec<_>>();
+    if sparse_keys.is_empty() {
+        return Ok(None);
+    }
+    for key in sparse_keys {
+        if !matches!(
+            key.as_slice(),
+            b"GNU.sparse.major"
+                | b"GNU.sparse.minor"
+                | b"GNU.sparse.name"
+                | b"GNU.sparse.realsize"
+                | b"GNU.sparse.size"
+                | b"GNU.sparse.numblocks"
+                | b"GNU.sparse.map"
+        ) {
+            bail!(
+                "OCI layer contains unsupported GNU sparse metadata {}",
+                String::from_utf8_lossy(key)
+            );
+        }
+    }
+    let major = pax.get(b"GNU.sparse.major".as_slice());
+    let minor = pax.get(b"GNU.sparse.minor".as_slice());
+    let path = pax.get(b"GNU.sparse.name".as_slice()).map_or_else(
+        || archive_path.to_path_buf(),
+        |path| PathBuf::from(OsStr::from_bytes(path)),
+    );
+    let real_size = pax
+        .get(b"GNU.sparse.realsize".as_slice())
+        .or_else(|| pax.get(b"GNU.sparse.size".as_slice()))
+        .context("OCI GNU sparse metadata has no real size")?;
+    let real_size = parse_sparse_decimal(real_size, "real size")?;
+    let map = match (major.map(Vec::as_slice), minor.map(Vec::as_slice)) {
+        (Some(b"1"), Some(b"0")) => {
+            if pax.contains_key(b"GNU.sparse.map".as_slice()) {
+                bail!("OCI GNU sparse 1.0 entry unexpectedly carries a PAX map");
+            }
+            GnuSparseMap::EmbeddedV1
+        }
+        (Some(b"0"), Some(b"1")) | (None, None)
+            if pax.contains_key(b"GNU.sparse.map".as_slice()) =>
+        {
+            let extents = parse_pax_sparse_map(
+                pax.get(b"GNU.sparse.map".as_slice())
+                    .context("OCI GNU sparse 0.1 entry has no map")?,
+                real_size,
+            )?;
+            let count = parse_sparse_decimal(
+                pax.get(b"GNU.sparse.numblocks".as_slice())
+                    .context("OCI GNU sparse 0.1 entry has no extent count")?,
+                "extent count",
+            )?;
+            if count != extents.len() as u64 {
+                bail!("OCI GNU sparse extent count does not match its map");
+            }
+            GnuSparseMap::Pax(extents)
+        }
+        (Some(major), Some(minor)) => bail!(
+            "OCI GNU sparse format {}.{} is unsupported",
+            String::from_utf8_lossy(major),
+            String::from_utf8_lossy(minor)
+        ),
+        _ => bail!("OCI GNU sparse metadata has an incomplete or unsupported version"),
+    };
+    Ok(Some(GnuSparseMetadata {
+        path,
+        real_size,
+        map,
+    }))
+}
+
+fn read_sparse_decimal_line(reader: &mut dyn Read, description: &str) -> Result<(u64, usize)> {
+    let mut value = Vec::with_capacity(20);
+    loop {
+        let mut byte = [0_u8; 1];
+        reader
+            .read_exact(&mut byte)
+            .with_context(|| format!("reading OCI GNU sparse {description}"))?;
+        if byte[0] == b'\n' {
+            return Ok((parse_sparse_decimal(&value, description)?, value.len() + 1));
+        }
+        if value.len() == 20 || !byte[0].is_ascii_digit() {
+            bail!("OCI GNU sparse {description} has an invalid decimal line");
+        }
+        value.push(byte[0]);
+    }
+}
+
+fn read_embedded_sparse_map(reader: &mut dyn Read, real_size: u64) -> Result<Vec<(u64, u64)>> {
+    let (count, mut prefix_bytes) = read_sparse_decimal_line(reader, "extent count")?;
+    if count > MAX_OCI_SPARSE_EXTENTS {
+        bail!("OCI GNU sparse map exceeds {MAX_OCI_SPARSE_EXTENTS} extents");
+    }
+    let mut extents = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let (offset, offset_bytes) = read_sparse_decimal_line(reader, "extent offset")?;
+        let (length, length_bytes) = read_sparse_decimal_line(reader, "extent length")?;
+        prefix_bytes = prefix_bytes
+            .checked_add(offset_bytes)
+            .and_then(|bytes| bytes.checked_add(length_bytes))
+            .context("OCI GNU sparse map prefix overflows usize")?;
+        extents.push((offset, length));
+    }
+    validate_sparse_extents(&extents, real_size)?;
+    let padding = (512 - prefix_bytes % 512) % 512;
+    let mut remaining = padding;
+    let mut buffer = [0_u8; 512];
+    while remaining != 0 {
+        let count = remaining.min(buffer.len());
+        reader
+            .read_exact(&mut buffer[..count])
+            .context("reading OCI GNU sparse map padding")?;
+        if buffer[..count].iter().any(|byte| *byte != 0) {
+            bail!("OCI GNU sparse map has non-zero padding");
+        }
+        remaining -= count;
+    }
+    Ok(extents)
+}
+
+fn ensure_rootfs_file_parent(rootfs: &Path, relative: &Path) -> Result<PathBuf> {
+    let mut current = rootfs.to_path_buf();
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let component = match component {
+                std::path::Component::CurDir => continue,
+                std::path::Component::Normal(component) => component,
+                _ => bail!("OCI sparse entry has an unsafe parent path"),
+            };
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => bail!(
+                    "OCI sparse entry parent {} is not a real directory",
+                    current.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir(&current).with_context(|| {
+                        format!("creating OCI sparse entry parent {}", current.display())
+                    })?;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("inspecting OCI sparse entry parent {}", current.display())
+                    });
+                }
+            }
+        }
+    }
+    Ok(rootfs.join(relative))
+}
+
+fn unpack_gnu_sparse_entry(
+    reader: &mut dyn Read,
+    rootfs: &Path,
+    relative: &Path,
+    metadata: GnuSparseMetadata,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> Result<()> {
+    let extents = match metadata.map {
+        GnuSparseMap::Pax(extents) => extents,
+        GnuSparseMap::EmbeddedV1 => read_embedded_sparse_map(reader, metadata.real_size)?,
+    };
+    let destination = ensure_rootfs_file_parent(rootfs, relative)?;
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => remove_path(&destination)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting OCI sparse entry {}", relative.display()));
+        }
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&destination)
+        .with_context(|| format!("creating OCI sparse entry {}", relative.display()))?;
+    output
+        .set_len(metadata.real_size)
+        .with_context(|| format!("sizing OCI sparse entry {}", relative.display()))?;
+    let mut buffer = [0_u8; 256 * 1024];
+    for (offset, length) in extents {
+        output
+            .seek(SeekFrom::Start(offset))
+            .with_context(|| format!("seeking OCI sparse entry {}", relative.display()))?;
+        let mut remaining = length;
+        while remaining != 0 {
+            let count = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
+            reader
+                .read_exact(&mut buffer[..count])
+                .with_context(|| format!("reading OCI sparse entry {}", relative.display()))?;
+            output
+                .write_all(&buffer[..count])
+                .with_context(|| format!("writing OCI sparse entry {}", relative.display()))?;
+            remaining -= count as u64;
+        }
+    }
+    let mut trailing = [0_u8; 1];
+    if reader
+        .read(&mut trailing)
+        .context("checking OCI sparse entry payload length")?
+        != 0
+    {
+        bail!("OCI GNU sparse entry has trailing physical data");
+    }
+    chown(
+        &destination,
+        Some(Uid::from_raw(uid)),
+        Some(Gid::from_raw(gid)),
+    )
+    .with_context(|| format!("preserving ownership on {}", destination.display()))?;
+    fs::set_permissions(&destination, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("preserving permissions on {}", destination.display()))?;
+    Ok(())
+}
+
 fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
     // OCI whiteouts affect content inherited from lower layers. Apply them
     // before unpacking this layer so archive entry ordering cannot change
@@ -3718,11 +4235,15 @@ fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
             .get(&entry.raw_header_position())
             .cloned()
             .unwrap_or_default();
-        let entry_path = if let Some(path) = pax.get(b"path".as_slice()) {
+        let header_path = if let Some(path) = pax.get(b"path".as_slice()) {
             PathBuf::from(OsStr::from_bytes(path))
         } else {
             entry.path().context("reading OCI layer path")?.into_owned()
         };
+        let sparse = parse_gnu_sparse_metadata(&pax, &header_path)?;
+        let entry_path = sparse
+            .as_ref()
+            .map_or_else(|| header_path.clone(), |sparse| sparse.path.clone());
         let path = safe_relative_path(&entry_path)?;
         if whiteout_action(path)?.is_some() {
             continue;
@@ -3806,7 +4327,20 @@ fn apply_layer(layer_tar: &Path, rootfs: &Path) -> Result<()> {
         if path.as_os_str().is_empty() {
             bail!("OCI layer contains a non-directory root entry");
         }
-        if !entry
+        if let Some(sparse) = sparse {
+            if !matches!(
+                entry_type,
+                tar::EntryType::Regular | tar::EntryType::Continuous
+            ) {
+                bail!(
+                    "OCI GNU sparse metadata describes a non-regular entry {}",
+                    path.display()
+                );
+            }
+            unpack_gnu_sparse_entry(
+                &mut entry, rootfs, path, sparse, uid as u32, gid as u32, mode,
+            )?;
+        } else if !entry
             .unpack_in(rootfs)
             .with_context(|| format!("extracting {}", path.display()))?
         {
@@ -4029,6 +4563,21 @@ fn valid_runtime_revision(revision: &str) -> bool {
 }
 
 fn bundled_guest_runtime_dir(revision: &str) -> Result<PathBuf> {
+    if let Some(launcher) = std::env::var_os(NAMESPACE_LAUNCHER_RELATIVE_ENV) {
+        let launcher = PathBuf::from(launcher);
+        if launcher.is_absolute()
+            || launcher
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            bail!("namespace launcher has an unsafe portable-relative path");
+        }
+        return Ok(launcher
+            .parent()
+            .context("namespace launcher path has no parent")?
+            .join(BUNDLED_GUEST_RUNTIME)
+            .join(revision));
+    }
     let launcher = std::env::current_exe().context("locating bundled guest runtime")?;
     Ok(launcher
         .parent()
@@ -5434,13 +5983,15 @@ fn run_guest_asset_helper(
     let resources = ResourceLocator::discover()?;
     let unshare = resources.helper_or_path("unshare")?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe().context("locating guest asset helper")?;
+    let namespace = PortableNamespaceContext::discover("guest asset helper")?;
+    let rootfs = namespace.relative(rootfs, "guest rootfs")?;
     let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     command
         .args(id_map.namespace_args())
-        .arg(&launcher)
+        .arg(&namespace.launcher)
         .arg(internal_command)
         .arg("--rootfs")
         .arg(rootfs)
@@ -5461,13 +6012,15 @@ fn run_guest_runtime_rollback_helper(
     let resources = ResourceLocator::discover()?;
     let unshare = resources.helper_or_path("unshare")?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe().context("locating guest runtime rollback helper")?;
+    let namespace = PortableNamespaceContext::discover("guest runtime rollback helper")?;
+    let rootfs = namespace.relative(rootfs, "guest rootfs")?;
     let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     let status = command
         .args(id_map.namespace_args())
-        .arg(&launcher)
+        .arg(&namespace.launcher)
         .arg("__rollback-guest-runtime")
         .arg("--rootfs")
         .arg(rootfs)
@@ -7257,6 +7810,72 @@ mod layer_tests {
     }
 
     #[test]
+    fn imports_gnu_sparse_1_0_without_materializing_its_transport_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let sparse_path = source.join("var/lib/buzzard/sparse.img");
+        fs::create_dir_all(sparse_path.parent().unwrap()).unwrap();
+        let mut sparse = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&sparse_path)
+            .unwrap();
+        sparse.set_len(8 * 1024 * 1024).unwrap();
+        sparse.write_all(b"sparse-head").unwrap();
+        sparse.seek(SeekFrom::End(-11)).unwrap();
+        sparse.write_all(b"sparse-tail").unwrap();
+        drop(sparse);
+
+        let layer = temp.path().join("layer.tar");
+        let tar = ResourceLocator::discover()
+            .unwrap()
+            .helper_or_path("tar")
+            .unwrap();
+        let status = Command::new(tar)
+            .args([
+                "--create",
+                "--file",
+                layer.to_str().unwrap(),
+                "--directory",
+                source.to_str().unwrap(),
+                "--format=pax",
+                "--numeric-owner",
+                "--sparse",
+                "--sparse-version=1.0",
+                ".",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let rootfs = temp.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        apply_layer(&layer, &rootfs).unwrap();
+
+        let restored_path = rootfs.join("var/lib/buzzard/sparse.img");
+        let restored = fs::metadata(&restored_path).unwrap();
+        assert_eq!(restored.len(), 8 * 1024 * 1024);
+        assert!(restored.blocks() * 512 < restored.len());
+        assert!(
+            fs::read_dir(rootfs.join("var/lib/buzzard"))
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .as_bytes()
+                    .starts_with(b"GNUSparseFile"))
+        );
+        let mut restored = File::open(restored_path).unwrap();
+        let mut head = [0_u8; 11];
+        restored.read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"sparse-head");
+        restored.seek(SeekFrom::End(-11)).unwrap();
+        let mut tail = [0_u8; 11];
+        restored.read_exact(&mut tail).unwrap();
+        assert_eq!(&tail, b"sparse-tail");
+    }
+
+    #[test]
     fn rejects_symlink_ancestor_escape() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
@@ -7920,6 +8539,17 @@ mod layer_tests {
         }
         fs::create_dir(&work).unwrap();
         fs::write(rootfs.join("opt/data/original"), b"portable state").unwrap();
+        let sparse_path = rootfs.join("opt/data/sparse.img");
+        let mut sparse = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&sparse_path)
+            .unwrap();
+        sparse.set_len(8 * 1024 * 1024).unwrap();
+        sparse.write_all(b"sparse-head").unwrap();
+        sparse.seek(SeekFrom::End(-11)).unwrap();
+        sparse.write_all(b"sparse-tail").unwrap();
+        drop(sparse);
         fs::hard_link(
             rootfs.join("opt/data/original"),
             rootfs.join("opt/data/hardlink"),
@@ -8035,6 +8665,11 @@ mod layer_tests {
                 .map(String::as_str),
             Some("preserved")
         );
+
+        // The normal machine export above owns the sparse-file regression.
+        // Keep the generic-seed determinism half of this combined test focused
+        // on identity normalization rather than filesystem allocation maps.
+        fs::remove_file(&sparse_path).unwrap();
 
         fs::create_dir_all(rootfs.join("etc/ssh")).unwrap();
         fs::create_dir_all(rootfs.join("var/lib/systemd")).unwrap();
@@ -8195,6 +8830,18 @@ mod layer_tests {
             fs::read_link(restored.join("opt/data/symlink")).unwrap(),
             Path::new("original")
         );
+        let restored_sparse_path = restored.join("opt/data/sparse.img");
+        let restored_sparse = fs::metadata(&restored_sparse_path).unwrap();
+        assert_eq!(restored_sparse.len(), 8 * 1024 * 1024);
+        assert!(restored_sparse.blocks() * 512 < restored_sparse.len());
+        let mut restored_sparse = File::open(&restored_sparse_path).unwrap();
+        let mut sparse_head = [0_u8; 11];
+        restored_sparse.read_exact(&mut sparse_head).unwrap();
+        assert_eq!(&sparse_head, b"sparse-head");
+        restored_sparse.seek(SeekFrom::End(-11)).unwrap();
+        let mut sparse_tail = [0_u8; 11];
+        restored_sparse.read_exact(&mut sparse_tail).unwrap();
+        assert_eq!(&sparse_tail, b"sparse-tail");
         let restored_file = fs::symlink_metadata(restored.join("opt/data/original")).unwrap();
         assert_eq!(restored_file.mtime(), 1_700_000_001);
         assert_eq!(restored_file.mtime_nsec(), 234_567_890);

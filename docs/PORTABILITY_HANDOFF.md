@@ -57,6 +57,13 @@ That package supplies the distro-owned `newuidmap` and `newgidmap`
 authorization gates. The portable folder supplies its own `unshare` and all
 other Buzzard OS helpers. LXC is neither installed nor used.
 
+On Ubuntu hosts that enforce AppArmor's unprivileged-user-namespace gate, the
+installer also writes and loads one exact-path AppArmor profile for the
+bundled `app/usr/libexec/wildbuzzard/unshare`. This is policy configuration,
+not another package or a privileged Buzzard OS service. It never disables the
+global AppArmor sysctl, never grants a wildcard executable path, and must be
+rerun after relocating the portable folder.
+
 The account must have non-overlapping subordinate UID and GID ranges of at
 least 65,536 IDs. The bundled util-linux 2.39-compatible invocation is:
 

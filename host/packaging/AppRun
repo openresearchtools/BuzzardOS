@@ -13,6 +13,24 @@ fi
 export PATH="$appdir/usr/bin${PATH:+:$PATH}"
 export LD_LIBRARY_PATH="$appdir/usr/lib:$appdir/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="$appdir/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+# Mesa's EGL vendor library is host GPU userspace and may be newer than the
+# portable build environment. Load the host session's matching Wayland client
+# first when one is present so that a newer Mesa never binds to the older
+# fallback client carried by the portable application. The bundled client
+# remains the dependency-complete fallback on hosts without a standard
+# multiarch Wayland library.
+host_wayland_client=
+for candidate in \
+    /usr/lib/x86_64-linux-gnu/libwayland-client.so.0 \
+    /lib/x86_64-linux-gnu/libwayland-client.so.0; do
+    if [ -r "$candidate" ]; then
+        host_wayland_client=$candidate
+        break
+    fi
+done
+if [ -n "$host_wayland_client" ]; then
+    export LD_PRELOAD="$host_wayland_client${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 # Release media pipelines may load only the audited plugins shipped in this
 # portable application. In particular, an inherited host plugin path must not substitute a
 # lookalike `pulsesrc` or introduce the unbundled direct-ALSA capture plugin.

@@ -62,6 +62,47 @@ fi
 portable_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 unshare="$portable_dir/app/usr/libexec/wildbuzzard/unshare"
 [ -x "$unshare" ] || fail "the bundled namespace helper is missing: $unshare"
+
+# Ubuntu enables a global AppArmor gate for unprivileged user namespaces. Do
+# not weaken that policy. Authorize only this extracted folder's bundled
+# unshare executable, using a path-derived profile name so relocation requires
+# an explicit rerun of this installer.
+apparmor_userns_gate=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+if [ -r "$apparmor_userns_gate" ] && [ "$(cat "$apparmor_userns_gate")" = 1 ]; then
+    command -v apparmor_parser >/dev/null 2>&1 || \
+        fail "AppArmor restricts unprivileged user namespaces, but apparmor_parser is unavailable. Install the distro apparmor package, then rerun this installer."
+    profile_digest=$(printf '%s' "$unshare" | sha256sum | awk '{print substr($1, 1, 16)}')
+    case "$profile_digest" in
+        *[!0-9a-f]*|'') fail "could not derive the AppArmor profile name" ;;
+    esac
+    profile_name="buzzardos-$uid-$profile_digest"
+    profile_path="/etc/apparmor.d/$profile_name"
+    escaped_unshare=$(printf '%s\n' "$unshare" | sed \
+        -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g' \
+        -e 's/\*/\\*/g' \
+        -e 's/?/\\?/g' \
+        -e 's/\[/\\[/g' \
+        -e 's/\]/\\]/g' \
+        -e 's/{/\\{/g' \
+        -e 's/}/\\}/g' \
+        -e 's/\^/\\^/g')
+    profile_stage=$(mktemp "${TMPDIR:-/tmp}/buzzardos-apparmor.XXXXXX") || \
+        fail "could not create the temporary AppArmor profile"
+    trap 'rm -f -- "$profile_stage"' EXIT HUP INT TERM
+    {
+        printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' ''
+        printf 'profile %s "%s" flags=(unconfined) {\n' \
+            "$profile_name" "$escaped_unshare"
+        printf '%s\n' '  userns,' '}'
+    } >"$profile_stage"
+    sudo install -o root -g root -m 0644 "$profile_stage" "$profile_path"
+    sudo apparmor_parser -r "$profile_path" || \
+        fail "AppArmor rejected the exact-path Buzzard OS user-namespace profile $profile_path"
+    rm -f -- "$profile_stage"
+    trap - EXIT HUP INT TERM
+fi
+
 helper_path=$(dirname -- "$(command -v newuidmap)")
 [ "$(dirname -- "$(command -v newgidmap)")" = "$helper_path" ] || \
     fail "newuidmap and newgidmap must be installed in the same trusted system directory"

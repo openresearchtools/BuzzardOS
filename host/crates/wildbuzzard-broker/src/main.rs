@@ -35,6 +35,8 @@ const DESKTOP_READY_MODE: u32 = 0o600;
 const SESSION_TOKEN_BYTES: usize = 32;
 const MAX_DESKTOP_READY_BYTES: u64 = 256;
 const MAX_BUBBLEWRAP_INFO_BYTES: u64 = 64 * 1024;
+const NAMESPACE_PORTABLE_BIND_ENV: &str = "WILDBUZZARD_NAMESPACE_PORTABLE_BIND";
+const BUZZARDOS_HOST_APP_ID: &str = "org.openresearchtools.buzzardos";
 
 #[derive(Debug)]
 struct DesktopReadinessDeadline {
@@ -109,6 +111,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    enter_namespace_portable_bind()?;
     match Cli::parse().command {
         Commands::Run {
             machine_dir,
@@ -130,6 +133,99 @@ fn run() -> Result<()> {
             &arguments,
         ),
     }
+}
+
+struct PortableNamespaceContext {
+    portable_root: PathBuf,
+    broker: PathBuf,
+    bind_point: tempfile::TempDir,
+}
+
+impl PortableNamespaceContext {
+    fn discover() -> Result<Self> {
+        let portable_root = std::env::var_os("BUZZARDOS_PORTABLE_DIR")
+            .context("portable root is unavailable for machine namespace")?;
+        let portable_root = PathBuf::from(portable_root)
+            .canonicalize()
+            .context("resolving portable root for machine namespace")?;
+        let broker = std::env::current_exe().context("locating broker for machine namespace")?;
+        let broker = namespace_relative_path(&portable_root, &broker, "broker")?;
+        let bind_point = tempfile::Builder::new()
+            .prefix("wildbuzzard-portable-")
+            .tempdir_in(std::env::temp_dir())
+            .context("creating private portable namespace bind point")?;
+        Ok(Self {
+            portable_root,
+            broker,
+            bind_point,
+        })
+    }
+
+    fn relative(&self, path: &Path, kind: &str) -> Result<PathBuf> {
+        namespace_relative_path(&self.portable_root, path, kind)
+    }
+
+    fn configure(&self, command: &mut Command) {
+        command
+            .current_dir(&self.portable_root)
+            .env(NAMESPACE_PORTABLE_BIND_ENV, self.bind_point.path());
+    }
+}
+
+fn namespace_relative_path(portable_root: &Path, path: &Path, kind: &str) -> Result<PathBuf> {
+    let resolved = path
+        .canonicalize()
+        .with_context(|| format!("resolving {kind} {}", path.display()))?;
+    let relative = resolved.strip_prefix(portable_root).with_context(|| {
+        format!(
+            "{kind} {} is outside portable root {}",
+            resolved.display(),
+            portable_root.display()
+        )
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("{kind} has an unsafe portable-relative path");
+    }
+    Ok(relative.to_path_buf())
+}
+
+fn enter_namespace_portable_bind() -> Result<()> {
+    let Some(target) = std::env::var_os(NAMESPACE_PORTABLE_BIND_ENV) else {
+        return Ok(());
+    };
+    let target = PathBuf::from(target);
+    let metadata = fs::symlink_metadata(&target).with_context(|| {
+        format!(
+            "inspecting private portable namespace bind point {}",
+            target.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("private portable namespace bind point must be a real directory");
+    }
+    mount_raw(
+        Some(Path::new(".")),
+        &target,
+        None,
+        libc::MS_BIND | libc::MS_REC,
+        None,
+    )
+    .with_context(|| {
+        format!(
+            "binding portable root into private namespace at {}",
+            target.display()
+        )
+    })?;
+    std::env::set_current_dir(&target).with_context(|| {
+        format!(
+            "entering private portable namespace root {}",
+            target.display()
+        )
+    })
 }
 
 fn run_machine(machine_dir: &Path, shared: &Path, detach: bool) -> Result<()> {
@@ -383,7 +479,7 @@ fn launch_container(
         ),
         (
             "WILDBUZZARD_WINDOW_APP_ID".into(),
-            "org.openresearchtools.wildbuzzard".into(),
+            BUZZARDOS_HOST_APP_ID.into(),
         ),
         // Select a known stock wlroots renderer so diagnostics describe the
         // renderer actually requested by this launch rather than inferring it
@@ -420,6 +516,10 @@ fn launch_container(
     };
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(unshare)?;
+    let namespace = PortableNamespaceContext::discover()?;
+    let bwrap = namespace.relative(bwrap, "sandbox helper")?;
+    let rootfs = namespace.relative(rootfs, "machine rootfs")?;
+    let shared = namespace.relative(shared, "shared folder")?;
     let host_apparmor_access = Path::new("/sys/kernel/security/apparmor/.access");
     let apparmor_access_source =
         if !matches!(config.network, NetworkMode::Host) && host_apparmor_access.exists() {
@@ -434,17 +534,18 @@ fn launch_container(
     let mut command = Command::new(namespace_program);
     command.env_clear();
     id_map.configure_command(&mut command);
+    namespace.configure(&mut command);
     command.args(id_map.namespace_args());
     match config.network {
         NetworkMode::Host => {
-            command.arg(bwrap);
+            command.arg(&bwrap);
         }
         NetworkMode::None | NetworkMode::User => {
             command
-                .arg(std::env::current_exe().context("locating broker network wrapper")?)
+                .arg(&namespace.broker)
                 .arg("__private-network-sandbox")
                 .arg("--bwrap")
-                .arg(bwrap);
+                .arg(&bwrap);
             if let Some(source) = &apparmor_access_source {
                 command.arg("--apparmor-access").arg(source);
             }
@@ -477,7 +578,7 @@ fn launch_container(
         .arg("--hostname")
         .arg(&config.name)
         .arg("--bind")
-        .arg(rootfs)
+        .arg(&rootfs)
         .arg("/");
     add_guest_pseudo_filesystems(&mut command);
     command
@@ -496,7 +597,7 @@ fn launch_container(
         .args(["--dir", "/run/wildbuzzard-host"])
         .args(["--dir", "/run/wildbuzzard-display-state"])
         .arg("--bind")
-        .arg(shared)
+        .arg(&shared)
         .arg("/shared")
         .arg("--bind")
         .arg(guest_runtime)
@@ -536,7 +637,7 @@ fn launch_container(
         .args([
             "--setenv",
             "WILDBUZZARD_WINDOW_APP_ID",
-            "org.openresearchtools.wildbuzzard",
+            BUZZARDOS_HOST_APP_ID,
         ]);
 
     add_fuse_device(&mut command)?;
@@ -1721,7 +1822,7 @@ fn start_display_gateway(
         .arg("--title")
         .arg(&config.name)
         .arg("--app-id")
-        .arg(format!("org.openresearchtools.wildbuzzard.{}", config.name));
+        .arg(machine_window_app_id(&config.name));
     if let Some(scale) = config.guest_scale_120 {
         command.arg("--guest-scale-120").arg(scale.to_string());
     }
@@ -1781,6 +1882,10 @@ fn start_display_gateway(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn machine_window_app_id(machine_name: &str) -> String {
+    format!("{BUZZARDOS_HOST_APP_ID}.{machine_name}")
 }
 
 /// Preserve caller-selected GDK diagnostics while ensuring GTK emits the
@@ -2601,6 +2706,8 @@ fn allowed_nvidia_cdi_source(path: &Path) -> bool {
             .ok()
             .and_then(Path::file_name)
             .is_some_and(|name| name.to_string_lossy().starts_with("nvidia-"))
+        || path == Path::new("/usr/sbin/nvidia-cuda-mps-server")
+        || path == Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf")
 }
 
 fn allowed_nvidia_cdi_destination(path: &Path) -> bool {
@@ -2617,6 +2724,8 @@ fn allowed_nvidia_cdi_destination(path: &Path) -> bool {
             .ok()
             .and_then(Path::file_name)
             .is_some_and(|name| name.to_string_lossy().starts_with("nvidia-"))
+        || path == Path::new("/usr/sbin/nvidia-cuda-mps-server")
+        || path == Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf")
 }
 
 fn is_nvidia_icd_destination(path: &Path) -> bool {
@@ -3456,6 +3565,14 @@ mod tests {
     }
 
     #[test]
+    fn host_visible_machine_id_uses_buzzard_os_branding() {
+        assert_eq!(
+            machine_window_app_id("default"),
+            "org.openresearchtools.buzzardos.default"
+        );
+    }
+
+    #[test]
     fn diagnostics_refresh_cannot_erase_an_external_stop_request() {
         let (_portable, machine, _rootfs, _data, _config) = portable_machine();
         let mut requested = RuntimeState::new(MachineState::Stopping);
@@ -3649,6 +3766,19 @@ mod tests {
         assert!(safe_absolute_path(Path::new("/dev/dri/renderD128")));
         assert!(allowed_nvidia_cdi_source(Path::new(
             "/usr/lib/x86_64-linux-gnu/libcuda.so.610.43.02"
+        )));
+        for generated_driver_file in [
+            Path::new("/usr/sbin/nvidia-cuda-mps-server"),
+            Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf"),
+        ] {
+            assert!(allowed_nvidia_cdi_source(generated_driver_file));
+            assert!(allowed_nvidia_cdi_destination(generated_driver_file));
+        }
+        assert!(!allowed_nvidia_cdi_source(Path::new(
+            "/usr/sbin/nvidia-unrelated"
+        )));
+        assert!(!allowed_nvidia_cdi_destination(Path::new(
+            "/usr/share/X11/xorg.conf.d/unrelated.conf"
         )));
         assert!(!allowed_nvidia_cdi_source(Path::new(
             "/home/user/.ssh/id_rsa"

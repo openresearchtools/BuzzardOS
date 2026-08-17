@@ -192,7 +192,9 @@ chmod 0644 "$archive"
 seed_check="$build_root/seed-check"
 mkdir -p "$seed_check"
 zstd -q -dc -- "$archive" | tar --no-same-owner -xf - -C "$seed_check"
-cmp "$layout/oci-layout" "$seed_check/oci-layout"
+jq -s -e \
+    'length == 2 and all(.[]; .imageLayoutVersion == "1.0.0" and (keys == ["imageLayoutVersion"]))' \
+    "$layout/oci-layout" "$seed_check/oci-layout" >/dev/null
 manifest_digest=$(jq -er '
   if .schemaVersion != 2 or (.manifests | length) != 1 then
     error("flattened OCI index must contain exactly one manifest")

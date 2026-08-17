@@ -179,6 +179,10 @@ Normal host prerequisites are limited to:
 - The bundled namespace helper uses the distro-owned `newuidmap` and
   `newgidmap` gates to authorize the exact subordinate-ID map. Buzzard OS does
   not install or use LXC and never disables Ubuntu's global AppArmor policy.
+  When Ubuntu's unprivileged-user-namespace AppArmor gate is active, the
+  dependency installer adds only an exact-path `userns` profile for the
+  bundled namespace helper. Moving the portable folder requires rerunning the
+  installer; it never changes the global sysctl or grants a wildcard path.
 - A host Wayland session.
 - A working host GPU kernel driver and permission to selected devices.
 - For optional audio, microphone, and camera integration, a working host

@@ -60,6 +60,21 @@ class AppRunTests(unittest.TestCase):
         self.assertNotIn("$(id -u)", script)
         self.assertNotIn("$(dirname", script)
 
+    def test_host_wayland_client_precedes_the_portable_fallback_for_host_mesa(self) -> None:
+        script = APPRUN.read_text(encoding="utf-8")
+        self.assertIn(
+            "/usr/lib/x86_64-linux-gnu/libwayland-client.so.0",
+            script,
+        )
+        self.assertIn(
+            'export LD_PRELOAD="$host_wayland_client${LD_PRELOAD:+:$LD_PRELOAD}"',
+            script,
+        )
+        self.assertLess(
+            script.index("host_wayland_client="),
+            script.index('exec "$appdir/usr/bin/wildbuzzard"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

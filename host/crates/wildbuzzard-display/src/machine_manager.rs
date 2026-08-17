@@ -43,7 +43,16 @@ pub(crate) fn run_from_args() -> Result<()> {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let activation = Rc::new(RefCell::new(Some((portable_dir, args.launcher))));
+    // GTK owns the application window after it is presented, but the window
+    // does not own `ManagerUi`.  Keep the controller alive for the complete
+    // application lifetime so its weak button callbacks remain usable.
+    let active_manager = Rc::new(RefCell::new(None::<Rc<ManagerUi>>));
+    let active_manager_for_activation = Rc::clone(&active_manager);
     application.connect_activate(move |application| {
+        if let Some(manager) = active_manager_for_activation.borrow().as_ref() {
+            manager.window.present();
+            return;
+        }
         let Some((portable_dir, launcher)) = activation.borrow_mut().take() else {
             if let Some(window) = application.active_window() {
                 window.present();
@@ -51,7 +60,10 @@ pub(crate) fn run_from_args() -> Result<()> {
             return;
         };
         match ManagerUi::build(application, portable_dir, launcher) {
-            Ok(manager) => manager.window.present(),
+            Ok(manager) => {
+                manager.window.present();
+                active_manager_for_activation.replace(Some(manager));
+            }
             Err(error) => {
                 eprintln!("Buzzard OS machine manager: {error:#}");
                 application.quit();
@@ -59,6 +71,7 @@ pub(crate) fn run_from_args() -> Result<()> {
         }
     });
     let status = application.run_with_args(&["BuzzardOS"]);
+    drop(active_manager);
     if status != glib::ExitCode::SUCCESS {
         bail!("machine manager exited with {status:?}");
     }
