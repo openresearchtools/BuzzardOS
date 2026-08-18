@@ -94,7 +94,6 @@ use crate::x11::WindowInfo;
 /// backend.
 pub const ENABLE_WAYLAND_ENV: &str = "CUA_DRIVER_RS_ENABLE_WAYLAND";
 const BUZZARDOS_OUTPUT_STATE: &str = "/run/buzzardos-display-state/output-state.json";
-const BUZZARDOS_POINTER_CLICK_STATE: &str = "buzzardos-cua-pointer-click.json";
 
 fn buzzardos_output_state_required() -> bool {
     std::env::var_os("BUZZARDOS_MACHINE_ID").is_some()
@@ -273,49 +272,6 @@ fn with_stable_output_generation<T>(
     let after = read_buzzardos_output_state()?;
     require_same_output_generation(before, after)?;
     result
-}
-
-fn record_buzzardos_pointer_click(x: i32, y: i32, button: u8) {
-    let Some(state) = buzzardos_output_state() else {
-        return;
-    };
-    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
-        return;
-    };
-    let logical = state.guest_logical_dimensions();
-    let maximum_x = i32::try_from(state.physical_width.saturating_sub(1)).unwrap_or(i32::MAX);
-    let maximum_y = i32::try_from(state.physical_height.saturating_sub(1)).unwrap_or(i32::MAX);
-    let physical_x = x.clamp(0, maximum_x);
-    let physical_y = y.clamp(0, maximum_y);
-    let logical_x = scale_signed_ratio(i64::from(physical_x), logical.0, state.physical_width);
-    let logical_y = scale_signed_ratio(i64::from(physical_y), logical.1, state.physical_height);
-    let target = std::path::PathBuf::from(runtime).join(BUZZARDOS_POINTER_CLICK_STATE);
-    let temporary = target.with_file_name(format!(
-        "{BUZZARDOS_POINTER_CLICK_STATE}.{}.tmp",
-        std::process::id()
-    ));
-    let value = serde_json::json!({
-        "schema": 2,
-        "geometry_generation": state.geometry_generation,
-        "timestamp_ms": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        "x": logical_x,
-        "y": logical_y,
-        "button": button,
-    });
-    let result = serde_json::to_vec(&value)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| std::fs::write(&temporary, bytes))
-        .and_then(|()| std::fs::rename(&temporary, &target));
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&temporary);
-        tracing::debug!(
-            "could not record Buzzard OS guest pointer click at {}: {error}",
-            target.display()
-        );
-    }
 }
 
 /// Active Buzzard OS guest UI scale in 1/120 units.
@@ -2321,7 +2277,6 @@ pub fn click(window_id: u64, x: i32, y: i32, count: u32, button: u8) -> anyhow::
 pub fn click_desktop(x: i32, y: i32, count: u32, button: u8) -> anyhow::Result<()> {
     with_stable_output_generation(|| {
         if is_inject_mode() {
-            record_buzzardos_pointer_click(x, y, button);
             let btn = evdev_button(button as u32);
             return inject_send(&[format!("d {x} {y} {} {btn}", count.max(1))]);
         }
@@ -2351,7 +2306,6 @@ fn click_vptr(
     };
     let px = px.clamp(0, w as i32 - 1) as u32;
     let py = py.clamp(0, h as i32 - 1) as u32;
-    record_buzzardos_pointer_click(px as i32, py as i32, button);
     let btn = evdev_pointer_button(button);
     for i in 0..count.max(1) {
         if i > 0 {

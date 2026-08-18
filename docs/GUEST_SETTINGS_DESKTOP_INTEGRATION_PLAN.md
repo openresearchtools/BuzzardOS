@@ -169,6 +169,15 @@ the desktop, taskbar, menu, or transparent click-away surface. A resize or move
 cursor selected by an application must not persist over shell-owned empty
 space.
 
+An application-titlebar secondary click sends only the target window identity
+to the shell. The transient full-output menu surface obtains the current
+horizontal position from its normal Wayland pointer-enter event after one
+stock-Sway zero-distance cursor-focus refresh, anchors the window controls
+there, and consumes the first outside click before closing. The refresh moves
+neither axis and returns no coordinates. Neither host input nor Buzzard CUA
+writes a last-click coordinate file, so guest processes cannot poll human
+input through desktop integration state.
+
 The desktop always starts with Files and Shared. A newly created shortcut is
 placed in the first available cell on the first visible desktop page, below
 those built-ins when they occupy the leading cells. It immediately appears in

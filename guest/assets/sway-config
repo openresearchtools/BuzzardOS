@@ -39,10 +39,12 @@ client.background #181818
 # Sway's synchronized titlebar, drag path, and four-edge/four-corner resize.
 for_window [all] floating enable, border normal 8
 
-# Stock Sway scopes an unqualified mouse binding to the titlebar. Focus the
-# exact container under the pointer, then ask the shell to open its normal
-# accessible window-controls menu. Application content keeps button 3.
-bindsym button3 focus, exec --no-startup-id /usr/bin/buzzardos-desktop --request-focused-window-menu
+# Stock Sway scopes an unqualified mouse binding to the titlebar. Run after
+# button release so the compositor's implicit grab has ended before the shell
+# maps its transient menu surface; the surface then receives an ordinary
+# pointer-enter coordinate without any global click record. Application
+# content keeps button 3.
+bindsym --release button3 focus, exec --no-startup-id /usr/bin/buzzardos-desktop --request-focused-window-menu
 
 # Conventional guest shortcuts. There is deliberately no compositor root menu,
 # workspace bar, launcher, or host lifecycle action in this configuration.

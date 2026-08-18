@@ -418,6 +418,16 @@ Every shell-owned surface restores the default pointer on entry so a client
 resize/move cursor cannot persist over the empty desktop, panel, or
 Applications click-away surface.
 
+A secondary click on an application titlebar opens that window's controls at
+the pointer's horizontal position. The titlebar binding sends only the opaque
+window identity; after the transient click-away surface opens, its ordinary
+Wayland pointer-enter event supplies the position. One stock-Sway zero-distance
+cursor-focus refresh after mapping triggers that enter without moving the
+cursor or returning its coordinates through IPC. Buzzard OS never writes a
+host-input or CUA-input click-coordinate file. The surface consumes the first
+outside click, closes the controls without activating the covered client, and
+has an empty input region while closed.
+
 FreeDesktop discovery hides helper/`NoDisplay` entries, responds to newly
 installed entries, and presents each app once. Menus/taskbar work at small
 sizes through measured layout, scrolling, and paging. Desktop supplies

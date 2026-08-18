@@ -296,6 +296,16 @@ fn run_global_command(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Ask stock Sway to recompute pointer focus without moving the cursor.
+///
+/// A newly mapped layer surface does not receive `wl_pointer.enter` until the
+/// seat processes a cursor update. Zero leaves both documented coordinates
+/// unchanged while causing that normal focus transition; no pointer position
+/// is returned through IPC or persisted anywhere.
+pub fn refresh_cursor_focus() -> Result<()> {
+    run_global_command("seat - cursor move 0 0")
+}
+
 fn css(color: SolidColor) -> String {
     color.to_string().to_ascii_lowercase()
 }

@@ -171,6 +171,10 @@ Local changes are kept as ordinary reviewable source changes in this tree:
   fail closed if that canonical state is missing or invalid instead of
   fabricating generation-zero fallback geometry; standalone upstream use
   retains its ordinary compositor/X11 fallback.
+- CUA no longer writes a shared last-click coordinate file. Agents retain the
+  coordinates of actions they issue and verify them through the existing
+  screenshot, accessibility, and window-state APIs, but receive no passive
+  side channel for human clicks in other guest applications.
 - wlroots virtual pointers are bound to Buzzard OS's concrete guest output
   with protocol version 2. This prevents absolute input from being accepted
   against an ambiguous nested output layout while leaving the real Sway seat

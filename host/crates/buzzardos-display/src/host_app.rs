@@ -638,6 +638,17 @@ impl NativeWindow {
         launch: Launch,
         connection: GatewayConnection,
     ) -> Result<Rc<Self>> {
+        let obsolete_click_state = launch.output_state_dir.join("pointer-click.json");
+        if let Err(error) = fs::remove_file(&obsolete_click_state)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error).with_context(|| {
+                format!(
+                    "removing obsolete guest-readable click state {}",
+                    obsolete_click_state.display()
+                )
+            });
+        }
         let initial_guest_scale_preset = GuestScalePreset::from_scale_120(launch.guest_scale_120)
             .context("validated guest scale has no typed preset")?;
         let initial_guest_ui_scale_120 = initial_guest_scale_preset.resolve(120);
@@ -1130,11 +1141,6 @@ impl NativeWindow {
             };
 
             if pressed {
-                if let Some((x, y)) = event.position()
-                    && let Err(error) = this.save_pointer_click(x, y, event.button())
-                {
-                    eprintln!("buzzardos-display: recording guest pointer click failed: {error:#}");
-                }
                 if let Some(toplevel) = this.gdk_toplevel() {
                     toplevel.inhibit_system_shortcuts(Some(event.as_ref()));
                     let mut stats = this.input.borrow_mut();
@@ -1231,32 +1237,6 @@ impl NativeWindow {
         (
             map_monitor_coordinate(x, self.viewport_width.get(), mode.physical_width),
             map_monitor_coordinate(y, self.viewport_height.get(), mode.physical_height),
-        )
-    }
-
-    fn save_pointer_click(&self, x: f64, y: f64, button: u32) -> Result<()> {
-        let (surface_x, surface_y) = self.to_guest_surface(x, y);
-        let mode = self.output_mode();
-        let logical_x = unscale_monitor_coordinate(
-            surface_x,
-            u64::from(mode.physical_width),
-            u64::from(mode.logical_width),
-        );
-        let logical_y = unscale_monitor_coordinate(
-            surface_y,
-            u64::from(mode.physical_height),
-            u64::from(mode.logical_height),
-        );
-        atomic_json(
-            &self.launch.output_state_dir.join("pointer-click.json"),
-            &serde_json::json!({
-                "schema": 2,
-                "geometry_generation": mode.geometry_generation,
-                "timestamp_ms": unix_time_millis(),
-                "x": logical_x,
-                "y": logical_y,
-                "button": button,
-            }),
         )
     }
 
@@ -4475,15 +4455,6 @@ fn monotonic_us() -> u64 {
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time);
     }
     (time.tv_sec as u64 * 1_000_000) + (time.tv_nsec as u64 / 1_000)
-}
-
-fn unix_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn offload_expectation_from_geometry(

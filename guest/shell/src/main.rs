@@ -68,7 +68,7 @@ use std::sync::{
     Arc, Mutex,
     mpsc::{self, Receiver, Sender},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     globals::registry_queue_init,
@@ -93,10 +93,8 @@ const REPAINT_ACKNOWLEDGEMENT: &str = "buzzardos-shell-repaint-ack";
 const SHELL_READY: &str = "shell-ready";
 const SHELL_CONTROL_SOCKET: &str = "buzzardos-shell-control.sock";
 const REQUEST_FOCUSED_WINDOW_MENU: &str = "--request-focused-window-menu";
-const HOST_POINTER_CLICK_STATE: &str = "/run/buzzardos-display-state/pointer-click.json";
-const CUA_POINTER_CLICK_STATE: &str = "buzzardos-cua-pointer-click.json";
-const POINTER_CLICK_MAX_AGE: Duration = Duration::from_secs(3);
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
+const WINDOW_MENU_POINTER_REFRESH_DELAY: Duration = Duration::from_millis(16);
 const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
@@ -243,12 +241,9 @@ fn request_focused_window_menu() -> Result<()> {
         .into_iter()
         .find(|window| window.focused && !window.minimized)
         .context("Sway has no focused visible toplevel")?;
-    let pointer = recent_titlebar_pointer(&focused);
     let payload = serde_json::json!({
         "schema": 1,
         "identifier": focused.identifier,
-        "x": pointer.map(|point| point.0),
-        "y": pointer.map(|point| point.1),
     });
     let socket = UnixDatagram::unbound().context("creating shell-control datagram")?;
     socket
@@ -260,80 +255,26 @@ fn request_focused_window_menu() -> Result<()> {
     Ok(())
 }
 
-fn unix_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
-fn pointer_click(path: &std::path::Path) -> Option<(u64, f64, f64)> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    if value.get("button").and_then(serde_json::Value::as_u64) != Some(3) {
-        return None;
-    }
-    let timestamp = value
-        .get("timestamp_ms")
-        .and_then(serde_json::Value::as_u64)?;
-    let x = value.get("x").and_then(serde_json::Value::as_f64)?;
-    let y = value.get("y").and_then(serde_json::Value::as_f64)?;
-    (x.is_finite() && y.is_finite()).then_some((timestamp, x, y))
-}
-
-fn recent_titlebar_pointer(window: &sway_ipc::WindowState) -> Option<(f64, f64)> {
-    let runtime_pointer = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|runtime| runtime.join(CUA_POINTER_CLICK_STATE));
-    let mut latest = pointer_click(std::path::Path::new(HOST_POINTER_CLICK_STATE));
-    if let Some(candidate) = runtime_pointer.as_deref().and_then(pointer_click)
-        && latest.is_none_or(|current| candidate.0 > current.0)
-    {
-        latest = Some(candidate);
-    }
-    let (timestamp, x, y) = latest?;
-    let age = unix_time_millis().saturating_sub(timestamp);
-    if age > POINTER_CLICK_MAX_AGE.as_millis() as u64 {
-        return None;
-    }
-    let titlebar_bottom = window
-        .rect
-        .y
-        .saturating_add(window.decoration_height.max(1));
-    let window_right = window.rect.x.saturating_add(window.rect.width.max(1));
-    (x >= f64::from(window.rect.x)
-        && x < f64::from(window_right)
-        && y >= f64::from(window.rect.y)
-        && y < f64::from(titlebar_bottom))
-    .then_some((x, y))
-}
-
-fn parse_window_menu_request(bytes: &[u8]) -> Option<(String, Option<(f64, f64)>)> {
+fn parse_window_menu_request(bytes: &[u8]) -> Option<String> {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
         && let Some(identifier) = value
             .get("identifier")
             .and_then(serde_json::Value::as_str)
             .filter(|identifier| !identifier.is_empty())
     {
-        let pointer = value
-            .get("x")
-            .and_then(serde_json::Value::as_f64)
-            .zip(value.get("y").and_then(serde_json::Value::as_f64))
-            .filter(|(x, y)| x.is_finite() && y.is_finite());
-        return Some((identifier.to_owned(), pointer));
+        return Some(identifier.to_owned());
     }
     std::str::from_utf8(bytes)
         .ok()
         .filter(|identifier| !identifier.is_empty())
-        .map(|identifier| (identifier.to_owned(), None))
+        .map(str::to_owned)
 }
 
 fn titlebar_menu_origin(
     frame: sway_ipc::Rect,
     decoration_height: i32,
     desktop_size: (u32, u32),
-    pointer: Option<(f64, f64)>,
+    pointer_x: f64,
 ) -> (i32, i32) {
     let desktop_width = i32::try_from(desktop_size.0).unwrap_or(i32::MAX);
     let desktop_height = i32::try_from(desktop_size.1).unwrap_or(i32::MAX);
@@ -341,15 +282,11 @@ fn titlebar_menu_origin(
     let maximum_top = desktop_height
         .saturating_sub(PANEL_HEIGHT)
         .saturating_sub(WINDOW_MENU_HEIGHT as i32);
-    let requested_left = pointer
-        .filter(|(x, y)| {
-            let titlebar_bottom = frame.y.saturating_add(decoration_height.max(1));
-            *x >= f64::from(frame.x)
-                && *x < f64::from(frame.x.saturating_add(frame.width.max(1)))
-                && *y >= f64::from(frame.y)
-                && *y < f64::from(titlebar_bottom)
-        })
-        .map_or(frame.x, |(x, _)| x.floor() as i32);
+    let requested_left = if pointer_x.is_finite() {
+        pointer_x.floor() as i32
+    } else {
+        frame.x
+    };
     (
         requested_left.clamp(0, maximum_left.max(0)),
         frame
@@ -787,6 +724,8 @@ fn run() -> Result<()> {
         context_configured: false,
         menu_open: false,
         menu_kind: MenuKind::Applications,
+        window_menu_pending_pointer: false,
+        window_menu_pointer_refresh_at: None,
         menu_scroll: 0,
         context_state: ContextState::Hidden,
         desktop_selection: BTreeSet::new(),
@@ -912,6 +851,8 @@ struct Shell {
     context_configured: bool,
     menu_open: bool,
     menu_kind: MenuKind,
+    window_menu_pending_pointer: bool,
+    window_menu_pointer_refresh_at: Option<Instant>,
     menu_scroll: usize,
     context_state: ContextState,
     desktop_selection: BTreeSet<PathBuf>,
@@ -1074,13 +1015,23 @@ impl Shell {
                 }
             }
         }
-        for (identifier, pointer) in requests {
-            self.show_titlebar_window_menu(&identifier, pointer);
+        for identifier in requests {
+            self.show_titlebar_window_menu(&identifier);
         }
     }
 
     fn poll(&mut self) {
         self.poll_control_socket();
+        if self
+            .window_menu_pointer_refresh_at
+            .is_some_and(|deadline| self.window_menu_pending_pointer && Instant::now() >= deadline)
+        {
+            self.window_menu_pointer_refresh_at = None;
+            if let Err(error) = sway_ipc::refresh_cursor_focus() {
+                eprintln!("buzzardos-shell: refreshing titlebar menu pointer focus: {error:#}");
+                self.hide_menu();
+            }
+        }
         if let Some(settings) = self.settings_tracker.candidate() {
             match apply_runtime_theme(&self.config_home, settings.appearance.theme) {
                 Ok(()) => {
@@ -1680,6 +1631,8 @@ impl Shell {
         }
         self.menu_open = true;
         self.menu_kind = MenuKind::Applications;
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
         self.menu_scroll = 0;
         self.menu
             .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
@@ -1693,21 +1646,31 @@ impl Shell {
 
     fn apply_applications_menu_geometry(&mut self) {
         let content_size = self.preferred_menu_size();
-        self.menu_size = (
+        self.menu_size = self.menu_overlay_size();
+        self.menu_origin = (
+            0,
+            i32::try_from(self.menu_size.1.saturating_sub(content_size.1)).unwrap_or_default(),
+        );
+        self.apply_menu_overlay_geometry();
+    }
+
+    fn menu_overlay_size(&self) -> (u32, u32) {
+        (
             self.desktop_size.0.max(1),
             self.desktop_size
                 .1
                 .saturating_sub(PANEL_HEIGHT as u32)
                 .max(1),
-        );
-        self.menu_origin = (
-            0,
-            i32::try_from(self.menu_size.1.saturating_sub(content_size.1)).unwrap_or_default(),
-        );
-        // The transparent overlay consumes the opening click anywhere outside
-        // the visible menu.  This is the only reliable Wayland implementation
-        // of click-away dismissal because the shell cannot observe pointer
-        // events delivered to an unrelated guest client surface.
+        )
+    }
+
+    fn apply_menu_overlay_geometry(&self) {
+        // The transparent surface receives input only while a menu is open.
+        // It provides both click-away dismissal and, for titlebar menus, the
+        // normal Wayland pointer-enter position after the titlebar binding
+        // opens it. No global pointer monitor or click-history file is used.
+        // This is the reliable Wayland implementation of click-away dismissal
+        // because the shell cannot observe events delivered to another client.
         self.menu
             .set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
@@ -1724,7 +1687,11 @@ impl Shell {
                 self.menu_scroll = 0;
             }
             self.menu_open = false;
+            self.window_menu_pending_pointer = false;
+            self.window_menu_pointer_refresh_at = None;
             self.menu_size = (1, 1);
+            self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+            self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
             self.menu.set_size(1, 1);
             self.menu
                 .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
@@ -1734,7 +1701,7 @@ impl Shell {
         }
     }
 
-    fn open_window_menu(&mut self, id: u32, origin: (i32, i32), top_anchored: bool) {
+    fn open_window_menu(&mut self, id: u32, origin: (i32, i32), await_pointer: bool) {
         // Pointer-driven floating resize does not emit a stock Sway window
         // event. Refresh synchronously before choosing the context-menu label
         // so a window resized away from our classic maximized frame offers
@@ -1749,24 +1716,52 @@ impl Shell {
         };
         self.menu_open = true;
         self.menu_kind = MenuKind::Window(id);
+        self.window_menu_pending_pointer = await_pointer;
+        self.window_menu_pointer_refresh_at =
+            await_pointer.then(|| Instant::now() + WINDOW_MENU_POINTER_REFRESH_DELAY);
         self.menu_scroll = 0;
-        self.menu_size = (WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT);
+        self.menu_size = self.menu_overlay_size();
         self.menu_origin = origin;
-        if top_anchored {
-            self.menu.set_anchor(Anchor::TOP | Anchor::LEFT);
-            self.menu.set_margin(origin.1, 0, 0, origin.0);
-        } else {
-            self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-            self.menu.set_margin(0, 0, PANEL_HEIGHT, origin.0);
-        }
-        self.menu.set_size(WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT);
-        let _ = self.set_menu_input_region();
-        self.menu.commit();
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        self.apply_menu_overlay_geometry();
         self.dirty = true;
         eprintln!(
             "buzzardos-shell: opened controls for {} ({})",
             title, identifier
         );
+    }
+
+    fn position_pending_window_menu(&mut self, pointer_x: f64) {
+        if !self.window_menu_pending_pointer {
+            return;
+        }
+        let MenuKind::Window(id) = self.menu_kind else {
+            self.window_menu_pending_pointer = false;
+            self.window_menu_pointer_refresh_at = None;
+            return;
+        };
+        let Some(identifier) = self
+            .exact_toplevels
+            .get(&id)
+            .map(|toplevel| toplevel.identifier.clone())
+        else {
+            self.hide_menu();
+            return;
+        };
+        let Ok(state) = sway_ipc::window(&identifier) else {
+            self.hide_menu();
+            return;
+        };
+        self.menu_origin = titlebar_menu_origin(
+            state.rect,
+            state.decoration_height,
+            self.desktop_size,
+            pointer_x,
+        );
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
+        self.dirty = true;
     }
 
     fn show_taskbar_window_menu(&mut self, id: u32, pointer_x: f64) {
@@ -1784,7 +1779,7 @@ impl Shell {
         self.open_window_menu(id, (left, top), false);
     }
 
-    fn show_titlebar_window_menu(&mut self, identifier: &str, pointer: Option<(f64, f64)>) {
+    fn show_titlebar_window_menu(&mut self, identifier: &str) {
         self.refresh_window_states();
         let Some(id) = self
             .exact_toplevels
@@ -1793,16 +1788,10 @@ impl Shell {
         else {
             return;
         };
-        let Ok(state) = sway_ipc::window(identifier) else {
-            return;
-        };
-        let origin = titlebar_menu_origin(
-            state.rect,
-            state.decoration_height,
-            self.desktop_size,
-            pointer,
-        );
-        self.open_window_menu(id, origin, true);
+        // The full-output surface receives a standard pointer-enter event at
+        // the current titlebar click position. Keep its contents transparent
+        // until that event supplies the horizontal anchor.
+        self.open_window_menu(id, (0, 0), true);
     }
 
     fn preferred_menu_size(&self) -> (u32, u32) {
@@ -2760,11 +2749,25 @@ impl Shell {
                         ))
                         .find(|target| target.rect.contains(x, local_y))
                 }
-                MenuKind::Window(id) => self.exact_toplevels.get(&id).and_then(|window| {
-                    window_menu_targets(&window.window)
-                        .into_iter()
-                        .find(|target| target.rect.contains(x, y))
-                }),
+                MenuKind::Window(id) => {
+                    if self.window_menu_pending_pointer {
+                        return None;
+                    }
+                    let local_x = x - f64::from(self.menu_origin.0);
+                    let local_y = y - f64::from(self.menu_origin.1);
+                    if local_x < 0.0
+                        || local_y < 0.0
+                        || local_x >= f64::from(WINDOW_MENU_WIDTH)
+                        || local_y >= f64::from(WINDOW_MENU_HEIGHT)
+                    {
+                        return None;
+                    }
+                    self.exact_toplevels.get(&id).and_then(|window| {
+                        window_menu_targets(&window.window)
+                            .into_iter()
+                            .find(|target| target.rect.contains(local_x, local_y))
+                    })
+                }
             }
         } else if surface == self.desktop.wl_surface() {
             self.desktop_hit_targets
@@ -2788,10 +2791,7 @@ impl Shell {
         let target = self.target_at_surface(surface, x, y);
         if let Some(target) = target {
             self.activate(target.action);
-        } else if surface == self.menu.wl_surface()
-            && self.menu_open
-            && self.menu_kind == MenuKind::Applications
-        {
+        } else if surface == self.menu.wl_surface() && self.menu_open {
             self.hide_menu();
         }
     }
@@ -3270,12 +3270,14 @@ impl Shell {
     fn draw_menu(&mut self) -> Result<()> {
         let theme = self.palette;
         let (surface_logical_width, surface_logical_height) = nonzero_size(self.menu_size);
-        let (logical_width, logical_height) =
-            if self.menu_open && self.menu_kind == MenuKind::Applications {
-                nonzero_size(self.preferred_menu_size())
-            } else {
-                (surface_logical_width, surface_logical_height)
-            };
+        let (logical_width, logical_height) = if self.menu_open {
+            match self.menu_kind {
+                MenuKind::Applications => nonzero_size(self.preferred_menu_size()),
+                MenuKind::Window(_) => (WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT),
+            }
+        } else {
+            (surface_logical_width, surface_logical_height)
+        };
         let (surface_width, surface_height) = physical_size(
             (surface_logical_width, surface_logical_height),
             self.scale_120,
@@ -3301,7 +3303,7 @@ impl Shell {
         let canvas = content_canvas.as_mut_slice();
         clear(
             canvas,
-            if self.menu_open {
+            if self.menu_open && !self.window_menu_pending_pointer {
                 theme.menu.rgba()
             } else {
                 [0, 0, 0, 0]
@@ -3561,6 +3563,7 @@ impl Shell {
                 );
             }
         } else if self.menu_open
+            && !self.window_menu_pending_pointer
             && let MenuKind::Window(id) = self.menu_kind
             && let Some(toplevel) = self.exact_toplevels.get(&id)
         {
@@ -3635,8 +3638,18 @@ impl Shell {
                 );
             }
         }
-        let destination_y =
-            usize::try_from(surface_height.saturating_sub(height)).unwrap_or(usize::MAX);
+        let destination_x = usize::try_from(
+            scale_coord(self.menu_origin.0, self.scale_120)
+                .max(0)
+                .min(i32::try_from(surface_width.saturating_sub(width)).unwrap_or(i32::MAX)),
+        )
+        .unwrap_or_default();
+        let destination_y = usize::try_from(
+            scale_coord(self.menu_origin.1, self.scale_120)
+                .max(0)
+                .min(i32::try_from(surface_height.saturating_sub(height)).unwrap_or(i32::MAX)),
+        )
+        .unwrap_or_default();
         let row_bytes = usize::try_from(width)
             .unwrap_or(usize::MAX)
             .saturating_mul(4);
@@ -3648,7 +3661,8 @@ impl Shell {
             let source_end = source_start.saturating_add(row_bytes);
             let destination_start = destination_y
                 .saturating_add(row)
-                .saturating_mul(surface_stride);
+                .saturating_mul(surface_stride)
+                .saturating_add(destination_x.saturating_mul(4));
             let destination_end = destination_start.saturating_add(row_bytes);
             if source_end <= content_canvas.len() && destination_end <= surface_canvas.len() {
                 surface_canvas[destination_start..destination_end]
@@ -4518,6 +4532,9 @@ impl PointerHandler for Shell {
                         && let Err(error) = pointer.set_cursor(connection, CursorIcon::Default)
                     {
                         eprintln!("buzzardos-shell: restoring the default pointer: {error}");
+                    }
+                    if event.surface == *self.menu.wl_surface() {
+                        self.position_pending_window_menu(event.position.0);
                     }
                     self.update_hover(&event.surface, event.position.0, event.position.1);
                 }
@@ -5637,7 +5654,7 @@ mod scale_tests {
                 },
                 31,
                 (1280, 800),
-                None,
+                -50.0,
             ),
             (0, 51)
         );
@@ -5651,7 +5668,7 @@ mod scale_tests {
                 },
                 31,
                 (1280, 800),
-                None,
+                1_200.0,
             ),
             (
                 1_280 - WINDOW_MENU_WIDTH as i32,
@@ -5669,11 +5686,11 @@ mod scale_tests {
             height: 600,
         };
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (1280, 800), Some((640.75, 95.0))),
+            super::titlebar_menu_origin(frame, 31, (1280, 800), 640.75),
             (640, 111)
         );
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (800, 600), Some((790.0, 95.0))).0,
+            super::titlebar_menu_origin(frame, 31, (800, 600), 790.0).0,
             800 - WINDOW_MENU_WIDTH as i32
         );
     }
@@ -5710,15 +5727,15 @@ mod scale_tests {
     }
 
     #[test]
-    fn shell_control_request_preserves_optional_pointer_coordinates() {
+    fn shell_control_request_carries_only_the_window_identity() {
         let request = parse_window_menu_request(
             br#"{"schema":1,"identifier":"window-id","x":712.5,"y":91.0}"#,
         )
         .unwrap();
-        assert_eq!(request, ("window-id".to_owned(), Some((712.5, 91.0))));
+        assert_eq!(request, "window-id");
         assert_eq!(
             parse_window_menu_request(b"legacy-window-id").unwrap(),
-            ("legacy-window-id".to_owned(), None)
+            "legacy-window-id"
         );
     }
 
