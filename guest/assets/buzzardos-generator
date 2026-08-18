@@ -7,5 +7,3 @@ wants_dir="$normal_dir/multi-user.target.wants"
 mkdir -p "$wants_dir"
 ln -sf /usr/lib/systemd/system/buzzardos-desktop.service \
     "$wants_dir/buzzardos-desktop.service"
-ln -sf /usr/lib/systemd/system/buzzardos-runtime-ready.service \
-    "$wants_dir/buzzardos-runtime-ready.service"

@@ -750,8 +750,9 @@ impl RegistrationStore {
         let inspected = validated.inspect_metadata()?;
         apply_inspection(&mut registration, &inspected, validated.path());
         self.save_projected_with_icon(&registration, inspected.icon.as_ref())?;
-        validated.authorize_owner_execute()?;
-        let child = validated.spawn_exact()?;
+        let child = crate::launch_validated(&validated).map_err(|error| {
+            StoreError::UnsafeManagedPath(format!("launching validated AppImage failed: {error:#}"))
+        })?;
         registration.last_successful_launch_unix_seconds = Some(unix_time());
         registration.save(&self.paths.appimage_registration_path(id))?;
         Ok(LaunchResult {

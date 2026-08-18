@@ -403,13 +403,35 @@ commands, ports, or capture targets.
 `buzzardos-desktop` is classic XFCE/Openbox-style, not a full-screen launcher.
 It provides one desktop, compact bottom taskbar, Applications menu, one task
 button per window, Show Desktop, `Files` and `/shared` shortcuts, and a clearly
-labelled `Shut Down Machine` action.
+separated lifecycle boundary: machine shutdown remains in the native host
+window and never appears as a redundant Applications-menu row inside the guest.
+
+Task buttons are contiguous, borderless, and have no visual gaps. Capped task
+buttons are on by default, use a 260-pixel maximum and a 96-pixel minimum, and
+expose adjacent `Applications`, `<`, `>` controls in that order only when every
+window cannot fit at the minimum; paging controls never bracket the task list.
+Each paging action moves the visible range by exactly five windows. Applications has immediate
+case-insensitive search which clears whenever the menu closes, persistent
+pin/unpin actions, and a full-output transparent click-away surface so any
+click outside the visible menu closes it without reaching the covered client.
+Every shell-owned surface restores the default pointer on entry so a client
+resize/move cursor cannot persist over the empty desktop, panel, or
+Applications click-away surface.
 
 FreeDesktop discovery hides helper/`NoDisplay` entries, responds to newly
 installed entries, and presents each app once. Menus/taskbar work at small
 sizes through measured layout, scrolling, and paging. Desktop supplies
 Light/Dark, solid background color, time/location, official themes/icons, and
 Thunar integration; it supplies no logo wallpaper or remote background.
+Thunar's GTK3 status bar remains palette-correct in focused and backdrop
+states; no inactive white strip is permitted.
+
+Thunar exposes fixed, single-path helper actions for validated Type-2
+AppImages: Run, persistent source-adjacent Extract and Run, persistent Extract
+and Run with `--no-sandbox`, Add/Remove Applications, and Add/Remove Desktop.
+The extracted directory is `<AppImage>.extracted`; the opt-in is remembered by
+a private zero-byte `.no-sandbox` marker inside it. Normal launches reuse a
+valid existing extraction. No Thunar action embeds a shell command.
 
 Sway owns geometry/state. Drag, resize, minimize, maximize/restore, close,
 focus, and titlebar context actions use confirmed Sway IPC. Do not add a

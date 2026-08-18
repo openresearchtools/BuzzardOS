@@ -496,7 +496,7 @@ impl Default for MonitorContinuityDiagnostics {
 }
 
 impl MonitorContinuityDiagnostics {
-    fn install_frame(&mut self, id: u64) {
+    fn record_frame_installed(&mut self, id: u64) {
         self.frames_installed = self.frames_installed.saturating_add(1);
         if self.attachment_active {
             self.frame_replacements = self.frame_replacements.saturating_add(1);
@@ -1664,7 +1664,7 @@ impl NativeWindow {
             self.offload_expectation(width, height),
         );
         self.frame_paintable.set_texture(&texture);
-        self.continuity.borrow_mut().install_frame(id);
+        self.continuity.borrow_mut().record_frame_installed(id);
         self.continuity_dirty.set(true);
         self.update_state_ui();
         let superseded = self
@@ -2642,16 +2642,15 @@ impl NativeWindow {
     }
 
     fn save_host_request(&self, action: &str) -> Result<()> {
-        let machine = self
-            .launch
-            .machine_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("machine directory name is not valid UTF-8")?;
+        // The selected machine directory is deliberately independent from
+        // the human-facing machine name.  Authenticate lifecycle requests
+        // with the name in the self-describing machine metadata, never with
+        // the directory basename.
+        let config = MachineConfig::load(&self.launch.machine_dir)?;
         let value = serde_json::json!({
             "schema": 1,
             "action": action,
-            "machine": machine,
+            "machine": config.name,
         });
         atomic_json(&self.launch.status_dir.join("host-request.json"), &value)
     }
@@ -4651,12 +4650,12 @@ mod tests {
     #[test]
     fn attached_monitor_never_exposes_placeholder_or_blank_across_frames() {
         let mut continuity = MonitorContinuityDiagnostics::default();
-        continuity.install_frame(1);
+        continuity.record_frame_installed(1);
         assert!(!continuity.observe("frame-installed", false, true));
         for _ in 0..128 {
             assert!(!continuity.observe("cursor", false, true));
         }
-        continuity.install_frame(2);
+        continuity.record_frame_installed(2);
         assert!(!continuity.observe("frame-installed", false, true));
         assert_eq!(continuity.frames_installed, 2);
         assert_eq!(continuity.frame_replacements, 1);
@@ -4669,7 +4668,7 @@ mod tests {
     #[test]
     fn continuity_instrumentation_detects_both_regression_classes() {
         let mut continuity = MonitorContinuityDiagnostics::default();
-        continuity.install_frame(41);
+        continuity.record_frame_installed(41);
         assert!(continuity.observe("lifecycle-ui", true, true));
         assert!(continuity.observe("paintable-identity", false, false));
         continuity.paintable_identity_changed();

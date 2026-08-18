@@ -14,6 +14,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -321,11 +322,13 @@ fn run() -> Result<()> {
         archive,
         expected_digest,
         rootfs,
-        work_dir,
+        work_dir: _,
     }) = &cli.command
     {
-        apply_image_archive(archive, expected_digest, rootfs, work_dir)?;
-        validate_extracted_rootfs(rootfs)?;
+        with_private_bind_mount(rootfs, "OCI rootfs", |mounted_rootfs| {
+            apply_image_archive(archive, expected_digest, mounted_rootfs, mounted_rootfs)?;
+            validate_extracted_rootfs(mounted_rootfs)
+        })?;
         return Ok(());
     }
     if let Some(Commands::ExportOci {
@@ -1417,7 +1420,7 @@ fn export_machine(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("OCI export")?;
+    let mut namespace = PortableNamespaceContext::discover("OCI export")?;
     let rootfs = namespace.relative(&machine_dir.join("rootfs"), "machine rootfs")?;
     let machine_config = namespace.relative(
         &machine_dir.join(MachineConfig::FILE),
@@ -2101,16 +2104,22 @@ fn reset_cloned_machine_identity_in_stage(
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
     let namespace = PortableNamespaceContext::discover("clone identity reset")?;
-    let rootfs = namespace.relative(rootfs, "cloned rootfs")?;
+    let rootfs = rootfs
+        .canonicalize()
+        .with_context(|| format!("resolving cloned rootfs {}", rootfs.display()))?;
+    let parent = rootfs.parent().context("cloned rootfs has no parent")?;
+    let name = rootfs
+        .file_name()
+        .context("cloned rootfs has no directory name")?;
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
-    namespace.configure(&mut command);
     let status = command
+        .current_dir(parent)
         .args(id_map.namespace_args())
         .arg(&namespace.launcher)
         .arg("__reset-clone-identity")
         .arg("--rootfs")
-        .arg(rootfs)
+        .arg(name)
         .stdin(Stdio::null())
         .status()?;
     if !status.success() {
@@ -2121,7 +2130,6 @@ fn reset_cloned_machine_identity_in_stage(
 
 fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
-    let rootfs = rootfs.canonicalize()?;
     let machine_id = rootfs.join("etc/machine-id");
     let mut file = match OpenOptions::new()
         .write(true)
@@ -2199,7 +2207,7 @@ fn cleanup_failed_machine_stage(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("machine staging cleanup")?;
+    let mut namespace = PortableNamespaceContext::discover("machine staging cleanup")?;
     let namespace_staging = namespace.relative(staging, "machine staging directory")?;
     let namespace_machines = namespace.relative(machines, "Machines directory")?;
     let mut command = Command::new(namespace_program);
@@ -2241,7 +2249,7 @@ fn cleanup_export_stage(resources: &ResourceLocator, staging: &Path, cache: &Pat
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("export staging cleanup")?;
+    let mut namespace = PortableNamespaceContext::discover("export staging cleanup")?;
     let namespace_staging = namespace.relative(staging, "export staging directory")?;
     let namespace_cache = namespace.relative(cache, "portable cache")?;
     let mut command = Command::new(namespace_program);
@@ -2285,7 +2293,7 @@ fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let namespace = PortableNamespaceContext::discover("machine deletion")?;
+    let mut namespace = PortableNamespaceContext::discover("machine deletion")?;
     let machine_dir = namespace.relative(&machine_dir, "machine directory")?;
     let machines = namespace.relative(&paths.machines(), "Machines directory")?;
     let mut command = Command::new(namespace_program);
@@ -2462,6 +2470,56 @@ fn open_regular_nofollow(path: &Path, description: &str) -> Result<File> {
         bail!("{description} {} is not a regular file", path.display());
     }
     Ok(file)
+}
+
+/// Give namespace-only code an absolute path whose ancestors remain
+/// searchable by subordinate guest root. The source directory is already
+/// pinned as the child process's cwd before the UID map changes; a private
+/// bind mount exposes only that exact directory inside this disposable mount
+/// namespace. This is necessary because `realpath(3)` retraverses absolute
+/// host ancestors even when relative lookup from the inherited cwd succeeds.
+fn with_private_bind_mount<T>(
+    source: &Path,
+    description: &str,
+    operation: impl FnOnce(&Path) -> Result<T>,
+) -> Result<T> {
+    let temporary = tempfile::Builder::new()
+        .prefix("buzzardos-namespace-")
+        .tempdir_in("/tmp")
+        .with_context(|| format!("creating private {description} mount point"))?;
+    let target = temporary.path().join("rootfs");
+    fs::create_dir(&target)
+        .with_context(|| format!("creating private {description} mount target"))?;
+    let source_c = CString::new(source.as_os_str().as_bytes())
+        .context("private namespace mount source contains a NUL byte")?;
+    let target_c = CString::new(target.as_os_str().as_bytes())
+        .context("private namespace mount target contains a NUL byte")?;
+    let mounted = unsafe {
+        libc::mount(
+            source_c.as_ptr(),
+            target_c.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        )
+    };
+    if mounted != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("binding private {description} mount"));
+    }
+
+    let result = operation(&target);
+    let unmounted = unsafe { libc::umount2(target_c.as_ptr(), libc::MNT_DETACH) };
+    if unmounted != 0 {
+        let cleanup = std::io::Error::last_os_error();
+        return match result {
+            Ok(_) => Err(cleanup).with_context(|| format!("unmounting private {description}")),
+            Err(error) => Err(error).context(format!(
+                "private {description} operation also failed to unmount: {cleanup}"
+            )),
+        };
+    }
+    result
 }
 
 struct HashingReader<R> {
@@ -2652,34 +2710,43 @@ fn apply_image_in_user_namespace(
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
-    let launcher = std::env::current_exe()
-        .context("locating launcher for OCI extraction")?
-        .canonicalize()
-        .context("resolving launcher for OCI extraction")?;
-    let archive = archive
-        .canonicalize()
-        .with_context(|| format!("resolving OCI archive {}", archive.display()))?;
-    let rootfs = rootfs
-        .canonicalize()
-        .with_context(|| format!("resolving rootfs {}", rootfs.display()))?;
+    let mut namespace = PortableNamespaceContext::discover("OCI extraction")?;
+    let archive = namespace.relative(archive, "OCI layout")?;
     let work_dir = work_dir
         .canonicalize()
         .with_context(|| format!("resolving OCI work directory {}", work_dir.display()))?;
+    let rootfs = rootfs
+        .canonicalize()
+        .with_context(|| format!("resolving rootfs {}", rootfs.display()))?;
+    let relative_rootfs = rootfs
+        .strip_prefix(&work_dir)
+        .context("rootfs is outside its OCI work directory")?;
+    if relative_rootfs.components().count() != 1 {
+        bail!("rootfs must be a direct child of its OCI work directory");
+    }
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     let status = command
-        .current_dir("/")
+        // The host user opens the new rootfs before entering the user
+        // namespace. Using it as cwd avoids searching the mode-0700 staging
+        // directory after guest root has become a subordinate host ID. The
+        // extractor first changes `.` to guest-root ownership, then uses it
+        // for its transient layer files as well as the final filesystem.
+        // Relative paths therefore remain reachable
+        // even when a subordinate guest-root ID cannot retraverse a private
+        // host ancestor.
+        .current_dir(&rootfs)
         .args(id_map.namespace_args())
-        .arg(&launcher)
+        .arg(&namespace.launcher)
         .arg("__apply-image")
         .arg("--archive")
         .arg(archive)
         .arg("--expected-digest")
         .arg(expected_digest)
         .arg("--rootfs")
-        .arg(rootfs)
+        .arg(".")
         .arg("--work-dir")
-        .arg(work_dir)
+        .arg(".")
         .stdin(Stdio::null())
         .status()
         .with_context(|| {
@@ -2698,6 +2765,7 @@ fn apply_image_in_user_namespace(
 
 struct PortableNamespaceContext {
     launcher: PathBuf,
+    descriptors: Vec<File>,
 }
 
 impl PortableNamespaceContext {
@@ -2707,15 +2775,20 @@ impl PortableNamespaceContext {
         let launcher = launcher
             .canonicalize()
             .with_context(|| format!("resolving launcher for {kind}"))?;
-        Ok(Self { launcher })
+        Ok(Self {
+            launcher,
+            descriptors: Vec::new(),
+        })
     }
 
-    fn relative(&self, path: &Path, kind: &str) -> Result<PathBuf> {
-        path.canonicalize()
-            .with_context(|| format!("resolving {kind} {}", path.display()))
+    fn relative(&mut self, path: &Path, kind: &str) -> Result<PathBuf> {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("resolving {kind} {}", path.display()))?;
+        self.inherit_path(&canonical, kind)
     }
 
-    fn new_file(&self, path: &Path, kind: &str) -> Result<PathBuf> {
+    fn new_file(&mut self, path: &Path, kind: &str) -> Result<PathBuf> {
         let name = path
             .file_name()
             .filter(|name| !name.is_empty())
@@ -2728,7 +2801,42 @@ impl PortableNamespaceContext {
             .context("new private namespace file has no parent")?
             .canonicalize()
             .with_context(|| format!("resolving {kind} parent"))?;
-        Ok(parent.join(name))
+        Ok(self.inherit_path(&parent, kind)?.join(name))
+    }
+
+    /// Keep an already-resolved path open across `unshare`/`exec` and address
+    /// it through procfs. Guest root maps to a subordinate host ID, so it
+    /// cannot retraverse a host-private ancestor such as a mode-0700 home or
+    /// encrypted data mount. An inherited descriptor preserves access only to
+    /// the exact path the host user opened; it does not widen access to any
+    /// sibling or parent directory.
+    fn inherit_path(&mut self, path: &Path, kind: &str) -> Result<PathBuf> {
+        let descriptor = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .with_context(|| format!("opening {kind} {}", path.display()))?;
+        let fd = descriptor.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("inspecting inherited {kind} descriptor"));
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("preserving inherited {kind} descriptor"));
+        }
+        let is_directory = descriptor.metadata()?.is_dir();
+        self.descriptors.push(descriptor);
+        let inherited = PathBuf::from(format!("/proc/self/fd/{fd}"));
+        // Address a directory through a child lookup so `symlink_metadata`
+        // observes the opened directory, not procfs's descriptor symlink.
+        // The latter is deliberately rejected by rootfs safety validation.
+        Ok(if is_directory {
+            inherited.join(".")
+        } else {
+            inherited
+        })
     }
 
     fn configure(&self, command: &mut Command) {

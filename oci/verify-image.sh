@@ -4,6 +4,11 @@ set -euo pipefail
 
 image=${1:?usage: verify-image.sh IMAGE}
 container_engine=${BUZZARDOS_CONTAINER_ENGINE:-docker}
+expect_cuda=${BUZZARDOS_EXPECT_CUDA:-0}
+case "$expect_cuda" in
+    0|1) ;;
+    *) echo "BUZZARDOS_EXPECT_CUDA must be 0 or 1" >&2; exit 2 ;;
+esac
 case "$container_engine" in
     docker|podman|buildah) ;;
     *) echo "unsupported container engine: $container_engine" >&2; exit 2 ;;
@@ -21,9 +26,11 @@ run_shell() {
             --root "$BUZZARDOS_BUILDAH_ROOT" \
             --runroot "$BUZZARDOS_BUILDAH_RUNROOT" \
             --storage-driver vfs \
-            run "$image" -- /bin/sh -ec "$1"
+            run "$image" -- env BUZZARDOS_EXPECT_CUDA="$expect_cuda" /bin/sh -ec "$1"
     else
-        "$container_engine" run --rm --entrypoint /bin/sh "$image" -ec "$1"
+        "$container_engine" run --rm \
+            --env BUZZARDOS_EXPECT_CUDA="$expect_cuda" \
+            --entrypoint /bin/sh "$image" -ec "$1"
     fi
 }
 
@@ -284,6 +291,58 @@ PY
 	        ii*) echo "forbidden runtime package is installed: $forbidden_package" >&2; exit 1 ;;
 	    esac
 	done
+	cuda_packages=$(dpkg-query -W -f="\${binary:Package}\n" 2>/dev/null | grep -E \
+	    "^(cuda-|libcublas-|libcufft-|libcufile-|libcuobjclient-|libcurand-|libcusolver-|libcusparse-|libnccl2$|libnpp-|libnvfatbin-|libnvjitlink-|libnvjpeg-)" || true)
+	if [ "$BUZZARDOS_EXPECT_CUDA" = 0 ]; then
+	    test -z "$cuda_packages" || {
+	        echo "standard image unexpectedly contains CUDA packages:" >&2
+	        printf "%s\n" "$cuda_packages" >&2
+	        exit 1
+	    }
+	    test ! -e /usr/local/cuda
+	    test ! -e /etc/apt/sources.list.d/cuda-debian13-x86_64.list
+	else
+	    for cuda_package in \
+	        cuda-keyring cuda-compat-13-3 cuda-cudart-13-3 \
+	        cuda-libraries-13-3 cuda-nvrtc-13-3 cuda-nvtx-13-3 \
+	        cuda-opencl-13-3 libcublas-13-3 libcufft-13-3 \
+	        libcufile-13-3 libcuobjclient-13-3 libcurand-13-3 \
+	        libcusolver-13-3 libcusparse-13-3 libnccl2 libnpp-13-3 \
+	        libnvfatbin-13-3 libnvjitlink-13-3 libnvjpeg-13-3
+	    do
+	        status=$(dpkg-query -W -f="\${db:Status-Status}" "$cuda_package")
+	        case "$status" in
+	            installed) ;;
+	            *) echo "CUDA runtime package is not installed: $cuda_package" >&2; exit 1 ;;
+	        esac
+	    done
+	    test "$(dpkg-query -W -f="\${Version}" cuda-cudart-13-3)" = 13.3.29-1
+	    test "$(dpkg-query -W -f="\${Version}" cuda-libraries-13-3)" = 13.3.1-1
+	    test "$(dpkg-query -W -f="\${Version}" cuda-compat-13-3)" = 610.43.02-1
+	    test "$(dpkg-query -W -f="\${Version}" libcublas-13-3)" = 13.6.0.2-1
+	    test "$(dpkg-query -W -f="\${Version}" libnccl2)" = 2.30.7-1+cuda13.3
+	    test -L /usr/local/cuda
+	    test -d /usr/local/cuda-13.3/compat
+	    test -s /etc/apt/sources.list.d/cuda-debian13-x86_64.list
+	    grep -Fq /usr/local/cuda/lib64 /etc/ld.so.conf.d/nvidia.conf
+	    ldconfig -p | grep -F "libcudart.so" >/dev/null
+	    ldconfig -p | grep -F "libcublas.so" >/dev/null
+	    test "$CUDA_VERSION" = 13.3.1
+	    test "$NVIDIA_VISIBLE_DEVICES" = all
+	    test "$NVIDIA_DRIVER_CAPABILITIES" = compute,utility
+	    test "$NVIDIA_PRODUCT_NAME" = CUDA
+	    command -v nvcc >/dev/null 2>&1 && {
+	        echo "CUDA developer compiler leaked into runtime image" >&2
+	        exit 1
+	    } || true
+	    for forbidden_cuda_package in cuda-drivers cuda-toolkit-13-3 nvidia-driver; do
+	        status=$(dpkg-query -W -f="\${db:Status-Abbrev}" \
+	            "$forbidden_cuda_package" 2>/dev/null || true)
+	        case "$status" in
+	            ii*) echo "CUDA runtime image contains driver/devel package: $forbidden_cuda_package" >&2; exit 1 ;;
+	        esac
+	    done
+	fi
 	test ! -d /source || { echo "source tree leaked into the image" >&2; exit 1; }
     for unit in \
         sys-kernel-config.mount \

@@ -13,6 +13,10 @@ pub const APPLICATIONS_MENU_HEADER_HEIGHT: i32 = 54;
 pub const APPLICATIONS_MENU_SECTION_HEIGHT: i32 = 26;
 pub const APPLICATIONS_MENU_FOOTER_HEIGHT: i32 = 50;
 pub const MENU_ROW_HEIGHT: i32 = 36;
+pub const CAPPED_TASK_BUTTON_WIDTH: i32 = 260;
+pub const MIN_TASK_BUTTON_WIDTH: i32 = 96;
+pub const TASK_PAGE_STEP: usize = 5;
+const TASK_PAGE_BUTTON_WIDTH: i32 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Application {
@@ -60,6 +64,8 @@ pub enum ShellAction {
     LaunchApplication(String),
     AddApplicationDesktopShortcut(String),
     RemoveApplicationDesktopShortcut(String),
+    PinApplication(String),
+    UnpinApplication(String),
     DesktopOpenSelection,
     DesktopCut,
     DesktopCopy,
@@ -85,7 +91,6 @@ pub enum ShellAction {
     TaskbarNext,
     ShowDesktop,
     CloseApplicationsMenu,
-    ShutdownMachine,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +100,12 @@ pub struct HitTarget {
     pub action: ShellAction,
 }
 
-pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<HitTarget> {
-    const NAV_WIDTH: i32 = 24;
-    const MIN_TASK_WIDTH: i32 = 148;
-
+pub fn panel_targets(
+    width: u32,
+    windows: &[GuestWindow],
+    offset: usize,
+    capped_task_buttons: bool,
+) -> Vec<HitTarget> {
     let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
     let show_desktop_width = SHOW_DESKTOP_WIDTH.min(width);
     let taskbar_right = width.saturating_sub(show_desktop_width);
@@ -118,12 +125,27 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
 
     let right_edge = taskbar_right.max(x);
     let available = right_edge.saturating_sub(x).max(0);
-    let initial_slots = usize::try_from((available / MIN_TASK_WIDTH).max(1)).unwrap_or(1);
-    let needs_paging = windows.len() > initial_slots;
-    let task_space = available.saturating_sub(if needs_paging { NAV_WIDTH * 2 } else { 0 });
-    let slots = usize::try_from((task_space / MIN_TASK_WIDTH).max(1)).unwrap_or(1);
-    let pages = windows.len().div_ceil(slots).max(1);
-    let start = (page % pages).saturating_mul(slots).min(windows.len());
+    let needs_paging = capped_task_buttons
+        && i32::try_from(windows.len())
+            .unwrap_or(i32::MAX)
+            .saturating_mul(MIN_TASK_BUTTON_WIDTH)
+            > available;
+    let task_space = available.saturating_sub(if needs_paging {
+        TASK_PAGE_BUTTON_WIDTH * 2
+    } else {
+        0
+    });
+    let slots = if needs_paging {
+        usize::try_from((task_space / MIN_TASK_BUTTON_WIDTH).max(1)).unwrap_or(1)
+    } else {
+        windows.len()
+    };
+    let maximum_offset = windows.len().saturating_sub(slots);
+    let start = if needs_paging {
+        offset.min(maximum_offset)
+    } else {
+        0
+    };
     let end = start.saturating_add(slots).min(windows.len());
     let visible = &windows[start..end];
 
@@ -132,19 +154,35 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
             rect: Rect {
                 x,
                 y: 0,
-                width: NAV_WIDTH,
+                width: TASK_PAGE_BUTTON_WIDTH,
                 height: PANEL_HEIGHT,
             },
             label: "Previous running applications".to_owned(),
             action: ShellAction::TaskbarPrevious,
         });
-        x += NAV_WIDTH;
+        x += TASK_PAGE_BUTTON_WIDTH;
+        targets.push(HitTarget {
+            rect: Rect {
+                x,
+                y: 0,
+                width: TASK_PAGE_BUTTON_WIDTH,
+                height: PANEL_HEIGHT,
+            },
+            label: "Next running applications".to_owned(),
+            action: ShellAction::TaskbarNext,
+        });
+        x += TASK_PAGE_BUTTON_WIDTH;
     }
 
     let task_width = if visible.is_empty() {
-        task_space
+        0
     } else {
-        task_space / i32::try_from(visible.len()).unwrap_or(1)
+        let equal_width = task_space / i32::try_from(visible.len()).unwrap_or(1);
+        if capped_task_buttons {
+            equal_width.clamp(MIN_TASK_BUTTON_WIDTH, CAPPED_TASK_BUTTON_WIDTH)
+        } else {
+            equal_width
+        }
     };
     for window in visible {
         targets.push(HitTarget {
@@ -160,18 +198,6 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
         x += task_width;
     }
 
-    if needs_paging {
-        targets.push(HitTarget {
-            rect: Rect {
-                x,
-                y: 0,
-                width: NAV_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            label: "Next running applications".to_owned(),
-            action: ShellAction::TaskbarNext,
-        });
-    }
     targets.push(HitTarget {
         rect: Rect {
             x: taskbar_right,
@@ -183,6 +209,20 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
         action: ShellAction::ShowDesktop,
     });
     targets
+}
+
+pub fn taskbar_max_offset(width: u32, window_count: usize, capped_task_buttons: bool) -> usize {
+    if !capped_task_buttons {
+        return 0;
+    }
+    let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
+    let available = width
+        .saturating_sub(SHOW_DESKTOP_WIDTH.min(width))
+        .saturating_sub(APPLICATIONS_BUTTON_WIDTH.min(width))
+        .saturating_sub(TASK_PAGE_BUTTON_WIDTH * 2)
+        .max(MIN_TASK_BUTTON_WIDTH);
+    let slots = usize::try_from((available / MIN_TASK_BUTTON_WIDTH).max(1)).unwrap_or(1);
+    window_count.saturating_sub(slots)
 }
 
 pub fn menu_targets(
@@ -215,19 +255,6 @@ pub fn menu_targets(
         y += MENU_ROW_HEIGHT;
     }
 
-    targets.push(HitTarget {
-        rect: Rect {
-            x: 8,
-            y: menu_height
-                .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
-                .saturating_add(6)
-                .max(0),
-            width: menu_width.saturating_sub(16),
-            height: MENU_ROW_HEIGHT,
-        },
-        label: "Shut Down Machine".to_owned(),
-        action: ShellAction::ShutdownMachine,
-    });
     targets
 }
 
@@ -284,6 +311,7 @@ pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
 pub fn application_context_targets(
     application: &Application,
     shortcut_exists: bool,
+    pinned: bool,
 ) -> Vec<HitTarget> {
     const CONTEXT_WIDTH: i32 = 252;
     [
@@ -300,6 +328,17 @@ pub fn application_context_targets(
             (
                 "Add Desktop Shortcut",
                 ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
+            )
+        },
+        if pinned {
+            (
+                "Unpin from Applications",
+                ShellAction::UnpinApplication(application.id.clone()),
+            )
+        } else {
+            (
+                "Pin in Applications",
+                ShellAction::PinApplication(application.id.clone()),
             )
         },
     ]
@@ -467,7 +506,7 @@ mod tests {
                 ..GuestWindow::default()
             },
         ];
-        let targets = panel_targets(1280, &windows, 0);
+        let targets = panel_targets(1280, &windows, 0, true);
         let actions: Vec<_> = targets
             .iter()
             .filter_map(|target| match target.action {
@@ -493,14 +532,77 @@ mod tests {
     }
 
     #[test]
-    fn classic_menu_keeps_shutdown_separate_from_host_chrome() {
-        let targets = menu_targets(300, 166, &[app("Browser")], 0);
+    fn capped_taskbar_pages_by_five_only_after_minimum_width_is_exhausted() {
+        let windows = (0..10)
+            .map(|index| GuestWindow {
+                id: index + 1,
+                title: format!("Window {}", index + 1),
+                ..GuestWindow::default()
+            })
+            .collect::<Vec<_>>();
+        let first = panel_targets(640, &windows, 0, true);
         assert!(
-            targets
+            first
                 .iter()
-                .any(|target| target.action == ShellAction::ShutdownMachine
-                    && target.label == "Shut Down Machine")
+                .any(|target| target.action == ShellAction::TaskbarPrevious)
         );
+        assert!(
+            first
+                .iter()
+                .any(|target| target.action == ShellAction::TaskbarNext)
+        );
+        let first_ids = first
+            .iter()
+            .filter_map(|target| match target.action {
+                ShellAction::ActivateWindow(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let second_ids = panel_targets(640, &windows, TASK_PAGE_STEP, true)
+            .into_iter()
+            .filter_map(|target| match target.action {
+                ShellAction::ActivateWindow(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_ids, [1, 2, 3, 4]);
+        assert_eq!(second_ids, [6, 7, 8, 9]);
+        let applications = &first[0];
+        let previous = first
+            .iter()
+            .find(|target| target.action == ShellAction::TaskbarPrevious)
+            .expect("previous-page target");
+        let next = first
+            .iter()
+            .find(|target| target.action == ShellAction::TaskbarNext)
+            .expect("next-page target");
+        assert_eq!(
+            applications.rect.x + applications.rect.width,
+            previous.rect.x
+        );
+        assert_eq!(previous.rect.x + previous.rect.width, next.rect.x);
+        assert!(first_ids.iter().all(|id| {
+            first
+                .iter()
+                .find(|target| target.action == ShellAction::ActivateWindow(*id))
+                .is_some_and(|target| target.rect.x >= next.rect.x + next.rect.width)
+        }));
+
+        let fitting = panel_targets(640, &windows[..5], 0, true);
+        assert!(!fitting.iter().any(|target| matches!(
+            target.action,
+            ShellAction::TaskbarPrevious | ShellAction::TaskbarNext
+        )));
+        for pair in fitting.windows(2) {
+            if !matches!(pair[1].action, ShellAction::ShowDesktop) {
+                assert_eq!(pair[0].rect.x + pair[0].rect.width, pair[1].rect.x);
+            }
+        }
+    }
+
+    #[test]
+    fn classic_menu_contains_applications_but_no_host_lifecycle_actions() {
+        let targets = menu_targets(300, 208, &[app("Browser")], 0);
         assert_eq!(
             targets
                 .iter()
@@ -531,11 +633,7 @@ mod tests {
                 .iter()
                 .all(|target| !matches!(target.action, ShellAction::LaunchApplication(_)))
         );
-        assert!(
-            targets
-                .iter()
-                .any(|target| target.action == ShellAction::ShutdownMachine)
-        );
+        assert!(targets.is_empty());
     }
 
     #[test]

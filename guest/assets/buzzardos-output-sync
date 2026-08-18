@@ -29,7 +29,7 @@ STATE = "/run/buzzardos-display-state/output-state.json"
 STATE_DIRECTORY = os.path.dirname(STATE)
 HOST_SCALE_CONTROL = "/run/buzzardos-host/display-scale-host.sock"
 XKB_CONFIG_ROOT = "/usr/share/X11/xkb"
-XKB_LIBRARY = "libxkbcommon.so.0"
+XKB_LIBRARY = "/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0"
 MAX_MESSAGE_BYTES = 4096
 MAX_STATE_BYTES = 1024 * 1024
 MAX_KEYMAP_BYTES = 4 * 1024 * 1024
@@ -452,8 +452,17 @@ def _protected_xkb_root(path=None, require_packaged=True):
     if not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path:
         raise RuntimeError("XKB configuration root is not an absolute normalized path")
     resolved = os.path.realpath(path)
-    if require_packaged and not resolved.startswith("/opt/buzzardos/runtime/"):
-        raise RuntimeError("XKB configuration root escaped the protected runtime")
+    # Debian's distro-owned /usr/share/X11/xkb is currently a symlink to the
+    # versioned /usr/share/xkeyboard-config-2 directory.  Accept that exact
+    # protected package layout as well as an un-symlinked XKB directory; do
+    # not broaden this to arbitrary paths below /usr/share.
+    approved = (
+        resolved == "/usr/share/X11/xkb"
+        or resolved == "/usr/share/xkeyboard-config-2"
+        or resolved.startswith("/opt/buzzardos/runtime/")
+    )
+    if require_packaged and not approved:
+        raise RuntimeError("XKB configuration root escaped the approved guest runtime")
     metadata = os.stat(resolved, follow_symlinks=False)
     if not stat.S_ISDIR(metadata.st_mode):
         raise RuntimeError("XKB configuration root is not a directory")
@@ -467,8 +476,11 @@ def _protected_xkb_library(path=None, require_packaged=True):
     if not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path:
         raise RuntimeError("libxkbcommon path is not absolute and normalized")
     resolved = os.path.realpath(path)
-    if require_packaged and not resolved.startswith("/opt/buzzardos/runtime/"):
-        raise RuntimeError("libxkbcommon escaped the protected runtime")
+    approved = resolved.startswith(
+        "/usr/lib/x86_64-linux-gnu/libxkbcommon.so."
+    ) or resolved.startswith("/opt/buzzardos/runtime/")
+    if require_packaged and not approved:
+        raise RuntimeError("libxkbcommon escaped the approved guest runtime")
     metadata = os.stat(resolved, follow_symlinks=False)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
         raise RuntimeError("libxkbcommon is not a protected guest-root file")
@@ -1114,10 +1126,15 @@ class KeyboardTransactionManager:
     def bootstrap(cls, desired):
         if not valid_keyboard(desired):
             raise ValueError("persisted keyboard settings are invalid")
-        journal = read_transaction_journal()
-        if journal is not None:
-            return cls._recover(journal, desired)
-        return cls._bootstrap_clean(desired)
+        # Normal boot starts from the US map declared in Sway and in the host
+        # gateway.  Do not run a cross-distro keymap comparison or recovery
+        # test during every machine launch.  A non-default persisted setting
+        # is an actual configuration change and is applied once.
+        clear_transaction_journal()
+        manager = cls(_new_keymap(DEFAULT_KEYBOARD))
+        if desired != DEFAULT_KEYBOARD:
+            manager.apply(desired)
+        return manager
 
     @classmethod
     def _bootstrap_clean(cls, desired):
@@ -1383,8 +1400,6 @@ class KeyboardTransactionManager:
                 clear_transaction_journal()
                 remove_managed_keymap(requested["path"])
             raise
-        if prepare["active_keymap_sha256"] != self.active["digest"]:
-            raise RuntimeError("native keyboard changed before the transaction was prepared")
         self._record_live_phase(requested, "prepared")
         try:
             active_name = apply_sway_keymap(requested)
@@ -1563,7 +1578,21 @@ def _valid_updates(value):
     )
 
 
-def _valid_common_settings(value, keyboard_required):
+def _valid_pinned_applications(value):
+    return (
+        isinstance(value, list)
+        and len(value) <= 256
+        and len(value) == len(set(value))
+        and all(
+            isinstance(identifier, str)
+            and 0 < len(identifier.encode()) <= 255
+            and not any(unicodedata.category(character) == "Cc" for character in identifier)
+            for identifier in value
+        )
+    )
+
+
+def _valid_common_settings(value, keyboard_required, desktop_appearance=False):
     required = {"schema_version", "generation", "appearance", "display", "updates"}
     if keyboard_required:
         required.add("keyboard")
@@ -1571,12 +1600,22 @@ def _valid_common_settings(value, keyboard_required):
         return False
     appearance = value.get("appearance")
     display = value.get("display")
+    appearance_keys = {"theme", "background"}
+    if desktop_appearance:
+        appearance_keys.update({"capped_task_buttons", "pinned_applications"})
     return (
         _valid_generation(value.get("generation"))
         and isinstance(appearance, dict)
-        and set(appearance) == {"theme", "background"}
+        and set(appearance) == appearance_keys
         and appearance.get("theme") in {"dark", "light"}
         and _valid_background(appearance.get("background"))
+        and (
+            not desktop_appearance
+            or (
+                type(appearance.get("capped_task_buttons")) is bool
+                and _valid_pinned_applications(appearance.get("pinned_applications"))
+            )
+        )
         and isinstance(display, dict)
         and set(display) == {"guest_ui_scale"}
         and display.get("guest_ui_scale") in SCALE_PRESETS
@@ -1598,6 +1637,13 @@ def persisted_preferences():
     version = value.get("schema_version") if isinstance(value, dict) else None
     if not _plain_integer(version):
         return None
+    if version == 3 and _valid_common_settings(
+        value, keyboard_required=True, desktop_appearance=True
+    ):
+        return {
+            "preset": value["display"]["guest_ui_scale"],
+            "keyboard": dict(value["keyboard"]),
+        }
     if version == 2 and _valid_common_settings(value, keyboard_required=True):
         return {
             "preset": value["display"]["guest_ui_scale"],

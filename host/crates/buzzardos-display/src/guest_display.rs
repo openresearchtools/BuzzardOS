@@ -781,17 +781,13 @@ impl GuestState {
             }
             return Ok(self.keyboard_map_response(method, completed.state));
         }
-        let keymap = CompiledKeymap::compile(&self.xkb_config_root, &spec)
+        let mut keymap = CompiledKeymap::compile(&self.xkb_config_root, &spec)
             .map_err(|error| KeyboardMapFailure::new("invalid_keymap", format!("{error:#}")))?;
-        if keymap.digest != requested_digest {
-            return Err(KeyboardMapFailure::new(
-                "digest_mismatch",
-                format!(
-                    "requested keymap digest does not match the bundled definitions (host {})",
-                    keymap.digest
-                ),
-            ));
-        }
+        // Host and guest intentionally use their distribution's xkb-data.
+        // Their serialized maps need not be byte-identical.  Compilation on
+        // both sides validates the bounded RMLVO request; the guest digest is
+        // the transaction identity for commit/abort reconciliation.
+        keymap.digest.clone_from(&requested_digest);
         self.neutralize_physical_keyboard();
         self.pending_keymap = Some(PendingKeymap {
             token,

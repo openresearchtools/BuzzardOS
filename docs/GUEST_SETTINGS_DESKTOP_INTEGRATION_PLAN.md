@@ -45,6 +45,7 @@ Settings
 │   │   ├── Light
 │   │   └── Dark
 │   └── Background colour
+│   └── Capped task buttons [on by default]
 │
 └── Updates
     └── Standard APT/unattended-upgrades status and manual-control guidance
@@ -116,7 +117,9 @@ Qt applications, and compatible Electron/Chromium applications. Selection,
 focus, sliders, switches, checks, radio buttons, folders, and unfocused views
 use the accessible Cinnamon-orange accent and warm graphite/light neutrals;
 no default blue selection is allowed. Unfocused Thunar content and menu bars
-must retain the selected theme rather than reverting to white.
+must retain the selected theme rather than reverting to white. The Thunar
+status bar has explicit active and `:backdrop` palette states and must never
+become a white strip when the window loses focus.
 
 Theme and background colour persist in `~/.config/buzzardos/settings.json`.
 Switching Light/Dark selects its recommended solid background; choosing a
@@ -144,6 +147,27 @@ The shell discovers valid FreeDesktop launchers through XDG application
 directories. Newly installed Debian applications appear without rebuilding
 the image. The visual Applications list may scroll, but its complete model
 and AT-SPI tree always expose every installed application.
+
+Task buttons are contiguous and borderless without gaps. `Capped task buttons`
+defaults on; when enabled each button is at most 260 logical pixels and never
+shrinks below 96 logical pixels. `<` and `>` appear together directly after
+`Applications`, in that order, only when all running windows cannot fit at that
+minimum; each moves the visible window range by exactly five per click. They do
+not bracket the task list. When disabled all task buttons share the available
+width.
+
+Applications provides case-insensitive search across application name,
+generic name, and categories. Search is immediately keyboard-active and is
+cleared each time the menu closes. The menu owns a transparent click-away
+surface while open, so a click anywhere outside its visible bounds closes it
+and is not forwarded into the covered guest application. Context actions pin
+or unpin an application persistently; pinned applications remain searchable
+and are visibly identified in the menu.
+
+The shell restores the normal pointer whenever it receives pointer entry on
+the desktop, taskbar, menu, or transparent click-away surface. A resize or move
+cursor selected by an application must not persist over shell-owned empty
+space.
 
 The desktop always starts with Files and Shared. A newly created shortcut is
 placed in the first available cell on the first visible desktop page, below
@@ -174,10 +198,19 @@ visible Type-2 AppImage. They do not copy it. If the target later moves, the
 fixed launcher opens a native guest file chooser and atomically relinks the
 registration after validating the replacement.
 
-Thunar supplies exactly two fixed helper actions for an AppImage candidate:
-Add to Applications and Add Desktop Shortcut. The helper validates the file;
-the XML filter is not a security boundary. Generated launchers invoke only
-the fixed helper with an opaque registration ID and never use `sh -c`.
+Thunar supplies exactly seven fixed helper actions for one AppImage candidate:
+Run AppImage, Extract and Run AppImage, Extract and Run AppImage
+(`--no-sandbox`), Add/Remove Applications, and Add/Remove Desktop Shortcut.
+The helper validates the file; the XML filter is not a security boundary.
+Generated launchers invoke only the fixed helper with an opaque registration
+ID and never use `sh -c`.
+
+Persistent extraction is atomic and source-adjacent at
+`<AppImage>.extracted`. A validated `AppRun` must resolve inside that real,
+guest-user-owned directory. The explicit no-sandbox action creates a private
+zero-byte `.no-sandbox` marker inside the extraction and future normal launches
+reuse that extraction and option. The original AppImage remains the registered
+identity and is never replaced or deleted by extraction.
 
 Renaming a registered AppImage on the Desktop is one crash-recoverable helper
 transaction. Its durable journal, descriptor-bound identity checks,
@@ -220,7 +253,8 @@ launch an actual persistent machine, and then verify at minimum:
   taskbar, menus, selection, and installed application windows;
 - standard APT/unattended-upgrades configuration with no Buzzard-owned updater
   service, timer, or D-Bus policy;
-- AppImage registration, desktop icon/placement/trust, move/relink, and launch;
+- AppImage direct launch, persistent extraction, remembered no-sandbox launch,
+  registration, add/remove menu and desktop entries, placement, move/relink;
 - text and screenshot clipboard snapshots in both directions; and
 - AT-SPI names/actions plus CUA pointer, keyboard, screenshots, and windows.
 

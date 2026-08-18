@@ -2,7 +2,6 @@
 0755	assets/buzzardos-init	@runtime/libexec/buzzardos-init
 0755	assets/buzzardos-generator	usr/lib/systemd/system-generators/buzzardos-generator
 0644	assets/buzzardos-desktop.service	usr/lib/systemd/system/buzzardos-desktop.service
-0644	assets/buzzardos-runtime-ready.service	usr/lib/systemd/system/buzzardos-runtime-ready.service
 0755	assets/buzzardos-session	@runtime/libexec/buzzardos-session
 0755	assets/buzzardos-sway-session	@runtime/libexec/buzzardos-sway-session
 0755	assets/buzzardos-output-sync	@runtime/libexec/buzzardos-output-sync
@@ -12,7 +11,6 @@
 0755	assets/buzzardos-appimage-ready	@runtime/libexec/buzzardos-appimage-ready
 0755	assets/buzzardos-fusermount	@runtime/libexec/buzzardos-fusermount
 0755	assets/buzzardos-fusermount-exec	@runtime/libexec/buzzardos-fusermount-exec
-0755	assets/buzzardos-runtime-ready	@runtime/libexec/buzzardos-runtime-ready
 0755	assets/buzzardos-sudo-exec	@runtime/libexec/buzzardos-sudo-exec
 0644	assets/sway-config	etc/buzzardos/sway-config
 0440	assets/90-buzzardos-sudoers	etc/sudoers.d/90-buzzardos

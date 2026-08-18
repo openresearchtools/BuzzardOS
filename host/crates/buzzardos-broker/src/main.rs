@@ -85,10 +85,23 @@ enum Commands {
         #[arg(long)]
         path: PathBuf,
     },
+    #[command(name = "__hold-user-namespace", hide = true)]
+    HoldUserNamespace {
+        #[arg(long)]
+        ready_fd: RawFd,
+        #[arg(long)]
+        release_fd: RawFd,
+    },
     #[command(name = "__private-network-sandbox", hide = true)]
     PrivateNetworkSandbox {
         #[arg(long)]
         bwrap: PathBuf,
+        #[arg(long)]
+        host_network: bool,
+        #[arg(long)]
+        private_bind_root: PathBuf,
+        #[arg(long = "private-bind")]
+        private_binds: Vec<String>,
         #[arg(long)]
         apparmor_access: Option<PathBuf>,
         #[arg(long)]
@@ -114,19 +127,29 @@ fn run() -> Result<()> {
             detach,
         } => run_machine(&machine_dir, detach),
         Commands::CleanupCgroup { path } => cleanup_mapped_cgroup_children(&path),
+        Commands::HoldUserNamespace {
+            ready_fd,
+            release_fd,
+        } => hold_user_namespace(ready_fd, release_fd),
         Commands::PrivateNetworkSandbox {
             bwrap,
+            host_network,
+            private_bind_root,
+            private_binds,
             apparmor_access,
             cgroup_source,
             cgroup_staged,
             arguments,
-        } => run_private_network_sandbox(
-            &bwrap,
-            apparmor_access.as_deref(),
-            &cgroup_source,
-            &cgroup_staged,
-            &arguments,
-        ),
+        } => run_private_network_sandbox(PrivateNetworkSandbox {
+            bwrap: &bwrap,
+            host_network,
+            private_bind_root: &private_bind_root,
+            private_binds: &private_binds,
+            apparmor_access: apparmor_access.as_deref(),
+            cgroup_source: &cgroup_source,
+            cgroup_staged: &cgroup_staged,
+            arguments: &arguments,
+        }),
     }
 }
 
@@ -410,15 +433,7 @@ fn launch_container(
     }
     write_environment_file(&guest_runtime.join("driver.env"), &service_environment)?;
     let cgroup = MachineCgroup::create(config, unshare)?;
-    let staged_cgroup = if matches!(config.network, NetworkMode::Host) {
-        None
-    } else {
-        let path = host_status.join("cgroup");
-        fs::create_dir(&path).context("creating private cgroup mountpoint")?;
-        Some(path)
-    };
     let id_map = IdMap::discover()?;
-    let namespace_program = id_map.namespace_program(unshare)?;
     let bwrap = bwrap
         .canonicalize()
         .with_context(|| format!("resolving sandbox helper {}", bwrap.display()))?;
@@ -429,46 +444,21 @@ fn launch_container(
         .context("locating Buzzard OS broker")?
         .canonicalize()
         .context("resolving Buzzard OS broker")?;
+    // Bubblewrap must open the selected rootfs and share paths while it still
+    // has the host desktop identity. It then joins this already-authorized
+    // full subordinate-ID namespace through the pinned descriptor. Launching
+    // Bubblewrap from inside that namespace would make private host ancestors
+    // unsearchable before it could open the exact paths.
+    let mut user_namespace = create_mapped_user_namespace(unshare, &broker, &id_map)?;
     let host_apparmor_access = Path::new("/sys/kernel/security/apparmor/.access");
-    let apparmor_access_source =
-        if !matches!(config.network, NetworkMode::Host) && host_apparmor_access.exists() {
-            let staged = host_status.join("apparmor-access");
-            File::create(&staged).context("creating private AppArmor access mountpoint")?;
-            fs::set_permissions(&staged, fs::Permissions::from_mode(0o600))
-                .context("setting private AppArmor access mountpoint permissions")?;
-            Some(staged)
-        } else {
-            None
-        };
-    let mut command = Command::new(namespace_program);
+    let mut command = Command::new(&bwrap);
     command.env_clear();
-    id_map.configure_command(&mut command);
     command.current_dir("/");
-    command.args(id_map.namespace_args());
-    match config.network {
-        NetworkMode::Host => {
-            command.arg(&bwrap);
-        }
-        NetworkMode::None | NetworkMode::User => {
-            command
-                .arg(&broker)
-                .arg("__private-network-sandbox")
-                .arg("--bwrap")
-                .arg(&bwrap);
-            if let Some(source) = &apparmor_access_source {
-                command.arg("--apparmor-access").arg(source);
-            }
-            command
-                .arg("--cgroup-source")
-                .arg(cgroup.path())
-                .arg("--cgroup-staged")
-                .arg(
-                    staged_cgroup
-                        .as_ref()
-                        .context("missing staged cgroup path")?,
-                );
-            command.arg("--");
-        }
+    command
+        .arg("--userns")
+        .arg(user_namespace.descriptor.as_raw_fd().to_string());
+    if !matches!(config.network, NetworkMode::Host) {
+        command.arg("--unshare-net");
     }
     command
         .args([
@@ -513,7 +503,7 @@ fn launch_container(
         .arg("/run/buzzardos-display-state")
         .args(["--ro-bind-try", "/sys", "/sys"])
         .arg("--bind")
-        .arg(staged_cgroup.as_deref().unwrap_or_else(|| cgroup.path()))
+        .arg(cgroup.path())
         .arg("/sys/fs/cgroup")
         .arg("--ro-bind")
         .arg(&resolv_conf)
@@ -553,7 +543,7 @@ fn launch_container(
     if let Some(injection) = &nvidia {
         injection.apply(&mut command);
     }
-    if matches!(config.network, NetworkMode::Host) {
+    if host_apparmor_access.exists() {
         command
             .arg("--bind-try")
             .arg(host_apparmor_access)
@@ -563,6 +553,12 @@ fn launch_container(
 
     command
         .arg("--")
+        .args([
+            "/usr/bin/setpriv",
+            "--reuid=0",
+            "--regid=0",
+            "--clear-groups",
+        ])
         .arg("/opt/buzzardos/runtime/current/libexec/buzzardos-init")
         .stdin(Stdio::null());
 
@@ -577,6 +573,7 @@ fn launch_container(
     let container_pid = read_container_pid(info_read).inspect_err(|_| {
         terminate(&mut container.child);
     })?;
+    user_namespace.release_holder()?;
     state.container_pid = Some(container_pid);
     state.detail = Some("waiting for desktop readiness".into());
     state.save(machine_dir)?;
@@ -624,6 +621,10 @@ fn launch_container(
         Err(error) => {
             let log = fs::read_to_string(guest_runtime.join("compositor.log"))
                 .unwrap_or_else(|_| "the nested compositor produced no diagnostic log".into());
+            if let Some(mut child) = network.take() {
+                terminate(&mut child.process.child);
+            }
+            cgroup.kill_all();
             return Err(error.context(format!("nested compositor log:\n{}", log.trim())));
         }
     }
@@ -1209,8 +1210,8 @@ fn wait_for_desktop(
     container: &mut Child,
     marker: &Path,
     expected_session_token: &str,
-    window_marker: &Path,
-    presentation_marker: &Path,
+    _window_marker: &Path,
+    _presentation_marker: &Path,
     host_status: &Path,
     machine_dir: &Path,
     machine_name: &str,
@@ -1220,18 +1221,8 @@ fn wait_for_desktop(
     let deadline = Instant::now() + timeout;
     let mut requested_restart = None;
     loop {
-        if desktop_ready_for_session(marker, expected_session_token)?
-            && read_window_diagnostics(window_marker).is_some_and(|window| window.toplevels == 1)
-        {
-            let presentation_ready = if presentation_marker.exists() {
-                read_presentation_diagnostics(presentation_marker)
-                    .is_some_and(|frame| !frame.presentation_feedback || frame.presented)
-            } else {
-                true
-            };
-            if presentation_ready {
-                return Ok(DesktopWait::Ready);
-            }
+        if desktop_ready_for_session(marker, expected_session_token)? {
+            return Ok(DesktopWait::Ready);
         }
         if requested_restart.is_none()
             && let Some(request) = take_host_request(host_status, machine_name)?
@@ -2188,11 +2179,19 @@ fn prepare_nvidia_injection(
         ));
     }
 
+    let image_library_path = config
+        .oci
+        .environment_pairs()?
+        .into_iter()
+        .find_map(|(name, value)| (name == "LD_LIBRARY_PATH").then_some(value));
+    let injected_library_path = match image_library_path {
+        Some(value) if !value.is_empty() => {
+            format!("{}:{value}", guest_library_dir.display())
+        }
+        _ => guest_library_dir.display().to_string(),
+    };
     let mut environment = cdi.environment;
-    environment.push((
-        "LD_LIBRARY_PATH".into(),
-        guest_library_dir.display().to_string(),
-    ));
+    environment.push(("LD_LIBRARY_PATH".into(), injected_library_path));
     let mut metadata_binds = Vec::new();
     stage_driver_json(
         Path::new("/usr/share/glvnd/egl_vendor.d/10_nvidia.json"),
@@ -2356,9 +2355,7 @@ fn generate_nvidia_cdi(
         .unwrap_or_default()
         .trim()
         .to_owned();
-    if !toolkit_version.contains("1.19.1") {
-        bail!("unexpected bundled NVIDIA toolkit version '{toolkit_version}'");
-    }
+    validate_nvidia_toolkit_version(&toolkit_version)?;
 
     let bytes = fs::read(&spec_path)
         .with_context(|| format!("reading generated CDI spec {}", spec_path.display()))?;
@@ -2465,6 +2462,37 @@ fn generate_nvidia_cdi(
         toolkit_version,
         device_names: selected_names,
     })
+}
+
+fn validate_nvidia_toolkit_version(version_line: &str) -> Result<()> {
+    let version = version_line
+        .strip_prefix("NVIDIA Container Toolkit CLI version ")
+        .with_context(|| format!("unexpected NVIDIA toolkit version output '{version_line}'"))?;
+    let mut components = version.split('.');
+    let major = components
+        .next()
+        .context("NVIDIA toolkit version has no major component")?
+        .parse::<u32>()
+        .context("NVIDIA toolkit major version is invalid")?;
+    let minor = components
+        .next()
+        .context("NVIDIA toolkit version has no minor component")?
+        .parse::<u32>()
+        .context("NVIDIA toolkit minor version is invalid")?;
+    let patch = components
+        .next()
+        .context("NVIDIA toolkit version has no patch component")?
+        .parse::<u32>()
+        .context("NVIDIA toolkit patch version is invalid")?;
+    if components.next().is_some() {
+        bail!("NVIDIA toolkit version '{version}' is not semantic version x.y.z");
+    }
+    if major != 1 || minor < 19 || (minor == 19 && patch < 1) {
+        bail!(
+            "unsupported NVIDIA Container Toolkit {version}; Buzzard OS requires version 1.19.1 or newer within the compatible 1.x series"
+        );
+    }
+    Ok(())
 }
 
 fn validate_cdi_header(spec: &NvidiaCdiSpec) -> Result<()> {
@@ -2611,6 +2639,7 @@ fn allowed_nvidia_cdi_source(path: &Path) -> bool {
         || path.starts_with("/usr/share/vulkan")
         || path.starts_with("/usr/share/glvnd")
         || path.starts_with("/usr/share/egl")
+        || path == Path::new("/etc/OpenCL/vendors/nvidia.icd")
         || path
             .strip_prefix("/usr/bin")
             .ok()
@@ -2629,6 +2658,7 @@ fn allowed_nvidia_cdi_destination(path: &Path) -> bool {
         || path.starts_with("/usr/share/glvnd")
         || path.starts_with("/usr/share/egl")
         || path.starts_with("/etc/vulkan")
+        || path == Path::new("/etc/OpenCL/vendors/nvidia.icd")
         || path
             .strip_prefix("/usr/bin")
             .ok()
@@ -2863,6 +2893,10 @@ impl MachineCgroup {
     fn cleanup(&self) {
         let _ = cleanup_cgroup_tree(&self.path);
     }
+
+    fn kill_all(&self) {
+        let _ = fs::write(self.path.join("cgroup.kill"), b"1\n");
+    }
 }
 
 impl Drop for MachineCgroup {
@@ -2954,13 +2988,28 @@ fn validate_rootfs(rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_private_network_sandbox(
-    bwrap: &Path,
-    apparmor_access: Option<&Path>,
-    cgroup_source: &Path,
-    cgroup_staged: &Path,
-    arguments: &[OsString],
-) -> Result<()> {
+struct PrivateNetworkSandbox<'a> {
+    bwrap: &'a Path,
+    host_network: bool,
+    private_bind_root: &'a Path,
+    private_binds: &'a [String],
+    apparmor_access: Option<&'a Path>,
+    cgroup_source: &'a Path,
+    cgroup_staged: &'a Path,
+    arguments: &'a [OsString],
+}
+
+fn run_private_network_sandbox(config: PrivateNetworkSandbox<'_>) -> Result<()> {
+    let PrivateNetworkSandbox {
+        bwrap,
+        host_network,
+        private_bind_root,
+        private_binds,
+        apparmor_access,
+        cgroup_source,
+        cgroup_staged,
+        arguments,
+    } = config;
     let bwrap_metadata = fs::symlink_metadata(bwrap)
         .with_context(|| format!("inspecting sandbox helper {}", bwrap.display()))?;
     if bwrap_metadata.file_type().is_symlink()
@@ -2973,7 +3022,12 @@ fn run_private_network_sandbox(
         bail!("private-network sandbox received no sandbox arguments");
     }
 
-    let result = unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_NEWNET) };
+    let namespace_flags = if host_network {
+        libc::CLONE_NEWNS
+    } else {
+        libc::CLONE_NEWNS | libc::CLONE_NEWNET
+    };
+    let result = unsafe { libc::unshare(namespace_flags) };
     if result != 0 {
         return Err(std::io::Error::last_os_error())
             .context("creating private network and mount namespaces");
@@ -2986,6 +3040,8 @@ fn run_private_network_sandbox(
         None,
     )
     .context("making private-network mounts private")?;
+
+    install_private_bind_aliases(private_bind_root, private_binds)?;
 
     let source_metadata = fs::symlink_metadata(cgroup_source)
         .with_context(|| format!("inspecting delegated cgroup {}", cgroup_source.display()))?;
@@ -3024,14 +3080,16 @@ fn run_private_network_sandbox(
         .context("preserving the narrow AppArmor user-namespace gate")?;
     }
 
-    mount_raw(
-        Some(Path::new("sysfs")),
-        Path::new("/sys"),
-        Some("sysfs"),
-        libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-        None,
-    )
-    .context("mounting network-namespace-owned sysfs")?;
+    if !host_network {
+        mount_raw(
+            Some(Path::new("sysfs")),
+            Path::new("/sys"),
+            Some("sysfs"),
+            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            None,
+        )
+        .context("mounting network-namespace-owned sysfs")?;
+    }
 
     if let Some(staged) = apparmor_access {
         let security = Path::new("/sys/kernel/security");
@@ -3053,6 +3111,61 @@ fn run_private_network_sandbox(
 
     let error = Command::new(bwrap).args(arguments).exec();
     Err(error).with_context(|| format!("executing sandbox helper {}", bwrap.display()))
+}
+
+fn install_private_bind_aliases(root: &Path, specifications: &[String]) -> Result<()> {
+    let root_value = root.to_string_lossy();
+    if !root_value.starts_with("/tmp/buzzardos-private-binds-") || !safe_absolute_path(root) {
+        bail!("private bind root is outside the fixed /tmp namespace");
+    }
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspecting private bind root {}", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        bail!("private bind root must be a real directory");
+    }
+
+    for specification in specifications {
+        let mut fields = specification.split(':');
+        let descriptor = fields
+            .next()
+            .context("private bind has no descriptor")?
+            .parse::<RawFd>()
+            .context("private bind descriptor is invalid")?;
+        let kind = fields.next().context("private bind has no kind")?;
+        let name = fields.next().context("private bind has no name")?;
+        if fields.next().is_some()
+            || descriptor < 3
+            || !name.starts_with("source-")
+            || !name["source-".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            || !matches!(kind, "d" | "f")
+        {
+            bail!("invalid private bind specification '{specification}'");
+        }
+        if unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("private bind descriptor is not inherited");
+        }
+        let target = root.join(name);
+        let target_metadata = fs::symlink_metadata(&target)?;
+        if target_metadata.file_type().is_symlink()
+            || (kind == "d" && !target_metadata.is_dir())
+            || (kind == "f" && !target_metadata.is_file())
+        {
+            bail!("private bind target {name} has the wrong type");
+        }
+        let source = PathBuf::from(format!("/proc/self/fd/{descriptor}"));
+        mount_raw(
+            Some(&source),
+            &target,
+            None,
+            libc::MS_BIND | if kind == "d" { libc::MS_REC } else { 0 },
+            None,
+        )
+        .with_context(|| format!("installing private bind alias {name}"))?;
+    }
+    Ok(())
 }
 
 fn mount_raw(
@@ -3203,6 +3316,102 @@ fn pipe() -> std::io::Result<(RawFd, fs::File)> {
     // SAFETY: libc::pipe returned two new, owned file descriptors.
     let writer = unsafe { fs::File::from_raw_fd(descriptors[1]) };
     Ok((descriptors[0], writer))
+}
+
+fn hold_user_namespace(ready_fd: RawFd, release_fd: RawFd) -> Result<()> {
+    if ready_fd < 3 || release_fd < 3 || ready_fd == release_fd {
+        bail!("user namespace holder received invalid descriptors");
+    }
+    // SAFETY: these descriptors are transferred exclusively to this hidden
+    // helper by the broker parent.
+    let mut ready = unsafe { File::from_raw_fd(ready_fd) };
+    // SAFETY: see above.
+    let mut release = unsafe { File::from_raw_fd(release_fd) };
+    ready.write_all(&[1])?;
+    drop(ready);
+    let mut signal = [0_u8; 1];
+    release.read_exact(&mut signal)?;
+    Ok(())
+}
+
+struct MappedUserNamespace {
+    descriptor: File,
+    holder: Option<Child>,
+    release: Option<File>,
+}
+
+impl MappedUserNamespace {
+    fn release_holder(&mut self) -> Result<()> {
+        if let Some(mut release) = self.release.take() {
+            release.write_all(&[1])?;
+        }
+        if let Some(mut holder) = self.holder.take() {
+            let status = holder
+                .wait()
+                .context("reaping mapped user namespace holder")?;
+            if !status.success() {
+                bail!("mapped user namespace holder exited with {status}");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for MappedUserNamespace {
+    fn drop(&mut self) {
+        if self.release_holder().is_err()
+            && let Some(holder) = &mut self.holder
+        {
+            terminate(holder);
+        }
+    }
+}
+
+fn create_mapped_user_namespace(
+    unshare: &Path,
+    broker: &Path,
+    id_map: &IdMap,
+) -> Result<MappedUserNamespace> {
+    let (ready_read, ready_write) = pipe()?;
+    let (release_read, release_write) = pipe()?;
+    let mut command = Command::new(unshare);
+    id_map.configure_command(&mut command);
+    command
+        .args(id_map.namespace_args())
+        .arg(broker)
+        .arg("__hold-user-namespace")
+        .arg("--ready-fd")
+        .arg(ready_write.as_raw_fd().to_string())
+        .arg("--release-fd")
+        .arg(release_read.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().context("creating mapped user namespace")?;
+    drop(ready_write);
+    close_fd(release_read);
+    // SAFETY: the parent owns the read end returned by `pipe`.
+    let mut ready_read = unsafe { File::from_raw_fd(ready_read) };
+    let mut signal = [0_u8; 1];
+    if let Err(error) = ready_read.read_exact(&mut signal) {
+        terminate(&mut child);
+        return Err(error).context("waiting for mapped user namespace");
+    }
+    let namespace_path = PathBuf::from(format!("/proc/{}/ns/user", child.id()));
+    let namespace = File::open(&namespace_path)
+        .with_context(|| format!("opening mapped user namespace {}", namespace_path.display()))?;
+    let fd = namespace.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        terminate(&mut child);
+        return Err(std::io::Error::last_os_error())
+            .context("making mapped user namespace descriptor inheritable");
+    }
+    Ok(MappedUserNamespace {
+        descriptor: namespace,
+        holder: Some(child),
+        release: Some(release_write),
+    })
 }
 
 fn close_fd(fd: RawFd) {

@@ -675,8 +675,16 @@ def validate_build_pins() -> None:
             "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb",
             "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb",
             "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb",
-            "ARG CUDA_CUDART_VERSION=13.1.80-1",
-            "ARG CUDA_CUBLAS_VERSION=13.2.2.2-1",
+        ],
+    )
+    require_literals(
+        ROOT / "oci/desktop/Containerfile.cuda",
+        [
+            "ARG NV_CUDA_CUDART_VERSION=13.3.29-1",
+            "ARG NV_CUDA_LIB_VERSION=13.3.1-1",
+            "ARG NV_CUDA_COMPAT_VERSION=610.43.02-1",
+            "ARG NV_LIBCUBLAS_VERSION=13.6.0.2-1",
+            "ARG NV_LIBNCCL_PACKAGE_VERSION=2.30.7-1+cuda13.3",
         ],
     )
 
@@ -743,6 +751,38 @@ def validate_package_inputs() -> None:
                     "direct package version changed without updating "
                     "LICENSES/package-inputs.toml"
                 )
+
+    repository_records = sorted(
+        data.get("repository_package_block", []), key=lambda item: item.get("order", 0)
+    )
+    repository_orders = [record.get("order") for record in repository_records]
+    expected_start = len(records) + len(direct_records) + 1
+    if repository_orders != list(
+        range(expected_start, expected_start + len(repository_records))
+    ):
+        raise AuditError("package-inputs repository package blocks have invalid ordering")
+    for record in repository_records:
+        relative = record.get("containerfile", "")
+        path = (ROOT / relative).resolve()
+        if not relative or not path.is_relative_to(ROOT) or not path.is_file():
+            raise AuditError("repository package block has an invalid Containerfile")
+        contents = path.read_text(encoding="utf-8")
+        key_checksum = record.get("repository_key_sha256", "")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", key_checksum) is None
+            or key_checksum not in contents
+        ):
+            raise AuditError("repository package block has no pinned repository key evidence")
+        packages = record.get("packages", [])
+        if not packages:
+            raise AuditError("repository package block has no packages")
+        for package in packages:
+            name, separator, version = package.partition("=")
+            variable = re.fullmatch(r"\$\{([A-Z0-9_]+)\}", version)
+            if not separator or not name or variable is None or name not in contents:
+                raise AuditError("repository package block has an invalid package pin")
+            if f"ARG {variable.group(1)}=" not in contents:
+                raise AuditError("repository package version pin is missing from Containerfile")
 
     actual_images = [
         value

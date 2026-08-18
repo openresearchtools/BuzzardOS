@@ -199,6 +199,24 @@ impl SettingsStore {
         Ok(self.settings.generation)
     }
 
+    pub fn set_capped_task_buttons(&mut self, enabled: bool) -> Result<u64, StoreError> {
+        self.ensure_writable()?;
+        if self.settings.appearance.capped_task_buttons == enabled {
+            return Ok(self.settings.generation);
+        }
+        let mut candidate = self.settings.clone();
+        candidate.appearance.capped_task_buttons = enabled;
+        candidate.generation = candidate
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Settings("settings generation overflow".into()))?;
+        candidate
+            .save(&self.paths.settings_path())
+            .map_err(|error| StoreError::Settings(error.to_string()))?;
+        self.settings = candidate;
+        Ok(self.settings.generation)
+    }
+
     /// Persist a toolkit theme and its matching recommended desktop colour as
     /// one generation.  Writing these independently creates a visible mixed
     /// state (light controls over the previous dark desktop) if the GTK theme

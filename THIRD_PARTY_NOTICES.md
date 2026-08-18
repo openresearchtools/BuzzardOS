@@ -37,7 +37,7 @@ Buzzard OS. Machine-readable component and asset records are under
   The image pins the Debian amd64 base manifest and resolves build-time
   packages from dated snapshots. The finished persistent guest restores the
   live Debian repository so its owner can request normal updates.
-- NVIDIA CUDA Runtime 13.1.80-1 and cuBLAS 13.2.2.2-1 use the NVIDIA CUDA EULA
+- NVIDIA CUDA Runtime 13.3.29-1 and cuBLAS 13.6.0.2-1 use the NVIDIA CUDA EULA
   plus bundled third-party notices. Their package copyright/EULA files must
   remain in the guest. Inclusion in NVIDIA's redistributable-file list does
   not replace a project-level distribution-rights review.

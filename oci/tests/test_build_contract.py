@@ -11,10 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class OciBuildContractTests(unittest.TestCase):
+    def containerfiles(self) -> list[Path]:
+        return [
+            ROOT / "oci/desktop/Containerfile",
+            ROOT / "oci/desktop/Containerfile.cuda",
+        ]
+
     def test_every_non_scratch_base_is_an_exact_amd64_manifest(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
-            encoding="utf-8"
-        )
         lock = tomllib.loads(
             (ROOT / "oci/base-images.lock.toml").read_text(encoding="utf-8")
         )
@@ -24,30 +27,32 @@ class OciBuildContractTests(unittest.TestCase):
             image["reference"]: image["manifest_digest"]
             for image in lock["image"]
         }
-        from_references = [
-            match.group(1)
-            for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
-            if match.group(1) != "scratch"
-        ]
-        self.assertEqual(len(from_references), 1)
-        for reference in from_references:
-            name, separator, digest = reference.partition("@")
-            self.assertEqual(separator, "@", reference)
-            self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
-            self.assertEqual(digest, locked[name], reference)
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            from_references = [
+                match.group(1)
+                for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
+                if match.group(1) != "scratch"
+            ]
+            self.assertEqual(len(from_references), 1, path)
+            for reference in from_references:
+                name, separator, digest = reference.partition("@")
+                self.assertEqual(separator, "@", reference)
+                self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+                self.assertEqual(digest, locked[name], reference)
 
     def test_dockerfile_frontend_is_an_exact_amd64_manifest(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
-            encoding="utf-8"
-        )
         lock = tomllib.loads(
             (ROOT / "oci/base-images.lock.toml").read_text(encoding="utf-8")
         )
         frontend = lock["frontend"]
-        self.assertEqual(
-            containerfile.splitlines()[0],
-            f'# syntax={frontend["reference"]}@{frontend["manifest_digest"]}',
-        )
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            self.assertEqual(
+                containerfile.splitlines()[0],
+                f'# syntax={frontend["reference"]}@{frontend["manifest_digest"]}',
+                path,
+            )
 
     def test_build_time_debian_repositories_are_immutable_snapshots(self) -> None:
         lock = tomllib.loads(
@@ -77,6 +82,9 @@ class OciBuildContractTests(unittest.TestCase):
             "--no-cache",
             "--pull=always",
             'install -m 0644 "$guest_deb" "$desktop_deb" "$cua_deb"',
+            'variant=${BUZZARDOS_OCI_VARIANT:-standard}',
+            'containerfile=Containerfile.cuda',
+            'BUZZARDOS_EXPECT_CUDA="$expect_cuda"',
             'rm -rf -- "$context" "$work"',
         ):
             self.assertIn(required, builder)
@@ -222,17 +230,11 @@ class OciBuildContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, sound)
 
-    def test_runtime_readiness_is_bound_to_one_broker_session(self) -> None:
+    def test_production_startup_has_no_acceptance_probes(self) -> None:
         broker = (ROOT / "host/crates/buzzardos-broker/src/main.rs").read_text(
             encoding="utf-8"
         )
         services = (ROOT / "guest/assets/buzzardos-desktop-services").read_text(
-            encoding="utf-8"
-        )
-        readiness = (ROOT / "guest/assets/buzzardos-runtime-ready").read_text(
-            encoding="utf-8"
-        )
-        unit = (ROOT / "guest/assets/buzzardos-runtime-ready.service").read_text(
             encoding="utf-8"
         )
         self.assertIn('"BUZZARDOS_SESSION_TOKEN".into()', broker)
@@ -242,10 +244,11 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("mktemp \"$status_dir/.desktop-ready.XXXXXX\"", services)
         self.assertIn("chmod 0600 \"$desktop_ready_tmp\"", services)
         self.assertIn("$BUZZARDOS_SESSION_TOKEN", services)
-        self.assertIn("EnvironmentFile=/run/buzzardos-host/driver.env", unit)
-        self.assertIn("SESSION_TOKEN_RE", readiness)
-        self.assertIn("HOST_RUNTIME_MODE = 0o700", readiness)
-        self.assertIn("read_desktop_ready(DESKTOP_READY, session_token)", readiness)
+        self.assertNotIn("health_report", services)
+        self.assertNotIn("get_desktop_state", services)
+        self.assertNotIn("start_output_sync_supervisor", services)
+        self.assertFalse((ROOT / "guest/assets/buzzardos-runtime-ready").exists())
+        self.assertFalse((ROOT / "guest/assets/buzzardos-runtime-ready.service").exists())
 
     def test_managed_sway_config_does_not_invoke_unpackaged_swaybg(self) -> None:
         sway_config = (ROOT / "guest/assets/sway-config").read_text(
@@ -275,33 +278,31 @@ class OciBuildContractTests(unittest.TestCase):
             "managed Sway config invokes swaybg without packaging and verifying it",
         )
 
-    def test_cuda_packages_are_exact_hash_verified_downloads(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
-            encoding="utf-8"
-        )
-        expected_hashes = (
-            "282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc",
-            "5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8",
-            "f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a",
-            "b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84",
-            "0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7",
-        )
-        for digest in expected_hashes:
-            self.assertIn(digest, containerfile)
-        for package in (
-            "cuda-toolkit-config-common",
-            "cuda-toolkit-13-config-common",
-            "cuda-toolkit-13-1-config-common",
-            "cuda-cudart-13-1",
-            "libcublas-13-1",
+    def test_cuda_variant_is_the_complete_standard_file_plus_one_tail(self) -> None:
+        standard = (ROOT / "oci/desktop/Containerfile").read_bytes()
+        cuda = (ROOT / "oci/desktop/Containerfile.cuda").read_bytes()
+        self.assertTrue(cuda.startswith(standard + b"\n"))
+        self.assertNotIn(b"CUDA", standard)
+
+        cuda_tail = cuda[len(standard) :].decode("utf-8")
+        for required in (
+            "cuda-keyring_",
+            "cuda-cudart-13-3=",
+            "cuda-compat-13-3=",
+            "cuda-libraries-13-3=",
+            "libnpp-13-3=",
+            "cuda-nvtx-13-3=",
+            "libcusparse-13-3=",
+            "libcublas-13-3=",
+            "libnccl2=",
+            "NVIDIA_VISIBLE_DEVICES=all",
+            "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+            "NVIDIA_PRODUCT_NAME=CUDA",
+            "sha256sum --check --strict",
         ):
-            self.assertIn(f"/{package}_", containerfile)
-        self.assertIn("sha256sum --check", containerfile)
-        self.assertNotIn("cuda-keyring", containerfile)
-        cuda_section = containerfile.split(
-            "# The reference machine carries only the CUDA runtime", 1
-        )[1].split("COPY apt/debian-sid-live.sources", 1)[0]
-        self.assertNotIn("apt-get", cuda_section)
+            self.assertIn(required, cuda_tail)
+        for forbidden in ("nvcc", "cuda-toolkit-13-3=", "cuda-drivers"):
+            self.assertNotIn(forbidden, cuda_tail)
 
 
 if __name__ == "__main__":

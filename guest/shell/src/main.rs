@@ -24,8 +24,9 @@ use icons::{AppIcon, load_application_icons, load_icon};
 use model::{
     APPLICATIONS_MENU_FOOTER_HEIGHT, APPLICATIONS_MENU_HEADER_HEIGHT,
     APPLICATIONS_MENU_SECTION_HEIGHT, Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT,
-    PANEL_HEIGHT, Rect, ShellAction, application_context_targets, applications_menu_close_target,
-    builtin_desktop_targets, menu_targets, panel_targets, scan_applications, window_menu_targets,
+    PANEL_HEIGHT, Rect, ShellAction, TASK_PAGE_STEP, application_context_targets,
+    applications_menu_close_target, builtin_desktop_targets, menu_targets, panel_targets,
+    scan_applications, taskbar_max_offset, window_menu_targets,
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -38,7 +39,10 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-        pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            BTN_LEFT, BTN_RIGHT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler,
+            ThemeSpec, ThemedPointer,
+        },
     },
     shell::{
         WaylandSurface,
@@ -90,14 +94,13 @@ const REQUEST_FOCUSED_WINDOW_MENU: &str = "--request-focused-window-menu";
 const HOST_POINTER_CLICK_STATE: &str = "/run/buzzardos-display-state/pointer-click.json";
 const CUA_POINTER_CLICK_STATE: &str = "buzzardos-cua-pointer-click.json";
 const POINTER_CLICK_MAX_AGE: Duration = Duration::from_secs(3);
-const OUTPUT_SETTLE_REPAINT_FRAMES: u8 = 90;
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
 const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
 const WINDOW_MENU_HEIGHT: u32 = 44 + 5 * MENU_ROW_HEIGHT as u32;
 const APPLICATION_CONTEXT_WIDTH: u32 = 252;
-const APPLICATION_CONTEXT_HEIGHT: u32 = 12 + 2 * MENU_ROW_HEIGHT as u32;
+const APPLICATION_CONTEXT_HEIGHT: u32 = 12 + 3 * MENU_ROW_HEIGHT as u32;
 const DESKTOP_CONTEXT_WIDTH: u32 = 272;
 const DESKTOP_DIALOG_WIDTH: u32 = 430;
 const DESKTOP_DIALOG_HEIGHT: u32 = 190;
@@ -794,7 +797,15 @@ fn run() -> Result<()> {
         clipboard_generation: 0,
         paste_available: false,
         scale_120: 120,
-        task_page: 0,
+        task_offset: 0,
+        capped_task_buttons: initial_settings.appearance.capped_task_buttons,
+        pinned_applications: initial_settings
+            .appearance
+            .pinned_applications
+            .iter()
+            .cloned()
+            .collect(),
+        application_search: String::new(),
         hovered: None,
         exit: false,
         dirty: true,
@@ -819,7 +830,6 @@ fn run() -> Result<()> {
         // An output-sync request may predate the shell process by a few
         // milliseconds. Treat the first observed generation as pending.
         repaint_generation: None,
-        repaint_frames: 0,
         full_repaint_after: None,
         palette: *initial_settings.appearance.theme.palette(),
         desktop_background: initial_settings.appearance.background.solid_color().rgba(),
@@ -844,7 +854,6 @@ fn run() -> Result<()> {
         if shell.dirty {
             shell.draw()?;
             shell.dirty = false;
-            shell.repaint_frames = shell.repaint_frames.saturating_sub(1);
             if !ready_published && shell.desktop_configured && shell.panel_configured {
                 fs::write(&shell_ready, b"ready\n").with_context(|| {
                     format!("publishing shell readiness at {}", shell_ready.display())
@@ -855,13 +864,6 @@ fn run() -> Result<()> {
                     shell.desktop_size.0, shell.desktop_size.1
                 );
             }
-        } else if shell.repaint_frames > 0 && shell.panel_configured {
-            // Once the debounced full redraw establishes the new geometry,
-            // cheap panel commits keep frames flowing until the host accepts
-            // one. Repeating the full desktop render would be unnecessarily
-            // expensive at very large monitor sizes.
-            shell.draw_panel()?;
-            shell.repaint_frames -= 1;
         }
     }
     Ok(())
@@ -920,11 +922,14 @@ struct Shell {
     clipboard_generation: u64,
     paste_available: bool,
     scale_120: u32,
-    task_page: usize,
+    task_offset: usize,
+    capped_task_buttons: bool,
+    pinned_applications: BTreeSet<String>,
+    application_search: String,
     hovered: Option<ShellAction>,
     exit: bool,
     dirty: bool,
-    pointer: Option<wl_pointer::WlPointer>,
+    pointer: Option<ThemedPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     seat: Option<wl_seat::WlSeat>,
     applications: Vec<Application>,
@@ -942,7 +947,6 @@ struct Shell {
     sway_window_changes: Receiver<()>,
     repaint_request: Option<PathBuf>,
     repaint_generation: Option<String>,
-    repaint_frames: u8,
     full_repaint_after: Option<Instant>,
     palette: ThemePalette,
     desktop_background: [u8; 4],
@@ -971,6 +975,7 @@ enum AccessibleTarget {
     },
     ToggleDesktopSelection(PathBuf),
     EditValue,
+    ApplicationSearch,
     ScrollMenu,
 }
 
@@ -1079,10 +1084,21 @@ impl Shell {
                 Ok(()) => {
                     self.palette = *settings.appearance.theme.palette();
                     self.desktop_background = settings.appearance.background.solid_color().rgba();
+                    self.capped_task_buttons = settings.appearance.capped_task_buttons;
+                    self.pinned_applications = settings
+                        .appearance
+                        .pinned_applications
+                        .iter()
+                        .cloned()
+                        .collect();
+                    self.task_offset = self.task_offset.min(taskbar_max_offset(
+                        self.panel_size.0,
+                        self.windows().len(),
+                        self.capped_task_buttons,
+                    ));
                     let generation = settings.generation;
                     self.settings_tracker.commit(settings);
                     self.dirty = true;
-                    self.repaint_frames = OUTPUT_SETTLE_REPAINT_FRAMES;
                     eprintln!(
                         "buzzardos-shell: applied appearance settings generation {generation}"
                     );
@@ -1104,15 +1120,8 @@ impl Shell {
                 let _ = fs::write(acknowledgement, generation.as_bytes());
             }
             self.repaint_generation = Some(generation);
-            // Continue briefly after the output transaction. Host
-            // compositors are allowed to discard frames while a native
-            // toplevel is being maximized, restored, or interactively
-            // resized, so one early commit is not sufficient.
-            self.repaint_frames = OUTPUT_SETTLE_REPAINT_FRAMES;
-            // Some nested wlroots compositors do not treat damage to the panel alone as an output
-            // geometry update. Redraw the desktop once after resize events
-            // settle; during an interactive drag, later generations debounce
-            // this expensive full-surface render.
+            // Redraw the complete shell once after resize events settle;
+            // later generations coalesce into this same bounded debounce.
             self.full_repaint_after = Some(Instant::now() + OUTPUT_SETTLE_DEBOUNCE);
         }
         if self
@@ -1229,6 +1238,19 @@ impl Shell {
                         dialog.input = value.into();
                         dialog.replace_on_type = false;
                         dialog.error = None;
+                        self.dirty = true;
+                    }
+                }
+                (
+                    Action::SetValue | Action::ReplaceSelectedText,
+                    AccessibleTarget::ApplicationSearch,
+                ) => {
+                    if let Some(ActionData::Value(value)) = request.data
+                        && !value.chars().any(char::is_control)
+                    {
+                        self.application_search = value.into();
+                        self.menu_scroll = 0;
+                        self.apply_applications_menu_geometry();
                         self.dirty = true;
                     }
                 }
@@ -1384,6 +1406,7 @@ impl Shell {
                     application_context_targets(
                         application,
                         application_desktop_shortcut_exists(application),
+                        self.pinned_applications.contains(&application.id),
                     )
                 })
                 .unwrap_or_default(),
@@ -1648,6 +1671,8 @@ impl Shell {
         self.menu_open = true;
         self.menu_kind = MenuKind::Applications;
         self.menu_scroll = 0;
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         // Update hit-testing before the configure round-trip. Reusing the
         // former 1x1 hidden extent makes a freshly opened menu visible but
         // temporarily unclickable, so a quick human/CUA click reaches the
@@ -1657,18 +1682,26 @@ impl Shell {
     }
 
     fn apply_applications_menu_geometry(&mut self) {
-        let requested_size = self.preferred_menu_size();
-        self.menu_size = requested_size;
+        let content_size = self.preferred_menu_size();
+        self.menu_size = (
+            self.desktop_size.0.max(1),
+            self.desktop_size
+                .1
+                .saturating_sub(PANEL_HEIGHT as u32)
+                .max(1),
+        );
         self.menu_origin = (
             0,
-            i32::try_from(self.desktop_size.1)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(PANEL_HEIGHT)
-                .saturating_sub(i32::try_from(requested_size.1).unwrap_or(i32::MAX)),
+            i32::try_from(self.menu_size.1.saturating_sub(content_size.1)).unwrap_or_default(),
         );
-        self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+        // The transparent overlay consumes the opening click anywhere outside
+        // the visible menu.  This is the only reliable Wayland implementation
+        // of click-away dismissal because the shell cannot observe pointer
+        // events delivered to an unrelated guest client surface.
+        self.menu
+            .set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
-        self.menu.set_size(requested_size.0, requested_size.1);
+        self.menu.set_size(0, 0);
         let _ = self.set_menu_input_region();
         self.menu.commit();
     }
@@ -1676,9 +1709,15 @@ impl Shell {
     fn hide_menu(&mut self) {
         self.hide_context();
         if self.menu_open {
+            if self.menu_kind == MenuKind::Applications {
+                self.application_search.clear();
+                self.menu_scroll = 0;
+            }
             self.menu_open = false;
             self.menu_size = (1, 1);
             self.menu.set_size(1, 1);
+            self.menu
+                .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
             let _ = self.set_menu_input_region();
             self.menu.commit();
             self.dirty = true;
@@ -1757,18 +1796,88 @@ impl Shell {
     }
 
     fn preferred_menu_size(&self) -> (u32, u32) {
+        let applications = self.filtered_applications();
         (
-            applications_menu_width(self.font.as_ref(), &self.applications, self.desktop_size.0),
-            applications_menu_height(self.applications.len(), self.desktop_size.1),
+            applications_menu_width(self.font.as_ref(), &applications, self.desktop_size.0),
+            applications_menu_height(applications.len(), self.desktop_size.1),
         )
     }
 
+    fn filtered_applications(&self) -> Vec<Application> {
+        let query = self.application_search.trim().to_lowercase();
+        let (mut regular, pinned): (Vec<_>, Vec<_>) = self
+            .applications
+            .iter()
+            .filter(|application| {
+                query.is_empty()
+                    || application.name.to_lowercase().contains(&query)
+                    || application
+                        .generic_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&query))
+                    || application
+                        .categories
+                        .iter()
+                        .any(|category| category.to_lowercase().contains(&query))
+            })
+            .cloned()
+            .partition(|application| !self.pinned_applications.contains(&application.id));
+        regular.extend(pinned);
+        regular
+    }
+
+    fn set_application_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        anyhow::ensure!(
+            self.applications
+                .iter()
+                .any(|application| application.id == id),
+            "application no longer exists"
+        );
+        let mut settings = load_settings(&self.settings_tracker.path)?;
+        let already_pinned = settings
+            .appearance
+            .pinned_applications
+            .iter()
+            .any(|candidate| candidate == id);
+        if already_pinned == pinned {
+            return Ok(());
+        }
+        if pinned {
+            settings.appearance.pinned_applications.push(id.to_owned());
+        } else {
+            settings
+                .appearance
+                .pinned_applications
+                .retain(|candidate| candidate != id);
+        }
+        settings.generation = settings
+            .generation
+            .checked_add(1)
+            .context("settings generation overflow")?;
+        settings
+            .save(&self.settings_tracker.path)
+            .context("saving pinned Applications entries")?;
+        if pinned {
+            self.pinned_applications.insert(id.to_owned());
+        } else {
+            self.pinned_applications.remove(id);
+        }
+        self.menu_scroll = 0;
+        self.dirty = true;
+        Ok(())
+    }
+
     fn visible_menu_rows(&self) -> usize {
+        let menu_height = if self.menu_open && self.menu_kind == MenuKind::Applications {
+            self.preferred_menu_size().1
+        } else {
+            self.menu_size.1
+        };
         let used = APPLICATIONS_MENU_HEADER_HEIGHT
             + APPLICATIONS_MENU_SECTION_HEIGHT
             + APPLICATIONS_MENU_FOOTER_HEIGHT;
         usize::try_from(
-            (i32::try_from(self.menu_size.1)
+            (i32::try_from(menu_height)
                 .unwrap_or(i32::MAX)
                 .saturating_sub(used)
                 / MENU_ROW_HEIGHT)
@@ -1778,11 +1887,10 @@ impl Shell {
     }
 
     fn clamp_menu_scroll(&mut self) {
-        self.menu_scroll = self.menu_scroll.min(
-            self.applications
-                .len()
-                .saturating_sub(self.visible_menu_rows()),
-        );
+        let application_count = self.filtered_applications().len();
+        self.menu_scroll = self
+            .menu_scroll
+            .min(application_count.saturating_sub(self.visible_menu_rows()));
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -2298,6 +2406,39 @@ impl Shell {
             }
             return;
         }
+        if self.menu_open
+            && self.menu_kind == MenuKind::Applications
+            && !self.context_state.is_visible()
+        {
+            match event.keysym {
+                Keysym::BackSpace => {
+                    self.application_search.pop();
+                    self.menu_scroll = 0;
+                    self.apply_applications_menu_geometry();
+                    self.dirty = true;
+                }
+                Keysym::Return | Keysym::KP_Enter => {
+                    if let Some(application) = self.filtered_applications().first() {
+                        launch_application(application);
+                        self.hide_menu();
+                    }
+                }
+                _ => {
+                    if !self.modifiers.ctrl
+                        && !self.modifiers.alt
+                        && !self.modifiers.logo
+                        && let Some(text) = event.utf8
+                        && !text.chars().any(char::is_control)
+                    {
+                        self.application_search.push_str(&text);
+                        self.menu_scroll = 0;
+                        self.apply_applications_menu_geometry();
+                        self.dirty = true;
+                    }
+                }
+            }
+            return;
+        }
         if self.keyboard_focus != Some(ShellSurface::Desktop) {
             return;
         }
@@ -2381,6 +2522,20 @@ impl Shell {
                 let _ = self.rebuild_desktop_targets();
                 self.hide_context();
             }
+            ShellAction::PinApplication(id) => {
+                if let Err(error) = self.set_application_pinned(&id, true) {
+                    self.show_operation_error("Could not pin application", error);
+                } else {
+                    self.hide_context();
+                }
+            }
+            ShellAction::UnpinApplication(id) => {
+                if let Err(error) = self.set_application_pinned(&id, false) {
+                    self.show_operation_error("Could not unpin application", error);
+                } else {
+                    self.hide_context();
+                }
+            }
             ShellAction::DesktopOpenSelection => self.open_selection(),
             ShellAction::DesktopCut => self.copy_selection_to_clipboard(ClipboardOperation::Cut),
             ShellAction::DesktopCopy => self.copy_selection_to_clipboard(ClipboardOperation::Copy),
@@ -2462,11 +2617,18 @@ impl Shell {
                 self.hide_menu();
             }
             ShellAction::TaskbarPrevious => {
-                self.task_page = self.task_page.saturating_sub(1);
+                self.task_offset = self.task_offset.saturating_sub(TASK_PAGE_STEP);
                 self.dirty = true;
             }
             ShellAction::TaskbarNext => {
-                self.task_page = self.task_page.saturating_add(1);
+                self.task_offset =
+                    self.task_offset
+                        .saturating_add(TASK_PAGE_STEP)
+                        .min(taskbar_max_offset(
+                            self.panel_size.0,
+                            self.windows().len(),
+                            self.capped_task_buttons,
+                        ));
                 self.dirty = true;
             }
             ShellAction::ShowDesktop => {
@@ -2476,10 +2638,6 @@ impl Shell {
                 self.hide_menu();
             }
             ShellAction::CloseApplicationsMenu => self.hide_menu(),
-            ShellAction::ShutdownMachine => {
-                spawn("sudo", ["-n", "systemctl", "poweroff"]);
-                self.hide_menu();
-            }
         }
     }
 
@@ -2490,20 +2648,39 @@ impl Shell {
         y: f64,
     ) -> Option<HitTarget> {
         if surface == self.panel.wl_surface() {
-            panel_targets(self.panel_size.0, &self.windows(), self.task_page)
-                .into_iter()
-                .find(|target| target.rect.contains(x, y))
+            panel_targets(
+                self.panel_size.0,
+                &self.windows(),
+                self.task_offset,
+                self.capped_task_buttons,
+            )
+            .into_iter()
+            .find(|target| target.rect.contains(x, y))
         } else if surface == self.menu.wl_surface() && self.menu_open {
             match self.menu_kind {
                 MenuKind::Applications => {
-                    std::iter::once(applications_menu_close_target(self.menu_size.0))
+                    let applications = self.filtered_applications();
+                    let content_size = self.preferred_menu_size();
+                    let content_y = f64::from(
+                        i32::try_from(self.menu_size.1.saturating_sub(content_size.1))
+                            .unwrap_or_default(),
+                    );
+                    if x < 0.0
+                        || y < content_y
+                        || x >= f64::from(content_size.0)
+                        || y >= content_y + f64::from(content_size.1)
+                    {
+                        return None;
+                    }
+                    let local_y = y - content_y;
+                    std::iter::once(applications_menu_close_target(content_size.0))
                         .chain(menu_targets(
-                            self.menu_size.0,
-                            self.menu_size.1,
-                            &self.applications,
+                            content_size.0,
+                            content_size.1,
+                            &applications,
                             self.menu_scroll,
                         ))
-                        .find(|target| target.rect.contains(x, y))
+                        .find(|target| target.rect.contains(x, local_y))
                 }
                 MenuKind::Window(id) => self.exact_toplevels.get(&id).and_then(|window| {
                     window_menu_targets(&window.window)
@@ -2533,6 +2710,11 @@ impl Shell {
         let target = self.target_at_surface(surface, x, y);
         if let Some(target) = target {
             self.activate(target.action);
+        } else if surface == self.menu.wl_surface()
+            && self.menu_open
+            && self.menu_kind == MenuKind::Applications
+        {
+            self.hide_menu();
         }
     }
 
@@ -2678,9 +2860,14 @@ impl Shell {
     }
 
     fn secondary_click_panel(&mut self, x: f64, y: f64) {
-        let target = panel_targets(self.panel_size.0, &self.windows(), self.task_page)
-            .into_iter()
-            .find(|target| target.rect.contains(x, y));
+        let target = panel_targets(
+            self.panel_size.0,
+            &self.windows(),
+            self.task_offset,
+            self.capped_task_buttons,
+        )
+        .into_iter()
+        .find(|target| target.rect.contains(x, y));
         if let Some(HitTarget {
             action: ShellAction::ActivateWindow(id),
             ..
@@ -2699,9 +2886,9 @@ impl Shell {
             ..
         }) = target
         {
-            self.show_application_context(id, x, y);
+            self.show_application_context(id, x, y - f64::from(self.menu_origin.1));
         } else {
-            self.hide_context();
+            self.hide_menu();
         }
     }
 
@@ -2867,7 +3054,12 @@ impl Shell {
             ),
             theme.border.rgba(),
         );
-        for target in panel_targets(logical_width, &windows, self.task_page) {
+        for target in panel_targets(
+            logical_width,
+            &windows,
+            self.task_offset,
+            self.capped_task_buttons,
+        ) {
             let hovered = self.hovered.as_ref() == Some(&target.action);
             let (color, label, active) = match target.action {
                 ShellAction::ToggleApplications => {
@@ -2928,7 +3120,7 @@ impl Shell {
                     } else {
                         theme.surface.rgba()
                     },
-                    "‹".to_owned(),
+                    "<".to_owned(),
                     false,
                 ),
                 ShellAction::TaskbarNext => (
@@ -2937,7 +3129,7 @@ impl Shell {
                     } else {
                         theme.surface.rgba()
                     },
-                    "›".to_owned(),
+                    ">".to_owned(),
                     false,
                 ),
                 ShellAction::ShowDesktop => (
@@ -2951,7 +3143,7 @@ impl Shell {
                 ),
                 _ => continue,
             };
-            let button_rect = scale_rect(inset(target.rect, 2), self.scale_120);
+            let button_rect = scale_rect(target.rect, self.scale_120);
             fill_rect(canvas, width, height, button_rect, color);
             if active {
                 fill_rect(
@@ -2963,9 +3155,9 @@ impl Shell {
                         y: button_rect.y
                             + button_rect
                                 .height
-                                .saturating_sub(scale_coord(2, self.scale_120)),
+                                .saturating_sub(scale_coord(3, self.scale_120)),
                         width: button_rect.width,
-                        height: scale_coord(2, self.scale_120),
+                        height: scale_coord(3, self.scale_120),
                     },
                     theme.focus.rgba(),
                 );
@@ -2999,18 +3191,36 @@ impl Shell {
 
     fn draw_menu(&mut self) -> Result<()> {
         let theme = self.palette;
-        let (logical_width, logical_height) = nonzero_size(self.menu_size);
+        let (surface_logical_width, surface_logical_height) = nonzero_size(self.menu_size);
+        let (logical_width, logical_height) =
+            if self.menu_open && self.menu_kind == MenuKind::Applications {
+                nonzero_size(self.preferred_menu_size())
+            } else {
+                (surface_logical_width, surface_logical_height)
+            };
+        let (surface_width, surface_height) = physical_size(
+            (surface_logical_width, surface_logical_height),
+            self.scale_120,
+        );
         let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let visible_menu_rows = self.visible_menu_rows();
-        let (buffer, canvas) = self
+        let filtered_applications = self.filtered_applications();
+        let (buffer, surface_canvas) = self
             .pool
             .create_buffer(
-                width as i32,
-                height as i32,
-                width as i32 * 4,
+                surface_width as i32,
+                surface_height as i32,
+                surface_width as i32 * 4,
                 wl_shm::Format::Argb8888,
             )
             .context("allocating applications menu frame")?;
+        clear(surface_canvas, [0, 0, 0, 0]);
+        let content_len = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        let mut content_canvas = vec![0_u8; content_len];
+        let canvas = content_canvas.as_mut_slice();
         clear(
             canvas,
             if self.menu_open {
@@ -3103,13 +3313,57 @@ impl Shell {
                 scale_font(10.0, self.scale_120),
                 theme.text_muted.rgba(),
             );
+            let search_rect = Rect {
+                x: 8,
+                y: i32::try_from(logical_height)
+                    .unwrap_or(i32::MAX)
+                    .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
+                    .saturating_add(6),
+                width: i32::try_from(logical_width)
+                    .unwrap_or(i32::MAX)
+                    .saturating_sub(16),
+                height: MENU_ROW_HEIGHT,
+            };
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(search_rect, self.scale_120),
+                theme.raised.rgba(),
+            );
+            draw_outline(
+                canvas,
+                width,
+                height,
+                scale_rect(search_rect, self.scale_120),
+                scale_coord(1, self.scale_120),
+                theme.border.rgba(),
+            );
+            draw_text(
+                canvas,
+                width,
+                height,
+                self.font.as_ref(),
+                if self.application_search.is_empty() {
+                    "Search applications"
+                } else {
+                    &self.application_search
+                },
+                scale_coord(search_rect.x + 10, self.scale_120),
+                scale_coord(search_rect.y + 10, self.scale_120),
+                scale_font(13.0, self.scale_120),
+                if self.application_search.is_empty() {
+                    theme.text_muted.rgba()
+                } else {
+                    theme.text.rgba()
+                },
+            );
             for target in menu_targets(
                 logical_width,
                 logical_height,
-                &self.applications,
+                &filtered_applications,
                 self.menu_scroll,
             ) {
-                let footer = matches!(target.action, ShellAction::ShutdownMachine);
                 let hovered = self.hovered.as_ref() == Some(&target.action);
                 fill_rect(
                     canvas,
@@ -3117,11 +3371,7 @@ impl Shell {
                     height,
                     scale_rect(inset(target.rect, 2), self.scale_120),
                     if hovered {
-                        if footer {
-                            theme.destructive.rgba()
-                        } else {
-                            theme.hover.rgba()
-                        }
+                        theme.hover.rgba()
                     } else {
                         theme.menu.rgba()
                     },
@@ -3150,6 +3400,12 @@ impl Shell {
                     draw_menu_icon(canvas, width, height, icon_rect, &target.action, theme);
                 }
                 let update_badge: Option<usize> = None;
+                let display_label = match &target.action {
+                    ShellAction::LaunchApplication(id) if self.pinned_applications.contains(id) => {
+                        format!("★ {}", target.label)
+                    }
+                    _ => target.label.clone(),
+                };
                 draw_text(
                     canvas,
                     width,
@@ -3157,7 +3413,7 @@ impl Shell {
                     self.font.as_ref(),
                     &elide_to_width(
                         self.font.as_ref(),
-                        &target.label,
+                        &display_label,
                         13.0,
                         target.rect.width.saturating_sub(if update_badge.is_some() {
                             96
@@ -3213,7 +3469,7 @@ impl Shell {
                     theme.text_secondary.rgba(),
                 );
             }
-            if self.menu_scroll + visible_menu_rows < self.applications.len() {
+            if self.menu_scroll + visible_menu_rows < filtered_applications.len() {
                 draw_text(
                     canvas,
                     width,
@@ -3301,14 +3557,34 @@ impl Shell {
                 );
             }
         }
+        let destination_y =
+            usize::try_from(surface_height.saturating_sub(height)).unwrap_or(usize::MAX);
+        let row_bytes = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        let surface_stride = usize::try_from(surface_width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        for row in 0..usize::try_from(height).unwrap_or_default() {
+            let source_start = row.saturating_mul(row_bytes);
+            let source_end = source_start.saturating_add(row_bytes);
+            let destination_start = destination_y
+                .saturating_add(row)
+                .saturating_mul(surface_stride);
+            let destination_end = destination_start.saturating_add(row_bytes);
+            if source_end <= content_canvas.len() && destination_end <= surface_canvas.len() {
+                surface_canvas[destination_start..destination_end]
+                    .copy_from_slice(&content_canvas[source_start..source_end]);
+            }
+        }
         attach(
             &self.menu,
             &self.viewports[2],
             buffer,
-            width,
-            height,
-            logical_width,
-            logical_height,
+            surface_width,
+            surface_height,
+            surface_logical_width,
+            surface_logical_height,
         )?;
         Ok(())
     }
@@ -3666,7 +3942,12 @@ impl Shell {
                 focus = id;
             }
         }
-        let panel_targets = panel_targets(self.panel_size.0, &windows, self.task_page);
+        let panel_targets = panel_targets(
+            self.panel_size.0,
+            &windows,
+            self.task_offset,
+            self.capped_task_buttons,
+        );
         if let Some(target) = panel_targets
             .iter()
             .find(|target| matches!(target.action, ShellAction::ToggleApplications))
@@ -3745,16 +4026,53 @@ impl Shell {
         // paging the visible menu.
         let visible_rows = self.visible_menu_rows();
         let mut menu_children = Vec::new();
+        let filtered_applications = self.filtered_applications();
+        let content_size = self.preferred_menu_size();
+        let search_id = NodeId(20_002);
+        let mut search = A11yNode::new(Role::TextInput);
+        search.set_label("Search applications");
+        search.set_value(self.application_search.clone());
+        if applications_menu_open {
+            search.set_bounds(a11y_rect(
+                Rect {
+                    x: 8,
+                    y: i32::try_from(content_size.1)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
+                        .saturating_add(6),
+                    width: i32::try_from(content_size.0)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(16),
+                    height: MENU_ROW_HEIGHT,
+                },
+                menu_x,
+                menu_y,
+            ));
+        }
+        search.add_action(Action::SetValue);
+        search.add_action(Action::ReplaceSelectedText);
+        nodes.push((search_id, search));
+        menu_children.push(search_id);
+        targets.insert(search_id, AccessibleTarget::ApplicationSearch);
         for (index, application) in self.applications.iter().enumerate() {
             let id = NodeId(10_000 + index as u64);
-            let relative_row = i32::try_from(index)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX));
+            let filtered_index = filtered_applications
+                .iter()
+                .position(|candidate| candidate.id == application.id);
+            let relative_row = filtered_index
+                .map(|index| {
+                    i32::try_from(index)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX))
+                })
+                .unwrap_or(i32::MAX);
             let mut node = A11yNode::new(Role::MenuItem);
             node.set_label(application.name.clone());
             if applications_menu_open
-                && index >= self.menu_scroll
-                && index < self.menu_scroll.saturating_add(visible_rows)
+                && filtered_index.is_some_and(|index| {
+                    index >= self.menu_scroll
+                        && index < self.menu_scroll.saturating_add(visible_rows)
+                })
             {
                 node.set_bounds(a11y_rect(
                     Rect {
@@ -3771,7 +4089,7 @@ impl Shell {
                     menu_y,
                 ));
             }
-            node.set_position_in_set(index + 1);
+            node.set_position_in_set(filtered_index.map_or(index + 1, |position| position + 1));
             node.add_action(Action::Click);
             if applications_menu_open {
                 node.add_action(Action::ScrollIntoView);
@@ -3782,7 +4100,7 @@ impl Shell {
                 id,
                 AccessibleTarget::Activate {
                     action: ShellAction::LaunchApplication(application.id.clone()),
-                    menu_index: Some(index),
+                    menu_index: filtered_index,
                 },
             );
 
@@ -3813,35 +4131,6 @@ impl Shell {
                 },
             );
         }
-        let shutdown_id = NodeId(20_000);
-        let mut shutdown = A11yNode::new(Role::MenuItem);
-        shutdown.set_label("Shut Down Machine");
-        if applications_menu_open {
-            shutdown.set_bounds(a11y_rect(
-                Rect {
-                    x: 8,
-                    y: i32::try_from(self.menu_size.1)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(44),
-                    width: i32::try_from(self.menu_size.0)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(16),
-                    height: MENU_ROW_HEIGHT,
-                },
-                menu_x,
-                menu_y,
-            ));
-        }
-        shutdown.add_action(Action::Click);
-        nodes.push((shutdown_id, shutdown));
-        menu_children.push(shutdown_id);
-        targets.insert(
-            shutdown_id,
-            AccessibleTarget::Activate {
-                action: ShellAction::ShutdownMachine,
-                menu_index: None,
-            },
-        );
         let close_id = NodeId(20_001);
         let close_target = applications_menu_close_target(self.menu_size.0);
         let mut close = A11yNode::new(Role::Button);
@@ -3874,16 +4163,16 @@ impl Shell {
             menu.set_bounds(A11yRect::new(
                 f64::from(menu_x),
                 f64::from(menu_y),
-                f64::from(menu_x) + f64::from(self.menu_size.0),
-                f64::from(menu_y) + f64::from(self.menu_size.1),
+                f64::from(menu_x) + f64::from(content_size.0),
+                f64::from(menu_y) + f64::from(content_size.1),
             ));
         }
         menu.set_children(menu_children);
-        menu.set_size_of_set(self.applications.len());
+        menu.set_size_of_set(filtered_applications.len());
         if applications_menu_open {
             menu.set_scroll_y(self.menu_scroll as f64);
             menu.set_scroll_y_min(0.0);
-            menu.set_scroll_y_max(self.applications.len().saturating_sub(visible_rows) as f64);
+            menu.set_scroll_y_max(filtered_applications.len().saturating_sub(visible_rows) as f64);
             menu.add_action(Action::ScrollDown);
             menu.add_action(Action::ScrollUp);
         }
@@ -4106,7 +4395,17 @@ impl SeatHandler for Shell {
     ) {
         self.seat.get_or_insert_with(|| seat.clone());
         if capability == Capability::Pointer && self.pointer.is_none() {
-            self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+            let cursor_surface = self.compositor.create_surface(qh);
+            self.pointer = self
+                .seat_state
+                .get_pointer_with_theme(
+                    qh,
+                    &seat,
+                    self.shm.wl_shm(),
+                    cursor_surface,
+                    ThemeSpec::default(),
+                )
+                .ok();
         }
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
@@ -4120,10 +4419,8 @@ impl SeatHandler for Shell {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer
-            && let Some(pointer) = self.pointer.take()
-        {
-            pointer.release();
+        if capability == Capability::Pointer && self.pointer.is_some() {
+            self.pointer.take();
         }
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
@@ -4142,7 +4439,7 @@ impl SeatHandler for Shell {
 impl PointerHandler for Shell {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        connection: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -4150,6 +4447,11 @@ impl PointerHandler for Shell {
         for event in events {
             match event.kind {
                 PointerEventKind::Enter { .. } => {
+                    if let Some(pointer) = self.pointer.as_ref()
+                        && let Err(error) = pointer.set_cursor(connection, CursorIcon::Default)
+                    {
+                        eprintln!("buzzardos-shell: restoring the default pointer: {error}");
+                    }
                     self.update_hover(&event.surface, event.position.0, event.position.1);
                 }
                 PointerEventKind::Motion { .. } => {
@@ -4289,7 +4591,8 @@ impl KeyboardHandler for Shell {
         event: KeyEvent,
     ) {
         if matches!(event.keysym, Keysym::BackSpace | Keysym::Delete)
-            && matches!(self.context_state, ContextState::Edit(_))
+            && (matches!(self.context_state, ContextState::Edit(_))
+                || (self.menu_open && self.menu_kind == MenuKind::Applications))
         {
             self.handle_key(event);
         }
@@ -4761,7 +5064,7 @@ fn applications_menu_width(
         .fold(0.0_f32, f32::max);
     // The measured row width includes the menu inset, icon, icon/text gap,
     // and enough trailing space to keep glyph antialiasing out of the edge.
-    let row_width = longest_application.max(text_width(font, "Shut Down Machine", 13.0)) + 64.0;
+    let row_width = longest_application.max(text_width(font, "Search applications", 13.0)) + 64.0;
     let header_width = text_width(font, "Applications", 17.0) + 82.0;
     let measured = row_width.max(header_width).ceil().max(1.0) as u32;
 
@@ -5213,7 +5516,6 @@ fn draw_menu_icon(
 ) {
     let color = match action {
         ShellAction::OpenFiles | ShellAction::OpenShared => theme.folder.rgba(),
-        ShellAction::ShutdownMachine => theme.destructive_icon.rgba(),
         ShellAction::LaunchApplication(_) => theme.selection.rgba(),
         _ => theme.text_secondary.rgba(),
     };

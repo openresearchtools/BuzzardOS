@@ -514,6 +514,15 @@ mod tests {
             include_str!("../../assets/themes/BuzzardOS-Shared/gtk-4.0/geometry.css");
         assert!(gtk4_geometry.contains("button.wb-primary-action label,"));
         assert!(gtk4_geometry.contains("color: @wb_selected_text;"));
+        let gtk3_geometry =
+            include_str!("../../assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css");
+        assert!(gtk3_geometry.contains("statusbar > box"));
+        assert!(gtk3_geometry.contains("statusbar:backdrop"));
+        assert!(gtk3_geometry.contains("statusbar:backdrop *"));
+        assert!(gtk3_geometry.contains("junction:backdrop"));
+        assert!(gtk3_geometry.contains("scrollbar button:backdrop"));
+        assert!(gtk3_geometry.contains("scrollbar slider:backdrop"));
+        assert!(gtk3_geometry.contains("background-color: @wb_backdrop_surface;"));
 
         for (mode, palette_css) in [
             (

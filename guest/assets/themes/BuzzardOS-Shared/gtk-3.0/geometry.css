@@ -23,6 +23,12 @@ dialog:backdrop {
   background-color: @wb_backdrop_surface;
 }
 
+/* Thunar's root grid has narrow cells beside its status bar. */
+window.thunar > grid:backdrop {
+  background-image: none;
+  background-color: @wb_backdrop_surface;
+}
+
 headerbar,
 .titlebar {
   color: @wb_header_text;
@@ -56,6 +62,70 @@ toolbar:backdrop,
   color: @wb_backdrop_text;
   background-image: none;
   background-color: @wb_header_backdrop;
+  border-color: @wb_border;
+}
+
+/*
+ * Thunar's bottom information strip is a GtkStatusbar.  GTK's fallback
+ * backdrop styling otherwise paints that strip with the host theme when the
+ * window loses focus, producing a bright band in the Buzzard OS dark theme.
+ */
+statusbar,
+.statusbar,
+statusbar > box,
+.statusbar > box {
+  color: @wb_secondary;
+  background-image: none;
+  background-color: @wb_surface;
+  border-color: @wb_border;
+}
+
+statusbar *,
+.statusbar * {
+  background-image: none;
+  background-color: transparent;
+}
+
+statusbar:backdrop,
+.statusbar:backdrop,
+statusbar > box:backdrop,
+.statusbar > box:backdrop,
+statusbar label:backdrop,
+.statusbar label:backdrop {
+  color: @wb_backdrop_text;
+  background-image: none;
+  background-color: @wb_backdrop_surface;
+  border-color: @wb_border;
+}
+
+statusbar:backdrop *,
+.statusbar:backdrop * {
+  color: @wb_backdrop_text;
+  background-image: none;
+  background-color: transparent;
+}
+
+/* Keep the scrolled-window corner beside Thunar's status bar on-palette. */
+junction,
+junction:backdrop {
+  background-image: none;
+  background-color: @wb_field;
+}
+
+/*
+ * GtkScrolledWindow exposes undershoot/overshoot edge nodes when focus moves
+ * to the shell's Applications layer.  Without explicit backdrop colours,
+ * GTK's fallback theme shows those narrow nodes as white blocks beside
+ * Thunar's status bar.
+ */
+scrolledwindow:backdrop,
+scrolledwindow viewport:backdrop,
+scrolledwindow undershoot:backdrop,
+scrolledwindow overshoot:backdrop,
+undershoot:backdrop,
+overshoot:backdrop {
+  background-image: none;
+  background-color: @wb_field;
   border-color: @wb_border;
 }
 
@@ -327,12 +397,42 @@ scrollbar {
   min-height: 12px;
 }
 
+scrollbar trough,
+scrollbar contents {
+  background-image: none;
+  background-color: @wb_field;
+  border-color: @wb_border;
+}
+
+scrollbar button {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background-image: none;
+  background-color: @wb_field;
+}
+
+scrollbar:backdrop,
+scrollbar trough:backdrop,
+scrollbar button:backdrop {
+  background-image: none;
+  background-color: @wb_field;
+  border-color: @wb_border;
+}
+
 scrollbar slider {
   background-color: @wb_scrollbar;
   border: 2px solid @wb_field;
   border-radius: 6px;
   min-width: 8px;
   min-height: 28px;
+}
+
+scrollbar slider:backdrop {
+  background-image: none;
+  background-color: @wb_scrollbar;
+  border-color: @wb_field;
 }
 
 scrollbar slider:hover,

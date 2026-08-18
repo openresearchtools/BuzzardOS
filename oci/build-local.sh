@@ -5,10 +5,27 @@ set -euo pipefail
 oci_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(CDPATH= cd -- "$oci_dir/.." && pwd)
 task_uid=$(id -u)
+variant=${BUZZARDOS_OCI_VARIANT:-standard}
+case "$variant" in
+    standard)
+        containerfile=Containerfile
+        default_image=buzzardos-desktop:local
+        expect_cuda=0
+        ;;
+    cuda)
+        containerfile=Containerfile.cuda
+        default_image=buzzardos-desktop-cuda:local
+        expect_cuda=1
+        ;;
+    *)
+        echo "unsupported BUZZARDOS_OCI_VARIANT: $variant (expected standard or cuda)" >&2
+        exit 2
+        ;;
+esac
 build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-oci-build-$task_uid"}
-output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/output"}
+output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/output/$variant"}
 deb_dir=${BUZZARDOS_GUEST_DEB_DIR:-"$build_root/debs"}
-image=${BUZZARDOS_OCI_TAG:-buzzardos-desktop:local}
+image=${BUZZARDOS_OCI_TAG:-$default_image}
 
 for command_name in buildah dpkg-deb id install mktemp realpath sha256sum; do
     command -v "$command_name" >/dev/null 2>&1 || {
@@ -83,7 +100,7 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT HUP INT TERM
 
-install -D -m 0644 "$oci_dir/desktop/Containerfile" "$context/Containerfile"
+install -D -m 0644 "$oci_dir/desktop/$containerfile" "$context/Containerfile"
 install -D -m 0755 "$oci_dir/desktop/provision-image.sh" "$context/provision-image.sh"
 install -d -m 0755 "$context/apt" "$context/debs"
 install -m 0644 "$oci_dir/desktop/apt/debian-sid-snapshot.sources" \
@@ -112,6 +129,7 @@ container=$(buildah_local from "$image_id")
 BUZZARDOS_CONTAINER_ENGINE=buildah \
 BUZZARDOS_BUILDAH_ROOT="$storage" \
 BUZZARDOS_BUILDAH_RUNROOT="$runroot" \
+BUZZARDOS_EXPECT_CUDA="$expect_cuda" \
     "$oci_dir/verify-image.sh" "$container"
 
 inventory_tmp=$(mktemp "$output_dir/.dpkg-packages.tsv.XXXXXX")
@@ -124,11 +142,11 @@ printf '%s\n' "$image_id" >"$output_dir/image-id.txt"
 printf '%s\n' "$build_seconds" >"$output_dir/build-seconds.txt"
 
 if [[ ${BUZZARDOS_EXPORT_ARCHIVE:-0} == 1 ]]; then
-    archive="$output_dir/buzzardos-desktop-amd64.oci.tar"
+    archive="$output_dir/buzzardos-desktop-$variant-amd64.oci.tar"
     temporary="$archive.tmp"
     rm -f -- "$temporary"
     buildah_local push --format oci "$image_id" \
-        "oci-archive:$temporary:buzzardos-desktop"
+        "oci-archive:$temporary:buzzardos-desktop-$variant"
     mv -f -- "$temporary" "$archive"
     sha256sum "$archive" >"$archive.sha256"
     stat -c '%s' "$archive" >"$output_dir/archive-size.bytes"
@@ -136,7 +154,7 @@ if [[ ${BUZZARDOS_EXPORT_ARCHIVE:-0} == 1 ]]; then
         "$archive" "$(cat "$output_dir/archive-size.bytes")"
 fi
 
-printf 'Verified %s; uncached Buildah assembly took %s seconds.\n' \
-    "$image" "$build_seconds"
+printf 'Verified %s (%s variant); uncached Buildah assembly took %s seconds.\n' \
+    "$image" "$variant" "$build_seconds"
 printf 'All temporary Buildah images and storage will now be discarded from %s.\n' \
     "$work"

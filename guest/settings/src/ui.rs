@@ -47,6 +47,7 @@ const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
     "Light theme",
     "Dark theme",
     "Desktop background colour",
+    "Capped task buttons",
     "Automatic software updates",
 ];
 
@@ -1005,10 +1006,26 @@ fn build_appearance_page(
     ));
     contents.append(&background_section);
 
+    let taskbar_section = section("Taskbar");
+    let capped = gtk::Switch::new();
+    capped.set_active(store.borrow().settings.appearance.capped_task_buttons);
+    accessible(
+        &capped,
+        "Capped task buttons",
+        "Keep task buttons at or below 260 pixels and page overflowing windows five at a time.",
+    );
+    taskbar_section.append(&setting_row(
+        "Capped task buttons",
+        "Keep buttons compact. The < and > controls appear only when minimum-width buttons no longer fit.",
+        &capped,
+    ));
+    contents.append(&taskbar_section);
+
     let writable = store.borrow().writable;
     light.set_sensitive(writable);
     dark.set_sensitive(writable);
     colour.set_sensitive(writable);
+    capped.set_sensitive(writable);
     let changing = Rc::new(Cell::new(false));
     for (button, mode, background, color) in [
         (
@@ -1063,6 +1080,29 @@ fn build_appearance_page(
                     let _ = bus.emit_changed(generation, &[ChangeSection::Appearance]);
                 }
                 Err(error) => show_error(&window, "Background was not changed", &error.to_string()),
+            }
+        });
+    }
+    {
+        let window = window.clone();
+        let store = Rc::clone(&store);
+        let bus = Rc::clone(&bus);
+        let changing = Rc::clone(&changing);
+        capped.connect_active_notify(move |button| {
+            if changing.get() {
+                return;
+            }
+            let requested = button.is_active();
+            match store.borrow_mut().set_capped_task_buttons(requested) {
+                Ok(generation) => {
+                    let _ = bus.emit_changed(generation, &[ChangeSection::Appearance]);
+                }
+                Err(error) => {
+                    changing.set(true);
+                    button.set_active(!requested);
+                    changing.set(false);
+                    show_error(&window, "Taskbar was not changed", &error.to_string());
+                }
             }
         });
     }

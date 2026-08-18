@@ -1,7 +1,7 @@
 schema = 1
 audited_at = "2026-08-11"
 containerfile = "oci/desktop/Containerfile"
-notes = "The Containerfile installs three already-built Buzzard OS guest packages; their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source. CUDA runtime packages use exact filenames and verified payload hashes. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
+notes = "The standard Containerfile installs three already-built Buzzard OS guest packages; their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source. The optional CUDA variant adds exact-version NVIDIA repository packages after the complete standard definition. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
 
 [[base_image]]
 reference = "docker.io/library/debian:sid"
@@ -17,10 +17,11 @@ surface = "oci"
 packages = ["ca-certificates", "curl", "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb"]
 notes = "The three local packages are compiled before OCI assembly. APT resolves their declared distro dependencies from the immutable snapshot."
 
-[[direct_package_block]]
+[[repository_package_block]]
 order = 2
 stage = "runtime-cuda"
 surface = "oci"
-resolution = "direct NVIDIA repository filenames with sha256 verification; no repository-index resolution"
-packages = ["cuda-toolkit-config-common=${CUDA_TOOLKIT_CONFIG_VERSION}", "cuda-toolkit-13-config-common=${CUDA_TOOLKIT_13_CONFIG_VERSION}", "cuda-toolkit-13-1-config-common=${CUDA_TOOLKIT_13_1_CONFIG_VERSION}", "cuda-cudart-13-1=${CUDA_CUDART_VERSION}", "libcublas-13-1=${CUDA_CUBLAS_VERSION}"]
-sha256 = ["282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc", "5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8", "f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a", "b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84", "0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7"]
+containerfile = "oci/desktop/Containerfile.cuda"
+resolution = "exact package versions from NVIDIA's Debian 13 repository authenticated by the pinned cuda-keyring package"
+repository_key_sha256 = "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
+packages = ["cuda-cudart-13-3=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-3-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-compat-13-3=${NV_CUDA_COMPAT_VERSION}", "cuda-libraries-13-3=${NV_CUDA_LIB_VERSION}", "libnpp-13-3=${NV_LIBNPP_VERSION}", "cuda-nvtx-13-3=${NV_NVTX_VERSION}", "libcusparse-13-3=${NV_LIBCUSPARSE_VERSION}", "libcublas-13-3=${NV_LIBCUBLAS_VERSION}", "libnccl2=${NV_LIBNCCL_PACKAGE_VERSION}"]

@@ -12,10 +12,6 @@ buzzardos-guest	0.1.0
 buzzardoscua	0.17.0+buzzard1
 ca-certificates	20260601
 coreutils	9.10-1
-cuda-cudart-13-1	13.1.80-1
-cuda-toolkit-13-1-config-common	13.1.80-1
-cuda-toolkit-13-config-common	13.3.29-1
-cuda-toolkit-config-common	13.3.29-1
 curl	8.21.0-2
 dash	0.5.12-12
 dbus	1.16.2-5+b1
@@ -131,7 +127,6 @@ libcom-err2:amd64	1.47.4-1
 libconfig++11:amd64	1.7.3-2.1+b1
 libcpuinfo0:amd64	0.0~git20250905.877328f-1+b1
 libcrypt1:amd64	1:4.5.1-1+b1
-libcublas-13-1	13.2.2.2-1
 libcups2t64:amd64	2.4.18-1
 libcurl3t64-gnutls:amd64	8.21.0-2
 libcurl4-gnutls:amd64	8.21.0-2

@@ -3,7 +3,8 @@
 use anyhow::{Context, Result, bail};
 use buzzardos_desktop_core::{DesktopDirectory, RegistrationId, XdgPaths};
 use buzzardos_shortcut_helper::{
-    LaunchStatus, RegistrationFlags, RegistrationStore, install_thunar_actions, validate_appimage,
+    LaunchStatus, RegistrationFlags, RegistrationStore, extract_and_launch, install_thunar_actions,
+    launch_path, validate_appimage,
 };
 use gio::prelude::*;
 use serde::Serialize;
@@ -72,6 +73,11 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
                 })),
             }))
         }
+        "run-path" => process_json(launch_path(exactly_one_path(rest)?)?),
+        "extract-and-run" => process_json(extract_and_launch(exactly_one_path(rest)?, false)?),
+        "extract-and-run-no-sandbox" => {
+            process_json(extract_and_launch(exactly_one_path(rest)?, true)?)
+        }
         "register-applications" => registration_json(
             store.register(exactly_one_path(rest)?, RegistrationFlags::APPLICATIONS)?,
         ),
@@ -131,6 +137,10 @@ fn choose_relink_json(store: &RegistrationStore, id: RegistrationId) -> Result<s
 
 fn registration_json<T: Serialize>(registration: T) -> Result<serde_json::Value> {
     Ok(json!({ "ok": true, "registration": registration }))
+}
+
+fn process_json(child: std::process::Child) -> Result<serde_json::Value> {
+    Ok(json!({ "ok": true, "process_id": child.id() }))
 }
 
 fn optional_registration_json<T: Serialize>(registration: Option<T>) -> Result<serde_json::Value> {

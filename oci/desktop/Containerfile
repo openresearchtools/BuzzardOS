@@ -4,9 +4,6 @@
 # allowed into the reference image build.
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
 
-ARG CUDA_CUDART_VERSION=13.1.80-1
-ARG CUDA_CUBLAS_VERSION=13.2.2.2-1
-
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Resolve every Debian package against the immutable archive snapshot named by
@@ -38,55 +35,6 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         /usr/share/xdg-desktop-portal/portals/kwallet.portal && \
     apt-get clean && \
     rm -rf /tmp/buzzardos-debs /var/lib/apt/lists/*
-
-ARG CUDA_CUDART_SHA256=b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84
-ARG CUDA_CUBLAS_SHA256=0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7
-ARG CUDA_TOOLKIT_CONFIG_VERSION=13.3.29-1
-ARG CUDA_TOOLKIT_CONFIG_SHA256=282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc
-ARG CUDA_TOOLKIT_13_CONFIG_VERSION=13.3.29-1
-ARG CUDA_TOOLKIT_13_CONFIG_SHA256=5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8
-ARG CUDA_TOOLKIT_13_1_CONFIG_VERSION=13.1.80-1
-ARG CUDA_TOOLKIT_13_1_CONFIG_SHA256=f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a
-
-# The reference machine carries only the CUDA runtime needed by normal guest
-# applications. Driver libraries and devices still come from the selected host
-# GPU through the launcher's bundled, pinned NVIDIA CDI integration. Download
-# exact package filenames and verify their payload hashes rather than resolving
-# a mutable NVIDIA repository index. Do not add nvcc or a compiler toolchain.
-RUN curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-config-common_${CUDA_TOOLKIT_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-13-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-13-config-common_${CUDA_TOOLKIT_13_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-13-1-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-13-1-config-common_${CUDA_TOOLKIT_13_1_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-cudart.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-cudart-13-1_${CUDA_CUDART_VERSION}_amd64.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/libcublas.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/libcublas-13-1_${CUDA_CUBLAS_VERSION}_amd64.deb" && \
-    printf '%s  %s\n' \
-        "$CUDA_TOOLKIT_CONFIG_SHA256" /tmp/cuda-toolkit-config-common.deb \
-        "$CUDA_TOOLKIT_13_CONFIG_SHA256" /tmp/cuda-toolkit-13-config-common.deb \
-        "$CUDA_TOOLKIT_13_1_CONFIG_SHA256" /tmp/cuda-toolkit-13-1-config-common.deb \
-        "$CUDA_CUDART_SHA256" /tmp/cuda-cudart.deb \
-        "$CUDA_CUBLAS_SHA256" /tmp/libcublas.deb \
-        | sha256sum --check - && \
-    dpkg --install \
-        /tmp/cuda-toolkit-config-common.deb \
-        /tmp/cuda-toolkit-13-config-common.deb \
-        /tmp/cuda-toolkit-13-1-config-common.deb \
-        /tmp/cuda-cudart.deb \
-        /tmp/libcublas.deb && \
-    rm -f \
-        /tmp/cuda-toolkit-config-common.deb \
-        /tmp/cuda-toolkit-13-config-common.deb \
-        /tmp/cuda-toolkit-13-1-config-common.deb \
-        /tmp/cuda-cudart.deb \
-        /tmp/libcublas.deb
 
 COPY apt/debian-sid-live.sources \
     /etc/apt/sources.list.d/debian.sources

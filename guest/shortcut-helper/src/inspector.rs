@@ -151,14 +151,45 @@ impl ValidatedAppImage {
         let mut command = Command::new(&descriptor_path);
         command
             .arg0(&descriptor_path)
+            .env("APPIMAGE", &self.path)
+            .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(parent) = self.path.parent() {
+            command.current_dir(parent).env("OWD", parent);
+        }
         inherit_descriptor(&mut command, self.file.as_raw_fd());
         command.spawn().map_err(|source| InspectionError::Launch {
             path: self.path.display().to_string(),
             source,
         })
+    }
+
+    /// Extract through the exact validated descriptor, never by reopening the
+    /// mutable pathname after validation.
+    pub fn extract_to(&self, destination: &Path) -> Result<(), InspectionError> {
+        let descriptor_path = descriptor_path(self.file.as_raw_fd());
+        let offset = self.squashfs_offset.to_string();
+        let mut command = Command::new(UNSQUASHFS);
+        command
+            .args(["-offset", &offset, "-no-progress", "-d"])
+            .arg(destination)
+            .arg(&descriptor_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        inherit_descriptor(&mut command, self.file.as_raw_fd());
+        let output = command.output().map_err(|source| InspectionError::Io {
+            path: destination.display().to_string(),
+            source,
+        })?;
+        if !output.status.success() {
+            return Err(InspectionError::ParserFailed(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
