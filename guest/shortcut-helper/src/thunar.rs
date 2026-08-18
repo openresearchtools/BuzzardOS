@@ -20,7 +20,7 @@ use thiserror::Error;
 
 const MAX_UCA_BYTES: usize = 1024 * 1024;
 const TEMPLATE_PATH: &str = "/etc/buzzardos/xdg/Thunar/uca.xml";
-const MANAGED_ACTIONS: [(&str, &str, &str); 7] = [
+const MANAGED_ACTIONS: [(&str, &str, &str); 5] = [
     (
         "buzzardos-appimage-run-v1",
         "/usr/libexec/buzzardos-shortcut-helper run-path %f",
@@ -29,33 +29,27 @@ const MANAGED_ACTIONS: [(&str, &str, &str); 7] = [
     (
         "buzzardos-appimage-extract-run-v1",
         "/usr/libexec/buzzardos-shortcut-helper extract-and-run %f",
-        "Extract and Run AppImage",
+        "Extract and Run AppImage (Persistent)",
     ),
     (
         "buzzardos-appimage-extract-run-no-sandbox-v1",
         "/usr/libexec/buzzardos-shortcut-helper extract-and-run-no-sandbox %f",
-        "Extract and Run AppImage (--no-sandbox)",
+        "Extract and Run --no-sandbox",
     ),
     (
         "buzzardos-appimage-add-applications-v1",
         "/usr/libexec/buzzardos-shortcut-helper register-applications %f",
-        "Add to Applications",
-    ),
-    (
-        "buzzardos-appimage-remove-applications-v1",
-        "/usr/libexec/buzzardos-shortcut-helper remove-applications-for %f",
-        "Remove from Applications",
+        "Add AppImage to Applications",
     ),
     (
         "buzzardos-appimage-add-desktop-v1",
         "/usr/libexec/buzzardos-shortcut-helper register-desktop %f",
-        "Add Desktop Shortcut",
+        "Add AppImage to Desktop",
     ),
-    (
-        "buzzardos-appimage-remove-desktop-v1",
-        "/usr/libexec/buzzardos-shortcut-helper remove-desktop-for %f",
-        "Remove Desktop Shortcut",
-    ),
+];
+const RETIRED_MANAGED_ACTION_IDS: [&str; 2] = [
+    "buzzardos-appimage-remove-applications-v1",
+    "buzzardos-appimage-remove-desktop-v1",
 ];
 const PATTERNS: &str = "*.AppImage;*.appimage";
 const RANGE: &str = "1-1";
@@ -306,10 +300,7 @@ impl ParsedActions {
                     .children()
                     .any(|child| child.is_element() && child.has_tag_name("other-files")),
             };
-            if MANAGED_ACTIONS
-                .iter()
-                .any(|managed| managed.0 == id.as_str())
-            {
+            if is_buzzard_managed_action_id(&id) {
                 managed_ranges.push(whole_line_range(xml, action.range.clone()));
             } else {
                 custom_action_count += 1;
@@ -371,6 +362,11 @@ impl ParsedActions {
         output.push_str(&without_managed[adjusted_close..]);
         output
     }
+}
+
+fn is_buzzard_managed_action_id(id: &str) -> bool {
+    MANAGED_ACTIONS.iter().any(|managed| managed.0 == id)
+        || RETIRED_MANAGED_ACTION_IDS.contains(&id)
 }
 
 fn child_text(node: Node<'_, '_>, name: &str) -> Option<String> {
@@ -478,6 +474,30 @@ mod tests {
         install_thunar_actions_at(&config, &template).unwrap();
         let result = fs::read_to_string(thunar.join("uca.xml")).unwrap();
         assert!(!result.contains("--obsolete"));
+        for (id, _, _) in MANAGED_ACTIONS {
+            assert_eq!(result.matches(id).count(), 1);
+        }
+    }
+
+    #[test]
+    fn removes_retired_buzzard_actions_without_treating_them_as_user_actions() {
+        let (_temporary, config, template) = setup();
+        let thunar = config.join("Thunar");
+        fs::create_dir(&thunar).unwrap();
+        let retired = r#"  <action><name>Remove from Applications</name><unique-id>buzzardos-appimage-remove-applications-v1</unique-id><command>obsolete</command></action>
+  <action><name>Remove Desktop Shortcut</name><unique-id>buzzardos-appimage-remove-desktop-v1</unique-id><command>obsolete</command></action>
+"#;
+        fs::write(
+            thunar.join("uca.xml"),
+            TEMPLATE.replace("</actions>", &format!("{retired}</actions>")),
+        )
+        .unwrap();
+        let installed = install_thunar_actions_at(&config, &template).unwrap();
+        assert_eq!(installed.preserved_custom_actions, 0);
+        let result = fs::read_to_string(installed.path).unwrap();
+        for id in RETIRED_MANAGED_ACTION_IDS {
+            assert!(!result.contains(id));
+        }
         for (id, _, _) in MANAGED_ACTIONS {
             assert_eq!(result.matches(id).count(), 1);
         }

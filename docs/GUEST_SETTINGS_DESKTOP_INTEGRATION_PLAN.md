@@ -193,24 +193,40 @@ AT-SPI as well as pointer/keyboard interaction.
 
 ## 8. AppImage integration
 
-Add to Applications and Add Desktop Shortcut link to the original guest-
-visible Type-2 AppImage. They do not copy it. If the target later moves, the
+Add AppImage to Applications and Add AppImage to Desktop link to the original
+guest-visible Type-2 AppImage. They do not copy it. If the target later moves, the
 fixed launcher opens a native guest file chooser and atomically relinks the
 registration after validating the replacement.
 
-Thunar supplies exactly seven fixed helper actions for one AppImage candidate:
-Run AppImage, Extract and Run AppImage, Extract and Run AppImage
-(`--no-sandbox`), Add/Remove Applications, and Add/Remove Desktop Shortcut.
+Thunar supplies exactly five fixed helper actions for one AppImage candidate:
+Run AppImage, Extract and Run AppImage (Persistent), Extract and Run
+`--no-sandbox`, Add AppImage to Applications, and Add AppImage to Desktop.
+Remove from Applications and Remove Desktop Shortcut are not Thunar actions.
 The helper validates the file; the XML filter is not a security boundary.
 Generated launchers invoke only the fixed helper with an opaque registration
 ID and never use `sh -c`.
 
+A managed AppImage's Applications secondary-click menu contains, in order:
+Open, Extract and Run, Extract and Run `--no-sandbox`, Pin/Unpin, Add to
+Desktop, Rename, and Delete from Applications. Ordinary distribution
+applications contain Open, Pin/Unpin, and Add to Desktop, without AppImage-only
+operations. Rename updates the managed Applications and Desktop projections,
+not the original AppImage filename. Delete from Applications unpins and removes
+only the Applications projection. It does not delete the original AppImage,
+its extraction, or an explicitly requested Desktop shortcut.
+
 Persistent extraction is atomic and source-adjacent at
 `<AppImage>.extracted`. A validated `AppRun` must resolve inside that real,
 guest-user-owned directory. The explicit no-sandbox action creates a private
-zero-byte `.no-sandbox` marker inside the extraction and future normal launches
-reuse that extraction and option. The original AppImage remains the registered
-identity and is never replaced or deleted by extraction.
+zero-byte, mode-0600 `.no-sandbox` marker inside the extraction. Every normal
+launch route checks for the extraction first; when it is absent the original
+AppImage runs normally. When present, the helper runs the validated `AppRun`,
+retains literal fixed arguments from the first safe top-level desktop entry,
+discards arguments containing FreeDesktop field codes, and suppresses any
+embedded `--no-sandbox` unless the marker is valid. Applications, generated
+Desktop shortcuts, raw Desktop AppImages, Thunar, AT-SPI, and CUA therefore
+inherit the same selected persistent mode. The original AppImage remains the
+registered identity and is never replaced or deleted by extraction.
 
 Renaming a registered AppImage on the Desktop is one crash-recoverable helper
 transaction. Its durable journal, descriptor-bound identity checks,

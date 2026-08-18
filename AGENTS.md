@@ -426,12 +426,25 @@ Thunar integration; it supplies no logo wallpaper or remote background.
 Thunar's GTK3 status bar remains palette-correct in focused and backdrop
 states; no inactive white strip is permitted.
 
-Thunar exposes fixed, single-path helper actions for validated Type-2
-AppImages: Run, persistent source-adjacent Extract and Run, persistent Extract
-and Run with `--no-sandbox`, Add/Remove Applications, and Add/Remove Desktop.
-The extracted directory is `<AppImage>.extracted`; the opt-in is remembered by
-a private zero-byte `.no-sandbox` marker inside it. Normal launches reuse a
-valid existing extraction. No Thunar action embeds a shell command.
+Thunar exposes exactly five fixed, single-path helper actions for validated
+Type-2 AppImages: Run AppImage, persistent source-adjacent Extract and Run,
+Extract and Run `--no-sandbox`, Add AppImage to Applications, and Add AppImage
+to Desktop. Removal is never a file-manager action. A managed AppImage's
+Applications secondary-click menu owns exactly Open, Extract and Run, Extract
+and Run `--no-sandbox`, Pin/Unpin, Add to Desktop, Rename, and Delete from
+Applications. Deleting from Applications removes only that projection and
+never deletes the source AppImage or extraction; an explicitly created Desktop
+shortcut remains usable.
+
+Every Applications, generated Desktop-shortcut, raw Desktop-AppImage, Thunar,
+AT-SPI, and CUA launch enters the same fixed helper. Normal launch checks
+`<AppImage>.extracted` first and otherwise executes the original AppImage. A
+real, guest-user-owned extraction must contain an `AppRun` resolving inside
+it. Extracted launch retains literal fixed arguments from the first safe
+top-level desktop entry, discards FreeDesktop field-code arguments, and removes
+an embedded `--no-sandbox` unless approved by an exact guest-user-owned,
+regular, zero-byte, mode-0600 `.no-sandbox` marker. The explicit no-sandbox
+action creates that marker. No action embeds a shell command.
 
 Sway owns geometry/state. Drag, resize, minimize, maximize/restore, close,
 focus, and titlebar context actions use confirmed Sway IPC. Do not add a

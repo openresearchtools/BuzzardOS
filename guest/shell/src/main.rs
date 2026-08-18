@@ -17,7 +17,9 @@ use buzzardos_desktop_core::{
     Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
     read_bounded,
 };
-use buzzardos_shortcut_helper::{HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore};
+use buzzardos_shortcut_helper::{
+    HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore, extract_and_launch, launch_path,
+};
 use fontdue::{Font, FontSettings};
 use gio::prelude::*;
 use icons::{AppIcon, load_application_icons, load_icon};
@@ -100,7 +102,6 @@ const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
 const WINDOW_MENU_HEIGHT: u32 = 44 + 5 * MENU_ROW_HEIGHT as u32;
 const APPLICATION_CONTEXT_WIDTH: u32 = 252;
-const APPLICATION_CONTEXT_HEIGHT: u32 = 12 + 3 * MENU_ROW_HEIGHT as u32;
 const DESKTOP_CONTEXT_WIDTH: u32 = 272;
 const DESKTOP_DIALOG_WIDTH: u32 = 430;
 const DESKTOP_DIALOG_HEIGHT: u32 = 190;
@@ -150,6 +151,7 @@ struct PasteSession {
 enum EditOperation {
     NewFolder,
     Rename(PathBuf),
+    RenameApplication(RegistrationId),
 }
 
 #[derive(Debug, Clone)]
@@ -1405,8 +1407,8 @@ impl Shell {
                 .map(|application| {
                     application_context_targets(
                         application,
-                        application_desktop_shortcut_exists(application),
                         self.pinned_applications.contains(&application.id),
+                        managed_appimage_registration_id(application).is_some(),
                     )
                 })
                 .unwrap_or_default(),
@@ -1427,15 +1429,11 @@ impl Shell {
                     entries.push(("Rename", ShellAction::DesktopRename));
                 }
                 entries.push(("Delete", ShellAction::DesktopDelete));
-                if let Some(registered) = appimage_registered {
-                    entries.push(if *registered {
-                        (
-                            "Remove from Applications",
-                            ShellAction::DesktopRemoveFromApplications,
-                        )
-                    } else {
-                        ("Add to Applications", ShellAction::DesktopAddToApplications)
-                    });
+                if matches!(appimage_registered, Some(false)) {
+                    entries.push((
+                        "Add AppImage to Applications",
+                        ShellAction::DesktopAddToApplications,
+                    ));
                 }
                 rows(entries)
             }
@@ -1449,7 +1447,7 @@ impl Shell {
                     },
                     label: match dialog.operation {
                         EditOperation::NewFolder => "Create",
-                        EditOperation::Rename(_) => "Rename",
+                        EditOperation::Rename(_) | EditOperation::RenameApplication(_) => "Rename",
                     }
                     .to_owned(),
                     action: ShellAction::DesktopEditConfirm,
@@ -1549,6 +1547,18 @@ impl Shell {
     }
 
     fn show_application_context(&mut self, id: String, local_x: f64, local_y: f64) {
+        let rows = self
+            .applications
+            .iter()
+            .find(|application| application.id == id)
+            .map_or(3, |application| {
+                if managed_appimage_registration_id(application).is_some() {
+                    7
+                } else {
+                    3
+                }
+            });
+        let height = 12 + rows * MENU_ROW_HEIGHT as u32;
         let maximum_left = self
             .desktop_size
             .0
@@ -1557,12 +1567,12 @@ impl Shell {
             .desktop_size
             .1
             .saturating_sub(PANEL_HEIGHT as u32)
-            .saturating_sub(APPLICATION_CONTEXT_HEIGHT) as i32;
+            .saturating_sub(height) as i32;
         let left = (self.menu_origin.0 + local_x.floor() as i32).clamp(0, maximum_left.max(0));
         let top = (self.menu_origin.1 + local_y.floor() as i32).clamp(0, maximum_top.max(0));
         self.show_context(
             ContextState::Application(id),
-            (APPLICATION_CONTEXT_WIDTH, APPLICATION_CONTEXT_HEIGHT),
+            (APPLICATION_CONTEXT_WIDTH, height),
             (left, top),
         );
     }
@@ -1585,7 +1595,7 @@ impl Shell {
             });
         let rows = if item {
             4 + usize::from(self.desktop_selection.len() == 1)
-                + usize::from(appimage_registered.is_some())
+                + usize::from(matches!(appimage_registered, Some(false)))
         } else {
             3
         };
@@ -2194,6 +2204,26 @@ impl Shell {
         }));
     }
 
+    fn begin_application_rename(&mut self, application_id: &str) {
+        let Some(application) = self
+            .applications
+            .iter()
+            .find(|application| application.id == application_id)
+        else {
+            return;
+        };
+        let Some(registration_id) = managed_appimage_registration_id(application) else {
+            return;
+        };
+        let input = application.name.clone();
+        self.show_dialog(ContextState::Edit(EditDialog {
+            operation: EditOperation::RenameApplication(registration_id),
+            input,
+            replace_on_type: true,
+            error: None,
+        }));
+    }
+
     fn commit_edit(&mut self) {
         let ContextState::Edit(dialog) = self.context_state.clone() else {
             return;
@@ -2203,6 +2233,7 @@ impl Shell {
         // Desktop operations provide the authoritative empty/dot/slash/NUL
         // validation.
         let name = dialog.input.as_str();
+        let renaming_application = matches!(&dialog.operation, EditOperation::RenameApplication(_));
         let result = (|| -> Result<Option<PathBuf>> {
             match dialog.operation {
                 EditOperation::NewFolder => {
@@ -2221,10 +2252,17 @@ impl Shell {
                         .rename_desktop_item(old, OsStr::new(name))?;
                     Ok(Some(renamed))
                 }
+                EditOperation::RenameApplication(id) => {
+                    RegistrationStore::discover()?.rename_application(id, name)?;
+                    Ok(None)
+                }
             }
         })();
         match result {
             Ok(selected) => {
+                if renaming_application {
+                    self.refresh_applications_now();
+                }
                 let _ = self.refresh_desktop_items();
                 if let Some(selected) = selected {
                     self.select_only(selected);
@@ -2310,19 +2348,15 @@ impl Shell {
         }
     }
 
-    fn set_appimage_application_registration(&mut self, enabled: bool) {
+    fn add_selected_appimage_to_applications(&mut self) {
         let Some(path) = self.single_selected_path() else {
             return;
         };
         let result = (|| -> Result<()> {
             let store = RegistrationStore::discover()?;
             if let Some(registration) = store.find_by_target(&path)? {
-                if enabled {
-                    store.add_applications(registration.id)?;
-                } else {
-                    store.remove_applications(registration.id)?;
-                }
-            } else if enabled {
+                store.add_applications(registration.id)?;
+            } else {
                 store.register(&path, RegistrationFlags::APPLICATIONS)?;
             }
             Ok(())
@@ -2330,6 +2364,63 @@ impl Shell {
         match result {
             Ok(()) => self.hide_context(),
             Err(error) => self.show_operation_error("Could not update Applications", error),
+        }
+    }
+
+    fn extract_registered_application(&mut self, application_id: &str, no_sandbox: bool) {
+        let result = (|| -> Result<()> {
+            let application = self
+                .applications
+                .iter()
+                .find(|application| application.id == application_id)
+                .context("application no longer exists")?;
+            let id = managed_appimage_registration_id(application)
+                .context("application is not a managed AppImage")?;
+            let registration = RegistrationStore::discover()?.load(id)?;
+            extract_and_launch(&registration.target_path, no_sandbox)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.hide_context(),
+            Err(error) => self.show_operation_error("Could not extract and run AppImage", error),
+        }
+    }
+
+    fn delete_application_registration(&mut self, application_id: &str) {
+        let result = (|| -> Result<()> {
+            let application = self
+                .applications
+                .iter()
+                .find(|application| application.id == application_id)
+                .context("application no longer exists")?;
+            let id = managed_appimage_registration_id(application)
+                .context("application is not a managed AppImage")?;
+            RegistrationStore::discover()?.remove_applications(id)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.set_application_pinned(application_id, false) {
+                    eprintln!(
+                        "buzzardos-shell: clearing removed application pin failed: {error:#}"
+                    );
+                }
+                self.refresh_applications_now();
+                self.hide_context();
+            }
+            Err(error) => self.show_operation_error("Could not delete from Applications", error),
+        }
+    }
+
+    fn refresh_applications_now(&mut self) {
+        if let Ok(applications) = scan_applications() {
+            self.application_icons = load_application_icons(&applications);
+            self.applications = applications;
+            self.clamp_menu_scroll();
+            if self.menu_open && self.menu_kind == MenuKind::Applications {
+                self.apply_applications_menu_geometry();
+            }
+            self.dirty = true;
         }
     }
 
@@ -2508,19 +2599,9 @@ impl Shell {
                 let _ = self.rebuild_desktop_targets();
                 self.hide_context();
             }
-            ShellAction::RemoveApplicationDesktopShortcut(id) => {
-                if let Some(application) = self
-                    .applications
-                    .iter()
-                    .find(|application| application.id == id)
-                    .cloned()
-                    && let Err(error) = remove_application_desktop_shortcut(&application)
-                {
-                    eprintln!("buzzardos-shell: remove desktop shortcut failed: {error:#}");
-                }
-                let _ = self.desktop_model.rescan();
-                let _ = self.rebuild_desktop_targets();
-                self.hide_context();
+            ShellAction::ExtractApplication(id) => self.extract_registered_application(&id, false),
+            ShellAction::ExtractApplicationNoSandbox(id) => {
+                self.extract_registered_application(&id, true)
             }
             ShellAction::PinApplication(id) => {
                 if let Err(error) = self.set_application_pinned(&id, true) {
@@ -2536,6 +2617,8 @@ impl Shell {
                     self.hide_context();
                 }
             }
+            ShellAction::RenameApplication(id) => self.begin_application_rename(&id),
+            ShellAction::DeleteApplication(id) => self.delete_application_registration(&id),
             ShellAction::DesktopOpenSelection => self.open_selection(),
             ShellAction::DesktopCut => self.copy_selection_to_clipboard(ClipboardOperation::Cut),
             ShellAction::DesktopCopy => self.copy_selection_to_clipboard(ClipboardOperation::Copy),
@@ -2555,12 +2638,7 @@ impl Shell {
                     self.dirty = true;
                 }
             }
-            ShellAction::DesktopAddToApplications => {
-                self.set_appimage_application_registration(true)
-            }
-            ShellAction::DesktopRemoveFromApplications => {
-                self.set_appimage_application_registration(false)
-            }
+            ShellAction::DesktopAddToApplications => self.add_selected_appimage_to_applications(),
             ShellAction::DesktopEditConfirm => self.commit_edit(),
             ShellAction::DesktopDeleteConfirm => self.confirm_delete(),
             ShellAction::DesktopCollisionReplace => {
@@ -3616,6 +3694,7 @@ impl Shell {
                 let title = match dialog.operation {
                     EditOperation::NewFolder => "New Folder",
                     EditOperation::Rename(_) => "Rename Item",
+                    EditOperation::RenameApplication(_) => "Rename Application",
                 };
                 draw_text(
                     canvas,
@@ -3835,14 +3914,12 @@ impl Shell {
                         .ok()
                         .flatten()
                         .is_some_and(|registration| registration.applications_launcher);
-                    operations.push(if registered {
-                        (
-                            "Remove from Applications",
-                            ShellAction::DesktopRemoveFromApplications,
-                        )
-                    } else {
-                        ("Add to Applications", ShellAction::DesktopAddToApplications)
-                    });
+                    if !registered {
+                        operations.push((
+                            "Add AppImage to Applications",
+                            ShellAction::DesktopAddToApplications,
+                        ));
+                    }
                 }
                 for (operation_index, (label, action)) in operations.into_iter().enumerate() {
                     let operation_id = NodeId(
@@ -4104,29 +4181,19 @@ impl Shell {
                 },
             );
 
-            // Expose shortcut management as a direct AT-SPI action for every
+            // Expose shortcut creation as a direct AT-SPI action for every
             // installed application. Agents do not have to open the visual
             // context menu, find a row, or scroll it into view first.
-            let shortcut_exists = application_desktop_shortcut_exists(application);
             let shortcut_id = NodeId(40_000 + index as u64);
-            let shortcut_action = if shortcut_exists {
-                ShellAction::RemoveApplicationDesktopShortcut(application.id.clone())
-            } else {
-                ShellAction::AddApplicationDesktopShortcut(application.id.clone())
-            };
             let mut shortcut = A11yNode::new(Role::Button);
-            shortcut.set_label(format!(
-                "{} Desktop Shortcut for {}",
-                if shortcut_exists { "Remove" } else { "Add" },
-                application.name
-            ));
+            shortcut.set_label(format!("Add {} to Desktop", application.name));
             shortcut.add_action(Action::Click);
             nodes.push((shortcut_id, shortcut));
             menu_children.push(shortcut_id);
             targets.insert(
                 shortcut_id,
                 AccessibleTarget::Activate {
-                    action: shortcut_action,
+                    action: ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
                     menu_index: None,
                 },
             );
@@ -4701,19 +4768,6 @@ fn managed_appimage_registration_id(application: &Application) -> Option<Registr
     RegistrationId::from_str(value).ok()
 }
 
-fn application_desktop_shortcut_exists(application: &Application) -> bool {
-    if let Some(id) = managed_appimage_registration_id(application) {
-        return RegistrationStore::discover()
-            .and_then(|store| store.load(id))
-            .is_ok_and(|registration| registration.desktop_shortcut);
-    }
-    XdgPaths::discover()
-        .ok()
-        .map(|paths| paths.desktop_dir.join(&application.id))
-        .and_then(|path| fs::symlink_metadata(path).ok())
-        .is_some_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-}
-
 fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
     if let Some(id) = managed_appimage_registration_id(application) {
         RegistrationStore::discover()?.add_desktop(id)?;
@@ -4735,16 +4789,6 @@ fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
     Ok(())
 }
 
-fn remove_application_desktop_shortcut(application: &Application) -> Result<()> {
-    if let Some(id) = managed_appimage_registration_id(application) {
-        RegistrationStore::discover()?.remove_desktop(id)?;
-        return Ok(());
-    }
-    let paths = XdgPaths::discover()?;
-    DesktopDirectory::open(&paths.desktop_dir)?.delete_confirmed(OsStr::new(&application.id))?;
-    Ok(())
-}
-
 fn open_desktop_item(path: &std::path::Path, kind: DesktopItemKind) -> Result<()> {
     match kind {
         DesktopItemKind::AppImage => {
@@ -4758,9 +4802,7 @@ fn open_desktop_item(path: &std::path::Path, kind: DesktopItemKind) -> Result<()
                 let id = registration.id.to_string();
                 spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)]);
             } else {
-                let validated = buzzardos_shortcut_helper::validate_appimage(path)?;
-                validated.authorize_owner_execute()?;
-                let _ = validated.spawn_exact()?;
+                let _ = launch_path(path)?;
             }
             Ok(())
         }

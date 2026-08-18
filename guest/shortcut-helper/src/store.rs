@@ -722,6 +722,20 @@ impl RegistrationStore {
         )
     }
 
+    pub fn rename_application(
+        &self,
+        id: RegistrationId,
+        display_name: &str,
+    ) -> Result<AppImageRegistration, StoreError> {
+        let _lock = self.acquire_desktop_rename_lock()?;
+        self.recover_pending_desktop_rename_locked()?;
+        let mut registration = self.load_locked(id)?;
+        registration.display_name = display_name.to_owned();
+        registration.validate()?;
+        self.save_projected(&registration)?;
+        Ok(registration)
+    }
+
     pub fn launch(&self, id: RegistrationId) -> Result<LaunchResult, StoreError> {
         let _lock = self.acquire_desktop_rename_lock()?;
         self.recover_pending_desktop_rename_locked()?;
@@ -1161,9 +1175,6 @@ fn apply_inspection(
     target: &Path,
 ) {
     registration.target_path = target.to_path_buf();
-    registration
-        .display_name
-        .clone_from(&inspected.display_name);
     registration.icon = icon_metadata(inspected);
     registration.last_observed = Some(inspected.observation.clone());
 }
@@ -1360,6 +1371,31 @@ mod tests {
             store.load(id),
             Err(StoreError::MissingRegistration(_))
         ));
+    }
+
+    #[test]
+    fn application_rename_updates_both_projections_without_touching_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        let id = RegistrationId::generate();
+        let target = temp.path().join("original.AppImage");
+        fs::write(&target, b"original bytes").unwrap();
+        let record = registration(id, target.clone());
+        store.save_projected(&record).unwrap();
+
+        let renamed = store.rename_application(id, "Renamed Application").unwrap();
+        assert_eq!(renamed.display_name, "Renamed Application");
+        assert_eq!(fs::read(&target).unwrap(), b"original bytes");
+        for path in [
+            store.paths.managed_appimage_desktop_path(id),
+            store.paths.desktop_dir.join(id.desktop_file_id()),
+        ] {
+            assert!(
+                fs::read_to_string(path)
+                    .unwrap()
+                    .contains("Name=Renamed Application")
+            );
+        }
     }
 
     #[test]

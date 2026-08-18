@@ -63,9 +63,12 @@ pub enum ShellAction {
     OpenDesktopItem(PathBuf, DesktopItemKind),
     LaunchApplication(String),
     AddApplicationDesktopShortcut(String),
-    RemoveApplicationDesktopShortcut(String),
+    ExtractApplication(String),
+    ExtractApplicationNoSandbox(String),
     PinApplication(String),
     UnpinApplication(String),
+    RenameApplication(String),
+    DeleteApplication(String),
     DesktopOpenSelection,
     DesktopCut,
     DesktopCopy,
@@ -75,7 +78,6 @@ pub enum ShellAction {
     DesktopNewFolder,
     DesktopArrangeIcons,
     DesktopAddToApplications,
-    DesktopRemoveFromApplications,
     DesktopEditConfirm,
     DesktopDeleteConfirm,
     DesktopCollisionReplace,
@@ -310,51 +312,64 @@ pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
 
 pub fn application_context_targets(
     application: &Application,
-    shortcut_exists: bool,
     pinned: bool,
+    managed_appimage: bool,
 ) -> Vec<HitTarget> {
     const CONTEXT_WIDTH: i32 = 252;
-    [
+    let mut entries = vec![(
+        "Open",
+        ShellAction::LaunchApplication(application.id.clone()),
+    )];
+    if managed_appimage {
+        entries.extend([
+            (
+                "Extract and Run",
+                ShellAction::ExtractApplication(application.id.clone()),
+            ),
+            (
+                "Extract and Run --no-sandbox",
+                ShellAction::ExtractApplicationNoSandbox(application.id.clone()),
+            ),
+        ]);
+    }
+    entries.push(if pinned {
         (
-            "Open",
-            ShellAction::LaunchApplication(application.id.clone()),
-        ),
-        if shortcut_exists {
+            "Unpin",
+            ShellAction::UnpinApplication(application.id.clone()),
+        )
+    } else {
+        ("Pin", ShellAction::PinApplication(application.id.clone()))
+    });
+    entries.push((
+        "Add to Desktop",
+        ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
+    ));
+    if managed_appimage {
+        entries.extend([
             (
-                "Remove Desktop Shortcut",
-                ShellAction::RemoveApplicationDesktopShortcut(application.id.clone()),
-            )
-        } else {
+                "Rename…",
+                ShellAction::RenameApplication(application.id.clone()),
+            ),
             (
-                "Add Desktop Shortcut",
-                ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
-            )
-        },
-        if pinned {
-            (
-                "Unpin from Applications",
-                ShellAction::UnpinApplication(application.id.clone()),
-            )
-        } else {
-            (
-                "Pin in Applications",
-                ShellAction::PinApplication(application.id.clone()),
-            )
-        },
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (label, action))| HitTarget {
-        rect: Rect {
-            x: 6,
-            y: 6 + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
-            width: CONTEXT_WIDTH - 12,
-            height: MENU_ROW_HEIGHT,
-        },
-        label: label.to_owned(),
-        action,
-    })
-    .collect()
+                "Delete from Applications",
+                ShellAction::DeleteApplication(application.id.clone()),
+            ),
+        ]);
+    }
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action))| HitTarget {
+            rect: Rect {
+                x: 6,
+                y: 6 + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+                width: CONTEXT_WIDTH - 12,
+                height: MENU_ROW_HEIGHT,
+            },
+            label: label.to_owned(),
+            action,
+        })
+        .collect()
 }
 
 pub fn builtin_desktop_targets() -> Vec<HitTarget> {
@@ -490,6 +505,33 @@ mod tests {
 
         let applications = scan_application_directories(&[local, system]).unwrap();
         assert!(applications.is_empty());
+    }
+
+    #[test]
+    fn application_context_matches_gnozzard_menu_ownership() {
+        let application = app("Fixture");
+        let managed = application_context_targets(&application, false, true)
+            .into_iter()
+            .map(|target| target.label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            managed,
+            [
+                "Open",
+                "Extract and Run",
+                "Extract and Run --no-sandbox",
+                "Pin",
+                "Add to Desktop",
+                "Rename…",
+                "Delete from Applications",
+            ]
+        );
+
+        let ordinary = application_context_targets(&application, true, false)
+            .into_iter()
+            .map(|target| target.label)
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary, ["Open", "Unpin", "Add to Desktop"]);
     }
 
     #[test]

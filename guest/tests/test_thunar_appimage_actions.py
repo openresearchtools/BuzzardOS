@@ -15,15 +15,13 @@ class ThunarAppImageActionContractTests(unittest.TestCase):
         root = ET.fromstring(asset.read_text(encoding="utf-8"))
         self.assertEqual(root.tag, "actions")
         actions = list(root.findall("action"))
-        self.assertEqual(len(actions), 7)
+        self.assertEqual(len(actions), 5)
         expected = {
             "Run AppImage": "run-path",
-            "Extract and Run AppImage": "extract-and-run",
-            "Extract and Run AppImage (--no-sandbox)": "extract-and-run-no-sandbox",
-            "Add to Applications": "register-applications",
-            "Remove from Applications": "remove-applications-for",
-            "Add Desktop Shortcut": "register-desktop",
-            "Remove Desktop Shortcut": "remove-desktop-for",
+            "Extract and Run AppImage (Persistent)": "extract-and-run",
+            "Extract and Run --no-sandbox": "extract-and-run-no-sandbox",
+            "Add AppImage to Applications": "register-applications",
+            "Add AppImage to Desktop": "register-desktop",
         }
         for action in actions:
             name = action.findtext("name")

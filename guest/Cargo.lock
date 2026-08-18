@@ -2271,6 +2271,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "tempfile",
  "thiserror",
  "buzzardos-desktop-core",
