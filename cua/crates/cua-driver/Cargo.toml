@@ -1,0 +1,46 @@
+[package]
+name = "cua-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Daemonless Sway/Wayland/Xwayland computer-use CLI for Buzzard OS"
+default-run = "cua"
+
+[[bin]]
+name = "cua"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+cua-driver-core = { path = "../cua-driver-core" }
+cursor-overlay = { path = "../cursor-overlay" }
+async-trait = "0.1"
+base64 = { workspace = true }
+uuid = { workspace = true }
+# Used by process/session helpers on Linux.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+platform-linux = { path = "../platform-linux" }
+
+[features]
+default = []
+
+[dev-dependencies]
+# Shared integration-test harness (MCP/CLI transports, child reaping, paths,
+# response accessors). Dev-only — never linked into the shipped driver.
+cua-driver-testkit = { path = "../cua-driver-testkit" }
+cua-driver-contract = { path = "../cua-driver-contract" }
+tokio = { workspace = true, features = ["full"] }
+image = { workspace = true }
+base64 = { workspace = true }
+tempfile = "3"
+semver = "1"
+futures-util = "0.3"
+tokio-tungstenite = "0.24"
