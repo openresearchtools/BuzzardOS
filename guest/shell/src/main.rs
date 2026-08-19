@@ -802,6 +802,9 @@ fn run() -> Result<()> {
         desktop_watcher,
         desktop_rescan_after: None,
         exact_toplevels: BTreeMap::new(),
+        pending_window_normalization: BTreeSet::new(),
+        window_normalization_retry_after: None,
+        process_workspace_affinity: BTreeMap::new(),
         sway_window_changes: sway_ipc::subscribe_window_changes()
             .context("subscribing to authoritative Sway window events")?,
         repaint_request,
@@ -951,6 +954,9 @@ struct Shell {
     desktop_watcher: DirectoryWatcher,
     desktop_rescan_after: Option<Instant>,
     exact_toplevels: BTreeMap<u32, ExactToplevel>,
+    pending_window_normalization: BTreeSet<u32>,
+    window_normalization_retry_after: Option<Instant>,
+    process_workspace_affinity: BTreeMap<u32, String>,
     sway_window_changes: Receiver<()>,
     repaint_request: Option<PathBuf>,
     repaint_generation: Option<String>,
@@ -1138,6 +1144,9 @@ impl Shell {
             .exact_toplevels
             .get(&id)
             .map(|entry| entry.window.clone());
+        if existing.is_none() {
+            self.pending_window_normalization.insert(id);
+        }
         self.exact_toplevels.insert(
             id,
             ExactToplevel {
@@ -1189,6 +1198,13 @@ impl Shell {
 
     fn poll(&mut self) {
         self.poll_control_socket();
+        if self
+            .window_normalization_retry_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.window_normalization_retry_after = None;
+            self.refresh_window_states();
+        }
         if self
             .window_menu_pointer_refresh_at
             .is_some_and(|deadline| self.window_menu_pending_pointer && Instant::now() >= deadline)
@@ -1411,6 +1427,68 @@ impl Shell {
             .map(|state| (state.identifier.clone(), state))
             .collect::<BTreeMap<_, _>>();
         let mut changed = false;
+        // Learn only from established windows. A pending window initially
+        // placed on Desktop must not overwrite the CUA workspace remembered
+        // from the splash/dialog it just replaced.
+        let mut established = BTreeMap::<u32, BTreeSet<String>>::new();
+        for (id, toplevel) in &self.exact_toplevels {
+            if self.pending_window_normalization.contains(id) {
+                continue;
+            }
+            let Some(state) = states.get(&toplevel.identifier) else {
+                continue;
+            };
+            if state.pid != 0
+                && !state.minimized
+                && !state.workspace.is_empty()
+                && state.workspace != "__i3_scratch"
+            {
+                established
+                    .entry(state.pid)
+                    .or_default()
+                    .insert(state.workspace.clone());
+            }
+        }
+        for (pid, workspaces) in established {
+            if workspaces.len() == 1 {
+                self.process_workspace_affinity
+                    .insert(pid, workspaces.into_iter().next().expect("one workspace"));
+            } else {
+                self.process_workspace_affinity.remove(&pid);
+            }
+        }
+        self.process_workspace_affinity
+            .retain(|pid, _| std::path::Path::new(&format!("/proc/{pid}")).exists());
+        let normalized = self
+            .pending_window_normalization
+            .iter()
+            .filter_map(|id| {
+                let toplevel = self.exact_toplevels.get(id)?;
+                states.get(&toplevel.identifier)?;
+                let preferred_workspace = states
+                    .get(&toplevel.identifier)
+                    .and_then(|state| self.process_workspace_affinity.get(&state.pid))
+                    .map(String::as_str);
+                match sway_ipc::place_new_window(&toplevel.identifier, preferred_workspace) {
+                    Ok(()) => Some(*id),
+                    Err(error) => {
+                        eprintln!(
+                            "buzzardos-shell: deferring initial frame constraint for {}: {error:#}",
+                            toplevel.identifier
+                        );
+                        None
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+        for id in normalized {
+            self.pending_window_normalization.remove(&id);
+        }
+        self.window_normalization_retry_after = if self.pending_window_normalization.is_empty() {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(100))
+        };
         for toplevel in self.exact_toplevels.values_mut() {
             let Some(state) = states.get(&toplevel.identifier) else {
                 continue;
@@ -3551,7 +3629,10 @@ impl Shell {
                 wl_shm::Format::Argb8888,
             )
             .context("allocating workspace bar frame")?;
-        clear(canvas, theme.canvas.rgba());
+        // The workspace selector is one continuous bar. Keep the unused
+        // portion on the same panel surface colour as its tabs instead of
+        // exposing the darker desktop canvas after the final `+` button.
+        clear(canvas, theme.surface.rgba());
         for target in top_bar_targets(logical_width, &self.workspace_tabs) {
             let hovered = self.hovered.as_ref() == Some(&target.action);
             let active = match target.action {
@@ -4809,6 +4890,7 @@ impl ForeignToplevelListHandler for Shell {
     ) {
         let id = handle.id().protocol_id();
         self.exact_toplevels.remove(&id);
+        self.pending_window_normalization.remove(&id);
         if self.menu_kind == MenuKind::Window(id) {
             self.hide_menu();
         }
@@ -5575,7 +5657,10 @@ fn draw_panel_frame(
             wl_shm::Format::Argb8888,
         )
         .context("allocating panel frame")?;
-    clear(canvas, theme.canvas.rgba());
+    // Empty taskbar space is still part of the panel, not desktop canvas.
+    // Painting it with the panel surface colour keeps the bar visually
+    // continuous when capped task buttons do not consume the full width.
+    clear(canvas, theme.surface.rgba());
     fill_rect(
         canvas,
         width,

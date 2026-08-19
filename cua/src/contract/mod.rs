@@ -17,7 +17,7 @@ pub use inputs::{
     ClickButton, ClickInput, ClipboardReadInput, ClipboardWriteInput, CloseWindowInput, DragInput,
     GetAgentCursorStateInput, GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput,
     HotkeyInput, InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput,
-    PressKeyInput, RestoreWindowInput, ScrollInput, SetAgentCursorEnabledInput,
+    PressKeyInput, RestoreWindowInput, ScrollBy, ScrollInput, SetAgentCursorEnabledInput,
     SetAgentCursorMotionInput, SetAgentCursorThemeInput, SetWindowFrameInput, ToolInput,
     TypeTextInput, MAX_TYPE_TEXT_CHARS,
 };

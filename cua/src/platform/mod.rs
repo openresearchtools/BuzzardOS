@@ -35,7 +35,7 @@ pub mod installed_apps;
 #[cfg(target_os = "linux")]
 pub mod capture;
 #[cfg(target_os = "linux")]
-mod clipboard;
+pub(crate) mod clipboard;
 
 #[cfg(target_os = "linux")]
 pub mod atspi;

@@ -325,6 +325,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-scanner",
+ "wl-clipboard-rs",
  "x11",
  "x11rb",
  "xkbcommon",

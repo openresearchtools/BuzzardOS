@@ -2,8 +2,8 @@
 
 use crate::contract::{
     ClickButton, ClickInput, DragInput, GetCursorPositionInput, GetDesktopStateInput,
-    GetScreenSizeInput, HotkeyInput, InvokeMenuInput, MoveCursorInput, PressKeyInput, ScrollInput,
-    TypeTextInput,
+    GetScreenSizeInput, HotkeyInput, InvokeMenuInput, MoveCursorInput, PressKeyInput, ScrollBy,
+    ScrollInput, TypeTextInput,
 };
 use crate::core::{
     protocol::ToolResult,
@@ -1500,6 +1500,7 @@ impl Tool for GetWindowStateTool {
 
 pub struct LaunchAppTool;
 static LAUNCH_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
+const GUI_LAUNCH_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug)]
 enum DirectLaunchObservation {
@@ -1640,6 +1641,22 @@ fn route_launch_observation_to_cua(
                 record["workspace"] = json!(workspace);
                 record["workspace_index"] = json!(index);
                 record["output"] = json!(moved.output);
+                let frame = crate::platform::wayland::logical_rect_to_canonical(
+                    moved.x,
+                    moved.y,
+                    moved.width,
+                    moved.height,
+                );
+                record["bounds"] = json!({
+                    "x": frame.0,
+                    "y": frame.1,
+                    "width": frame.2,
+                    "height": frame.3,
+                });
+                record["x"] = json!(frame.0);
+                record["y"] = json!(frame.1);
+                record["width"] = json!(frame.2);
+                record["height"] = json!(frame.3);
             }
             Ok(DirectLaunchObservation::Running { pid, windows })
         }
@@ -1755,7 +1772,13 @@ impl Tool for LaunchAppTool {
                             let pid = child.id();
                             let observation = observe_direct_launch(
                                 child,
-                                std::time::Duration::from_secs(3),
+                                // Firefox, Blender, and other heavyweight GUI
+                                // programs routinely need more than three
+                                // seconds for their first Wayland toplevel.
+                                // Do not return an empty success before that
+                                // window can be moved to the caller's cuaN
+                                // workspace.
+                                GUI_LAUNCH_WINDOW_TIMEOUT,
                                 std::time::Duration::from_millis(100),
                                 |pid| {
                                     crate::platform::wayland::list_windows_dispatch(Some(pid))
@@ -2716,9 +2739,9 @@ impl Tool for ClickTool {
                 back to full-window space.\n\n\
                 button: \"left\" (default), \"right\", or \"middle\". Defaults to left so the \
                 field is fully back-compat. X11: routes through XSendEvent ButtonPress/Release \
-                with the matching button code. Native Wayland: only left-button is supported \
-                via the virtual-pointer protocol — right/middle return an error rather than \
-                silently degrading to left. `modifier` holds ctrl/shift/alt/super for the \
+                with the matching button code. Native Wayland routes left, right, and middle \
+                through the invocation-owned virtual pointer without changing another seat. \
+                `modifier` holds ctrl/shift/alt/super for the \
                 click on X11. Native Wayland refuses modified pointer clicks until its input \
                 protocol can carry keyboard modifier state.".into(),
             input_schema: json!({
@@ -2737,7 +2760,7 @@ impl Tool for ClickTool {
                     // Shape matches the shared button_schema() canon (string +
                     // [left,right,middle]); kept inline to carry the Linux/Wayland
                     // back-compat prose the click button-schema test asserts on.
-                    "button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button. Default: \"left\" (legacy back-compat). X11: routed via ButtonPress/Release with the matching evdev code. Native Wayland: only left-button is supported via the virtual-pointer protocol; right/middle return an error."},
+                    "button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button. Default: \"left\" (legacy back-compat). X11 uses the matching button code; native Wayland routes left, right, and middle through the invocation-owned virtual pointer."},
                     "count":{"type":"integer"},
                     "modifier": crate::core::tool_schema::modifier_schema(),
                     "from_zoom":{"type":"boolean","description":"Set true after a zoom call to auto-translate zoom-image pixel coordinates back to full-window space."},
@@ -3150,6 +3173,10 @@ impl Tool for ClickTool {
                 // (foreign-toplevel `activate`), then drive `count` virtual-pointer
                 // button events. Wayland injection routes to the compositor focus.
                 crate::platform::wayland::click(xid, output_x, output_y, count as u32, button)?;
+                if button == 3 && count == 1 {
+                    let _ =
+                        crate::platform::wayland::sway_ipc::request_titlebar_menu_if_hit(xid, yi)?;
+                }
                 return Ok("wayland_activate");
             }
             // X11 injection. Tiered no-focus-steal delivery (background):
@@ -4622,13 +4649,39 @@ impl Tool for SetValueTool {
 pub struct ScrollTool;
 static SCROLL_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 
+fn wayland_scroll_key(direction: &str, by: Option<ScrollBy>) -> &'static str {
+    match (direction, by) {
+        ("up", Some(ScrollBy::Page)) => "pageup",
+        ("down", Some(ScrollBy::Page)) => "pagedown",
+        ("up", _) => "up",
+        ("down", _) => "down",
+        ("left", _) => "left",
+        ("right", _) => "right",
+        _ => "down",
+    }
+}
+
+#[cfg(test)]
+mod wayland_scroll_tests {
+    use super::{wayland_scroll_key, ScrollBy};
+
+    #[test]
+    fn page_scrolls_use_page_keys_and_line_scrolls_use_arrows() {
+        assert_eq!(wayland_scroll_key("down", Some(ScrollBy::Page)), "pagedown");
+        assert_eq!(wayland_scroll_key("up", Some(ScrollBy::Page)), "pageup");
+        assert_eq!(wayland_scroll_key("down", Some(ScrollBy::Line)), "down");
+        assert_eq!(wayland_scroll_key("left", Some(ScrollBy::Page)), "left");
+    }
+}
+
 #[async_trait]
 impl Tool for ScrollTool {
     fn def(&self) -> &ToolDef {
         SCROLL_DEF.get_or_init(|| ToolDef {
             name: "scroll".into(),
-            description: "Scroll the target pid's focused region via XSendEvent Button4/5. \
-                direction required; by defaults to line, amount defaults to 3.".into(),
+            description: "Scroll the target pid's focused region. Stock Sway uses seat-scoped \
+                virtual-keyboard line/page navigation; X11 uses wheel events. direction is \
+                required, by defaults to line, and amount defaults to 3.".into(),
             input_schema: json!({
                 // `pid` is conditionally required (validated in code), so only
                 // `direction` is pinned — matches the scroll→["direction"] canon
@@ -4663,16 +4716,34 @@ impl Tool for ScrollTool {
                 Err(result) => return result,
             };
             let direction = input.direction.as_str().to_owned();
+            let by = input.by;
             let x = input.x.round() as i32;
             let y = input.y.round() as i32;
             let amount = input.amount.unwrap_or(3).clamp(1, 50) as usize;
             let display = direction.clone();
             let wayland = crate::platform::wayland::wayland_input_enabled();
-            let path = if wayland { "wayland_desktop" } else { "xtest" };
+            let path = if wayland {
+                "wayland_keyboard_scroll"
+            } else {
+                "xtest"
+            };
             let (visual_before, cursor_masks) = capture_guest_output_after_pointer_at(x, y).await;
-            let result = tokio::task::spawn_blocking(move || {
+            let keyboard_admission = if wayland {
+                match keyboard_admission(&args) {
+                    Ok(admission) => Some(admission),
+                    Err(error) => return error,
+                }
+            } else {
+                None
+            };
+            let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 if wayland {
-                    crate::platform::wayland::scroll_desktop(x, y, &direction, amount as u32)
+                    let key = wayland_scroll_key(&direction, by);
+                    let admission = keyboard_admission.as_ref().expect("Wayland admission");
+                    for _ in 0..amount {
+                        crate::platform::wayland::press_key_focused(admission, key)?;
+                    }
+                    Ok(())
                 } else {
                     crate::platform::input::send_scroll_xtest_desktop(x, y, &direction, amount)
                 }
@@ -4803,6 +4874,10 @@ impl Tool for ScrollTool {
             if let Some(refusal) = unavailable_wayland_focused_input_background(delivery) {
                 return refusal;
             }
+            let keyboard_admission = match keyboard_admission(&args) {
+                Ok(admission) => admission,
+                Err(error) => return error,
+            };
             let direction_for_wayland = direction.clone();
             let local_point = match (pixel_target, &resolved) {
                 (Some(point), _) => Some(point),
@@ -4838,20 +4913,36 @@ impl Tool for ScrollTool {
                     y.round() as i32,
                 )
             });
-            let result = tokio::task::spawn_blocking(move || {
-                crate::platform::wayland::scroll_at(
-                    xid,
-                    output_point,
-                    &direction_for_wayland,
-                    amount as u32,
-                )
+            let (visual_before, cursor_masks) = match output_point {
+                Some((x, y)) => capture_guest_output_after_pointer_at(x, y).await,
+                None => capture_guest_output_with_current_pointer_mask().await,
+            };
+            let by = match args.opt_str("by").as_deref() {
+                Some("page") => Some(ScrollBy::Page),
+                _ => Some(ScrollBy::Line),
+            };
+            let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let key = wayland_scroll_key(&direction_for_wayland, by);
+                for _ in 0..amount {
+                    crate::platform::wayland::press_key(&keyboard_admission, xid, key)?;
+                }
+                Ok(())
             })
             .await;
             return match result {
-                Ok(Ok(())) => ToolResult::text(format!(
-                    "Scrolled {direction} {amount} ticks (delivery_mode=foreground)."
-                ))
-                .with_structured(json!({ "verified": false, "delivery_mode": "foreground" })),
+                Ok(Ok(())) => {
+                    let mut observation = observe_guest_output_change_masked(
+                        visual_before,
+                        "wayland_keyboard_scroll",
+                        &cursor_masks,
+                    )
+                    .await;
+                    observation["delivery_mode"] = json!("foreground");
+                    ToolResult::text(format!(
+                        "Scrolled {direction} {amount} ticks (delivery_mode=foreground)."
+                    ))
+                    .with_structured(observation)
+                }
                 Ok(Err(error)) => ToolResult::error(error.to_string()),
                 Err(error) => ToolResult::error(format!("Task error: {error}")),
             };
@@ -6840,12 +6931,12 @@ impl Tool for GetCursorPositionTool {
         if crate::platform::wayland::is_wayland() {
             return match crate::platform::wayland::last_synth_cursor_pos() {
                 Some((x, y)) => ToolResult::text(
-                    format!("✅ Cursor at ({x}, {y}) (synthetic — last move_cursor in this process)")
+                    format!("✅ Cursor at ({x}, {y}) (synthetic — last action by this numbered CUA seat)")
                 ).with_structured(json!({
                     "x": x, "y": y, "source": "synthetic"
                 })),
                 None => ToolResult::text(
-                    "Cursor position unknown on Wayland — no move_cursor has been issued in this process yet.".to_string()
+                    "Cursor position unknown on Wayland — this numbered CUA seat has no current synthetic position.".to_string()
                 ).with_structured(json!({ "source": "synthetic", "available": false })),
             };
         }

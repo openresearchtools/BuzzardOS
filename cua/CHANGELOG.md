@@ -1,5 +1,18 @@
 # Changelog
 
+## Buzzard 0.17.0+buzzard1 (2026-08-19)
+
+- Reduced the reviewed fork to one daemonless Linux/Sway CLI crate with 43
+  local tools and no MCP, browser/CDP, recording, updater, or telemetry path.
+- Added lazy, independently locked `cua`, `cua2`, ... outputs/workspaces with
+  output-local screenshots, coordinates, window metadata, input, and cursor
+  state.
+- Added bounded RAM-backed cross-invocation cursor state and a daemonless
+  Wayland clipboard owner with strict text/image/file limits.
+- Fixed heavyweight GUI launch routing, cross-output window coordinates,
+  moved-window clamping, native right/middle click, and observable stock-Sway
+  line/page scrolling.
+
 ## [0.17.0](https://github.com/trycua/cua/compare/cua-driver-rs-v0.16.0...cua-driver-rs-v0.17.0) (2026-08-02)
 
 

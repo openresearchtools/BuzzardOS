@@ -65,6 +65,7 @@ impl Rect {
 pub struct WindowState {
     pub identifier: String,
     pub container_id: u64,
+    pub pid: u32,
     pub rect: Rect,
     pub workspace_rect: Option<Rect>,
     pub workspace: String,
@@ -213,6 +214,11 @@ fn collect(
         windows.push(WindowState {
             identifier: identifier.to_owned(),
             container_id,
+            pid: node
+                .get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+                .unwrap_or_default(),
             rect,
             workspace_rect,
             workspace: workspace_name.unwrap_or_default().to_owned(),
@@ -559,7 +565,23 @@ fn switch_workspace_unlocked(name: &str, host_output: &str, current: &str) -> Re
         quote_sway(current)?,
         quote_sway(&target.output)?,
         quote_sway(name)?
-    ))
+    ))?;
+
+    // Moving a workspace between the off-screen agent output and the fixed
+    // human output changes its usable rectangle: only the human output owns
+    // the 28px navigation bar. Re-clamp every normal mapped window after the
+    // atomic swap so an off-screen frame at y=14 cannot appear underneath the
+    // human bar, and so the workspace moved away may use its full height.
+    let affected = list_windows()?
+        .into_iter()
+        .filter(|window| window.workspace == name || window.workspace == current)
+        .map(|window| window.identifier)
+        .collect::<Vec<_>>();
+    for identifier in affected {
+        constrain_new_window(&identifier)
+            .with_context(|| format!("constraining {identifier} after workspace swap"))?;
+    }
+    Ok(())
 }
 
 pub fn move_window_to_workspace(identifier: &str, workspace: &str, focus: bool) -> Result<()> {
@@ -892,6 +914,76 @@ pub fn bring_into_view(identifier: &str) -> Result<()> {
         |state| state.rect == visible_frame && state.focused && !state.minimized,
     )?;
     Ok(())
+}
+
+/// Clamp one newly mapped floating toplevel into its current usable workspace.
+///
+/// This is intentionally separate from `bring_into_view`: initial placement
+/// must respect layer-shell exclusive zones without focusing the window or
+/// changing the active workspace/seat. The shell calls it only for a new
+/// foreign-toplevel identity, so later user-directed off-edge placement is not
+/// continuously overridden.
+pub fn constrain_new_window(identifier: &str) -> Result<()> {
+    let state = window(identifier)?;
+    if state.minimized || state.fullscreen {
+        return Ok(());
+    }
+    let workspace = state
+        .workspace_rect
+        .context("new window is not attached to a usable workspace")?;
+    let visible_frame = clamp_to_workspace(state.rect, workspace);
+    if visible_frame == state.rect {
+        return Ok(());
+    }
+    let mut commands = Vec::new();
+    remove_restore_mark_commands(&state, &mut commands);
+    frame_commands(visible_frame, &mut commands);
+    run_confirmed(
+        identifier,
+        state.container_id,
+        "constrain new window to usable workspace",
+        commands,
+        |state| state.rect == visible_frame && !state.minimized && !state.fullscreen,
+    )?;
+    Ok(())
+}
+
+/// Keep a new secondary window with the one unambiguous workspace already
+/// owned by its application process, then constrain its outer frame there.
+/// Modal dialogs from Thunar/Firefox/Blender otherwise land on Sway's globally
+/// focused workspace even when the application itself belongs to a numbered
+/// CUA output. Multiple existing workspaces are deliberately ambiguous and
+/// are not guessed.
+pub fn place_new_window(identifier: &str, preferred_workspace: Option<&str>) -> Result<()> {
+    let windows = list_windows()?;
+    let state = windows
+        .iter()
+        .find(|window| window.identifier == identifier)
+        .with_context(|| format!("Sway has no mapped toplevel identifier {identifier}"))?;
+    let destination = preferred_workspace.map(str::to_owned).or_else(|| {
+        if state.pid == 0 {
+            return None;
+        }
+        let workspaces = windows
+            .iter()
+            .filter(|window| {
+                window.identifier != identifier
+                    && window.pid == state.pid
+                    && !window.minimized
+                    && !window.workspace.is_empty()
+                    && window.workspace != SCRATCHPAD_WORKSPACE
+            })
+            .map(|window| window.workspace.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        (workspaces.len() == 1)
+            .then(|| (*workspaces.iter().next().expect("one workspace")).to_owned())
+    });
+    if let Some(workspace) = destination
+        && workspace != state.workspace
+    {
+        move_window_to_workspace(identifier, &workspace, false)?;
+    }
+    constrain_new_window(identifier)
 }
 
 pub fn minimize(identifier: &str) -> Result<()> {

@@ -37,6 +37,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-scanner = "0.31"
+wl-clipboard-rs = "0.9.3"
 x11 = { version = "2.21", features = ["xlib", "xinput", "xtest"] }
 x11rb = { version = "0.13", features = ["xinput", "randr", "xfixes", "composite", "shape", "xtest"] }
 xkbcommon = "0.9"

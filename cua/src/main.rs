@@ -161,9 +161,21 @@ fn alias_definition(mut definition: Value, alias: &str) -> Value {
 
 fn main() {
     let argv0 = std::env::args_os().next().unwrap_or_else(|| "cua".into());
+    let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--internal-wayland-clipboard-owner-v1")
+    {
+        arguments.remove(0);
+        if let Err(error) = crate::platform::clipboard::run_internal_wayland_owner(&arguments) {
+            println!("ERROR:{error}");
+            std::io::stdout().flush().ok();
+            process::exit(1);
+        }
+        return;
+    }
     let mut invocation_index =
         crate::core::seat_context::invocation_index(&argv0).unwrap_or_else(|error| die(error, 64));
-    let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let explicit_index = if arguments
         .first()
         .is_some_and(|argument| argument == "--index")

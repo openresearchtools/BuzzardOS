@@ -418,6 +418,23 @@ fn logical_rect_to_canonical_for_state(
     width: u32,
     height: u32,
 ) -> (i32, i32, u32, u32) {
+    // Sway uses one global logical coordinate space for every virtual output,
+    // whereas the selected wl_output's screencopy and virtual-pointer
+    // protocols start at (0,0). Translate to that output before scaling.
+    let origin = sway_ipc::caller_output_origin().unwrap_or((0, 0));
+    logical_rect_to_canonical_for_state_at_origin(state, x, y, width, height, origin)
+}
+
+fn logical_rect_to_canonical_for_state_at_origin(
+    state: Option<BuzzardOSOutputState>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    (origin_x, origin_y): (i32, i32),
+) -> (i32, i32, u32, u32) {
+    let x = x.saturating_sub(origin_x);
+    let y = y.saturating_sub(origin_y);
     let Some(state) = state else {
         return (x, y, width, height);
     };
@@ -451,20 +468,29 @@ fn physical_rect_to_logical_for_state(
     width: u32,
     height: u32,
 ) -> (i32, i32, u32, u32) {
-    let Some(state) = state else {
-        return (x, y, width, height);
+    let logical = match state {
+        Some(state) => {
+            let dimensions = state.guest_logical_dimensions();
+            scaled_rect(
+                x,
+                y,
+                width,
+                height,
+                dimensions.0,
+                dimensions.1,
+                state.physical_width,
+                state.physical_height,
+                false,
+            )
+        }
+        None => (x, y, width, height),
     };
-    let logical = state.guest_logical_dimensions();
-    scaled_rect(
-        x,
-        y,
-        width,
-        height,
-        logical.0,
-        logical.1,
-        state.physical_width,
-        state.physical_height,
-        false,
+    let (origin_x, origin_y) = sway_ipc::caller_output_origin().unwrap_or((0, 0));
+    (
+        logical.0.saturating_add(origin_x),
+        logical.1.saturating_add(origin_y),
+        logical.2,
+        logical.3,
     )
 }
 
@@ -2264,12 +2290,6 @@ pub fn scroll_at(
     with_stable_output_generation(|| scroll_vptr(Some(window_id), point, &direction, amount))
 }
 
-/// Scroll at a desktop-absolute point without activating a named toplevel.
-pub fn scroll_desktop(x: i32, y: i32, direction: &str, amount: u32) -> anyhow::Result<()> {
-    let direction = direction.to_string();
-    with_stable_output_generation(|| scroll_vptr(None, Some((x, y)), &direction, amount))
-}
-
 /// wlroots virtual-pointer implementation of [`scroll`].
 fn scroll_vptr(
     window_id: Option<u64>,
@@ -2303,7 +2323,9 @@ fn scroll_vptr(
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         sess.vptr.axis_source(AxisSource::Wheel);
-        sess.vptr.axis_discrete(event_time_ms(), axis, value, sign);
+        let time = event_time_ms();
+        sess.vptr.axis_discrete(time, axis, value, sign);
+        sess.vptr.axis_stop(time, axis);
         sess.vptr.frame();
         sess.queue.roundtrip(&mut sess.state)?;
     }
@@ -2312,33 +2334,51 @@ fn scroll_vptr(
     Ok(())
 }
 
-/// Last cursor position the agent warped to via `move_cursor_absolute`.
-/// Wayland exposes no protocol for clients to read the real global cursor
-/// position; a Wayland-conformant `get_cursor_position` can therefore only
-/// report what THIS process synthesized. Updated every `motion_absolute`
-/// emitted from `move_cursor_absolute` / `click` / `drag`.
-static SYNTH_CURSOR_POS: std::sync::OnceLock<std::sync::Mutex<Option<(i32, i32)>>> =
-    std::sync::OnceLock::new();
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticCursorState {
+    x: i32,
+    y: i32,
+    geometry_generation: u64,
+}
 
 fn record_synth_cursor(x: i32, y: i32) {
-    let cell = SYNTH_CURSOR_POS.get_or_init(|| std::sync::Mutex::new(None));
-    if let Ok(mut g) = cell.lock() {
-        *g = Some((x, y));
+    let state = SyntheticCursorState {
+        x,
+        y,
+        geometry_generation: buzzardos_output_state()
+            .map(|state| state.geometry_generation)
+            .unwrap_or(0),
+    };
+    let result = serde_json::to_vec(&state)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| crate::core::seat_context::write_state("cursor-position", &bytes, 256));
+    if let Err(error) = result {
+        tracing::warn!(%error, "could not record daemonless CUA cursor position");
     }
 }
 
-/// Returns the last `(x, y)` this process warped the cursor to via the
-/// Wayland virtual-pointer protocol, or `None` if no warp has happened in
-/// this process. The reading is "synthetic": Wayland forbids clients from
-/// querying the real cursor position, so this value diverges from reality
-/// the moment the user moves their physical mouse. Callers should surface
-/// `source: "synthetic"` in the structured payload.
+/// Returns the last `(x, y)` this numbered CUA seat warped to via the Wayland
+/// virtual-pointer protocol. The latest point is a bounded, mode-0600 record
+/// in the user's RAM-backed XDG runtime directory, so independent daemonless
+/// CLI invocations share it without a service, unbounded history, or durable
+/// telemetry. A geometry-generation mismatch invalidates it after resize.
 pub fn last_synth_cursor_pos() -> Option<(i32, i32)> {
-    SYNTH_CURSOR_POS
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
+    let bytes = crate::core::seat_context::read_state("cursor-position", 256)
         .ok()
-        .and_then(|g| *g)
+        .flatten()?;
+    let state: SyntheticCursorState = serde_json::from_slice(&bytes).ok()?;
+    let output = buzzardos_output_state();
+    if output.is_some_and(|output| {
+        state.geometry_generation != output.geometry_generation
+            || state.x < 0
+            || state.y < 0
+            || state.x >= output.physical_width as i32
+            || state.y >= output.physical_height as i32
+    }) {
+        return None;
+    }
+    Some((state.x, state.y))
 }
 
 /// Warp the cursor to absolute output coordinates `(x, y)` using
@@ -2724,14 +2764,22 @@ pub fn list_windows_dispatch_checked(
 ) -> anyhow::Result<(Vec<WindowInfo>, Option<CanonicalOutputMetadata>)> {
     let before = read_buzzardos_output_state()?;
     let mut windows = list_windows_dispatch_logical(filter_pid);
+    let window_origins = sway_ipc::public_window_output_origins().unwrap_or_default();
+    let caller_origin = sway_ipc::caller_output_origin().unwrap_or((0, 0));
     for window in &mut windows {
-        (window.x, window.y, window.width, window.height) = logical_rect_to_canonical_for_state(
-            before,
-            window.x,
-            window.y,
-            window.width,
-            window.height,
-        );
+        let origin = window_origins
+            .get(&window.xid)
+            .copied()
+            .unwrap_or(caller_origin);
+        (window.x, window.y, window.width, window.height) =
+            logical_rect_to_canonical_for_state_at_origin(
+                before,
+                window.x,
+                window.y,
+                window.width,
+                window.height,
+                origin,
+            );
     }
     let after = read_buzzardos_output_state()?;
     require_same_output_generation(before, after)?;

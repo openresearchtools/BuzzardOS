@@ -424,6 +424,45 @@ fn outputs() -> anyhow::Result<Vec<OutputInfo>> {
         .collect())
 }
 
+/// Return the Sway-logical origin of the output selected for this numbered
+/// CUA invocation. Sway exposes all virtual outputs in one global layout,
+/// while screencopy and output-bound virtual input both use coordinates local
+/// to the selected output. Keeping this translation beside the authoritative
+/// `get_outputs` parser prevents every input/capture caller from inventing its
+/// own multi-output arithmetic.
+pub fn caller_output_origin() -> anyhow::Result<(i32, i32)> {
+    let expected = std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV)
+        .map_err(|_| anyhow::anyhow!("numbered CUA output identity is unavailable"))?;
+    let output = outputs()?
+        .into_iter()
+        .find(|output| output.active && output.name == expected)
+        .ok_or_else(|| anyhow::anyhow!("Sway did not expose active caller output {expected}"))?;
+    Ok((output.rect.x, output.rect.y))
+}
+
+/// Return each public window's origin in its own output's Sway-logical space.
+/// Global window discovery spans every CUA output, but each published frame is
+/// defined in the native `(0,0)` coordinate space of the `output` named beside
+/// it. This prevents a cuaN caller from receiving large negative coordinates
+/// for otherwise valid windows on another agent output.
+pub fn public_window_output_origins() -> anyhow::Result<std::collections::HashMap<u64, (i32, i32)>>
+{
+    let outputs = outputs()?
+        .into_iter()
+        .filter(|output| output.active)
+        .map(|output| (output.name, (output.rect.x, output.rect.y)))
+        .collect::<std::collections::HashMap<_, _>>();
+    Ok(list_windows_result()?
+        .into_iter()
+        .filter_map(|window| {
+            outputs
+                .get(&window.output)
+                .copied()
+                .map(|origin| (window.id, origin))
+        })
+        .collect())
+}
+
 fn seats() -> anyhow::Result<Vec<SeatInfo>> {
     let value = swaymsg_value("get_seats")?;
     Ok(value
@@ -643,7 +682,26 @@ pub fn move_public_window_to_cua(
         "Sway accepted the move but window_id {id} remains on {}",
         moved.workspace
     );
-    Ok(moved)
+    if moved.fullscreen {
+        return Ok(moved);
+    }
+    let current = Rect {
+        x: moved.x,
+        y: moved.y,
+        width: i32::try_from(moved.width).unwrap_or(i32::MAX),
+        height: i32::try_from(moved.height).unwrap_or(i32::MAX),
+    };
+    let visible = clamp_restore_frame(current, &moved);
+    if visible != current {
+        set_window_frame_checked(
+            moved.id,
+            visible.x,
+            visible.y,
+            u32::try_from(visible.width).unwrap_or(1),
+            u32::try_from(visible.height).unwrap_or(1),
+        )?;
+    }
+    resolve_public_window(id, expected_pid)
 }
 
 pub fn is_public_window_id(id: u64) -> bool {
@@ -678,6 +736,32 @@ pub fn resolve_public_window(id: u64, expected_pid: Option<u32>) -> anyhow::Resu
         );
     }
     Ok(window)
+}
+
+/// Ask the optional Buzzard desktop shell to open controls for an exact
+/// titlebar target. Numbered CUA seats do not change Sway's legacy global
+/// `focused` flag (that belongs to human seat0), so the human titlebar helper
+/// cannot discover a CUA2/CUA3 target through that flag. The request contains
+/// only Sway's opaque mapped-window identity; the shell's transient surface
+/// still receives its horizontal position from an ordinary pointer-enter.
+pub fn request_titlebar_menu_if_hit(id: u64, local_y: i32) -> anyhow::Result<bool> {
+    let window = resolve_public_window(id, None)?;
+    if local_y < 0 || local_y >= window.content_y.max(0) {
+        return Ok(false);
+    }
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Ok(false);
+    };
+    let destination = std::path::PathBuf::from(runtime).join("buzzardos-shell-control.sock");
+    if !destination.exists() {
+        return Ok(false);
+    }
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "schema": 1,
+        "identifier": window.foreign_toplevel_identifier,
+    }))?;
+    std::os::unix::net::UnixDatagram::unbound()?.send_to(&payload, destination)?;
+    Ok(true)
 }
 
 pub fn window_for_id(id: u64) -> Option<Window> {
