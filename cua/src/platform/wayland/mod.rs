@@ -17,16 +17,14 @@ pub mod sway_ipc;
 mod virtual_keyboard;
 pub(crate) use virtual_keyboard::Admission as KeyboardAdmission;
 
-/// Install the session-revocation hook before any platform Tool can be
-/// admitted. This is intentionally separate from starting the Wayland owner.
+/// Initialize keyboard shutdown handling before any input tool is admitted.
+/// This is separate from starting the lazy Wayland owner.
 pub fn initialize_keyboard_cancellation() {
     virtual_keyboard::initialize();
 }
 
-pub fn keyboard_admission(
-    trusted_leases: Vec<crate::core::session::SessionLease>,
-) -> anyhow::Result<KeyboardAdmission> {
-    virtual_keyboard::admit(trusted_leases)
+pub fn keyboard_admission() -> anyhow::Result<KeyboardAdmission> {
+    virtual_keyboard::admit()
 }
 
 use std::collections::{HashMap, HashSet};
@@ -489,6 +487,7 @@ pub fn wayland_input_enabled() -> bool {
 struct Toplevel {
     title: String,
     app_id: String,
+    outputs: HashSet<u32>,
     closed: bool,
     maximized: bool,
     minimized: bool,
@@ -607,26 +606,48 @@ fn matching_handle(state: &State, id: u64) -> Option<ZwlrForeignToplevelHandleV1
             })
             .cloned();
     }
-    // IDs in this namespace were minted by the daemon-owned persistent
+    // IDs in this namespace were minted by the invocation-owned
     // foreign-toplevel connection. A missing one is stale or unknown and must
     // never fall through to title/app-id guessing, especially when several
     // windows share the same title.
     if id >= STABLE_TOPLEVEL_ID_BASE {
         return None;
     }
-    if let Some(identity) = identity_for(id) {
-        let by_title = state.toplevels.iter().find_map(|(protocol_id, toplevel)| {
-            (!identity.title.is_empty() && toplevel.title == identity.title)
-                .then(|| state.handles.get(protocol_id).cloned())
-                .flatten()
-        });
-        return by_title.or_else(|| {
-            state.toplevels.iter().find_map(|(protocol_id, toplevel)| {
-                (!identity.app_id.is_empty() && toplevel.app_id == identity.app_id)
+    if let Ok(window) = sway_ipc::resolve_public_window(id, None) {
+        let output_ids = state
+            .outputs
+            .iter()
+            .filter_map(|(output, name, _, _)| {
+                (name == &window.output).then_some(output.id().protocol_id())
+            })
+            .collect::<HashSet<_>>();
+        let mut candidates = state
+            .toplevels
+            .iter()
+            .filter_map(|(protocol_id, toplevel)| {
+                (!toplevel.closed
+                    && !output_ids.is_disjoint(&toplevel.outputs)
+                    && (window.title.is_empty() || toplevel.title == window.title)
+                    && (window.app_id.is_empty() || toplevel.app_id == window.app_id))
                     .then(|| state.handles.get(protocol_id).cloned())
                     .flatten()
-            })
-        });
+            });
+        let one = candidates.next()?;
+        return candidates.next().is_none().then_some(one);
+    }
+    if let Some(identity) = identity_for(id) {
+        let mut candidates = state
+            .toplevels
+            .iter()
+            .filter_map(|(protocol_id, toplevel)| {
+                (!toplevel.closed
+                    && (identity.title.is_empty() || toplevel.title == identity.title)
+                    && (identity.app_id.is_empty() || toplevel.app_id == identity.app_id))
+                    .then(|| state.handles.get(protocol_id).cloned())
+                    .flatten()
+            });
+        let one = candidates.next()?;
+        return candidates.next().is_none().then_some(one);
     }
 
     let protocol_id = u32::try_from(id).ok()?;
@@ -656,10 +677,12 @@ struct State {
     stable_toplevel_ids: HashMap<u32, u64>,
     next_stable_toplevel_id: u64,
     seat: Option<WlSeat>,
+    seats: Vec<(WlSeat, String)>,
     // Virtual-pointer manager + output dimensions, so `click` can land a real
     // button press at the output centre (over the just-activated window).
     vptr_manager: Option<ZwlrVirtualPointerManagerV1>,
     output: Option<WlOutput>,
+    outputs: Vec<(WlOutput, String, u32, u32)>,
     output_w: u32,
     output_h: u32,
     // Native screencopy capture state.
@@ -706,7 +729,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     Some(registry.bind::<ZwlrForeignToplevelManagerV1, _, _>(name, v, qh, ()));
             } else if interface == WlSeat::interface().name {
                 let v = version.min(7);
-                state.seat = Some(registry.bind::<WlSeat, _, _>(name, v, qh, ()));
+                let seat = registry.bind::<WlSeat, _, _>(name, v, qh, ());
+                state.seats.push((seat, String::new()));
             } else if interface == ZwlrVirtualPointerManagerV1::interface().name {
                 state.vptr_manager = Some(registry.bind::<ZwlrVirtualPointerManagerV1, _, _>(
                     name,
@@ -716,9 +740,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 ));
             } else if interface == WlOutput::interface().name {
                 let out = registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ());
-                if state.output.is_none() {
-                    state.output = Some(out);
-                }
+                state.outputs.push((out, String::new(), 0, 0));
             } else if interface == ZwlrScreencopyManagerV1::interface().name {
                 state.scrcopy_manager = Some(registry.bind::<ZwlrScreencopyManagerV1, _, _>(
                     name,
@@ -735,31 +757,75 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 
 impl Dispatch<WlSeat, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &WlSeat,
-        _: wayland_client::protocol::wl_seat::Event,
+        state: &mut Self,
+        seat: &WlSeat,
+        event: wayland_client::protocol::wl_seat::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // Seat name/capabilities events are irrelevant here — we only need the
-        // seat object to pass to foreign-toplevel `activate`.
+        if let wayland_client::protocol::wl_seat::Event::Name { name } = event {
+            if let Some(candidate) = state
+                .seats
+                .iter_mut()
+                .find(|candidate| candidate.0 == *seat)
+            {
+                candidate.1 = name.clone();
+            }
+            if std::env::var(crate::core::seat_context::CUA_SEAT_ENV)
+                .ok()
+                .as_deref()
+                == Some(name.as_str())
+            {
+                state.seat = Some(seat.clone());
+            }
+        }
     }
 }
 
 impl Dispatch<WlOutput, ()> for State {
     fn event(
         state: &mut Self,
-        _: &WlOutput,
+        output: &WlOutput,
         event: wl_output::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // Remember the output resolution so `click` can aim at its centre.
-        if let wl_output::Event::Mode { width, height, .. } = event {
-            state.output_w = width.max(0) as u32;
-            state.output_h = height.max(0) as u32;
+        match event {
+            wl_output::Event::Mode { width, height, .. } => {
+                if let Some(candidate) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|candidate| candidate.0 == *output)
+                {
+                    candidate.2 = width.max(0) as u32;
+                    candidate.3 = height.max(0) as u32;
+                    if state.output.as_ref() == Some(output) {
+                        state.output_w = candidate.2;
+                        state.output_h = candidate.3;
+                    }
+                }
+            }
+            wl_output::Event::Name { name } => {
+                if let Some(candidate) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|candidate| candidate.0 == *output)
+                {
+                    candidate.1 = name.clone();
+                    if std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV)
+                        .ok()
+                        .as_deref()
+                        == Some(name.as_str())
+                    {
+                        state.output = Some(output.clone());
+                        state.output_w = candidate.2;
+                        state.output_h = candidate.3;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -926,6 +992,12 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for State {
         match event {
             ftl_handle::Event::Title { title } => tl.title = title,
             ftl_handle::Event::AppId { app_id } => tl.app_id = app_id,
+            ftl_handle::Event::OutputEnter { output } => {
+                tl.outputs.insert(output.id().protocol_id());
+            }
+            ftl_handle::Event::OutputLeave { output } => {
+                tl.outputs.remove(&output.id().protocol_id());
+            }
             ftl_handle::Event::State { state } => apply_toplevel_state_array(tl, &state),
             ftl_handle::Event::Closed => tl.closed = true,
             _ => {}
@@ -1096,7 +1168,7 @@ fn foreign_toplevel_sender() -> &'static mpsc::Sender<ForeignToplevelCommand> {
     })
 }
 
-/// Enumerate native Wayland toplevels through one daemon-owned connection.
+/// Enumerate native Wayland toplevels through one invocation-owned connection.
 /// Stable ids remain bound to the same handle until its compositor `closed`
 /// event, including when several windows share one pid/title/app-id.
 pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
@@ -1594,6 +1666,13 @@ fn screenshot_display_dispatch_unchecked() -> anyhow::Result<Vec<u8>> {
 /// crop with.
 pub fn screenshot_window_dispatch(xid: u64) -> anyhow::Result<Vec<u8>> {
     if is_wayland() {
+        if sway_ipc::is_public_window_id(xid) {
+            sway_ipc::move_public_window_to_cua(
+                xid,
+                None,
+                crate::core::seat_context::current_index(),
+            )?;
+        }
         let before = read_buzzardos_output_state()?;
         if let Some((x, y, width, height)) = window_geometry_logical(xid) {
             let bytes = screenshot_display_dispatch_unchecked()?;
@@ -1644,12 +1723,12 @@ pub struct VptrSession {
 /// pointer event in *output* coordinates and rely on the activated toplevel
 /// covering the centre.
 pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<VptrSession> {
-    // Public wlroots ids are scoped to the daemon-owned persistent
+    // Public wlroots ids are scoped to the invocation-owned
     // foreign-toplevel connection. Activate them there; a fresh virtual
     // pointer connection cannot resolve those ids safely.
     let local_activate_window_id = match activate_window_id {
         Some(id) if sway_ipc::is_public_window_id(id) => {
-            sway_ipc::focus_public_window(id, None)?;
+            activate_window_for_input_target(id, None)?;
             None
         }
         Some(id) if id >= STABLE_TOPLEVEL_ID_BASE => {
@@ -1689,6 +1768,10 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
             .ok_or_else(|| anyhow::anyhow!("no native Wayland toplevel for window_id {id}"))?;
         handle.activate(&seat);
         queue.roundtrip(&mut state)?;
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        if sway_ipc::is_public_window_id(id) {
+            sway_ipc::require_caller_seat_focus(Some(id))?;
+        }
     }
 
     // Bind the virtual pointer to the concrete guest output when protocol
@@ -1734,10 +1817,20 @@ pub fn activate_window_for_input_target(
     window_id: u64,
     target_pid: Option<u32>,
 ) -> anyhow::Result<()> {
-    if sway_ipc::is_public_window_id(window_id) {
-        sway_ipc::focus_public_window(window_id, target_pid)?;
-        return Ok(());
-    }
+    let public_window = if sway_ipc::is_public_window_id(window_id) {
+        let window = sway_ipc::resolve_public_window(window_id, target_pid)?;
+        remember_identity(
+            window_id,
+            &Toplevel {
+                title: window.title.clone(),
+                app_id: window.app_id.clone(),
+                ..Toplevel::default()
+            },
+        );
+        Some(window)
+    } else {
+        None
+    };
 
     if window_id >= STABLE_TOPLEVEL_ID_BASE {
         activate_stable_foreign_toplevel(window_id)?;
@@ -1763,6 +1856,18 @@ pub fn activate_window_for_input_target(
         handle.activate(&seat);
         queue.roundtrip(&mut state)?;
         std::thread::sleep(std::time::Duration::from_millis(60));
+        if public_window.is_some() {
+            // Disambiguate duplicate titles/app-ids on their source outputs,
+            // confirm the exact seat focus there, then move the exact Sway
+            // container. Per-seat focus follows the container across outputs.
+            sway_ipc::require_caller_seat_exact_focus(window_id)?;
+            sway_ipc::move_public_window_to_cua(
+                window_id,
+                target_pid,
+                crate::core::seat_context::current_index(),
+            )?;
+            sway_ipc::require_caller_seat_focus(Some(window_id))?;
+        }
         return Ok(());
     }
 
@@ -2386,7 +2491,7 @@ fn drag_vptr(
     Ok(())
 }
 
-/// Type Unicode text into the focused Wayland surface through the daemon-owned
+/// Type Unicode text into the focused Wayland surface through the invocation-owned
 /// persistent `zwp_virtual_keyboard_v1`. Its generated one-keysym-per-key map
 /// preserves pinned wtype's Unicode behavior without destroying the active
 /// keyboard after each call. This mirrors the X11 backend's event typing.
@@ -2410,6 +2515,7 @@ pub fn type_text_focused(admission: &KeyboardAdmission, text: &str) -> anyhow::R
     if text.is_empty() {
         return Ok(());
     }
+    sway_ipc::require_caller_seat_focus(None)?;
     virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
@@ -2427,7 +2533,7 @@ pub fn type_text_with_delay(
 }
 
 /// Press a single named key into the focused Wayland surface through the
-/// daemon-owned persistent virtual keyboard.
+/// invocation-owned virtual keyboard.
 pub fn press_key(admission: &KeyboardAdmission, window_id: u64, key: &str) -> anyhow::Result<()> {
     activate_window_for_input(window_id)?;
     virtual_keyboard::press_key(admission, key)
@@ -2435,6 +2541,7 @@ pub fn press_key(admission: &KeyboardAdmission, window_id: u64, key: &str) -> an
 
 /// Press one key while an outer exact-container focus guard is active.
 pub fn press_key_focused(admission: &KeyboardAdmission, key: &str) -> anyhow::Result<()> {
+    sway_ipc::require_caller_seat_focus(None)?;
     virtual_keyboard::press_key(admission, key)
 }
 
@@ -2453,6 +2560,7 @@ pub fn hotkey(
 
 /// Send a chord while an outer exact-container focus guard is active.
 pub fn hotkey_focused(admission: &KeyboardAdmission, keys: &[String]) -> anyhow::Result<()> {
+    sway_ipc::require_caller_seat_focus(None)?;
     let (mods, final_key) = partition_modifiers(keys)?;
     virtual_keyboard::hotkey(admission, &mods, &final_key)
 }
@@ -2518,6 +2626,13 @@ fn wayland_atspi_windows(filter_pid: Option<u32>) -> Vec<WindowInfo> {
             window.is_on_screen =
                 compositor.visible && compositor.width > 0 && compositor.height > 0;
         }
+    }
+    // A toolkit may register on AT-SPI without mapping a toplevel (portals are
+    // a common example). Keep that synthetic handle for an explicit by-PID
+    // accessibility request, but never advertise it as an open window in the
+    // global window list.
+    if filter_pid.is_none() {
+        windows.retain(|window| window.width > 0 && window.height > 0);
     }
     windows
 }

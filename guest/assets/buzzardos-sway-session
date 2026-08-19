@@ -7,7 +7,6 @@ log_file="$status_dir/compositor.log"
 
 dbus-update-activation-environment \
     DBUS_SESSION_BUS_ADDRESS \
-    CUA_DRIVER_RS_ENABLE_WAYLAND \
     ELECTRON_OZONE_PLATFORM_HINT \
     GTK_MODULES \
     HOME \
@@ -36,6 +35,10 @@ dbus-send \
     string:org.a11y.Status \
     string:IsEnabled >/dev/null 2>&1 || true
 
+# Keep exactly one initial parent-Wayland output for the native Buzzard OS
+# window. Stock Sway's runtime `create_output` command creates later virtual
+# outputs through this backend; the filtered parent gateway keeps every later
+# surface off-screen and accepts host presentation/input only for the first.
 export WLR_BACKENDS=wayland
 export WLR_WL_OUTPUTS=1
 export WLR_LIBINPUT_NO_DEVICES=1

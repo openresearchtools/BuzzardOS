@@ -12,25 +12,25 @@ pub fn contracts() -> Vec<ToolContract> {
     vec![
         contract::<SetAgentCursorEnabledInput, SetAgentCursorEnabledOutput>(
             "set_agent_cursor_enabled",
-            "Show or hide the agent cursor owned by a session.",
+            "Show or hide the agent cursor owned by this numbered CUA workspace.",
             &["agent_cursor.set_enabled"],
             false,
         ),
         contract::<SetAgentCursorMotionInput, SetAgentCursorMotionOutput>(
             "set_agent_cursor_motion",
-            "Configure only movement physics and visibility timing for a session cursor.",
+            "Configure movement physics and visibility timing for this numbered CUA cursor.",
             &["agent_cursor.set_motion"],
             false,
         ),
         contract::<SetAgentCursorThemeInput, SetAgentCursorThemeOutput>(
             "set_agent_cursor_theme",
-            "Select an already-installed cursor theme for a session.",
+            "Select an installed cursor theme for this numbered CUA cursor.",
             &["agent_cursor.set_theme"],
             false,
         ),
         contract::<GetAgentCursorStateInput, GetAgentCursorStateOutput>(
             "get_agent_cursor_state",
-            "Return the session cursor's theme, semantic playback, position, visibility, and motion.",
+            "Return this numbered CUA cursor's theme, playback, position, visibility, and motion.",
             &["agent_cursor.state"],
             true,
         ),

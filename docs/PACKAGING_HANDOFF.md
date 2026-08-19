@@ -16,7 +16,7 @@ The deployment boundary is four binary packages:
 - `buzzardoscua`: the separately versioned in-guest computer-use service.
 
 The four version files are `VERSION`, `guest/GUEST_VERSION`,
-`guest/DESKTOP_VERSION`, and `guest/BUZZARDOSCUA_VERSION`. Package updates will
+`guest/DESKTOP_VERSION`, and `cua/VERSION`. Package updates will
 eventually be served from a separately designed signed APT repository. The
 current workflow does not publish packages or an OCI image.
 

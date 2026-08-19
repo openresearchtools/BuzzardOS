@@ -42,8 +42,8 @@ async fn call<T>(fut: impl std::future::Future<Output = T>) -> Option<T> {
 /// builds in `app_for_pid`), and an app that holds a modal grab can leave one of
 /// those unwrapped round-trips pending indefinitely. `walk_tree` already guards
 /// itself this way; this helper applies the same backstop to every other public
-/// entry point so a modal/wedged app can never hang the caller (the daemon, an
-/// MCP client) past OP_TIMEOUT (#1936). On timeout it yields `on_timeout` — the
+/// entry point so a modal/wedged app can never hang the CLI past OP_TIMEOUT.
+/// On timeout it yields `on_timeout` — the
 /// graceful "couldn't complete" value, so e.g. `type_text` falls back to XTEST.
 fn bounded<T>(
     work: impl std::future::Future<Output = Result<T>>,
@@ -93,7 +93,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 static SHARED_CONNECTION: tokio::sync::OnceCell<AccessibilityConnection> =
     tokio::sync::OnceCell::const_new();
 
-/// Keep one AT-SPI connection and registry registration alive for the daemon
+/// Keep one AT-SPI connection and registry registration alive for this CLI
 /// lifetime. WebKitGTK only publishes its WebProcess accessibility subtree
 /// while the registry reports an interested listener.
 async fn shared_connection() -> Result<&'static AccessibilityConnection> {

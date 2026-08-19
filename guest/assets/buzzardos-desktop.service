@@ -21,8 +21,6 @@ Environment=QT_QPA_PLATFORMTHEME=gtk3
 Environment=QT_ACCESSIBILITY=1
 Environment=GTK_MODULES=gail:atk-bridge
 Environment=NO_AT_BRIDGE=0
-Environment=CUA_DRIVER_RS_ENABLE_WAYLAND=1
-Environment=CUA_DRIVER_RS_TELEMETRY_ENABLED=false
 Environment=BUZZARDOS_STATUS_DIR=/run/buzzardos-host
 EnvironmentFile=/run/buzzardos-host/driver.env
 ExecStart=/opt/buzzardos/runtime/current/libexec/buzzardos-session

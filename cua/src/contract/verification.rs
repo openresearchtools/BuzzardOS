@@ -41,10 +41,6 @@ fn positive_integer_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "integer", "minimum": 1 })
 }
 
-fn string_schema(generator: &mut SchemaGenerator) -> Schema {
-    String::json_schema(generator)
-}
-
 fn nonempty_string_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "minLength": 1 })
 }
@@ -154,10 +150,6 @@ pub struct VerifyStateInput {
     /// One to eight predicates, combined with logical AND.
     #[schemars(length(min = 1, max = 8))]
     pub expect: Vec<StatePredicate>,
-    /// Optional session id for capture-scope and authorization continuity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     /// Bounded wait. Zero performs one sample.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "timeout_schema")]

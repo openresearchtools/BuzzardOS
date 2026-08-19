@@ -321,6 +321,8 @@ struct ReverseUdpRelay {
 struct HostUdpRelay {
     stop: Arc<AtomicBool>,
     socket_path: PathBuf,
+    #[cfg(test)]
+    local_host_port: u16,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -349,6 +351,11 @@ impl HostUdpRelay {
                     mapping.host_address, mapping.host_port
                 )
             })?;
+        #[cfg(test)]
+        let local_host_port = listener
+            .local_addr()
+            .context("reading host UDP listener address")?
+            .port();
         listener
             .set_nonblocking(true)
             .context("making host UDP listener nonblocking")?;
@@ -410,6 +417,8 @@ impl HostUdpRelay {
         Ok(Self {
             stop,
             socket_path,
+            #[cfg(test)]
+            local_host_port,
             thread: Some(thread),
         })
     }
@@ -2243,29 +2252,19 @@ mod tests {
     #[test]
     fn host_udp_relay_round_trips_without_slirp_udp_nat() {
         let temporary = tempfile::tempdir().unwrap();
-        let mut mapping = PortForward {
+        let mapping = PortForward {
             id: Uuid::new_v4(),
             enabled: true,
             direction: PortDirection::HostToGuest,
             protocol: PortProtocol::Udp,
             host_address: "127.0.0.1".into(),
-            host_port: 1,
+            host_port: 0,
             guest_address: "10.0.2.100".into(),
             guest_port: 9002,
         };
-        let relay = (0..32)
-            .find_map(|_| {
-                let reservation = UdpSocket::bind("127.0.0.1:0").unwrap();
-                mapping.host_port = reservation.local_addr().unwrap().port();
-                drop(reservation);
-                match HostUdpRelay::start(&mapping, temporary.path()) {
-                    Ok(relay) => Some(relay),
-                    Err(error) if error.to_string().contains("Address already in use") => None,
-                    Err(error) => panic!("starting host UDP relay: {error:#}"),
-                }
-            })
-            .expect("an ephemeral UDP port remained available for the relay");
-        let host_port = mapping.host_port;
+        let relay = HostUdpRelay::start(&mapping, temporary.path())
+            .expect("starting host UDP relay on a kernel-assigned port");
+        let host_port = relay.local_host_port;
         let guest_path = temporary
             .path()
             .join(format!("forward-client-{}.sock", mapping.id));

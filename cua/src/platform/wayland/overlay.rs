@@ -59,7 +59,7 @@ fn tx() -> Option<&'static Sender<WlOverlayCmd>> {
 }
 
 /// Lazily start the owner thread. Idempotent — safe to call from every
-/// MCP tool invocation; subsequent calls are no-ops.
+/// CUA tool invocation; subsequent calls are no-ops.
 pub fn ensure_started() {
     TX.get_or_init(|| {
         let (tx, rx) = bounded::<WlOverlayCmd>(64);
@@ -78,7 +78,7 @@ pub fn ensure_started() {
 /// Forward one cursor command to the in-process layer-shell owner thread.
 pub fn forward(command: &OverlayCommand) -> bool {
     // Lazy startup: spawning the layer-shell owner thread + connecting to
-    // the Wayland compositor takes 100-300ms. Doing that at cua-driver mcp
+    // the Wayland compositor takes 100-300ms. Doing that during a one-shot CUA
     // boot (the old eager-init path) was tipping the borderline CI
     // cursor-click-gif test over its 20s budget. ensure_started is
     // idempotent so calling it on every forward is fine — the OnceLock

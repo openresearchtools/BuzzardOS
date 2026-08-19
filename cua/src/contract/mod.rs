@@ -10,27 +10,21 @@ mod cursor_tools;
 mod desktop;
 mod inputs;
 mod outputs;
-mod session;
 pub(crate) mod verification;
 
-pub use cursor::{
-    CursorAction, CursorDelivery, CursorPlayback, CursorReducedMotion, CursorTarget,
-    CursorThemeSelection,
-};
+pub use cursor::{CursorAction, CursorDelivery, CursorPlayback, CursorReducedMotion, CursorTarget};
 pub use inputs::{
-    CaptureScope, ClickButton, ClickInput, ClipboardReadInput, ClipboardWriteInput,
-    CloseWindowInput, DragInput, EndSessionInput, EscalateSessionInput, EscalationReason,
+    ClickButton, ClickInput, ClipboardReadInput, ClipboardWriteInput, CloseWindowInput, DragInput,
     GetAgentCursorStateInput, GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput,
-    GetSessionStateInput, HotkeyInput, InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput,
-    MoveCursorInput, PressKeyInput, RestoreWindowInput, ScrollInput, SetAgentCursorEnabledInput,
-    SetAgentCursorMotionInput, SetAgentCursorThemeInput, SetWindowFrameInput, StartSessionInput,
-    ToolInput, TypeTextInput, MAX_TYPE_TEXT_CHARS,
+    HotkeyInput, InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput,
+    PressKeyInput, RestoreWindowInput, ScrollInput, SetAgentCursorEnabledInput,
+    SetAgentCursorMotionInput, SetAgentCursorThemeInput, SetWindowFrameInput, ToolInput,
+    TypeTextInput, MAX_TYPE_TEXT_CHARS,
 };
 pub use outputs::{
     ActionResult, ClipboardReadOutput, ClipboardWriteOutput, CursorPositionOutput,
-    DesktopStateOutput, EffectiveScope, EndSessionOutput, GetAgentCursorStateOutput,
-    ScreenSizeOutput, SessionStateOutput, SetAgentCursorEnabledOutput, SetAgentCursorMotionOutput,
-    SetAgentCursorThemeOutput, StartSessionOutput, ToolOutput,
+    DesktopStateOutput, GetAgentCursorStateOutput, ScreenSizeOutput, SetAgentCursorEnabledOutput,
+    SetAgentCursorMotionOutput, SetAgentCursorThemeOutput, ToolOutput,
 };
 pub use verification::{
     ElementPredicate, ElementSelector, PredicateOutcome, StatePredicate, UnknownReason,
@@ -65,8 +59,7 @@ pub enum Platform {
 }
 
 fn contracts() -> Vec<ToolContract> {
-    let mut tools = session::contracts();
-    tools.extend(desktop::contracts());
+    let mut tools = desktop::contracts();
     tools.extend(cursor_tools::contracts());
     tools.extend(verification::contracts());
     tools.sort_by(|left, right| left.name.cmp(&right.name));

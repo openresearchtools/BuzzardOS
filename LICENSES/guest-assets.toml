@@ -53,21 +53,21 @@ status = "project-authored-and-licensed"
 
 [[asset]]
 id = "trycua-default-cursor-assets"
-paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/cua.default.lottie", "guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/cua.default.cua-theme"]
+paths = ["cua/assets/cursor/cua.default.lottie", "cua/assets/cursor/cua.default.cua-theme"]
 license = "MIT"
-evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/UPSTREAM.toml"]
+evidence = ["cua/LICENSE.trycua.md", "cua/UPSTREAM.toml"]
 status = "covered-by-vendored-upstream-license"
 
 [[asset]]
 id = "trycua-inter-font"
-paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter.ttf"]
+paths = ["cua/assets/cursor/Inter.ttf"]
 license = "OFL-1.1"
-evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt"]
+evidence = ["cua/assets/cursor/Inter-OFL.txt"]
 status = "recorded"
 
 [[asset]]
 id = "wayland-virtual-keyboard-protocol"
-paths = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml"]
+paths = ["cua/protocol/virtual-keyboard-unstable-v1.xml"]
 license = "MIT"
-evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml:copyright"]
+evidence = ["cua/protocol/virtual-keyboard-unstable-v1.xml:copyright"]
 status = "recorded-inline"

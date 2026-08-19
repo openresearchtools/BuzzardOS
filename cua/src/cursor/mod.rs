@@ -11,15 +11,13 @@ pub use motion::{MotionConfig, Spring};
 pub use path_planner::{PathPlanner, PathState, PlannedPath};
 pub use render_state::{paint_cursor, RenderStateCore};
 pub use theme::{
-    session_fill_rgba, CursorAction, CursorVisualState, ReducedMotion, DEFAULT_THEME_ID,
+    seat_fill_rgba, CursorAction, CursorVisualState, ReducedMotion, DEFAULT_THEME_ID,
     DEFAULT_THEME_VERSION, THEME_PROFILE,
 };
 pub use theme_artifact::{
     embedded_default_theme, load_installed_theme, paint_compiled_theme_with_tint,
     resolve_theme_selection, CompiledTheme,
 };
-#[cfg(feature = "theme-authoring")]
-pub use theme_artifact::{encode_theme, install_artifact, uninstall_theme};
 
 /// Configuration assembled from CLI arguments and passed to every
 /// platform backend when it initialises the overlay window.
@@ -81,6 +79,8 @@ pub struct CursorInstanceState {
     pub config: CursorInstanceConfig,
     pub x: Option<f64>,
     pub y: Option<f64>,
+    #[serde(default)]
+    pub motion: MotionConfig,
 }
 
 /// Global registry of cursor instances, keyed by `cursor_id`.
@@ -90,17 +90,22 @@ pub struct CursorRegistry {
 
 impl CursorRegistry {
     pub fn new() -> Self {
-        let mut map = HashMap::new();
-        map.insert(
-            "default".into(),
-            CursorInstanceState {
+        let mut map = load_cursor_states().unwrap_or_default();
+        map.entry("default".into())
+            .or_insert_with(|| CursorInstanceState {
                 config: CursorInstanceConfig::default(),
                 x: None,
                 y: None,
-            },
-        );
+                motion: MotionConfig::default(),
+            });
         Self {
             inner: Mutex::new(map),
+        }
+    }
+
+    fn persist(inner: &HashMap<String, CursorInstanceState>) {
+        if let Err(error) = save_cursor_states(inner) {
+            eprintln!("cua: cannot persist bounded cursor state: {error:#}");
         }
     }
 
@@ -115,9 +120,11 @@ impl CursorRegistry {
                 },
                 x: None,
                 y: None,
+                motion: MotionConfig::default(),
             });
         state.x = Some(x);
         state.y = Some(y);
+        Self::persist(&inner);
     }
 
     pub fn set_enabled(&self, cursor_id: &str, enabled: bool) {
@@ -131,8 +138,10 @@ impl CursorRegistry {
                 },
                 x: None,
                 y: None,
+                motion: MotionConfig::default(),
             });
         state.config.enabled = enabled;
+        Self::persist(&inner);
     }
 
     pub fn update_config(&self, cursor_id: &str, f: impl FnOnce(&mut CursorInstanceConfig)) {
@@ -146,23 +155,94 @@ impl CursorRegistry {
                 },
                 x: None,
                 y: None,
+                motion: MotionConfig::default(),
             });
         f(&mut state.config);
+        Self::persist(&inner);
+    }
+
+    pub fn update_motion(&self, cursor_id: &str, motion: MotionConfig) {
+        let mut inner = self.inner.lock().unwrap();
+        let state = inner
+            .entry(cursor_id.to_owned())
+            .or_insert_with(|| CursorInstanceState {
+                config: CursorInstanceConfig {
+                    cursor_id: cursor_id.to_owned(),
+                    ..Default::default()
+                },
+                x: None,
+                y: None,
+                motion: MotionConfig::default(),
+            });
+        state.motion = motion;
+        Self::persist(&inner);
+    }
+
+    pub fn state(&self, cursor_id: &str) -> CursorInstanceState {
+        self.inner
+            .lock()
+            .unwrap()
+            .get(cursor_id)
+            .cloned()
+            .unwrap_or_else(|| CursorInstanceState {
+                config: CursorInstanceConfig {
+                    cursor_id: cursor_id.to_owned(),
+                    ..Default::default()
+                },
+                x: None,
+                y: None,
+                motion: MotionConfig::default(),
+            })
     }
 
     pub fn all_states(&self) -> Vec<CursorInstanceState> {
         self.inner.lock().unwrap().values().cloned().collect()
     }
 
-    /// Drop a session's cursor metadata entry (fired from the `session_end`
-    /// hook). The `"default"` key backs the anonymous / one-shot path and is
-    /// guarded against removal; an empty or absent key is a harmless no-op.
+    /// Drop one numbered cursor's bounded runtime metadata.
     pub fn remove(&self, cursor_id: &str) {
         if cursor_id.is_empty() || cursor_id == "default" {
             return;
         }
-        self.inner.lock().unwrap().remove(cursor_id);
+        let mut inner = self.inner.lock().unwrap();
+        inner.remove(cursor_id);
+        Self::persist(&inner);
     }
+}
+
+const CURSOR_STATE_MAX_BYTES: usize = 128 * 1024;
+const CURSOR_STATE_CAP: usize = 64;
+
+fn load_cursor_states() -> anyhow::Result<HashMap<String, CursorInstanceState>> {
+    let Some(bytes) = crate::core::seat_context::read_state("cursor", CURSOR_STATE_MAX_BYTES)?
+    else {
+        return Ok(HashMap::new());
+    };
+    let states: HashMap<String, CursorInstanceState> = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        states.len() <= CURSOR_STATE_CAP,
+        "cursor state exceeds its entry bound"
+    );
+    anyhow::ensure!(
+        states.iter().all(|(key, state)| {
+            !key.is_empty()
+                && key.len() <= 64
+                && state.config.cursor_id == *key
+                && state.x.is_none_or(f64::is_finite)
+                && state.y.is_none_or(f64::is_finite)
+        }),
+        "cursor state contains invalid values"
+    );
+    Ok(states)
+}
+
+fn save_cursor_states(states: &HashMap<String, CursorInstanceState>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        states.len() <= CURSOR_STATE_CAP,
+        "cursor state exceeds its entry bound"
+    );
+    let bytes = serde_json::to_vec(states)?;
+    crate::core::seat_context::write_state("cursor", &bytes, CURSOR_STATE_MAX_BYTES)
 }
 
 impl Default for CursorRegistry {
@@ -173,11 +253,9 @@ impl Default for CursorRegistry {
 
 /// Identifier for one owned cursor in the keyed render collection.
 ///
-/// Resolved by the macOS tool layer (see `resolve_cursor_key`) with the
-/// precedence: explicit `cursor_id` arg > injected `_session_id` > `"default"`.
-/// The render side treats it as an opaque insertion-ordered map key; the
-/// `"default"` key is special-cased (never removed) so the anonymous /
-/// one-shot `cua-driver call` path is backward compatible.
+/// Resolved from the current numbered CUA seat. The render side treats it as
+/// an opaque insertion-ordered map key; `"default"` remains the internal
+/// fallback for state created before seat preparation.
 pub type CursorKey = String;
 
 /// Commands sent from CLI tool handlers to the in-process overlay thread.

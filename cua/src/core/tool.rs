@@ -13,20 +13,12 @@ use crate::core::protocol::ToolResult;
 
 tokio::task_local! {
     static DISPATCH_RUNTIME_SCOPE: String;
-    static DISPATCH_SESSION_LEASES: Vec<crate::core::session::SessionLease>;
 }
 
 /// Runtime scope for state which must survive nested calls inside one CLI
 /// invocation. It is never caller-selectable transport metadata.
 pub fn current_dispatch_runtime_scope() -> Option<String> {
     DISPATCH_RUNTIME_SCOPE.try_with(Clone::clone).ok()
-}
-
-/// Session leases held while a synthetic input operation is in flight.
-pub fn current_dispatch_session_leases() -> Vec<crate::core::session::SessionLease> {
-    DISPATCH_SESSION_LEASES
-        .try_with(Clone::clone)
-        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +86,6 @@ impl Drop for RuntimeCleanup {
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     order: Vec<String>,
-    session_end_hooks: Vec<crate::core::session::SessionEndHookRegistration>,
     runtime_cleanups: Vec<RuntimeCleanup>,
 }
 
@@ -103,7 +94,6 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             order: Vec::new(),
-            session_end_hooks: Vec::new(),
             runtime_cleanups: Vec::new(),
         }
     }
@@ -114,26 +104,9 @@ impl ToolRegistry {
         self.tools.insert(name, tool);
     }
 
-    pub fn retain_session_end_hook(
-        &mut self,
-        registration: crate::core::session::SessionEndHookRegistration,
-    ) {
-        self.session_end_hooks.push(registration);
-    }
-
     pub fn retain_runtime_cleanup(&mut self, cleanup: impl FnOnce() + Send + Sync + 'static) {
         self.runtime_cleanups
             .push(RuntimeCleanup(Some(Box::new(cleanup))));
-    }
-
-    pub fn register_session_tools(&mut self) {
-        use crate::core::session_tools::{
-            EndSessionTool, EscalateSessionTool, GetSessionStateTool, StartSessionTool,
-        };
-        self.register(Box::new(StartSessionTool));
-        self.register(Box::new(EscalateSessionTool));
-        self.register(Box::new(GetSessionStateTool));
-        self.register(Box::new(EndSessionTool));
     }
 
     pub fn tool_names(&self) -> Vec<String> {
@@ -156,30 +129,8 @@ impl ToolRegistry {
         let Some(tool) = self.tools.get(name) else {
             return ToolResult::error(format!("Unknown tool: {name}"));
         };
-        if let Err(violation) = crate::core::capture_scope::enforce_tool(name, &args) {
-            return ToolResult::error(violation.message.clone()).with_structured(
-                violation.as_json(
-                    args.get("session")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default"),
-                ),
-            );
-        }
-        let session = args
-            .get("session")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty() && *value != "default");
-        let leases = session
-            .and_then(crate::core::session::capture_session_lease)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let scope = session.unwrap_or("cli").to_owned();
-        DISPATCH_RUNTIME_SCOPE
-            .scope(
-                scope,
-                DISPATCH_SESSION_LEASES.scope(leases, tool.invoke(args)),
-            )
-            .await
+        let scope = format!("cua{}", crate::core::seat_context::current_index());
+        DISPATCH_RUNTIME_SCOPE.scope(scope, tool.invoke(args)).await
     }
 }
 

@@ -1,61 +1,27 @@
-//! Shared delivery-mode logic for cua-driver Linux input tools.
-//!
-//! Mirrors macOS `tools::DeliveryMode` and Windows `input::delivery`: each
-//! input tool accepts an optional `delivery_mode` field with exactly two modes
-//! — the agent-selected rung of the best-effort-background ladder, passed per
-//! call (never a stored setting):
-//!
-//! - `background` (DEFAULT) — inject without activating/raising the target.
-//!   - **X11**: XTEST / XSendEvent / XInput2 MPX master-pointer no-focus-steal
-//!     path (see `input::mod`). Lands on a backgrounded window without stealing
-//!     focus — the direct analogue of macOS CGEvent / Windows PostMessage.
-//!   - **Wayland**: libei via xdg-desktop-portal (`wayland::libei`). Wayland's
-//!     security model has NO arbitrary per-window background targeting — libei
-//!     injects to the compositor's input focus, so "background" cannot aim at a
-//!     specific non-focused window the way X11/macOS/Windows can (this is a
-//!     platform constraint, reported honestly, like macOS pixel input being
-//!     driver-unverifiable). When no libei backend is available
-//!     (`PORTAL_INPUT_ENABLED == false`) the tool returns a structured
-//!     `background_unavailable` error so the caller can escalate to foreground.
-//!
-//! - `foreground` — activate the target first, inject, then restore the prior
-//!   active window.
-//!   - **X11**: EWMH `_NET_ACTIVE_WINDOW` client message (the `wmctrl -a`
-//!     equivalent) raise + activate.
-//!   - **Wayland**: compositor-specific activate where supported; else the
-//!     libei-to-focus path with an honest note.
-//!   The agent's explicit last resort; a brief focus swap unless the target was
-//!   already active. Matches the macOS / Windows `foreground` rung.
+//! Input delivery policy for numbered Buzzard CUA seats.
 
 use serde_json::Value;
 
-/// Input delivery modality — the agent-selected rung of the best-effort-
-/// background ladder, passed per call (never a stored/config setting). Mirrors
-/// macOS `tools::DeliveryMode` and Windows `input::delivery::DeliveryMode`.
+/// Visual input defaults to the caller's numbered seat. The legacy explicit
+/// `background` value remains accepted for semantic or Xwayland operations
+/// that can prove target-addressed delivery without focus.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum DeliveryMode {
-    /// Inject without activating the target (X11 XTEST/MPX; Wayland libei-to-focus).
-    #[default]
     Background,
-    /// Activate the target, inject, restore prior active window.
+    #[default]
     Foreground,
 }
 
 impl DeliveryMode {
-    /// Parse the per-call `delivery_mode` argument. Anything other than an
-    /// explicit case-insensitive `"foreground"` resolves to `Background` — the
-    /// correct default, so an omitted/garbage value never silently fronts.
-    /// Matches macOS / Windows `DeliveryMode::parse`.
     pub fn parse(arg: Option<&str>) -> Self {
         match arg {
-            Some(s) if s.eq_ignore_ascii_case("foreground") => Self::Foreground,
-            _ => Self::Background,
+            Some(value) if value.eq_ignore_ascii_case("background") => Self::Background,
+            _ => Self::Foreground,
         }
     }
 
-    /// Parse from a tool's JSON args, reading the `delivery_mode` field.
     pub fn from_args(args: &Value) -> Self {
-        Self::parse(args.get("delivery_mode").and_then(|v| v.as_str()))
+        Self::parse(args.get("delivery_mode").and_then(Value::as_str))
     }
 
     pub fn is_foreground(self) -> bool {
@@ -63,92 +29,58 @@ impl DeliveryMode {
     }
 }
 
-/// JSON-schema fragment for the `delivery_mode` field. Include this in every
-/// input tool's `input_schema.properties.delivery_mode`. Two modes, matching
-/// the macOS / Windows surface.
 pub fn delivery_mode_schema() -> Value {
-    // Source the SHAPE (`type` + `enum`) from the shared canon so it can't drift
-    // from macOS / Windows, while keeping the Linux-specific Wayland/X11 prose
-    // (the gate compares shape only — descriptions may vary per platform). The
-    // `default` advertisement is additive on top of the canon shape.
-    let mut v = crate::core::tool_schema::delivery_mode_schema_with(
-        "Input delivery mode. 'background' (default) never activates or raises \
-         the target window. On X11 it injects via XTEST / the XInput2 master \
-         pointer (no focus steal). On Wayland it goes through libei + \
-         xdg-desktop-portal, which injects to the compositor's input focus — \
-         Wayland's security model has no per-window background targeting, so a \
-         specific non-focused window cannot be aimed at; when no libei backend \
-         is available the tool returns a structured background_unavailable \
-         error. 'foreground' is the explicit escalation: activate the target \
-         (X11 _NET_ACTIVE_WINDOW; Wayland compositor activate), inject, then \
-         restore the prior active window — a brief focus swap unless the \
-         target was already active. Matches the macOS / Windows delivery_mode \
-         surface.",
+    let mut schema = crate::core::tool_schema::delivery_mode_schema_with(
+        "Input delivery mode. The default 'foreground' moves the exact target \
+         into this cuaN workspace and focuses it only for seatN before injecting \
+         input. Desktop/seat0 and other numbered seats are unaffected. Explicit \
+         'background' is a compatibility request and succeeds only when a \
+         target-addressed semantic or Xwayland route can prove delivery.",
     );
-    v["default"] = serde_json::json!("background");
-    v
+    schema["default"] = serde_json::json!("foreground");
+    schema
 }
 
-/// Reason a `background` delivery cannot be performed on Wayland.
 #[derive(Copy, Clone, Debug)]
 pub enum BackgroundUnavailable {
-    /// X11/Chromium does not accept synthetic pointer or keyboard input
-    /// addressed to an occluded, unfocused renderer without briefly moving
-    /// focus, which background delivery forbids.
     ChromiumInput,
-    /// The remaining backend can only inject into the globally focused widget.
     FocusedInputOnly,
-    /// WebKitGTK rejects synthetic XSendEvent input and no real target-addressed
-    /// pointer backend is available in this session.
     WebKitSyntheticInput,
 }
 
 impl BackgroundUnavailable {
-    fn code(self) -> &'static str {
-        match self {
-            Self::ChromiumInput => "background_unavailable",
-            Self::FocusedInputOnly => "background_unavailable",
-            Self::WebKitSyntheticInput => "background_unavailable",
-        }
-    }
     fn detail(self) -> &'static str {
         match self {
             Self::ChromiumInput => {
-                "Chromium/Electron does not accept pointer or keyboard input \
-                 addressed to an occluded, unfocused renderer through X11 \
-                 background injection"
+                "the application does not accept target-addressed background input"
             }
             Self::FocusedInputOnly => {
-                "the requested target has no focus-free input backend; the remaining XTest/X11 route can only deliver to the globally focused widget"
+                "the available input route delivers only to this seat's focused surface"
             }
             Self::WebKitSyntheticInput => {
-                "WebKitGTK rejects synthetic XSendEvent input and this session has no real target-addressed pointer backend"
+                "the application rejects target-addressed synthetic background input"
             }
         }
     }
 }
 
-/// Build the structured `background_unavailable` error returned when a
-/// `delivery_mode:"background"` injection has no Wayland backend. Mirrors the
-/// Windows silent-drop error so callers branch on `code` identically.
 pub fn background_unavailable_error(
     reason: BackgroundUnavailable,
 ) -> crate::core::protocol::ToolResult {
     let detail = reason.detail();
     crate::core::protocol::ToolResult::error(format!(
-        "Background delivery is not available: {detail}. Retry this action with \
-         delivery_mode:\"foreground\"; Cua Driver will activate the target for \
-         the action and restore the previous foreground afterward."
+        "Background delivery is unavailable because {detail}. Retry without \
+         delivery_mode, or pass delivery_mode:\"foreground\", to use this \
+         numbered CUA seat."
     ))
     .with_structured(serde_json::json!({
-        "code": reason.code(),
+        "code": "background_unavailable",
         "detail": detail,
-        "suggestion": "Retry this action with delivery_mode:\"foreground\".",
+        "suggestion": "Retry without delivery_mode or use delivery_mode:\"foreground\".",
         "escalation": {
             "recommended": "foreground",
-            "reason": "background input is unavailable on this surface; retry this \
-                       action with delivery_mode:\"foreground\".",
-        },
+            "reason": "seat-local focus is required for observable input delivery"
+        }
     }))
 }
 
@@ -157,88 +89,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delivery_mode_parses_known_values() {
-        let j = |s: &str| serde_json::json!({"delivery_mode": s});
+    fn delivery_mode_defaults_to_numbered_seat_foreground() {
+        assert_eq!(DeliveryMode::parse(None), DeliveryMode::Foreground);
         assert_eq!(
-            DeliveryMode::from_args(&j("background")),
-            DeliveryMode::Background
-        );
-        assert_eq!(
-            DeliveryMode::from_args(&j("foreground")),
-            DeliveryMode::Foreground
-        );
-        // Case-insensitive, matching macOS / Windows.
-        assert_eq!(
-            DeliveryMode::from_args(&j("Foreground")),
+            DeliveryMode::parse(Some("unknown")),
             DeliveryMode::Foreground
         );
     }
 
     #[test]
-    fn delivery_mode_defaults_to_background() {
-        // Missing field, garbage value, null, and the removed legacy "auto" all
-        // resolve to Background — the no-foreground-by-default contract.
+    fn delivery_mode_accepts_both_compatible_values() {
         assert_eq!(
-            DeliveryMode::from_args(&serde_json::json!({})),
+            DeliveryMode::parse(Some("background")),
             DeliveryMode::Background
         );
         assert_eq!(
-            DeliveryMode::from_args(&serde_json::json!({"delivery_mode": "garbage"})),
-            DeliveryMode::Background
-        );
-        assert_eq!(
-            DeliveryMode::from_args(&serde_json::json!({"delivery_mode": "auto"})),
-            DeliveryMode::Background
-        );
-        assert_eq!(
-            DeliveryMode::from_args(&serde_json::json!({"delivery_mode": null})),
-            DeliveryMode::Background
+            DeliveryMode::parse(Some("FOREGROUND")),
+            DeliveryMode::Foreground
         );
     }
 
     #[test]
-    fn delivery_mode_schema_advertises_two_modes() {
-        let s = delivery_mode_schema();
-        let en: Vec<&str> = s["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert_eq!(en, vec!["background", "foreground"]);
-        assert_eq!(s["default"], "background");
-        let description = s["description"]
-            .as_str()
-            .expect("delivery_mode description");
-        assert!(!description.contains("bring_to_front"));
+    fn delivery_mode_schema_advertises_numbered_seat_default() {
+        let schema = delivery_mode_schema();
+        assert_eq!(schema["type"], "string");
+        assert_eq!(
+            schema["enum"],
+            serde_json::json!(["background", "foreground"])
+        );
+        assert_eq!(schema["default"], "foreground");
     }
 
     #[test]
     fn background_unavailable_error_carries_code() {
-        let r = background_unavailable_error(BackgroundUnavailable::FocusedInputOnly);
-        assert_eq!(r.is_error, Some(true));
+        let result = background_unavailable_error(BackgroundUnavailable::FocusedInputOnly);
+        assert_eq!(result.is_error, Some(true));
         assert_eq!(
-            r.structured_content.as_ref().unwrap()["code"],
-            serde_json::json!("background_unavailable")
+            result.structured_content.unwrap()["code"],
+            "background_unavailable"
         );
-        let text = match &r.content[0] {
-            crate::core::protocol::Content::Text { text, .. } => text,
-            _ => panic!("expected text content"),
-        };
-        let structured = r.structured_content.as_ref().unwrap();
-        assert!(text.contains("Retry this action with delivery_mode:\"foreground\""));
-        assert!(!text.contains("bring_to_front"));
-        assert_eq!(
-            structured["suggestion"].as_str(),
-            Some("Retry this action with delivery_mode:\"foreground\".")
-        );
-        assert_eq!(
-            structured["escalation"]["recommended"].as_str(),
-            Some("foreground")
-        );
-        assert!(!structured["escalation"]["reason"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("bring_to_front"));
     }
 }

@@ -123,7 +123,7 @@ pub fn strip_trailing_agent_protocol_tags(text: &str) -> Cow<'_, str> {
     let kept = &trimmed[..cursor];
     let kept_trimmed = kept.trim_end();
     tracing::warn!(
-        target: "cua-driver::sanitize",
+        target: "buzzard-cua::sanitize",
         "type_text: stripped {} byte(s) of trailing agent-protocol closing tags from text payload. \
          Likely an LLM hallucinating its own tool-invocation tags into the parameter content. \
          Original length: {}, kept: {}.",

@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const PANEL_HEIGHT: i32 = 42;
+pub const TOP_BAR_HEIGHT: i32 = 28;
 pub const APPLICATIONS_BUTTON_WIDTH: i32 = 126;
 pub const SHOW_DESKTOP_WIDTH: i32 = 18;
 pub const APPLICATIONS_MENU_HEADER_HEIGHT: i32 = 54;
@@ -17,6 +18,16 @@ pub const CAPPED_TASK_BUTTON_WIDTH: i32 = 260;
 pub const MIN_TASK_BUTTON_WIDTH: i32 = 96;
 pub const TASK_PAGE_STEP: usize = 5;
 const TASK_PAGE_BUTTON_WIDTH: i32 = 28;
+const WORKSPACE_ADD_WIDTH: i32 = 34;
+const WORKSPACE_TAB_MAX_WIDTH: i32 = 150;
+pub const MANUAL_WORKSPACE_FLAG: u32 = 1 << 31;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceTab {
+    pub index: u32,
+    pub label: String,
+    pub active: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Application {
@@ -36,6 +47,9 @@ pub struct GuestWindow {
     pub focused: bool,
     pub minimized: bool,
     pub maximized: bool,
+    pub workspace_index: Option<u32>,
+    pub workspace: String,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +103,102 @@ pub enum ShellAction {
     MinimizeWindow(u32),
     ToggleMaximizeWindow(u32),
     CloseWindow(u32),
+    MoveWindowToWorkspace {
+        window_id: u32,
+        workspace_index: u32,
+    },
+    SwitchWorkspace(u32),
+    CreateWorkspace,
+    CloseWorkspace(u32),
     TaskbarPrevious,
     TaskbarNext,
     ShowDesktop,
     CloseApplicationsMenu,
+}
+
+pub fn workspace_name(index: u32) -> String {
+    match index {
+        0 => "Desktop".to_owned(),
+        1 => "CUA".to_owned(),
+        other if other & MANUAL_WORKSPACE_FLAG != 0 => {
+            format!("Workspace{}", other & !MANUAL_WORKSPACE_FLAG)
+        }
+        other => format!("CUA{other}"),
+    }
+}
+
+pub fn workspace_index(name: &str) -> Option<u32> {
+    match name {
+        "Desktop" => Some(0),
+        "CUA" => Some(1),
+        _ => name
+            .strip_prefix("CUA")
+            .filter(|suffix| !suffix.is_empty() && !suffix.starts_with('0'))
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .filter(|index| *index >= 2 && *index < MANUAL_WORKSPACE_FLAG)
+            .or_else(|| {
+                name.strip_prefix("Workspace")
+                    .filter(|suffix| !suffix.is_empty() && !suffix.starts_with('0'))
+                    .and_then(|suffix| suffix.parse::<u32>().ok())
+                    .filter(|index| *index > 0 && *index < MANUAL_WORKSPACE_FLAG)
+                    .map(|index| MANUAL_WORKSPACE_FLAG | index)
+            }),
+    }
+}
+
+pub fn is_cua_workspace(index: u32) -> bool {
+    index > 0 && index & MANUAL_WORKSPACE_FLAG == 0
+}
+
+pub fn next_manual_workspace(workspaces: &[WorkspaceTab]) -> u32 {
+    let next = workspaces
+        .iter()
+        .filter_map(|workspace| {
+            (workspace.index & MANUAL_WORKSPACE_FLAG != 0)
+                .then_some(workspace.index & !MANUAL_WORKSPACE_FLAG)
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1);
+    MANUAL_WORKSPACE_FLAG | next
+}
+
+pub fn top_bar_targets(width: u32, workspaces: &[WorkspaceTab]) -> Vec<HitTarget> {
+    let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
+    let add_width = WORKSPACE_ADD_WIDTH.min(width);
+    let available = width.saturating_sub(add_width);
+    let tab_width = if workspaces.is_empty() {
+        0
+    } else {
+        (available / i32::try_from(workspaces.len()).unwrap_or(1)).clamp(1, WORKSPACE_TAB_MAX_WIDTH)
+    };
+    let mut x = 0;
+    let mut targets = Vec::with_capacity(workspaces.len() + 1);
+    for workspace in workspaces {
+        targets.push(HitTarget {
+            rect: Rect {
+                x,
+                y: 0,
+                width: tab_width,
+                height: TOP_BAR_HEIGHT,
+            },
+            label: workspace.label.clone(),
+            action: ShellAction::SwitchWorkspace(workspace.index),
+        });
+        x = x.saturating_add(tab_width);
+    }
+    targets.push(HitTarget {
+        rect: Rect {
+            x: x.min(width.saturating_sub(add_width)),
+            y: 0,
+            width: add_width,
+            height: TOP_BAR_HEIGHT,
+        },
+        label: "Create CUA workspace".to_owned(),
+        action: ShellAction::CreateWorkspace,
+    });
+    targets
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,39 +381,82 @@ pub fn applications_menu_close_target(menu_width: u32) -> HitTarget {
     }
 }
 
-pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
+pub fn window_menu_targets(window: &GuestWindow, workspaces: &[WorkspaceTab]) -> Vec<HitTarget> {
     const HEADER_HEIGHT: i32 = 44;
     const MENU_WIDTH: i32 = 260;
-    [
-        ("Focus", ShellAction::ActivateWindow(window.id)),
+    let mut entries: Vec<(String, ShellAction)> = vec![
+        ("Focus".to_owned(), ShellAction::ActivateWindow(window.id)),
         (
-            "Bring Into View",
+            "Bring Into View".to_owned(),
             ShellAction::BringIntoViewWindow(window.id),
         ),
-        ("Minimize", ShellAction::MinimizeWindow(window.id)),
+        (
+            "Minimize".to_owned(),
+            ShellAction::MinimizeWindow(window.id),
+        ),
         (
             if window.minimized || window.maximized {
-                "Restore"
+                "Restore".to_owned()
             } else {
-                "Maximize"
+                "Maximize".to_owned()
             },
             ShellAction::ToggleMaximizeWindow(window.id),
         ),
-        ("Close", ShellAction::CloseWindow(window.id)),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (label, action))| HitTarget {
+        ("Close".to_owned(), ShellAction::CloseWindow(window.id)),
+    ];
+    entries.extend(
+        workspaces
+            .iter()
+            .filter(|workspace| window.workspace_index != Some(workspace.index))
+            .map(|workspace| {
+                (
+                    format!("Move to {}", workspace.label),
+                    ShellAction::MoveWindowToWorkspace {
+                        window_id: window.id,
+                        workspace_index: workspace.index,
+                    },
+                )
+            }),
+    );
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action))| HitTarget {
+            rect: Rect {
+                x: 8,
+                y: HEADER_HEIGHT + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+                width: MENU_WIDTH - 16,
+                height: MENU_ROW_HEIGHT,
+            },
+            label,
+            action,
+        })
+        .collect()
+}
+
+pub fn window_menu_height(window: &GuestWindow, workspaces: &[WorkspaceTab]) -> u32 {
+    let rows = window_menu_targets(window, workspaces).len();
+    44_u32.saturating_add(
+        u32::try_from(rows)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(MENU_ROW_HEIGHT as u32),
+    )
+}
+
+pub fn workspace_menu_targets(index: u32) -> Vec<HitTarget> {
+    if index == 0 {
+        return Vec::new();
+    }
+    vec![HitTarget {
         rect: Rect {
             x: 8,
-            y: HEADER_HEIGHT + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
-            width: MENU_WIDTH - 16,
+            y: 44,
+            width: 244,
             height: MENU_ROW_HEIGHT,
         },
-        label: label.to_owned(),
-        action,
-    })
-    .collect()
+        label: format!("Close {}", workspace_name(index)),
+        action: ShellAction::CloseWorkspace(index),
+    }]
 }
 
 pub fn application_context_targets(
@@ -454,6 +603,67 @@ mod tests {
             categories: Vec::new(),
             source: PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn cua_and_manual_workspace_identities_do_not_overlap() {
+        assert_eq!(workspace_index("Desktop"), Some(0));
+        assert_eq!(workspace_index("CUA"), Some(1));
+        assert_eq!(workspace_index("CUA19"), Some(19));
+        assert_eq!(
+            workspace_index("Workspace1"),
+            Some(MANUAL_WORKSPACE_FLAG | 1)
+        );
+        assert_eq!(workspace_name(MANUAL_WORKSPACE_FLAG | 7), "Workspace7");
+        assert!(is_cua_workspace(1));
+        assert!(!is_cua_workspace(MANUAL_WORKSPACE_FLAG | 1));
+    }
+
+    #[test]
+    fn plus_allocates_only_the_next_manual_workspace() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 8,
+                label: "CUA8".into(),
+                active: false,
+            },
+            WorkspaceTab {
+                index: MANUAL_WORKSPACE_FLAG | 2,
+                label: "Workspace2".into(),
+                active: false,
+            },
+        ];
+        assert_eq!(
+            next_manual_workspace(&workspaces),
+            MANUAL_WORKSPACE_FLAG | 3
+        );
+    }
+
+    #[test]
+    fn top_bar_keeps_selectors_and_plus_adjacent() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 1,
+                label: "CUA".into(),
+                active: false,
+            },
+        ];
+        let targets = top_bar_targets(640, &workspaces);
+        assert_eq!(targets.len(), 3);
+        assert!(matches!(targets[0].action, ShellAction::SwitchWorkspace(0)));
+        assert!(matches!(targets[1].action, ShellAction::SwitchWorkspace(1)));
+        assert_eq!(targets[2].action, ShellAction::CreateWorkspace);
+        assert_eq!(targets[1].rect.x + targets[1].rect.width, targets[2].rect.x);
     }
 
     #[test]
@@ -686,7 +896,7 @@ mod tests {
             maximized: false,
             ..GuestWindow::default()
         };
-        let targets = window_menu_targets(&window);
+        let targets = window_menu_targets(&window, &[]);
         assert_eq!(
             targets
                 .iter()
@@ -698,13 +908,13 @@ mod tests {
             maximized: true,
             ..window
         };
-        assert_eq!(window_menu_targets(&maximized)[3].label, "Restore");
+        assert_eq!(window_menu_targets(&maximized, &[])[3].label, "Restore");
         let minimized = GuestWindow {
             minimized: true,
             maximized: false,
             ..maximized
         };
-        assert_eq!(window_menu_targets(&minimized)[3].label, "Restore");
+        assert_eq!(window_menu_targets(&minimized, &[])[3].label, "Restore");
     }
 
     #[test]

@@ -21,7 +21,7 @@ const FLOAT_DURATION_SECS: f32 = 4.0;
 
 pub const DEFAULT_CURSOR_FILL: [u8; 4] = [94, 192, 232, 255];
 
-const SESSION_CURSOR_FILLS: &[[u8; 4]] = &[
+const SEAT_CURSOR_FILLS: &[[u8; 4]] = &[
     [178, 132, 255, 255],
     [247, 132, 170, 255],
     [96, 218, 174, 255],
@@ -33,20 +33,20 @@ const SESSION_CURSOR_FILLS: &[[u8; 4]] = &[
     [80, 126, 236, 255],
 ];
 
-/// Return the stable fill color for one session-owned cursor.
+/// Return the stable fill color for one numbered-seat cursor.
 ///
-/// The anonymous/default cursor keeps the original Cua blue. Named sessions
+/// The anonymous/default cursor keeps the original Cua blue. Numbered seats
 /// hash into the former multi-cursor palette so concurrent runs are visually
 /// distinct without accepting an agent-controlled styling argument.
-pub fn session_fill_rgba(session_id: &str) -> [u8; 4] {
-    if session_id.is_empty() || session_id == "default" {
+pub fn seat_fill_rgba(seat_id: &str) -> [u8; 4] {
+    if seat_id.is_empty() || seat_id == "default" {
         return DEFAULT_CURSOR_FILL;
     }
 
-    SESSION_CURSOR_FILLS[stable_session_index(session_id, SESSION_CURSOR_FILLS.len())]
+    SEAT_CURSOR_FILLS[stable_seat_index(seat_id, SEAT_CURSOR_FILLS.len())]
 }
 
-fn stable_session_index(id: &str, count: usize) -> usize {
+fn stable_seat_index(id: &str, count: usize) -> usize {
     let suffix = id
         .rfind(['-', '_', '.'])
         .map(|index| &id[index + 1..])
@@ -239,14 +239,14 @@ mod tests {
 
     #[test]
     fn default_cursor_keeps_original_blue_fill() {
-        assert_eq!(session_fill_rgba("default"), DEFAULT_CURSOR_FILL);
+        assert_eq!(seat_fill_rgba("default"), DEFAULT_CURSOR_FILL);
     }
 
     #[test]
     fn named_session_colors_are_stable_and_distinct() {
-        assert_eq!(session_fill_rgba("agent-1"), session_fill_rgba("agent-1"));
-        assert_ne!(session_fill_rgba("agent-1"), session_fill_rgba("agent-2"));
-        assert_ne!(session_fill_rgba("agent-2"), DEFAULT_CURSOR_FILL);
+        assert_eq!(seat_fill_rgba("cua1"), seat_fill_rgba("cua1"));
+        assert_ne!(seat_fill_rgba("cua1"), seat_fill_rgba("cua2"));
+        assert_ne!(seat_fill_rgba("cua2"), DEFAULT_CURSOR_FILL);
     }
 
     #[test]

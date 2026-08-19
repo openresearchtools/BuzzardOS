@@ -5,7 +5,7 @@
 //! Today consumers (Hermes wrapper, Codex, Claude Code) treat the bare
 //! 1-based `element_index` returned by `get_window_state` as valid until
 //! the next snapshot — but there's no formal validity contract. If
-//! cua-driver ever changes its internal indexing the silent failure mode
+//! Buzzard CUA ever changes its internal indexing the silent failure mode
 //! is a misclick: the integer still parses, the AX path still resolves
 //! *something*, and the user lands on the wrong button.
 //!
@@ -48,8 +48,12 @@
 //! The LRU is **per runtime and pid**, not global. Two snapshots in different
 //! lanes never collide even when their numeric counters match.
 
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(test)]
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -71,7 +75,7 @@ pub const STALE_TOKEN_ERROR: &str =
     "element_token is stale; call get_window_state again to refresh";
 
 /// One valid snapshot retained in the per-pid LRU.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 struct SnapshotEntry {
     /// Monotonic, process-global id assigned by [`mint_snapshot_id`].
     snapshot_id: u32,
@@ -92,12 +96,14 @@ struct SnapshotEntry {
 /// pid's vec is the LRU (newest at the back). Vec instead of VecDeque
 /// because the cap is tiny (8) and walks are linear either way.
 pub struct TokenRegistry {
+    #[cfg(test)]
     by_runtime_and_pid: Mutex<HashMap<(String, i32), Vec<SnapshotEntry>>>,
 }
 
 impl TokenRegistry {
     fn new() -> Self {
         Self {
+            #[cfg(test)]
             by_runtime_and_pid: Mutex::new(HashMap::new()),
         }
     }
@@ -115,31 +121,54 @@ impl TokenRegistry {
     /// in its lane, the oldest is evicted and any token that referenced
     /// it becomes stale — that's the contract.
     pub fn register_snapshot(&self, pid: i32, window_id: u32, element_count: usize) -> u32 {
-        // Keep the full 32-bit counter. Truncating to 16 bits repeats an id
-        // every 65,536 process-global snapshots. A long-lived daemon can then
-        // mint an id that still exists in another runtime/pid lane, allowing a
-        // stale token to resolve to the wrong snapshot instead of failing.
-        let id = mint_snapshot_id();
-        let runtime_scope = current_runtime_scope();
-        let mut entries = self.by_runtime_and_pid.lock().unwrap();
-        let lane = entries.entry((runtime_scope, pid)).or_default();
-        // Every platform replaces its per-window element cache on the next
-        // snapshot. Retaining an older token for the same window would resolve
-        // that token against the new cache and could target a different row.
-        // Invalidate it at the same boundary as the cache replacement.
-        lane.retain(|entry| entry.window_id != window_id);
-        lane.push(SnapshotEntry {
-            snapshot_id: id,
-            window_id,
-            max_element_index: element_count.saturating_sub(1),
-        });
-        // Evict oldest. The loop guards against pre-existing over-cap
-        // state from a previous version of the binary; in steady state
-        // this fires exactly once per call.
-        while lane.len() > LRU_CAP_PER_PID {
-            lane.remove(0);
+        #[cfg(not(test))]
+        {
+            let runtime_scope = current_runtime_scope();
+            let mut state = load_disk_state().unwrap_or_default();
+            let id = state.fresh_id();
+            state.register(
+                runtime_scope,
+                pid,
+                SnapshotEntry {
+                    snapshot_id: id,
+                    window_id,
+                    max_element_index: element_count.saturating_sub(1),
+                },
+            );
+            if let Err(error) = save_disk_state(&state) {
+                eprintln!("cua: cannot persist bounded element-token state: {error:#}");
+            }
+            return id;
         }
-        id
+
+        #[cfg(test)]
+        {
+            // Keep the full 32-bit counter. Truncating to 16 bits repeats an id
+            // every 65,536 process-global snapshots. A long-lived daemon can then
+            // mint an id that still exists in another runtime/pid lane, allowing a
+            // stale token to resolve to the wrong snapshot instead of failing.
+            let id = mint_snapshot_id();
+            let runtime_scope = current_runtime_scope();
+            let mut entries = self.by_runtime_and_pid.lock().unwrap();
+            let lane = entries.entry((runtime_scope, pid)).or_default();
+            // Every platform replaces its per-window element cache on the next
+            // snapshot. Retaining an older token for the same window would resolve
+            // that token against the new cache and could target a different row.
+            // Invalidate it at the same boundary as the cache replacement.
+            lane.retain(|entry| entry.window_id != window_id);
+            lane.push(SnapshotEntry {
+                snapshot_id: id,
+                window_id,
+                max_element_index: element_count.saturating_sub(1),
+            });
+            // Evict oldest. The loop guards against pre-existing over-cap
+            // state from a previous version of the binary; in steady state
+            // this fires exactly once per call.
+            while lane.len() > LRU_CAP_PER_PID {
+                lane.remove(0);
+            }
+            id
+        }
     }
 
     /// Resolve `token` against the LRU for `pid`. On success returns
@@ -157,35 +186,44 @@ impl TokenRegistry {
         let (sid, idx) =
             parse_token(token).ok_or_else(|| "element_token has invalid format".to_string())?;
         let runtime_scope = current_runtime_scope();
-        let entries = self.by_runtime_and_pid.lock().unwrap();
-        let belongs_to_another_runtime = || {
-            entries.iter().any(|((scope, entry_pid), snapshots)| {
-                scope != &runtime_scope
-                    && *entry_pid == pid
-                    && snapshots.iter().any(|entry| entry.snapshot_id == sid)
-            })
-        };
-        let lane = entries.get(&(runtime_scope.clone(), pid)).ok_or_else(|| {
-            if belongs_to_another_runtime() {
-                "element_token belongs to another runtime generation".to_owned()
-            } else {
-                STALE_TOKEN_ERROR.to_owned()
-            }
-        })?;
-        let entry = lane.iter().find(|e| e.snapshot_id == sid).ok_or_else(|| {
-            if belongs_to_another_runtime() {
-                "element_token belongs to another runtime generation".to_owned()
-            } else {
-                STALE_TOKEN_ERROR.to_owned()
-            }
-        })?;
-        if idx > entry.max_element_index {
-            return Err(format!(
-                "element_token element_index {idx} out of range (snapshot had {} elements)",
-                entry.max_element_index + 1
-            ));
+        #[cfg(not(test))]
+        {
+            let state = load_disk_state().map_err(|_| STALE_TOKEN_ERROR.to_owned())?;
+            return state.resolve(&runtime_scope, pid, sid, idx);
         }
-        Ok((entry.window_id, idx))
+
+        #[cfg(test)]
+        {
+            let entries = self.by_runtime_and_pid.lock().unwrap();
+            let belongs_to_another_runtime = || {
+                entries.iter().any(|((scope, entry_pid), snapshots)| {
+                    scope != &runtime_scope
+                        && *entry_pid == pid
+                        && snapshots.iter().any(|entry| entry.snapshot_id == sid)
+                })
+            };
+            let lane = entries.get(&(runtime_scope.clone(), pid)).ok_or_else(|| {
+                if belongs_to_another_runtime() {
+                    "element_token belongs to another runtime generation".to_owned()
+                } else {
+                    STALE_TOKEN_ERROR.to_owned()
+                }
+            })?;
+            let entry = lane.iter().find(|e| e.snapshot_id == sid).ok_or_else(|| {
+                if belongs_to_another_runtime() {
+                    "element_token belongs to another runtime generation".to_owned()
+                } else {
+                    STALE_TOKEN_ERROR.to_owned()
+                }
+            })?;
+            if idx > entry.max_element_index {
+                return Err(format!(
+                    "element_token element_index {idx} out of range (snapshot had {} elements)",
+                    entry.max_element_index + 1
+                ));
+            }
+            Ok((entry.window_id, idx))
+        }
     }
 
     /// Build the canonical token string for `snapshot_id` / `element_index`.
@@ -217,6 +255,187 @@ impl TokenRegistry {
     }
 }
 
+#[cfg(not(test))]
+const TOKEN_STATE_MAX_BYTES: usize = 256 * 1024;
+#[cfg(not(test))]
+const TOKEN_LANE_CAP: usize = 32;
+#[cfg(not(test))]
+const TOKEN_SNAPSHOT_CAP: usize = 16;
+
+#[cfg(not(test))]
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiskTokenState {
+    #[serde(default = "token_state_schema")]
+    schema: u32,
+    #[serde(default)]
+    lanes: Vec<DiskTokenLane>,
+}
+
+#[cfg(not(test))]
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiskTokenLane {
+    scope: String,
+    pid: i32,
+    snapshots: Vec<SnapshotEntry>,
+}
+
+#[cfg(not(test))]
+const fn token_state_schema() -> u32 {
+    1
+}
+
+#[cfg(not(test))]
+impl DiskTokenState {
+    fn fresh_id(&self) -> u32 {
+        loop {
+            let bytes = *uuid::Uuid::new_v4().as_bytes();
+            let candidate = u32::from_le_bytes(bytes[..4].try_into().expect("four UUID bytes"));
+            if candidate != 0
+                && self.lanes.iter().all(|lane| {
+                    lane.snapshots
+                        .iter()
+                        .all(|snapshot| snapshot.snapshot_id != candidate)
+                })
+            {
+                return candidate;
+            }
+        }
+    }
+
+    fn register(&mut self, scope: String, pid: i32, snapshot: SnapshotEntry) {
+        self.schema = token_state_schema();
+        let mut lane = self
+            .lanes
+            .iter()
+            .position(|lane| lane.scope == scope && lane.pid == pid)
+            .map(|position| self.lanes.remove(position))
+            .unwrap_or(DiskTokenLane {
+                scope,
+                pid,
+                snapshots: Vec::new(),
+            });
+        lane.snapshots
+            .retain(|entry| entry.window_id != snapshot.window_id);
+        lane.snapshots.push(snapshot);
+        while lane.snapshots.len() > LRU_CAP_PER_PID {
+            lane.snapshots.remove(0);
+        }
+        self.lanes.push(lane);
+        while self.lanes.len() > TOKEN_LANE_CAP {
+            self.lanes.remove(0);
+        }
+        while self
+            .lanes
+            .iter()
+            .map(|lane| lane.snapshots.len())
+            .sum::<usize>()
+            > TOKEN_SNAPSHOT_CAP
+        {
+            if let Some(lane) = self.lanes.first_mut() {
+                if !lane.snapshots.is_empty() {
+                    lane.snapshots.remove(0);
+                }
+            }
+            if self
+                .lanes
+                .first()
+                .is_some_and(|lane| lane.snapshots.is_empty())
+            {
+                self.lanes.remove(0);
+            }
+        }
+    }
+
+    fn resolve(
+        &self,
+        scope: &str,
+        pid: i32,
+        snapshot_id: u32,
+        index: usize,
+    ) -> Result<(u32, usize), String> {
+        if self.schema != token_state_schema() {
+            return Err(STALE_TOKEN_ERROR.to_owned());
+        }
+        let belongs_to_another_runtime = self.lanes.iter().any(|lane| {
+            lane.scope != scope
+                && lane.pid == pid
+                && lane
+                    .snapshots
+                    .iter()
+                    .any(|entry| entry.snapshot_id == snapshot_id)
+        });
+        let entry = self
+            .lanes
+            .iter()
+            .find(|lane| lane.scope == scope && lane.pid == pid)
+            .and_then(|lane| {
+                lane.snapshots
+                    .iter()
+                    .find(|entry| entry.snapshot_id == snapshot_id)
+            })
+            .ok_or_else(|| {
+                if belongs_to_another_runtime {
+                    "element_token belongs to another runtime generation".to_owned()
+                } else {
+                    STALE_TOKEN_ERROR.to_owned()
+                }
+            })?;
+        if index > entry.max_element_index {
+            return Err(format!(
+                "element_token element_index {index} out of range (snapshot had {} elements)",
+                entry.max_element_index + 1
+            ));
+        }
+        Ok((entry.window_id, index))
+    }
+}
+
+#[cfg(not(test))]
+fn load_disk_state() -> anyhow::Result<DiskTokenState> {
+    let Some(bytes) =
+        crate::core::seat_context::read_state("element-tokens", TOKEN_STATE_MAX_BYTES)?
+    else {
+        return Ok(DiskTokenState {
+            schema: token_state_schema(),
+            lanes: Vec::new(),
+        });
+    };
+    let state: DiskTokenState = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        state.schema == token_state_schema(),
+        "unsupported element-token state schema"
+    );
+    anyhow::ensure!(
+        state.lanes.len() <= TOKEN_LANE_CAP,
+        "element-token state has too many lanes"
+    );
+    anyhow::ensure!(
+        state
+            .lanes
+            .iter()
+            .all(|lane| lane.snapshots.len() <= LRU_CAP_PER_PID),
+        "element-token state exceeds its per-process snapshot bound"
+    );
+    anyhow::ensure!(
+        state
+            .lanes
+            .iter()
+            .map(|lane| lane.snapshots.len())
+            .sum::<usize>()
+            <= TOKEN_SNAPSHOT_CAP,
+        "element-token state exceeds its global snapshot bound"
+    );
+    Ok(state)
+}
+
+#[cfg(not(test))]
+fn save_disk_state(state: &DiskTokenState) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec(state)?;
+    crate::core::seat_context::write_state("element-tokens", &bytes, TOKEN_STATE_MAX_BYTES)
+}
+
 fn current_runtime_scope() -> String {
     crate::core::tool::current_dispatch_runtime_scope().unwrap_or_else(|| "legacy".to_owned())
 }
@@ -230,12 +449,14 @@ impl Default for TokenRegistry {
 /// Process-global counter for snapshot ids. Monotonically increasing —
 /// even after eviction we never reuse an id during the process lifetime
 /// (u32 wraps after 4 billion calls, well past any realistic agent run).
+#[cfg(test)]
 static SNAPSHOT_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Mint a fresh snapshot id. `1`-based so `"s00000000:..."` is never a
 /// legitimate token — makes "uninitialised default" bugs in client code
 /// pop on the first call instead of accidentally aliasing a real
 /// snapshot.
+#[cfg(test)]
 fn mint_snapshot_id() -> u32 {
     // `Relaxed` is fine: the only invariant we need is uniqueness of the
     // returned value, which `fetch_add` provides on its own. No happens-

@@ -20,8 +20,6 @@ rm -f \
 # activated applications can never inherit the display gateway connection.
 dbus-update-activation-environment \
     DBUS_SESSION_BUS_ADDRESS \
-    CUA_DRIVER_RS_ENABLE_WAYLAND \
-    CUA_DRIVER_RS_TELEMETRY_ENABLED \
     DISPLAY \
     ELECTRON_OZONE_PLATFORM_HINT \
     GTK_MODULES \
@@ -107,15 +105,6 @@ else
         >"$status_dir/desktop.log"
 fi
 start_service output-sync "$runtime/libexec/buzzardos-output-sync"
-
-if [ -x /usr/bin/buzzardoscua ]; then
-    start_service buzzardoscua /usr/bin/buzzardoscua serve \
-        --dangerously-bypass-approvals \
-        --no-overlay
-else
-    echo "required Buzzard CUA is not installed" >"$status_dir/buzzardoscua.log"
-    exit 1
-fi
 
 # Production startup performs no acceptance probes, screenshots, health RPCs,
 # or retry loops.  The authenticated marker means the real services were

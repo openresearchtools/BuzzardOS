@@ -313,7 +313,7 @@ wait_cua_capture_matches_runtime() {
             width: .display.presentation.width,
             height: .display.presentation.height
         }' "$runtime")
-        capture=$(guest cua-driver get_desktop_state '{}')
+        capture=$(guest cua get_desktop_state '{}')
         if jq -e --argjson expected "$expected" '
             .screenshot_mime_type == "image/png" and
             .screenshot_width == $expected.width and
@@ -358,7 +358,6 @@ guest() {
         QT_ACCESSIBILITY=1 \
         GTK_MODULES=gail:atk-bridge \
         NO_AT_BRIDGE=0 \
-        CUA_DRIVER_RS_ENABLE_WAYLAND=1 \
         sh -c '
             session_pid=
             WAYLAND_DISPLAY=
@@ -525,7 +524,7 @@ assert_cua_ok() {
     local tool=$1
     local arguments=$2
     local result
-    if ! result=$(guest cua-driver "$tool" "$arguments"); then
+    if ! result=$(guest cua "$tool" "$arguments"); then
         echo "Cua tool $tool failed: $result" >&2
         exit 1
     fi
@@ -543,7 +542,7 @@ assert_cua_confirmed() {
     local tool=$1
     local arguments=$2
     local result
-    if ! result=$(guest cua-driver "$tool" "$arguments"); then
+    if ! result=$(guest cua "$tool" "$arguments"); then
         echo "Cua tool $tool failed: $result" >&2
         exit 1
     fi
@@ -562,7 +561,7 @@ wait_for_window() {
     local deadline=$((SECONDS + 30))
     local windows
     while ((SECONDS < deadline)); do
-        windows=$(guest cua-driver list_windows '{}')
+        windows=$(guest cua list_windows '{}')
         if jq -e --arg needle "${needle,,}" \
             '.windows[] |
              select(((.app_name // "") | ascii_downcase | contains($needle)) or
@@ -583,7 +582,7 @@ wait_for_window() {
 
 window_frame_for_pid() {
     local pid=$1
-    guest cua-driver list_windows "{\"pid\":$pid}" |
+    guest cua list_windows "{\"pid\":$pid}" |
         jq -ce --argjson pid "$pid" '
             [.windows[] | select(.pid == $pid and .is_on_screen)][0] |
             {x, y, width, height}
@@ -1086,7 +1085,7 @@ done
 guest dbus-send --session --dest=org.a11y.Bus --type=method_call --print-reply \
     /org/a11y/bus org.a11y.Bus.GetAddress >/dev/null
 wait_sway_output_matches_runtime
-guest cua-driver health_report '{}' | jq -e '.overall == "ok"' >/dev/null
+guest cua health_report '{}' | jq -e '.overall == "ok"' >/dev/null
 wait_cua_capture_matches_runtime
 guest pgrep -x sway >/dev/null
 guest pgrep -x buzzardos-she >/dev/null
@@ -1173,10 +1172,10 @@ done
 guest pkill -x thunar >/dev/null 2>&1 || true
 guest_spawn thunar
 sleep 2
-windows=$(guest cua-driver list_windows '{}')
+windows=$(guest cua list_windows '{}')
 thunar_pid=$(jq -er '.windows[] | select(.app_name == "thunar") | .pid' <<<"$windows" | head -1)
 thunar_window=$(jq -er '.windows[] | select(.app_name == "thunar") | .window_id' <<<"$windows" | head -1)
-thunar_state=$(guest cua-driver get_window_state \
+thunar_state=$(guest cua get_window_state \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window,\"include_screenshot\":false}")
 jq -e '.element_count > 10 and (.tree_markdown | length) > 100' \
     <<<"$thunar_state" >/dev/null
@@ -1242,27 +1241,22 @@ guest sh -c 'printf "%s\n" "#!/bin/bash" "IFS= read -e -r cua_value" \
 guest rm -f /home/buzzard/.buzzardos-cua-input
 guest_spawn foot --app-id buzzardos-acceptance /tmp/buzzardos-input-test
 wait_for_window buzzardos-acceptance >/dev/null
-cua_keyboard_session="buzzardos-keyboard-$marker"
-assert_cua_ok start_session \
-    "{\"session\":\"$cua_keyboard_session\",\"capture_scope\":\"desktop\"}"
 assert_cua_ok hotkey \
-    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"keys\":[\"ctrl\",\"l\"],\"delivery_mode\":\"foreground\"}"
+    '{"scope":"desktop","keys":["ctrl","l"],"delivery_mode":"foreground"}'
 assert_cua_ok type_text \
-    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"text\":\"$marker\",\"delivery_mode\":\"foreground\"}"
+    "{\"scope\":\"desktop\",\"text\":\"$marker\",\"delivery_mode\":\"foreground\"}"
 assert_cua_ok press_key \
-    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"key\":\"backspace\",\"delivery_mode\":\"foreground\"}"
+    '{"scope":"desktop","key":"backspace","delivery_mode":"foreground"}'
 assert_cua_ok type_text \
-    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"text\":\"z\",\"delivery_mode\":\"foreground\"}"
+    '{"scope":"desktop","text":"z","delivery_mode":"foreground"}'
 assert_cua_ok press_key \
-    "{\"session\":\"$cua_keyboard_session\",\"scope\":\"desktop\",\"key\":\"enter\",\"delivery_mode\":\"foreground\"}"
+    '{"scope":"desktop","key":"enter","delivery_mode":"foreground"}'
 deadline=$((SECONDS + 5))
 while ((SECONDS < deadline)) &&
     ! guest test -e /home/buzzard/.buzzardos-cua-input; do
     sleep 0.1
 done
 [[ $(guest cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z" ]]
-assert_cua_ok end_session \
-    "{\"session\":\"$cua_keyboard_session\"}"
 guest pkill -x foot >/dev/null 2>&1 || true
 
 # Classic state changes remain compositor-owned even though stock Sway has no
@@ -1428,7 +1422,7 @@ jq -e -n \
     '$after.frame == $before.frame' >/dev/null
 assert_cua_confirmed close_window \
     "{\"pid\":$thunar_pid,\"window_id\":$thunar_window}"
-guest cua-driver list_windows '{}' |
+guest cua list_windows '{}' |
     jq -e --argjson id "$thunar_window" \
         'all(.windows[]; .window_id != $id)' >/dev/null
 
@@ -1457,7 +1451,7 @@ if [[ "$full_matrix" == 1 ]]; then
     dolphin=$(wait_for_window dolphin)
     dolphin_pid=$(jq -er '.pid' <<<"$dolphin")
     dolphin_window=$(jq -er '.window_id' <<<"$dolphin")
-    dolphin_state=$(guest cua-driver get_window_state \
+    dolphin_state=$(guest cua get_window_state \
         "{\"pid\":$dolphin_pid,\"window_id\":$dolphin_window,\"include_screenshot\":false}")
     jq -e '.element_count > 10 and (.tree_markdown | length) > 100' \
         <<<"$dolphin_state" >/dev/null
@@ -1470,7 +1464,7 @@ if [[ "$full_matrix" == 1 ]]; then
          select(.enabled and .role == "menu item" and .label == "Home") |
          .element_token' \
         <<<"$dolphin_state" | head -1)
-    dolphin_click=$(guest cua-driver click \
+    dolphin_click=$(guest cua click \
         "{\"pid\":$dolphin_pid,\"element_token\":\"$dolphin_action\"}")
     jq -e '
         (has("code") | not) and
@@ -1479,7 +1473,7 @@ if [[ "$full_matrix" == 1 ]]; then
     ' <<<"$dolphin_click" >/dev/null
     deadline=$((SECONDS + 10))
     while ((SECONDS < deadline)); do
-        dolphin_title=$(guest cua-driver list_windows '{}' | jq -r \
+        dolphin_title=$(guest cua list_windows '{}' | jq -r \
             --argjson pid "$dolphin_pid" \
             '.windows[] | select(.pid == $pid) | .title' | head -1)
         [[ "$dolphin_title" == Home* ]] && break
@@ -1521,7 +1515,7 @@ if [[ "$full_matrix" == 1 ]]; then
     deadline=$((SECONDS + 45))
     electron=
     while ((SECONDS < deadline)); do
-        electron=$(guest cua-driver list_windows '{}' | jq -c \
+        electron=$(guest cua list_windows '{}' | jq -c \
             '[.windows[] |
               select((.title | ascii_downcase) | contains("lm studio"))][0] // empty')
         [[ -n "$electron" ]] && break
@@ -1577,7 +1571,7 @@ if [[ "$full_matrix" == 1 ]]; then
     done
 
     # It also remains observable and operable through global capture/input.
-    guest cua-driver get_desktop_state '{}' |
+    guest cua get_desktop_state '{}' |
         jq -e '(.screenshot_png_b64 | length) > 0' >/dev/null
 
     # Prove that screenshot-driven input reaches a canvas-like Xwayland client

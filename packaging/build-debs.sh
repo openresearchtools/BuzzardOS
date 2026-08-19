@@ -13,7 +13,7 @@ cua_target=${BUZZARDOS_CUA_TARGET_DIR:-$build_root/target-cua}
 version=$(tr -d '\n' <"$project_dir/VERSION")
 guest_version=$(tr -d '\n' <"$project_dir/guest/GUEST_VERSION")
 desktop_version=$(tr -d '\n' <"$project_dir/guest/DESKTOP_VERSION")
-cua_version=$(tr -d '\n' <"$project_dir/guest/BUZZARDOSCUA_VERSION")
+cua_version=$(tr -d '\n' <"$project_dir/cua/VERSION")
 
 case "$version:$guest_version:$desktop_version:$cua_version" in
     *[!A-Za-z0-9.+:~_-]*) echo 'invalid Debian package version' >&2; exit 1 ;;
@@ -54,6 +54,9 @@ if want guest; then
 fi
 if want desktop; then
     [[ "$(workspace_version "$project_dir/guest/Cargo.toml")" == "$desktop_version" ]]
+fi
+if want cua; then
+    [[ "$(workspace_version "$project_dir/cua/Cargo.toml")" == "$cua_version" ]]
 fi
 
 write_control() {
@@ -194,7 +197,7 @@ build_guest() {
     install -d -m 0755 "$root/usr/share/buzzardos-guest"
     printf '%s\n' "$guest_version" >"$root/usr/share/buzzardos-guest/version"
     write_control "$root" buzzardos-guest "$guest_version" \
-        'at-spi2-core, buzzardoscua, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libfuse2t64 | libfuse2, libgbm1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, pkexec, polkitd, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, util-linux, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
+        'at-spi2-core, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libfuse2t64 | libfuse2, libgbm1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, pkexec, polkitd, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, util-linux, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
         'Buzzard OS guest session, integration, and persistent-machine mechanics'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
@@ -256,12 +259,17 @@ EOF
 build_cua() {
     CARGO_TARGET_DIR="$cua_target" cargo build \
         --locked --release \
-        --manifest-path "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/Cargo.toml" \
-        --package cua-driver
+        --manifest-path "$project_dir/cua/Cargo.toml"
     local root="$build_root/root-buzzardoscua"
     rm -rf -- "$root"
-    install -D -m 0755 "$cua_target/release/cua-driver" "$root/usr/bin/buzzardoscua"
-    install -D -m 0644 "$project_dir/guest/third_party/trycua-cua/LICENSE.md" \
+    install -D -m 0755 "$cua_target/release/cua" "$root/usr/bin/cua"
+    ln -s cua "$root/usr/bin/cua1"
+    local index
+    for index in $(seq 2 64); do
+        ln -s cua "$root/usr/bin/cua$index"
+    done
+    ln -s cua "$root/usr/bin/buzzardoscua"
+    install -D -m 0644 "$project_dir/cua/LICENSE.trycua.md" \
         "$root/usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md"
     install -D -m 0644 "$project_dir/LICENSE" \
         "$root/usr/share/doc/buzzardoscua/copyright"
@@ -278,23 +286,25 @@ build_cua() {
     install -D -m 0644 "$project_dir/LICENSES/generated/cargo-cua.tsv" \
         "$root/usr/share/doc/buzzardoscua/cargo-cua.tsv"
     install_rust_licensing "$root" buzzardoscua
-    install -D -m 0644 "$project_dir/guest/third_party/trycua-cua/UPSTREAM.toml" \
+    install -D -m 0644 "$project_dir/cua/UPSTREAM.toml" \
         "$root/usr/share/doc/buzzardoscua/UPSTREAM.toml"
-    install -D -m 0644 "$project_dir/guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md" \
+    install -D -m 0644 "$project_dir/cua/CHANGES.BUZZARDOS.md" \
         "$root/usr/share/doc/buzzardoscua/CHANGES.BUZZARDOS.md"
-    install -D -m 0644 "$project_dir/guest/third_party/trycua-cua/CITATION.cff" \
+    install -D -m 0644 "$project_dir/cua/CITATION.cff" \
         "$root/usr/share/doc/buzzardoscua/CITATION.cff"
     install -D -m 0644 \
-        "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt" \
+        "$project_dir/cua/assets/cursor/Inter-OFL.txt" \
         "$root/usr/share/doc/buzzardoscua/Inter-OFL.txt"
     install -D -m 0644 \
-        "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml" \
+        "$project_dir/cua/protocol/virtual-keyboard-unstable-v1.xml" \
         "$root/usr/share/doc/buzzardoscua/virtual-keyboard-unstable-v1.xml"
+    install -D -m 0644 "$project_dir/cua/Skills/buzzard-cua/SKILL.md" \
+        "$root/usr/share/buzzardoscua/SKILL.md"
     install -d -m 0755 "$root/usr/share/buzzardoscua"
     printf '%s\n' "$cua_version" >"$root/usr/share/buzzardoscua/version"
     write_control "$root" buzzardoscua "$cua_version" \
-        'libc6, libgcc-s1, libx11-6, libxfixes3, libxi6, libxkbcommon0, libxrandr2, libxtst6' \
-        'Buzzard CUA in-guest computer-use automation service'
+        'at-spi2-core, grim, libc6, libgcc-s1, libx11-6, libxfixes3, libxi6, libxkbcommon0, libxrandr2, libxtst6, sway (>= 1.9), xdg-utils' \
+        'Buzzard CUA daemonless computer-use command for numbered Sway workspaces'
     finish_package "$root" buzzardoscua "$cua_version"
 }
 

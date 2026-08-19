@@ -22,7 +22,11 @@ fn usage() {
            cua describe TOOL\n\
            cua call TOOL [JSON] [--screenshot-out-file PATH]\n\
            cua TOOL [JSON] [--screenshot-out-file PATH]\n\
-           cua browser WILDBUZZARD_ARGUMENTS...",
+           cua screenshot [JSON] --screenshot-out-file PATH\n\
+           cua batch JSON_ARRAY\n\
+           cua browser WILDBUZZARD_ARGUMENTS...\n\
+           cua2 TOOL [JSON]  # independent seat/workspace 2\n\
+           cua --index N TOOL [JSON]  # any positive numbered seat/workspace",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -82,6 +86,22 @@ fn write_image(path: &PathBuf, data: &str) {
 fn print_result(result: ToolResult, screenshot_output: Option<PathBuf>) {
     let failed = result.is_error == Some(true);
     let mut structured = result.structured_content;
+    if let Some(Value::Object(object)) = structured.as_mut() {
+        if let (Ok(index), Ok(seat), Ok(workspace), Ok(output)) = (
+            std::env::var(crate::core::seat_context::CUA_INDEX_ENV),
+            std::env::var(crate::core::seat_context::CUA_SEAT_ENV),
+            std::env::var(crate::core::seat_context::CUA_WORKSPACE_ENV),
+            std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV),
+        ) {
+            object.insert(
+                "cua_index".into(),
+                index.parse::<u32>().map(Value::from).unwrap_or(Value::Null),
+            );
+            object.insert("cua_seat".into(), Value::String(seat));
+            object.insert("cua_workspace".into(), Value::String(workspace));
+            object.insert("cua_output".into(), Value::String(output));
+        }
+    }
     let mut text = Vec::new();
     for item in result.content {
         match item {
@@ -118,8 +138,62 @@ fn registry() -> Arc<crate::core::tool::ToolRegistry> {
     Arc::new(crate::platform::register_tools())
 }
 
+fn canonical_tool(name: &str) -> &str {
+    match name {
+        "focus" => "bring_to_front",
+        "screenshot" => "get_desktop_state",
+        other => other,
+    }
+}
+
+fn alias_definition(mut definition: Value, alias: &str) -> Value {
+    if canonical_tool(alias) != alias {
+        if let Value::Object(object) = &mut definition {
+            object.insert("name".into(), Value::String(alias.to_owned()));
+            object.insert(
+                "aliasFor".into(),
+                Value::String(canonical_tool(alias).to_owned()),
+            );
+        }
+    }
+    definition
+}
+
 fn main() {
+    let argv0 = std::env::args_os().next().unwrap_or_else(|| "cua".into());
+    let mut invocation_index =
+        crate::core::seat_context::invocation_index(&argv0).unwrap_or_else(|error| die(error, 64));
     let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let explicit_index = if arguments
+        .first()
+        .is_some_and(|argument| argument == "--index")
+    {
+        if arguments.len() < 2 {
+            die("--index requires a positive integer", 64);
+        }
+        arguments.remove(0);
+        Some(arguments.remove(0))
+    } else if let Some(value) = arguments
+        .first()
+        .and_then(|argument| argument.strip_prefix("--index="))
+        .map(str::to_owned)
+    {
+        arguments.remove(0);
+        Some(value)
+    } else {
+        None
+    };
+    if let Some(value) = explicit_index {
+        let requested = value
+            .parse::<u32>()
+            .ok()
+            .filter(|index| *index > 0)
+            .unwrap_or_else(|| die("--index requires a positive integer", 64));
+        if invocation_index != 1 && invocation_index != requested {
+            die("numbered cuaN executable conflicts with --index", 64);
+        }
+        invocation_index = requested;
+    }
     if arguments.is_empty() || matches!(arguments[0].as_str(), "help" | "-h" | "--help") {
         usage();
         return;
@@ -136,39 +210,109 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|error| die(format!("cannot initialize runtime: {error}"), 1));
-    let registry = registry();
     match arguments[0].as_str() {
         "list-tools" | "tools" => {
+            let registry = registry();
             if arguments.iter().any(|argument| argument == "--json") {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&registry.tools_list()).unwrap()
-                );
+                let mut listed = registry.tools_list();
+                if let Some(tools) = listed.get_mut("tools").and_then(Value::as_array_mut) {
+                    for alias in ["focus", "screenshot"] {
+                        if let Some(definition) = registry.get_def(canonical_tool(alias)) {
+                            tools.push(alias_definition(definition.to_list_entry(), alias));
+                        }
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&listed).unwrap());
             } else {
                 for name in registry.tool_names() {
                     println!("{name}");
                 }
+                println!("focus");
+                println!("screenshot");
             }
         }
         "describe" => {
+            let registry = registry();
             let name = arguments
                 .get(1)
                 .unwrap_or_else(|| die("describe requires TOOL", 64));
             let definition = registry
-                .get_def(name)
+                .get_def(canonical_tool(name))
                 .unwrap_or_else(|| die(format!("unknown tool: {name}"), 2));
             println!(
                 "{}",
-                serde_json::to_string_pretty(&definition.to_list_entry()).unwrap()
+                serde_json::to_string_pretty(&alias_definition(definition.to_list_entry(), name))
+                    .unwrap()
             );
+        }
+        "batch" => {
+            arguments.remove(0);
+            if arguments.len() != 1 {
+                die("batch requires exactly one JSON array", 64);
+            }
+            let steps = serde_json::from_str::<Vec<Value>>(&arguments[0])
+                .unwrap_or_else(|error| die(format!("invalid batch JSON: {error}"), 64));
+            if steps.is_empty() || steps.len() > 64 {
+                die("batch requires between 1 and 64 steps", 64);
+            }
+            let _seat_context = crate::core::seat_context::prepare(invocation_index)
+                .unwrap_or_else(|error| {
+                    die(
+                        format!("cannot prepare numbered CUA workspace: {error:#}"),
+                        1,
+                    )
+                });
+            std::env::set_var("BUZZARDOS_CUA_BATCH", "1");
+            let registry = registry();
+            let mut results = Vec::with_capacity(steps.len());
+            let mut failed = false;
+            for (index, step) in steps.into_iter().enumerate() {
+                let Value::Object(mut object) = step else {
+                    die(format!("batch step {} must be an object", index + 1), 64);
+                };
+                let name = object
+                    .remove("tool")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| {
+                        die(format!("batch step {} requires string tool", index + 1), 64)
+                    });
+                let input = match object.remove("args") {
+                    Some(args) if object.is_empty() => args,
+                    Some(_) => die(
+                        format!(
+                            "batch step {} cannot mix args with inline fields",
+                            index + 1
+                        ),
+                        64,
+                    ),
+                    None => Value::Object(object),
+                };
+                let canonical = canonical_tool(&name);
+                let result = runtime.block_on(registry.invoke_direct(canonical, input));
+                let is_error = result.is_error == Some(true);
+                results.push(serde_json::json!({
+                    "index": index,
+                    "tool": name,
+                    "result": result,
+                }));
+                if is_error {
+                    failed = true;
+                    break;
+                }
+            }
+            println!("{}", serde_json::to_string_pretty(&results).unwrap());
+            if failed {
+                process::exit(1);
+            }
         }
         _ => {
             let explicit_call = arguments[0] == "call";
             let tool_index = usize::from(explicit_call);
-            let tool = arguments
+            let mut tool = arguments
                 .get(tool_index)
                 .cloned()
                 .unwrap_or_else(|| die("call requires TOOL", 64));
+            tool = canonical_tool(&tool).to_owned();
             arguments.drain(0..=tool_index);
             let screenshot_output =
                 take_option(&mut arguments, "--screenshot-out-file").map(PathBuf::from);
@@ -176,6 +320,14 @@ fn main() {
                 die("tool calls accept at most one JSON argument", 64);
             }
             let input = parse_arguments(arguments.first());
+            let _seat_context = crate::core::seat_context::prepare(invocation_index)
+                .unwrap_or_else(|error| {
+                    die(
+                        format!("cannot prepare numbered CUA workspace: {error:#}"),
+                        1,
+                    )
+                });
+            let registry = registry();
             let result = runtime.block_on(registry.invoke_direct(&tool, input));
             print_result(result, screenshot_output);
         }

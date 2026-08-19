@@ -709,13 +709,11 @@ def read_keymap_snapshot(value):
             before.st_ino,
             before.st_size,
             before.st_mtime_ns,
-            before.st_ctime_ns,
         ) == (
             after.st_dev,
             after.st_ino,
             after.st_size,
             after.st_mtime_ns,
-            after.st_ctime_ns,
         )
         if not stable_identity or len(contents) > MAX_KEYMAP_BYTES:
             raise ValueError("keyboard snapshot changed while it was being read")

@@ -374,14 +374,19 @@ fn run() -> Result<()> {
         }) => {
             let paths = creation_paths(cli.machine_dir.as_deref(), "create")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
-            create(
+            import_machine(
                 &paths,
                 &name,
-                &image,
-                network.into(),
-                gpus,
-                shared_paths(shares)?,
-                keep_oci_archive,
+                ImportMachineRequest {
+                    source: &image,
+                    selector: None,
+                    mode: ImportModeArg::Clone,
+                    source_reference_override: None,
+                    shares: shared_paths(shares)?,
+                    keep_oci_archive,
+                    network_override: Some(network.into()),
+                    gpus_override: Some(gpus),
+                },
             )?;
             registry.register(&paths.machine(&name))
         }

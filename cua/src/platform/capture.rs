@@ -84,20 +84,16 @@ pub fn png_dimensions_pub(data: &[u8]) -> Result<(u32, u32)> {
 
 // NOTE: the previously-inline `png_dimensions`, `write_uncompressed_png`,
 // `write_png_chunk`, `zlib_store`, `adler32` (and `crc32_ieee` below)
-// were extracted to `crate::core::image_utils` in the 2026-05 dedup
-// audit so all three platforms call the same code. See
-// `CUA_DRIVER_RS_DEDUP_AUDIT.md`. RGBA-encoding callers below now go
-// through `crate::core::image_utils::encode_rgba_to_png`.
+// are centralized in `crate::core::image_utils`; RGBA-encoding callers below
+// use `crate::core::image_utils::encode_rgba_to_png`.
 
 /// Capture the primary display (root window) as raw PNG bytes.
 ///
 /// Dispatch:
-/// - Native Wayland (`CUA_DRIVER_RS_ENABLE_WAYLAND=1` + Wayland session):
+/// - Native Wayland (the Buzzard OS Sway session):
 ///   routes through [`crate::platform::wayland::screenshot_display_dispatch`] which
-///   owns the complete GNOME helper → wlroots screencopy →
-///   ext-image-copy-capture-v1 → portal Screenshot → X11 cascade. An
-///   available GNOME helper's capture failure is terminal.
-/// - X11 / Wayland-disabled: ImageMagick `import` → x11rb `XGetImage`.
+///   owns native wlroots screencopy for the selected guest output.
+/// - Xwayland fallback: x11rb `XGetImage`.
 pub fn screenshot_display_bytes() -> Result<Vec<u8>> {
     screenshot_display_bytes_with_dispatch(
         crate::platform::wayland::is_wayland(),

@@ -282,7 +282,7 @@ pub fn validate_compiled_theme(theme: &CompiledTheme, full: bool) -> Result<()> 
     Ok(())
 }
 
-#[cfg(any(test, feature = "theme-authoring"))]
+#[cfg(test)]
 pub fn encode_theme(theme: &CompiledTheme) -> Result<Vec<u8>> {
     validate_compiled_theme(theme, theme.profile == crate::cursor::THEME_PROFILE)?;
     let payload = postcard::to_allocvec(theme).context("serialize compiled theme")?;
@@ -343,10 +343,10 @@ pub fn decode_theme(bytes: &[u8]) -> Result<CompiledTheme> {
 }
 
 pub fn theme_store_root() -> Result<PathBuf> {
-    if let Some(override_path) = std::env::var_os("CUA_DRIVER_CURSOR_THEME_DIR") {
+    if let Some(override_path) = std::env::var_os("BUZZARD_CUA_CURSOR_THEME_DIR") {
         let path = PathBuf::from(override_path);
         if !path.is_absolute() {
-            bail!("CUA_DRIVER_CURSOR_THEME_DIR must be absolute");
+            bail!("BUZZARD_CUA_CURSOR_THEME_DIR must be absolute");
         }
         return Ok(path);
     }
@@ -371,7 +371,9 @@ pub fn theme_store_root() -> Result<PathBuf> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         if let Some(root) = std::env::var_os("XDG_DATA_HOME") {
-            return Ok(PathBuf::from(root).join("cua-driver").join("cursor-themes"));
+            return Ok(PathBuf::from(root)
+                .join("buzzard-cua")
+                .join("cursor-themes"));
         }
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -379,7 +381,7 @@ pub fn theme_store_root() -> Result<PathBuf> {
         Ok(home
             .join(".local")
             .join("share")
-            .join("cua-driver")
+            .join("buzzard-cua")
             .join("cursor-themes"))
     }
 }
@@ -389,31 +391,6 @@ fn installed_path(id: &str) -> Result<PathBuf> {
         bail!("invalid cursor theme id");
     }
     Ok(theme_store_root()?.join(format!("{id}.cua-theme")))
-}
-
-#[cfg(feature = "theme-authoring")]
-pub fn install_artifact(bytes: &[u8]) -> Result<PathBuf> {
-    let theme = decode_theme(bytes)?;
-    let root = theme_store_root()?;
-    fs::create_dir_all(&root).context("create cursor-theme store")?;
-    let target = installed_path(&theme.id)?;
-    let temporary = root.join(format!(".{}.{}.tmp", theme.id, std::process::id()));
-    fs::write(&temporary, bytes).context("write staged cursor theme")?;
-    fs::rename(&temporary, &target).context("atomically install cursor theme")?;
-    Ok(target)
-}
-
-#[cfg(feature = "theme-authoring")]
-pub fn uninstall_theme(id: &str) -> Result<bool> {
-    if id == crate::cursor::DEFAULT_THEME_ID {
-        bail!("the embedded default theme cannot be uninstalled");
-    }
-    let path = installed_path(id)?;
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).context("remove installed cursor theme"),
-    }
 }
 
 fn theme_cache() -> &'static Mutex<BTreeMap<String, Arc<CompiledTheme>>> {

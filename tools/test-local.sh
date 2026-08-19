@@ -26,7 +26,7 @@ cargo fmt --manifest-path "$project_dir/host/Cargo.toml" --all -- --check
 cargo fmt --manifest-path "$project_dir/guest/Cargo.toml" --all -- --check
 cargo fmt \
     --manifest-path \
-    "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/Cargo.toml" \
+    "$project_dir/cua/Cargo.toml" \
     --all -- --check
 
 CARGO_TARGET_DIR="$test_root/host-target" \
@@ -49,9 +49,8 @@ CARGO_TARGET_DIR="$test_root/guest-target" \
 
 CARGO_TARGET_DIR="$test_root/cua-target" \
     cargo test \
-        --manifest-path \
-        "$project_dir/guest/third_party/trycua-cua/cua-driver/rust/Cargo.toml" \
-        --package platform-linux --locked
+        --manifest-path "$project_dir/cua/Cargo.toml" \
+        --all-targets --locked
 
 python3 -m unittest discover -s "$project_dir/guest/tests" -v
 python3 -m unittest discover -s "$project_dir/oci/tests" -v

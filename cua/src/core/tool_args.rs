@@ -21,17 +21,14 @@
 //!   when the field is absent.
 //!
 //! Error message format: `"Missing required {kind} field: {name}"`.
-//! Used uniformly so MCP clients can pattern-match the wording.
-//!
-//! See `libs/cua-driver/rust/docs/dedup-audit.md` for the audit trail
-//! that motivated this extraction.
+//! Used uniformly so CLI callers can pattern-match the wording.
 
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::core::protocol::ToolResult;
 
-/// Deserialize one transport-free Rust input type from MCP arguments.
+/// Deserialize one transport-free Rust input type from CLI JSON arguments.
 ///
 /// Published SDK tools use this before invoking platform behavior, so the
 /// generated schema and the live parser share the same Rust definition.
@@ -40,7 +37,7 @@ pub fn parse_typed_input<T: DeserializeOwned>(
     mut args: Value,
 ) -> Result<T, ToolResult> {
     // Public callers cannot supply reserved arguments: ingress strips them
-    // before trusted session/approval context is injected. Keep that internal
+    // before trusted transport context is injected. Keep that internal
     // transport metadata out of the transport-free contract types as well.
     sanitize_reserved_args(&mut args);
     serde_json::from_value(args).map_err(|error| {
@@ -79,7 +76,7 @@ pub fn parse_typed_projection<T: crate::contract::ToolInput>(
 }
 
 /// Remove transport-reserved arguments supplied by a public caller. Trusted
-/// ingress code calls this before injecting session or approval context, so a
+/// ingress code calls this before injecting transport context, so a
 /// tool request cannot forge underscore-prefixed transport evidence.
 pub fn sanitize_reserved_args(args: &mut Value) {
     if let Some(object) = args.as_object_mut() {
@@ -99,7 +96,7 @@ mod reserved_args_tests {
             "pid": 42,
             "_session_id": "forged",
             "_observation_only": true,
-            "_cua_browser_prepare_mcp_host_approved": true,
+            "_reserved_transport_value": true,
             "profile": {"mode": "isolated_new", "_future_public_field": "retained"}
         });
         sanitize_reserved_args(&mut args);
@@ -114,12 +111,10 @@ mod reserved_args_tests {
 
     #[test]
     fn typed_input_ignores_trusted_transport_metadata_but_rejects_public_unknown_fields() {
-        let input = parse_typed_input::<GetScreenSizeInput>(
-            "get_screen_size",
-            json!({"session": "public", "_session_id": "trusted"}),
-        )
-        .expect("trusted transport metadata is not part of the public contract");
-        assert_eq!(input.session.as_deref(), Some("public"));
+        let input =
+            parse_typed_input::<GetScreenSizeInput>("get_screen_size", json!({"_cua_index": 2}))
+                .expect("trusted transport metadata is not part of the public contract");
+        assert_eq!(input, GetScreenSizeInput {});
 
         let error = parse_typed_input::<GetScreenSizeInput>(
             "get_screen_size",
@@ -135,7 +130,7 @@ mod reserved_args_tests {
     }
 
     #[test]
-    fn set_window_frame_typed_input_accepts_namespaced_session_metadata() {
+    fn set_window_frame_typed_input_accepts_reserved_transport_metadata() {
         let input = parse_typed_input::<SetWindowFrameInput>(
             "set_window_frame",
             json!({
@@ -145,17 +140,14 @@ mod reserved_args_tests {
                 "y": 20,
                 "width": 800,
                 "height": 600,
-                "session": "window-layout",
-                "_public_session_label": "window-layout",
-                "_session_id": "__cua_runtime_test:window-layout",
-                "_transport_session_id": "transport-1"
+                "_cua_index": 3,
+                "_transport_id": "transport-1"
             }),
         )
-        .expect("trusted session metadata is not part of the public contract");
+        .expect("trusted transport metadata is not part of the public contract");
 
         assert_eq!(input.pid, 42);
         assert_eq!(input.window_id, 84);
-        assert_eq!(input.session.as_deref(), Some("window-layout"));
     }
 
     #[test]
@@ -210,7 +202,7 @@ fn out_of_range(kind: &str, name: &str, raw: i128) -> ToolResult {
     ToolResult::error(format!("Field {name} is out of range for {kind}: {raw}"))
 }
 
-/// Extension trait on `&serde_json::Value` (the MCP `arguments` blob)
+/// Extension trait on a CLI JSON argument value.
 /// that provides typed, error-formatted accessors for every field
 /// shape the tool surface uses.
 pub trait ArgsExt {

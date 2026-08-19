@@ -15,7 +15,7 @@ The canonical filenames are:
 buzzardos_<VERSION>_amd64.deb
 buzzardos-guest_<GUEST_VERSION>_amd64.deb
 buzzardos-desktop_<DESKTOP_VERSION>_amd64.deb
-buzzardoscua_<BUZZARDOSCUA_VERSION>_amd64.deb
+buzzardoscua_<cua/VERSION>_amd64.deb
 ```
 
 These are binary development artifacts. Publishing them from a signed APT

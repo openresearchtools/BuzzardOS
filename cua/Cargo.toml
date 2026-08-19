@@ -23,7 +23,6 @@ evdev = "0.12"
 fontdue = { version = "0.9", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 libc = "0.2"
-meval = "0.2"
 postcard = { version = "1", features = ["alloc"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
@@ -46,7 +45,3 @@ zstd = "0.13"
 
 [dev-dependencies]
 sha2 = "0.10"
-
-[features]
-default = []
-theme-authoring = []

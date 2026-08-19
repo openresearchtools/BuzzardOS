@@ -32,8 +32,10 @@ A machine is a persistent, directly writable, flat root filesystem:
   survive complete stop/start cycles.
 - Guest systemd is namespace PID 1 and supervises a complete multi-process
   desktop session.
-- Stock distro Sway/wlroots composites the complete guest desktop into exactly
-  one native host Wayland window.
+- Stock distro Sway/wlroots composites the guest into exactly one native host
+  Buzzard OS window through one fixed host-facing guest output. Additional
+  numbered CUA/manual outputs are guest-internal, active, off-screen virtual
+  outputs and never become additional host surfaces.
 - Guest applications are never forwarded as separate host surfaces.
 - The nested compositor is the guest display, input, screenshot, and
   accessibility boundary.
@@ -130,11 +132,13 @@ on `buzzardos-guest` and replace it.
 
 ### `buzzardoscua`
 
-The separate CUA package contains the reviewed Linux fork formerly called the
-TryCua Cua Driver. Its product, package, executable, service-facing, and
-diagnostic identity is `Buzzard CUA`. It runs as the interactive guest user and
-depends on compatible guest-runtime interfaces; neither guest package is
-collapsed into it.
+The separate CUA package contains one reviewed Rust CLI crate derived from the
+Linux functionality formerly called the TryCua Cua Driver. Its product,
+package, executable, and diagnostic identity is `Buzzard CUA`. It runs as the
+interactive guest user and depends on compatible guest-runtime interfaces;
+neither guest package is collapsed into it. It contains no CUA daemon, session
+manager, MCP server, browser-specific automation layer, recording subsystem,
+telemetry, vendor service, or start/end-session protocol.
 
 The reference image installs `buzzardos-guest`, `buzzardos-desktop`, and
 `buzzardoscua`, but their versions
@@ -340,8 +344,10 @@ installation may add only an exact-path profile for the namespace entry point.
 
 `buzzardos-display` is a native host Wayland app and filtered gateway. It owns
 the one `xdg_toplevel` before start, during boot/run, after stop, and after
-failure. The guest compositor is a buffer/input producer embedded as one
-monitor surface; it never owns host window policy.
+failure. Exactly one fixed guest output is host-facing for the lifetime of the
+machine window. The guest compositor is a buffer/input producer embedded as
+that one monitor surface; it never owns host window policy. Guest-internal
+off-screen outputs never create another host toplevel or host-control channel.
 
 The window has ordinary drag, edge/corner resize, minimize, maximize/restore,
 and close. One compact native header exposes `Machine`, `Ports`, `Devices`,
@@ -356,10 +362,12 @@ stretching and excludes host chrome. Monitor transitions negotiate scale,
 refresh, transform, subpixel, color/HDR, input, dmabuf, sync, and presentation;
 missing required capability fails clearly.
 
-The same virtual output stays live while minimized, occluded, unfocused, or on
-another workspace. Host callbacks pace visible presentation; an internal clock
-continues the same guest scanout when callbacks stop, without claiming vblank,
-creating a second display/stream, or using a CPU-copy fallback.
+The fixed host-facing output stays live while minimized, occluded, unfocused,
+or on another host workspace. Host callbacks pace visible presentation; an
+internal clock continues the same guest scanout when callbacks stop, without
+claiming vblank, creating a second host display/stream, or using a CPU-copy
+fallback. Guest workspace selection and numbered virtual-output management are
+performed only through guest Sway IPC and never send a host-control command.
 
 Closing requests orderly guest shutdown and never discards rootfs. Compositor
 disconnect changes the existing window to Stopped/Failed rather than closing it.
@@ -370,8 +378,9 @@ disconnect changes the existing window to Stopped/Failed rather than closing it.
 
 Sway is Wayland server for guest applications and nested client of the display
 gateway. Wlroots is Sway's library, not a daemon. Apps connect only to Sway's
-private socket; Sway presents one complete virtual monitor through the filtered
-parent socket.
+private socket. Sway presents one fixed host-facing output through the filtered
+parent socket and may also maintain active guest-only off-screen virtual
+outputs for numbered CUA and manual workspaces.
 
 The gateway keeps a versioned capability table and modular handlers.
 Guest-internal protocols stay inside Sway, safe parent monitor/input features
@@ -398,13 +407,65 @@ pipelines. Broker remains authority for namespaces, listeners, host targets,
 capture, shares, and devices. Guest cannot request arbitrary host mounts,
 commands, ports, or capture targets.
 
+### Guest workspace, output, and seat model
+
+The guest always has a canonical `Desktop` workspace; it is the initial human
+workspace shown by the fixed host-facing output. The host-facing output itself
+is never recreated when the selected guest workspace changes. There is exactly
+one human input seat, `seat0`. Host keyboard, pointer, touch, and tablet events
+enter only through `seat0`. Synthetic CUA input never uses or impersonates
+`seat0`.
+
+Numbered CUA workspaces are created lazily:
+
+```text
+cua  == cua1  -> seat1 -> workspace CUA  -> numbered virtual output 1
+cua2          -> seat2 -> workspace CUA2 -> numbered virtual output 2
+cuaN          -> seatN -> workspace CUAN -> numbered virtual output N
+```
+
+Invoking `cuaN` ensures that exact seat/workspace/off-screen output exists and
+is active; unused higher-numbered workspaces are not pre-created. Every CUA
+seat is permanently scoped to its matching numbered workspace/output. CUA
+coordinate transforms, output mode, screenshot metadata, pressed-input state,
+and mutation lock are per numbered output/seat, not global. Operations from
+different numbered callers may proceed independently; mutating operations for
+one seat serialize through that seat's lock.
+
+The official desktop exposes a thin guest-internal top bar with `Desktop`,
+`CUA`, `CUA2`, ... selectors for existing workspaces and a `+` control. The
+selectors change what the human views using only typed Sway IPC; they do not
+resize, replace, or command the native host window. `+` creates a manual guest
+workspace/output independently of CUA invocation and never allocates a CUA
+seat or turns it into a CUA workspace.
+
+Closing a numbered CUA or manual workspace is lossless: first move every
+window on it to `Desktop` through confirmed Sway IPC, then disable and remove
+its guest-only virtual output and selector. Failure to confirm all window moves
+leaves the workspace/output intact. `Desktop`, `seat0`, and the fixed
+host-facing output cannot be closed.
+
+Taskbars enumerate only windows on their own current workspace. A window never
+appears simultaneously in `Desktop` and CUA/manual taskbars. Every normal
+window titlebar menu offers a Move action targeting `Desktop` and every
+existing numbered CUA workspace; moving is confirmed against Sway's tree.
+
+Global compact window listing remains available to CUA, but each row includes
+the current output and workspace along with stable window identity, title,
+application ID, state, and geometry. When `cuaN` focuses a window currently on
+another workspace/output, it first moves that window to caller `N`'s workspace
+and output through Sway IPC, confirms the move, and only then focuses it.
+Focus never silently redirects the caller to another seat/output.
+
 ### Official desktop
 
 `buzzardos-desktop` is classic XFCE/Openbox-style, not a full-screen launcher.
-It provides one desktop, compact bottom taskbar, Applications menu, one task
-button per window, Show Desktop, `Files` and `/shared` shortcuts, and a clearly
-separated lifecycle boundary: machine shutdown remains in the native host
-window and never appears as a redundant Applications-menu row inside the guest.
+It provides the thin `Desktop`/`CUA`/`CUA2`.../`+` workspace bar described
+above, a compact bottom taskbar scoped to the currently displayed guest
+workspace, Applications menu, one task button per current-workspace window,
+Show Desktop, `Files` and `/shared` shortcuts, and a clearly separated
+lifecycle boundary: machine shutdown remains in the native host window and
+never appears as a redundant Applications-menu row inside the guest.
 
 Task buttons are contiguous, borderless, and have no visual gaps. Capped task
 buttons are on by default, use a 260-pixel maximum and a 96-pixel minimum, and
@@ -457,31 +518,44 @@ regular, zero-byte, mode-0600 `.no-sandbox` marker. The explicit no-sandbox
 action creates that marker. No action embeds a shell command.
 
 Sway owns geometry/state. Drag, resize, minimize, maximize/restore, close,
-focus, and titlebar context actions use confirmed Sway IPC. Do not add a
-layer-shell titlebar overlay or duplicate window controls in task items. Human
-input and CUA share one guest coordinate contract.
+focus, move-to-Desktop/CUA-workspace, and titlebar context actions use confirmed
+Sway IPC. Do not add a layer-shell titlebar overlay or duplicate window
+controls in task items. Human seat0 and each numbered CUA seat use the same
+coordinate definitions, scoped to their respective output.
 
 ### Buzzard CUA
 
-Buzzard CUA runs in the interactive guest. It provides full-output screenshot,
-window listing/state, AT-SPI inspection/action, app launch/focus, pointer
-move/click/drag/scroll, keyboard keys/chords/text, and window controls for
-Wayland and Xwayland.
+Buzzard CUA is a daemonless one-crate CLI. `cua` is exactly the `cua1` caller;
+`cuaN` selects numbered seat/output/workspace `N` and lazily creates it when
+needed. Every command performs its bounded operation and exits. There is no
+start-session, end-session, attach-session, session token, resident CUA daemon,
+MCP server, browser-specialized API, screen/action recording, telemetry,
+self-update, or remote skill download.
 
-Canonical coordinates are guest physical dmabuf pixels from `(0,0)` at monitor
-top-left. Screenshots exclude host chrome and are not downscaled for fractional
-scale. Logical geometry transforms exactly once; resize invalidates stale
-geometry atomically.
+The CLI provides raw visual and accessibility tools: screenshot, compact
+global window listing/state, AT-SPI inspection/action, application launch,
+window focus/move/state, pointer move/click/drag/scroll, and keyboard
+keys/chords/text for Wayland and Xwayland. Each raw visual/input command binds
+to the invoking `cuaN` seat and numbered output. It cannot inject through human
+`seat0` or operate in another CUA caller's coordinate space.
+
+Canonical coordinates are physical dmabuf pixels of the caller's numbered
+output from `(0,0)` at its top-left. Screenshots contain exactly that output,
+exclude host chrome and all other guest outputs, and are not downscaled for
+fractional scale. Logical geometry transforms exactly once. Output resize or
+workspace/output destruction atomically invalidates stale screenshot and
+geometry metadata for that caller.
 
 CUA returns structured success/failure and observable evidence. A helper exit
-code is not success. Persistent synthetic input never grabs the seat, suppresses
-human input, or leaves pressed keys after success, failure, cancellation,
-disconnect, or shutdown.
+code is not success. Per-seat input cleanup never leaves pressed keys after
+success, failure, cancellation, or process exit. Independent CLI invocations
+coordinate only through minimal per-seat/output state and locks; this state is
+not a session or daemon and grants no generic RPC surface.
 
-The fork pins exact upstream commit, preserves MIT notices, records Buzzard
-changes, removes telemetry/self-update/remote skill download, and contacts no
-upstream service. It exposes no host automation socket, VNC/RDP, network
-control port, or direct host compositor access.
+The fork pins an exact upstream commit, preserves MIT notices, records Buzzard
+changes, and contacts no upstream service. It exposes no host automation
+socket, VNC/RDP, network control port, direct host compositor access, or host
+window/workspace command.
 
 ## Clipboard boundary
 
@@ -550,7 +624,8 @@ Start:
 2. repair only stale ephemeral runtime state;
 3. enter `Starting`, construct namespaces/mounts/network/devices/display;
 4. execute guest systemd as namespace PID 1;
-5. start private session, Sway, integrations, selected desktop, and CUA;
+5. start private session, Sway, integrations, and selected desktop; Buzzard CUA
+   remains an already installed on-demand CLI and no CUA daemon is started;
 6. report `Running` only after runtime readiness; require desktop readiness
    only when a provider is selected.
 
@@ -593,8 +668,8 @@ A handoff is incomplete until automation plus real Wayland/GPU journeys prove:
   not derive from host identity;
 - guest files, packages, and UI customization survive restart; automatic APT
   updates do not rerun provisioning;
-- systemd is namespace PID 1; desktop/Sway/PipeWire/CUA run UID 1000; sudo is
-  confined to guest root;
+- systemd is namespace PID 1; desktop/Sway/PipeWire and every invoked CUA CLI
+  run as UID 1000; sudo is confined to guest root;
 - runtime works without `buzzardos-desktop` and supports another provider;
 - one host toplevel remains usable before/during/after runtime/failure; all
   controls work without guest input leakage;
@@ -603,8 +678,18 @@ A handoff is incomplete until automation plus real Wayland/GPU journeys prove:
 - clipboard isolation and two one-shot transfers pass hostile, replay,
   concurrency, multi-machine, timeout, MIME, and size tests;
 - live port/media/share/device toggles work on real hardware and fully revoke;
-- CUA/AT-SPI performs screenshot, input, window, application, Wayland,
-  Xwayland, accessibility, and hidden-window journeys with visible evidence;
+- the fixed host-facing output and single host window remain unchanged while
+  lazy CUA/CUA2/manual outputs are created, switched, kept active off-screen,
+  and closed entirely through guest Sway IPC;
+- workspace close moves every window to Desktop before output removal;
+  taskbars remain workspace-scoped and titlebar Move targets are correct;
+- concurrent `cua`/`cuaN` invocations bind their own seat/output, lock per
+  seat, produce output-scoped screenshots/coordinates, and never use seat0;
+- compact global window listings report output/workspace, and CUA focus moves
+  a selected foreign-workspace window into the caller workspace before focus;
+- daemonless CUA/AT-SPI performs screenshot, input, window, application,
+  Wayland, Xwayland, accessibility, and off-screen journeys with visible
+  evidence, with no session/MCP/browser/recording/telemetry subsystem;
 - guest AppImages work through constrained FUSE without `CAP_SYS_ADMIN` and
   ordinary files never gain execute permission;
 - namespace, filesystem, service, clipboard, media, network, and device

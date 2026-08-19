@@ -10,7 +10,11 @@
 //! fall back to a minimal X11 property tree (window title + role) via x11rb.
 
 use anyhow::Result;
-use std::collections::{HashMap, VecDeque};
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::VecDeque;
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
 pub mod native;
@@ -52,12 +56,15 @@ pub struct AtspiTreeResult {
     pub trusted: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize, Serialize)]
 struct SnapshotElementKeys {
+    #[serde(default)]
+    pid: u32,
     snapshot_id: String,
     keys: Vec<u64>,
 }
 
+#[cfg(test)]
 fn snapshot_element_keys() -> &'static Mutex<HashMap<u32, VecDeque<SnapshotElementKeys>>> {
     static KEYS: OnceLock<Mutex<HashMap<u32, VecDeque<SnapshotElementKeys>>>> = OnceLock::new();
     KEYS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -73,28 +80,119 @@ pub fn register_snapshot_element_keys(pid: u32, snapshot_id: &str, nodes: &[Atsp
         .filter(|node| node.element_index.is_some())
         .map(|node| node.element_key)
         .collect();
-    let mut all = snapshot_element_keys().lock().unwrap();
-    let snapshots = all.entry(pid).or_default();
-    snapshots.retain(|snapshot| snapshot.snapshot_id != snapshot_id);
-    snapshots.push_back(SnapshotElementKeys {
-        snapshot_id: snapshot_id.to_owned(),
-        keys,
-    });
-    while snapshots.len() > crate::core::element_token::LRU_CAP_PER_PID {
-        snapshots.pop_front();
+    #[cfg(not(test))]
+    {
+        let mut state = load_element_key_state().unwrap_or_default();
+        state.schema = 1;
+        state
+            .snapshots
+            .retain(|snapshot| !(snapshot.pid == pid && snapshot.snapshot_id == snapshot_id));
+        state.snapshots.push_back(SnapshotElementKeys {
+            pid,
+            snapshot_id: snapshot_id.to_owned(),
+            keys,
+        });
+        while state.snapshots.len() > ELEMENT_KEY_SNAPSHOT_CAP {
+            state.snapshots.pop_front();
+        }
+        if let Err(error) = save_element_key_state(&state) {
+            eprintln!("cua: cannot persist bounded AT-SPI element identities: {error:#}");
+        }
+    }
+    #[cfg(test)]
+    {
+        let mut all = snapshot_element_keys().lock().unwrap();
+        let snapshots = all.entry(pid).or_default();
+        snapshots.retain(|snapshot| snapshot.snapshot_id != snapshot_id);
+        snapshots.push_back(SnapshotElementKeys {
+            pid,
+            snapshot_id: snapshot_id.to_owned(),
+            keys,
+        });
+        while snapshots.len() > crate::core::element_token::LRU_CAP_PER_PID {
+            snapshots.pop_front();
+        }
     }
 }
 
 pub fn snapshot_element_key(pid: u32, snapshot_id: &str, index: usize) -> Option<u64> {
-    snapshot_element_keys()
-        .lock()
-        .unwrap()
-        .get(&pid)?
-        .iter()
-        .find(|snapshot| snapshot.snapshot_id == snapshot_id)?
-        .keys
-        .get(index)
-        .copied()
+    #[cfg(not(test))]
+    {
+        return load_element_key_state()
+            .ok()?
+            .snapshots
+            .into_iter()
+            .find(|snapshot| snapshot.pid == pid && snapshot.snapshot_id == snapshot_id)?
+            .keys
+            .get(index)
+            .copied();
+    }
+    #[cfg(test)]
+    {
+        snapshot_element_keys()
+            .lock()
+            .unwrap()
+            .get(&pid)?
+            .iter()
+            .find(|snapshot| snapshot.snapshot_id == snapshot_id)?
+            .keys
+            .get(index)
+            .copied()
+    }
+}
+
+#[cfg(not(test))]
+const ELEMENT_KEY_STATE_MAX_BYTES: usize = 1024 * 1024;
+#[cfg(not(test))]
+const ELEMENT_KEY_SNAPSHOT_CAP: usize = 16;
+#[cfg(not(test))]
+const ELEMENT_KEYS_PER_SNAPSHOT_CAP: usize = 5_000;
+
+#[cfg(not(test))]
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiskElementKeyState {
+    schema: u32,
+    snapshots: VecDeque<SnapshotElementKeys>,
+}
+
+#[cfg(not(test))]
+fn load_element_key_state() -> anyhow::Result<DiskElementKeyState> {
+    let Some(bytes) =
+        crate::core::seat_context::read_state("element-keys", ELEMENT_KEY_STATE_MAX_BYTES)?
+    else {
+        return Ok(DiskElementKeyState {
+            schema: 1,
+            snapshots: VecDeque::new(),
+        });
+    };
+    let state: DiskElementKeyState = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        state.schema == 1,
+        "unsupported AT-SPI element-key state schema"
+    );
+    anyhow::ensure!(
+        state.snapshots.len() <= ELEMENT_KEY_SNAPSHOT_CAP
+            && state
+                .snapshots
+                .iter()
+                .all(|snapshot| snapshot.keys.len() <= ELEMENT_KEYS_PER_SNAPSHOT_CAP),
+        "AT-SPI element-key state exceeds its bounds"
+    );
+    Ok(state)
+}
+
+#[cfg(not(test))]
+fn save_element_key_state(state: &DiskElementKeyState) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        state
+            .snapshots
+            .iter()
+            .all(|snapshot| snapshot.keys.len() <= ELEMENT_KEYS_PER_SNAPSHOT_CAP),
+        "AT-SPI snapshot exceeds its element-key bound"
+    );
+    let bytes = serde_json::to_vec(state)?;
+    crate::core::seat_context::write_state("element-keys", &bytes, ELEMENT_KEY_STATE_MAX_BYTES)
 }
 
 /// Walk the AT-SPI tree with caller-supplied caps. `None` for either cap

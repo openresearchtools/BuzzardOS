@@ -52,9 +52,9 @@ const CANCELLATION_POLL_SLICE: Duration = Duration::from_millis(10);
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum VirtualKeyboardError {
-    #[error("persistent virtual keyboard is unsupported: {0}")]
+    #[error("virtual keyboard is unsupported: {0}")]
     Unsupported(&'static str),
-    #[error("CUA keyboard operation was cancelled by session teardown")]
+    #[error("CUA keyboard operation was cancelled by guest shutdown")]
     Cancelled,
     #[error("CUA keyboard delivery became ambiguous: {0}")]
     DeliveryAmbiguous(&'static str),
@@ -67,44 +67,43 @@ static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 static TX: OnceLock<Sender<Cmd>> = OnceLock::new();
 static SHUTDOWN_EPOCH: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_OPERATION: Mutex<Option<Admission>> = Mutex::new(None);
-static SESSION_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
-/// Runtime-private session admission captured synchronously at a Tool's
-/// `invoke` boundary, before consent/focus/other awaits. A recycled public
-/// label gets a new runtime-private key from core; an explicitly restarted
-/// exact key gets the next generation after its prior EndSession.
+/// Runtime-private shutdown epoch captured synchronously at a tool's invoke
+/// boundary, before focus or delivery awaits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Admission {
-    leases: Vec<crate::core::session::SessionLease>,
     shutdown_epoch: u64,
 }
 
 pub(super) fn initialize() {
-    SESSION_HOOK_INSTALLED.get_or_init(|| {
-        crate::core::session::register_session_end_hook(end_session);
-    });
     // Create only the command owner, not a Wayland connection. Publishing an
     // ACTIVE operation is then never observable without a reset-capable owner.
     let _ = tx();
 }
 
-pub(super) fn admit(
-    trusted_leases: Vec<crate::core::session::SessionLease>,
-) -> anyhow::Result<Admission> {
+pub(super) fn admit() -> anyhow::Result<Admission> {
     initialize();
-    if trusted_leases
-        .iter()
-        .any(|lease| !crate::core::session::session_lease_is_current(lease))
-    {
-        return Err(VirtualKeyboardError::Cancelled.into());
-    }
-    Ok(Admission {
-        leases: trusted_leases,
+    let admission = Admission {
         shutdown_epoch: SHUTDOWN_EPOCH.load(Ordering::Acquire),
-    })
+    };
+    // Establish the invocation's named virtual-keyboard device before any
+    // focus request. Creating a keyboard can change Sway's per-seat focus;
+    // doing it lazily on the first key would race after the exact-window focus
+    // validation and could redirect that key to another workspace.
+    let (reply, receive) = bounded(1);
+    tx().send(Cmd::Prepare { reply })
+        .map_err(|error| anyhow::anyhow!("CUA virtual-keyboard worker stopped: {error}"))?;
+    receive
+        .recv()
+        .map_err(|error| anyhow::anyhow!("CUA virtual-keyboard reply closed: {error}"))??;
+    ensure_admitted(&admission)?;
+    Ok(admission)
 }
 
 enum Cmd {
+    Prepare {
+        reply: Sender<anyhow::Result<()>>,
+    },
     Sequence {
         transitions: Vec<KeyTransition>,
         admission: Admission,
@@ -130,6 +129,7 @@ enum Cmd {
 #[derive(Default)]
 struct State {
     seat: Option<WlSeat>,
+    seats: Vec<(WlSeat, String)>,
     manager: Option<ZwpVirtualKeyboardManagerV1>,
     completed_sync: u64,
 }
@@ -165,7 +165,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         } = event
         {
             if interface == WlSeat::interface().name {
-                state.seat = Some(registry.bind(name, version.min(7), qh, ()));
+                let seat: WlSeat = registry.bind(name, version.min(7), qh, ());
+                state.seats.push((seat, String::new()));
             } else if interface == ZwpVirtualKeyboardManagerV1::interface().name {
                 state.manager = Some(registry.bind(name, version.min(1), qh, ()));
             }
@@ -175,13 +176,29 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 
 impl Dispatch<WlSeat, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &WlSeat,
-        _: <WlSeat as Proxy>::Event,
+        state: &mut Self,
+        seat: &WlSeat,
+        event: <WlSeat as Proxy>::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let wayland_client::protocol::wl_seat::Event::Name { name } = event {
+            if let Some(candidate) = state
+                .seats
+                .iter_mut()
+                .find(|candidate| candidate.0 == *seat)
+            {
+                candidate.1 = name.clone();
+            }
+            if std::env::var(crate::core::seat_context::CUA_SEAT_ENV)
+                .ok()
+                .as_deref()
+                == Some(name.as_str())
+            {
+                state.seat = Some(seat.clone());
+            }
+        }
     }
 }
 
@@ -231,7 +248,7 @@ pub(super) fn press_key(admission: &Admission, key: &str) -> anyhow::Result<()> 
     hotkey(admission, &[], key)
 }
 
-/// Type Unicode text without replacing the daemon-owned virtual keyboard.
+/// Type Unicode text without replacing the invocation-owned virtual keyboard.
 ///
 /// The generated keymap follows wtype's one-key-per-keysym representation, so
 /// every scalar value supported by the pinned libxkbcommon has the same input
@@ -371,7 +388,7 @@ impl OperationGuard {
     fn begin(admission: &Admission) -> anyhow::Result<Self> {
         // The admission itself was captured by Tool::invoke before any await.
         // Revalidate after waiting for the global keyboard lane so a queued
-        // operation cannot start after its own EndSession.
+        // An operation cannot start after guest shutdown has begun.
         let lock = OPERATION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -406,65 +423,6 @@ impl Drop for OperationGuard {
     }
 }
 
-fn end_session(session: &str) {
-    let active = ACTIVE_OPERATION
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let active_generation = active
-        .as_ref()
-        .into_iter()
-        .flat_map(|active| &active.leases)
-        .filter(|lease| lease.session_id() == session)
-        .map(crate::core::session::SessionLease::generation)
-        .next();
-    drop(active);
-    let Some(generation) = active_generation else {
-        return;
-    };
-
-    const DEADLINE: Duration = Duration::from_secs(2);
-    let started = Instant::now();
-    let Some(reset_tx) = TX.get() else {
-        fail_stop_session_teardown(
-            session,
-            generation,
-            "keyboard owner was absent while its operation was active",
-        );
-    };
-    let (reply, receive) = bounded(1);
-    if reset_tx
-        .send_timeout(
-            Cmd::Reset { reply },
-            DEADLINE.saturating_sub(started.elapsed()),
-        )
-        .is_err()
-    {
-        fail_stop_session_teardown(session, generation, "neutral reset could not be queued");
-    }
-    match receive.recv_timeout(DEADLINE.saturating_sub(started.elapsed())) {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => fail_stop_session_teardown(
-            session,
-            generation,
-            &format!("neutral reset failed: {error:#}"),
-        ),
-        Err(error) => fail_stop_session_teardown(
-            session,
-            generation,
-            &format!("neutral reset was not acknowledged: {error}"),
-        ),
-    }
-}
-
-fn fail_stop_session_teardown(session: &str, generation: u64, reason: &str) -> ! {
-    tracing::error!(
-        session_generation = generation,
-        "CUA keyboard fail-stop during session teardown: {reason}; session identifier omitted"
-    );
-    let _ = session;
-    std::process::abort()
-}
-
 fn tx() -> &'static Sender<Cmd> {
     TX.get_or_init(|| {
         let (tx, receive) = crossbeam_channel::bounded(32);
@@ -480,6 +438,7 @@ fn owner_thread(receive: Receiver<Cmd>) {
     let mut worker = KeyboardWorker::default();
     while let Ok(command) = receive.recv() {
         let (result, reply) = match command {
+            Cmd::Prepare { reply } => (worker.ensure_session(), Some(reply)),
             Cmd::Sequence {
                 transitions,
                 admission,
@@ -551,7 +510,7 @@ impl KeyboardWorker {
             {
                 // Prove neutral on the same Wayland client. A sync on a newly
                 // connected client cannot order old-client key requests, so a
-                // failed same-client barrier makes EndSession fail-stop rather
+                // A failed same-client barrier makes shutdown fail-stop rather
                 // than accepting a merely neutral replacement keyboard.
                 let same_client_neutral = self
                     .session
@@ -1032,13 +991,6 @@ fn ensure_admitted(admission: &Admission) -> anyhow::Result<()> {
     if admission.shutdown_epoch != SHUTDOWN_EPOCH.load(Ordering::Acquire) {
         return Err(VirtualKeyboardError::Cancelled.into());
     }
-    if admission
-        .leases
-        .iter()
-        .any(|lease| !crate::core::session::session_lease_is_current(lease))
-    {
-        return Err(VirtualKeyboardError::Cancelled.into());
-    }
     Ok(())
 }
 
@@ -1247,7 +1199,7 @@ fn render_text_keymap(entries: &[TextKeymapEntry]) -> anyhow::Result<String> {
 }
 
 fn keymap_file(keymap: &str) -> anyhow::Result<File> {
-    let name = CString::new("cua-driver-keymap")?;
+    let name = CString::new("buzzard-cua-keymap")?;
     let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -1527,7 +1479,7 @@ mod tests {
     }
 
     #[test]
-    fn session_end_reset_then_parent_backspace_is_neutral() {
+    fn invocation_reset_then_parent_backspace_is_neutral() {
         let mut pressed = PressedState::default();
         pressed.record(KeyTransition {
             keycode: 29,
@@ -1640,31 +1592,6 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("limit is"));
-    }
-
-    #[test]
-    fn queued_waiter_with_core_lease_cannot_run_after_session_end() {
-        let session = "__cua_runtime_keyboard-test:queued-waiter";
-        let lease = crate::core::session::capture_session_lease(session).unwrap();
-        let admission = admit(vec![lease]).unwrap();
-        assert!(ensure_admitted(&admission).is_ok());
-        assert!(crate::core::session::fire_session_end(session));
-        assert!(ensure_admitted(&admission)
-            .unwrap_err()
-            .to_string()
-            .contains("cancelled"));
-    }
-
-    #[test]
-    fn huge_text_delay_is_cancelled_before_sleeping() {
-        let session = "__cua_runtime_keyboard-test:huge-delay";
-        let lease = crate::core::session::capture_session_lease(session).unwrap();
-        let admission = admit(vec![lease]).unwrap();
-        assert!(crate::core::session::fire_session_end(session));
-        let started = std::time::Instant::now();
-        let error = cancellable_delay(u64::MAX, &admission).unwrap_err();
-        assert!(error.to_string().contains("cancelled"));
-        assert!(started.elapsed() < std::time::Duration::from_millis(100));
     }
 
     #[test]

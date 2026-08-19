@@ -11,8 +11,7 @@ HARDWARE_ACCEPTANCE = PROJECT_DIR / "tests/acceptance/hardware-acceptance.sh"
 SWAY_CONFIG = PROJECT_DIR / "guest/assets/sway-config"
 CUA_VIRTUAL_KEYBOARD = (
     PROJECT_DIR
-    / "guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/src"
-    / "wayland/virtual_keyboard.rs"
+    / "cua/src/platform/wayland/virtual_keyboard.rs"
 )
 class HardwareAcceptanceContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -154,18 +153,16 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             "# Classic state changes remain compositor-owned", maxsplit=1
         )[0]
         ordered_fragments = (
-            "assert_cua_ok start_session",
             "assert_cua_ok hotkey",
-            r'[\"ctrl\",\"l\"]',
+            '["ctrl","l"]',
             "assert_cua_ok type_text",
             "assert_cua_ok press_key",
-            r'\"key\":\"backspace\"',
+            '"key":"backspace"',
             "assert_cua_ok type_text",
-            r'\"text\":\"z\"',
+            '"text":"z"',
             "assert_cua_ok press_key",
-            r'\"key\":\"enter\"',
+            '"key":"enter"',
             'cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z"',
-            "assert_cua_ok end_session",
         )
         cursor = 0
         for fragment in ordered_fragments:
@@ -176,20 +173,12 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertNotIn('wb window "$machine" focus-monitor', self.script)
         self.assertNotIn("BUZZARDOS_ACCEPT_HOST_INPUT_HOOK", self.script)
 
-    def test_cua_session_end_waits_for_a_neutral_keyboard_acknowledgement(self) -> None:
-        self.assertIn("register_session_end_hook", self.cua_keyboard)
-        self.assertIn(
-            "send_timeout(Cmd::Reset { reply }, remaining)", self.cua_keyboard
-        )
-        self.assertIn(
-            "receive.recv_timeout(DEADLINE.saturating_sub(started.elapsed()))",
-            self.cua_keyboard,
-        )
+    def test_cua_invocation_restores_a_neutral_keyboard(self) -> None:
+        self.assertIn("Cmd::Reset { reply }", self.cua_keyboard)
         self.assertIn("self.keyboard.modifiers(0, 0, 0, 0)", self.cua_keyboard)
         self.assertIn("self.pressed.cleanup_transitions()", self.cua_keyboard)
         self.assertIn("same_client_neutral", self.cua_keyboard)
-        self.assertIn("session.restore_fixed_neutral().is_ok()", self.cua_keyboard)
-        self.assertIn("cancelled_teardown_unproven = true", self.cua_keyboard)
+        self.assertIn("restore_fixed_neutral().is_ok()", self.cua_keyboard)
         self.assertIn(
             "cancelled CUA keyboard could not prove same-client neutral delivery",
             self.cua_keyboard,
@@ -209,7 +198,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             self.cua_keyboard,
         )
         self.assertIn(
-            "session_end_reset_then_parent_backspace_is_neutral",
+            "invocation_reset_then_parent_backspace_is_neutral",
             self.cua_keyboard,
         )
         self.assertIn(
@@ -218,19 +207,13 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         )
         self.assertNotIn("repair_transitions", self.cua_keyboard)
         self.assertIn("wlr_keyboard_finish emits releases", self.cua_keyboard)
-        self.assertIn("SHUTDOWN_EPOCH.fetch_add", self.cua_keyboard)
         self.assertIn("cancellable_delay(delay_ms, admission)", self.cua_keyboard)
-        hook = self.cua_keyboard.split("register_session_end_hook", 1)[1].split(
-            "owner_thread", 1
-        )[0]
-        self.assertNotIn("OPERATION_LOCK.try_lock", hook)
         self.assertGreaterEqual(self.cua_keyboard.count("keycode: 14"), 2)
 
     def test_supported_sway_text_does_not_spawn_one_shot_wtype(self) -> None:
         wayland = (
             PROJECT_DIR
-            / "guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/src"
-            / "wayland/mod.rs"
+            / "cua/src/platform/wayland/mod.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn('Command::new("wtype")', wayland)
         self.assertIn("virtual_keyboard::type_text", wayland)

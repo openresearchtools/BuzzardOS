@@ -1,44 +1,52 @@
-# Buzzard CUA Rust workspace
+# Buzzard CUA
 
-This locked Cargo workspace builds the Linux CUA Driver embedded in Wild
-Buzzard's guest image.
+Buzzard CUA is one Rust crate and one daemonless CLI for the stock-Sway guest
+inside Buzzard OS. It contains only the reviewed Linux/Wayland, Xwayland,
+AT-SPI, screenshot, input, window, application, clipboard, health, zoom, and
+agent-cursor code used by the product.
 
-## Workspace crates
+`cua` is `cua1`. `cuaN` binds to `seatN`, workspace `CUA`/`CUAN`, and that
+workspace's exact Sway output. `cua --index N` supports an arbitrary positive
+number without requiring another installed link. Different numbers have
+independent output coordinates and per-seat mutation locks.
 
-| Crate | Linux scope |
-| --- | --- |
-| `cua-driver` | CLI/MCP daemon and Linux integration tests |
-| `cua-driver-core` | Shared protocol, policy, capture, recording, and browser logic |
-| `cua-driver-contract` | Typed public tool and result contracts |
-| `cua-driver-sdk` | Typed Rust/UniFFI boundary used by the daemon |
-| `cua-driver-testkit` | Linux-only test process, transport, and evidence helpers |
-| `platform-linux` | Sway, Wayland, Xwayland, AT-SPI, capture, and input backend |
-| `cursor-overlay` | Semantic cursor renderer and compiled theme loader |
-| `pip-preview` | Recording preview support |
+There is no daemon, MCP server, browser/CDP implementation, recording,
+telemetry, self-update, remote skill download, macOS code, or Windows code.
+`cua browser ...` is only an `exec(2)` compatibility route to the separately
+installed `/usr/bin/wildbuzzard`; Buzzard CUA does not interpret browser tools.
 
-No macOS or Windows platform crate belongs to this workspace.
-
-## Build and verify
-
-Use the checked-in lockfile and an external target directory:
+## CLI
 
 ```bash
-export CARGO_TARGET_DIR="$(mktemp -d)/cua-target"
-cargo build --locked --release -p cua-driver
-cargo fmt --all -- --check
-cargo test --locked --workspace --all-targets
+cua list-tools
+cua describe TOOL
+cua TOOL '{"field":"value"}'
+cua screenshot --screenshot-out-file /tmp/cua.png
+cua2 list_windows
+cua --index 19 launch_app '{"name":"firefox-esr"}'
 ```
 
-Default tests are headless. Tests marked `#[ignore]` require a real Linux
-desktop session and the Sway/AT-SPI fixtures described in
-`crates/cua-driver/tests/README.md`.
+Each tool invocation prepares its numbered output, holds that seat's private
+lock, performs one bounded operation, prints structured JSON, and exits.
+Cross-invocation element-token, zoom, resize, and cursor settings are capped,
+mode-0600 files in `$XDG_RUNTIME_DIR/buzzardoscua`; this is normally tmpfs and
+is removed at logout or reboot. It is neither a session nor telemetry.
 
-`target/`, staged applications, recordings, screenshots, and other generated
-outputs are never source and must remain outside the repository.
+Wayland requires a button-down, motion, and button-up to share one live client
+connection. Use the ordinary `drag` tool, or place the three low-level held
+pointer tools in one bounded `cua batch` call. Standalone held-button calls
+refuse instead of falsely claiming that a button remains pressed after exit.
 
-## Policy files
+## Build
 
-`CUA_DRIVER_POLICY_FILE` accepts a YAML/Rego file or a directory of Rego files.
-The daemon evaluates the configured deny-by-default policy locally; no OPA
-service is required. Buzzard OS normally starts the driver in its managed
-guest session with the product's explicit authorization policy.
+```bash
+export CARGO_TARGET_DIR="$(mktemp -d)/buzzardoscua-target"
+cargo fmt --manifest-path cua/Cargo.toml --all -- --check
+cargo test --manifest-path cua/Cargo.toml --locked --all-targets
+cargo build --manifest-path cua/Cargo.toml --locked --release
+```
+
+The package build installs the release binary as `/usr/bin/cua`, numbered
+convenience links, `/usr/bin/buzzardoscua`, this crate's AGPL license, and the
+pinned upstream MIT notice. Generated targets, screenshots, and state never
+belong in source.

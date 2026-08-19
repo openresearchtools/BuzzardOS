@@ -98,11 +98,11 @@ mod tests {
             return;
         }
         backend
-            .write_text("cua-driver clipboard test".into())
+            .write_text("Buzzard CUA clipboard test".into())
             .unwrap();
         assert_eq!(
             backend.read_text().unwrap().as_deref(),
-            Some("cua-driver clipboard test")
+            Some("Buzzard CUA clipboard test")
         );
     }
 }

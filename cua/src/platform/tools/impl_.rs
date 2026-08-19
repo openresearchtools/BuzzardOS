@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
 use crate::cursor::CursorRegistry;
@@ -25,19 +26,9 @@ use crate::cursor::CursorRegistry;
 const CURSOR_EVIDENCE_MASK_RADIUS: i32 = 128;
 
 fn keyboard_admission(
-    args: &Value,
+    _args: &Value,
 ) -> Result<crate::platform::wayland::KeyboardAdmission, ToolResult> {
-    let session = args
-        .get("session")
-        .and_then(Value::as_str)
-        .filter(|session| !session.is_empty() && *session != "default");
-    let leases = crate::core::tool::current_dispatch_session_leases();
-    if session.is_some_and(|session| !leases.iter().any(|lease| lease.session_id() == session)) {
-        return Err(ToolResult::error(
-            "CUA keyboard request has no matching core-owned session lease",
-        ));
-    }
-    crate::platform::wayland::keyboard_admission(leases)
+    crate::platform::wayland::keyboard_admission()
         .map_err(|error| ToolResult::error(error.to_string()))
 }
 
@@ -535,15 +526,22 @@ pub struct ResizeRegistry {
 
 impl ResizeRegistry {
     pub fn new() -> Self {
+        let mut ratios = load_pid_state("resize").unwrap_or_default();
+        ratios.retain(|_, ratio: &mut f64| ratio.is_finite() && *ratio > 0.0);
         Self {
-            ratios: std::sync::Mutex::new(Default::default()),
+            ratios: std::sync::Mutex::new(ratios),
         }
     }
     pub fn set_ratio(&self, pid: u32, ratio: f64) {
-        self.ratios.lock().unwrap().insert(pid, ratio);
+        let mut ratios = self.ratios.lock().unwrap();
+        bound_pid_map_before_insert(&mut ratios, pid);
+        ratios.insert(pid, ratio);
+        save_pid_state("resize", &ratios);
     }
     pub fn clear_ratio(&self, pid: u32) {
-        self.ratios.lock().unwrap().remove(&pid);
+        let mut ratios = self.ratios.lock().unwrap();
+        ratios.remove(&pid);
+        save_pid_state("resize", &ratios);
     }
     pub fn ratio(&self, pid: u32) -> Option<f64> {
         self.ratios.lock().unwrap().get(&pid).copied()
@@ -553,7 +551,7 @@ impl ResizeRegistry {
 /// Per-process zoom context — stores padded crop origin and resize scale from
 /// the most recent `zoom` call so `click(from_zoom=true)` can translate
 /// zoom-image pixel coordinates back to full-window coordinates.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ZoomContext {
     pub origin_x: f64,
     pub origin_y: f64,
@@ -576,15 +574,65 @@ pub struct ZoomRegistry {
 
 impl ZoomRegistry {
     pub fn new() -> Self {
+        let mut contexts = load_pid_state("zoom").unwrap_or_default();
+        contexts.retain(|_, context: &mut ZoomContext| {
+            context.origin_x.is_finite()
+                && context.origin_y.is_finite()
+                && context.scale_inv.is_finite()
+                && context.scale_inv > 0.0
+        });
         Self {
-            inner: std::sync::Mutex::new(Default::default()),
+            inner: std::sync::Mutex::new(contexts),
         }
     }
     pub fn set(&self, pid: u32, ctx: ZoomContext) {
-        self.inner.lock().unwrap().insert(pid, ctx);
+        let mut contexts = self.inner.lock().unwrap();
+        bound_pid_map_before_insert(&mut contexts, pid);
+        contexts.insert(pid, ctx);
+        save_pid_state("zoom", &contexts);
     }
     pub fn get(&self, pid: u32) -> Option<ZoomContext> {
         self.inner.lock().unwrap().get(&pid).copied()
+    }
+}
+
+const PID_STATE_CAP: usize = 64;
+const PID_STATE_MAX_BYTES: usize = 64 * 1024;
+
+fn load_pid_state<T>(kind: &str) -> anyhow::Result<std::collections::HashMap<u32, T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(bytes) = crate::core::seat_context::read_state(kind, PID_STATE_MAX_BYTES)? else {
+        return Ok(Default::default());
+    };
+    let state = serde_json::from_slice::<std::collections::HashMap<u32, T>>(&bytes)?;
+    anyhow::ensure!(
+        state.len() <= PID_STATE_CAP,
+        "{kind} state exceeds its PID bound"
+    );
+    Ok(state)
+}
+
+fn save_pid_state<T>(kind: &str, state: &std::collections::HashMap<u32, T>)
+where
+    T: serde::Serialize,
+{
+    let result = serde_json::to_vec(state)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| {
+            crate::core::seat_context::write_state(kind, &bytes, PID_STATE_MAX_BYTES)
+        });
+    if let Err(error) = result {
+        eprintln!("cua: cannot persist bounded {kind} state: {error:#}");
+    }
+}
+
+fn bound_pid_map_before_insert<T>(state: &mut std::collections::HashMap<u32, T>, pid: u32) {
+    if state.len() >= PID_STATE_CAP && !state.contains_key(&pid) {
+        if let Some(oldest) = state.keys().copied().min() {
+            state.remove(&oldest);
+        }
     }
 }
 
@@ -608,8 +656,37 @@ pub struct MouseHoldState {
 
 impl ToolState {
     pub fn new() -> Arc<Self> {
+        let cursor_registry = Arc::new(CursorRegistry::new());
+        for cursor in cursor_registry.all_states() {
+            let key = cursor.config.cursor_id.clone();
+            crate::platform::overlay::send_command_for(
+                key.clone(),
+                crate::cursor::OverlayCommand::SetEnabled(cursor.config.enabled),
+            );
+            crate::platform::overlay::send_command_for(
+                key.clone(),
+                crate::cursor::OverlayCommand::SetMotion(cursor.motion.clone()),
+            );
+            crate::platform::overlay::send_command_for(
+                key.clone(),
+                crate::cursor::OverlayCommand::SetTheme {
+                    theme_id: cursor.config.theme_id,
+                    reduced_motion: cursor.config.reduced_motion,
+                },
+            );
+            if let (Some(x), Some(y)) = (cursor.x, cursor.y) {
+                crate::platform::overlay::send_command_for(
+                    key,
+                    crate::cursor::OverlayCommand::SnapTo {
+                        x,
+                        y,
+                        heading_radians: None,
+                    },
+                );
+            }
+        }
         Arc::new(Self {
-            cursor_registry: Arc::new(CursorRegistry::new()),
+            cursor_registry,
             resize_registry: Arc::new(ResizeRegistry::new()),
             zoom_registry: Arc::new(ZoomRegistry::new()),
             mouse_hold: std::sync::Mutex::new(Default::default()),
@@ -665,7 +742,27 @@ impl Tool for ListAppsTool {
         let apps = tokio::task::spawn_blocking(|| -> Vec<serde_json::Value> {
             let procs = crate::platform::proc_fs::list_processes();
             let installed = crate::platform::installed_apps::list_installed_apps();
-            visible_desktop_app_records(&procs, &installed)
+            let mut apps = visible_desktop_app_records(&procs, &installed);
+            let windows = crate::platform::wayland::sway_ipc::list_public_windows()
+                .unwrap_or_default();
+            for app in &mut apps {
+                let pid = app.get("pid").and_then(Value::as_u64).and_then(|pid| u32::try_from(pid).ok());
+                let placements = windows.iter().filter(|(_, window)| Some(window.pid) == pid).map(|(window_id, window)| {
+                    json!({
+                        "window_id": window_id,
+                        "title": window.title,
+                        "workspace": window.workspace,
+                        "workspace_index": match window.workspace.as_str() {
+                            "Desktop" => Some(0),
+                            "CUA" => Some(1),
+                            name => name.strip_prefix("CUA").and_then(|suffix| suffix.parse::<u32>().ok()),
+                        },
+                        "output": window.output,
+                    })
+                }).collect::<Vec<_>>();
+                app["windows"] = json!(placements);
+            }
+            apps
         })
         .await
         .unwrap_or_default();
@@ -869,7 +966,7 @@ impl Tool for ListWindowsTool {
     fn def(&self) -> &ToolDef {
         LIST_WINDOWS_DEF.get_or_init(|| ToolDef {
             name: "list_windows".into(),
-            description: "List top-level windows. Each record includes z_index (integer or null; \
+            description: "List every top-level window across Desktop and all numbered CUA workspaces. Each record includes compact workspace/output placement plus z_index (integer or null; \
                 higher values are closer to the front; null means stacking order is unavailable \
                 and callers must not infer one). To select a frontmost candidate, take the maximum \
                 integer z_index; if every value is null, use an explicit fallback instead of \
@@ -933,7 +1030,7 @@ impl Tool for ListWindowsTool {
 /// no schema_version bump.
 ///
 fn window_record_json(w: &crate::platform::x11::WindowInfo) -> Value {
-    json!({
+    let mut record = json!({
         "window_id": w.xid,
         "pid": w.pid,
         "app_name": w.app_name,
@@ -945,7 +1042,19 @@ fn window_record_json(w: &crate::platform::x11::WindowInfo) -> Value {
         // Legacy alias: flat fields kept inline for pre-existing callers.
         "x": w.x, "y": w.y,
         "width": w.width, "height": w.height,
-    })
+    });
+    if let Ok(window) = crate::platform::wayland::sway_ipc::resolve_public_window(w.xid, w.pid) {
+        record["workspace"] = json!(window.workspace);
+        record["output"] = json!(window.output);
+        record["workspace_index"] = json!(match window.workspace.as_str() {
+            "Desktop" => Some(0),
+            "CUA" => Some(1),
+            name => name
+                .strip_prefix("CUA")
+                .and_then(|suffix| suffix.parse::<u32>().ok()),
+        });
+    }
+    record
 }
 
 #[cfg(test)]
@@ -1059,7 +1168,6 @@ impl Tool for GetWindowStateTool {
                 the markdown and the structured elements are truncated \
                 identically. Omit both for current default behaviour.".into(),
             input_schema: json!({"type":"object","required":["pid","window_id"],"properties":{
-                "session": crate::core::tool_schema::session_schema(),
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer","description":"X11 XID from list_windows."},
                 "capture_mode": crate::core::capture_mode::capture_mode_schema(),
@@ -1326,7 +1434,7 @@ impl Tool for GetWindowStateTool {
                         structured["degraded"] = json!(true);
                         structured["degraded_reason"] = json!(
                             "x11_property_fallback_partial: AT-SPI was unavailable and \
-                             Cua Driver only recovered window metadata. Treat it as \
+                             Buzzard CUA only recovered window metadata. Treat it as \
                              discovery evidence; it cannot prove checked state."
                         );
                     } else if count == 0 {
@@ -1335,9 +1443,9 @@ impl Tool for GetWindowStateTool {
                             "atspi_tree_empty: the AT-SPI walk returned no actionable \
                              elements. Common causes: the a11y bridge is off (enable \
                              `gsettings set org.gnome.desktop.interface \
-                             toolkit-accessibility true`), the daemon is not on the \
-                             desktop session bus (DBUS_SESSION_BUS_ADDRESS unreachable — \
-                             run `cua-driver doctor`), or the window is a non-AX surface \
+                             toolkit-accessibility true`), the CLI is not on the \
+                             guest desktop bus (DBUS_SESSION_BUS_ADDRESS unreachable — \
+                             run `cua doctor`), or the window is a non-AX surface \
                              (canvas/WebGL/custom-drawn). Do not treat element data as \
                              authoritative — verify via the screenshot, and re-snapshot \
                              after enabling a11y or if the app just launched."
@@ -1513,6 +1621,32 @@ fn direct_launch_result(
     }
 }
 
+fn route_launch_observation_to_cua(
+    observation: DirectLaunchObservation,
+    index: u32,
+) -> anyhow::Result<DirectLaunchObservation> {
+    match observation {
+        DirectLaunchObservation::Running { pid, mut windows } => {
+            let workspace = crate::platform::wayland::sway_ipc::cua_workspace_name(index)?;
+            for record in &mut windows {
+                let Some(window_id) = record.get("window_id").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let moved = crate::platform::wayland::sway_ipc::move_public_window_to_cua(
+                    window_id,
+                    Some(pid),
+                    index,
+                )?;
+                record["workspace"] = json!(workspace);
+                record["workspace_index"] = json!(index);
+                record["output"] = json!(moved.output);
+            }
+            Ok(DirectLaunchObservation::Running { pid, windows })
+        }
+        other => Ok(other),
+    }
+}
+
 fn contains_remote_debugging_flag(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.contains("--remote-debugging-port") || lower.contains("--remote-debugging-pipe")
@@ -1546,7 +1680,7 @@ impl Tool for LaunchAppTool {
         let additional_arguments: Vec<String> = args.str_array("additional_arguments");
         if args.get("cdp_debugging_port").is_some() {
             return ToolResult::error(
-                "cdp_debugging_port moved to browser_prepare so DevTools is never enabled on an unproven user profile",
+                "Buzzard CUA has no CDP/browser tool; use `cua browser ...` for WildBuzzard automation",
             );
         }
         if launch_path_opt
@@ -1557,7 +1691,7 @@ impl Tool for LaunchAppTool {
             .any(contains_remote_debugging_flag)
         {
             return ToolResult::error(
-                "Chromium remote-debugging flags moved to browser_prepare so DevTools is never enabled on an unproven user profile",
+                "Buzzard CUA does not enable browser remote debugging; use `cua browser ...` for WildBuzzard automation",
             );
         }
 
@@ -1570,7 +1704,12 @@ impl Tool for LaunchAppTool {
                 // Open URLs via xdg-open.
                 if !urls.is_empty() {
                     for url in &urls {
-                        let child = std::process::Command::new("xdg-open").arg(url).spawn()?;
+                        let child = std::process::Command::new("xdg-open")
+                            .arg(url)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()?;
                         reap_in_background(child);
                     }
                     return Ok((
@@ -1596,7 +1735,14 @@ impl Tool for LaunchAppTool {
                         // launch Orca). Native toolkits ignore these when they
                         // do not need them.
                         .env("ACCESSIBILITY_ENABLED", "1")
-                        .env("NO_AT_BRIDGE", "0");
+                        .env("NO_AT_BRIDGE", "0")
+                        // A launched desktop app outlives this one-shot CLI.
+                        // Never let it inherit a caller's pipe/terminal and
+                        // keep guest-exec, shell substitution, or an agent
+                        // transport waiting until the GUI itself exits.
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
                     if chromium_family_program(prog)
                         && !rest
                             .iter()
@@ -1627,7 +1773,12 @@ impl Tool for LaunchAppTool {
                         Err(_) => {
                             // Fall back to xdg-open for .desktop app names. xdg-open may
                             // spawn a helper and exit, so do not claim its pid is the app pid.
-                            let child = std::process::Command::new("xdg-open").arg(cmd).spawn()?;
+                            let child = std::process::Command::new("xdg-open")
+                                .arg(cmd)
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .spawn()?;
                             reap_in_background(child);
                             return Ok((
                                 format!("Opened '{cmd}' via xdg-open."),
@@ -1645,7 +1796,15 @@ impl Tool for LaunchAppTool {
         match result {
             Ok(Ok((message, name, observation))) => {
                 if let Some(observation) = observation {
-                    direct_launch_result(message, name, observation)
+                    match route_launch_observation_to_cua(
+                        observation,
+                        crate::core::seat_context::current_index(),
+                    ) {
+                        Ok(observation) => direct_launch_result(message, name, observation),
+                        Err(error) => ToolResult::error(format!(
+                            "application launched but could not be routed into its numbered CUA workspace: {error:#}"
+                        )),
+                    }
                 } else {
                     ToolResult::text(message).with_structured(json!({
                         "pid": Value::Null,
@@ -2253,15 +2412,8 @@ fn mouse_button_name(button: u8) -> &'static str {
     }
 }
 
-fn resolve_cursor_key(args: &Value) -> String {
-    for key in ["session", "cursor_id"] {
-        if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
-            if !v.is_empty() {
-                return v.to_owned();
-            }
-        }
-    }
-    "default".to_owned()
+fn resolve_cursor_key(_: &Value) -> String {
+    format!("cua{}", crate::core::seat_context::current_index())
 }
 
 fn mouse_hold_json(cursor_id: &str, hold: Option<&MouseHoldState>) -> Value {
@@ -2575,8 +2727,6 @@ impl Tool for ClickTool {
                 // so it is NOT pinned in `required` — matches the click→[] canon
                 // in crate::core::tool_schema.
                 "type":"object","required":[],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
-                    "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
                     "x":{"type":"number"},
@@ -2603,11 +2753,11 @@ impl Tool for ClickTool {
         let cursor_id = resolve_cursor_key(&args);
         let modifiers: Vec<String> = args.str_array("modifier");
 
-        // ── Window-less screen-absolute branch (capture_scope="desktop") ──────
+        // ── Window-less screen-absolute branch ──────────────────────────────
         // x,y with NO pid and NO window_id → TRUE SCREEN pixels. Foreground,
         // desktop-scope click (the Linux peer of the Windows WindowFromPoint /
         // macOS global-HID path). The core registry has already enforced the
-        // session policy; this branch validates the explicit action form.
+        // This branch validates the explicit full-output action form.
         let has_pid = args.get("pid").map(|v| !v.is_null()).unwrap_or(false);
         let has_window_id = args.get("window_id").map(|v| !v.is_null()).unwrap_or(false);
         let has_xy = args.get("x").map(|v| v.is_number()).unwrap_or(false)
@@ -2749,6 +2899,18 @@ impl Tool for ClickTool {
             let stable_element_key = snapshot_handle.as_deref().and_then(|snapshot| {
                 crate::platform::atspi::snapshot_element_key(pid, snapshot, idx)
             });
+            if snapshot_handle.is_some() && stable_element_key.is_none() {
+                return ToolResult::error(
+                    "element_token is stale; call get_window_state again to refresh",
+                )
+                .with_structured(json!({
+                    "status": "refused",
+                    "refusal": {
+                        "code": "stale_element_token",
+                        "message": "the bounded daemonless AT-SPI snapshot is no longer available"
+                    }
+                }));
+            }
             let xid_hint = window_id_resolved;
             // Resolve the element's screen center + its window FIRST, so the
             // agent cursor glides to the target *before* the click fires —
@@ -2956,9 +3118,9 @@ impl Tool for ClickTool {
         let (output_x, output_y) = wayland_output_point.unwrap_or((xi, yi));
         let cursor_id_for_task = cursor_id.clone();
         let modifiers_for_task = modifiers.clone();
-        // delivery_mode: background (default) = no-focus-steal injection;
-        // foreground = activate the target window (EWMH) first, then inject,
-        // then restore prior active. Mirrors macOS/Windows.
+        // Normal delivery focuses the target only on this numbered CUA seat.
+        // Explicit background remains a compatibility request and must prove
+        // target-addressed delivery.
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<&'static str> {
             if crate::platform::wayland::wayland_input_enabled() {
                 if !modifiers_for_task.is_empty() {
@@ -3091,9 +3253,8 @@ impl Tool for ClickTool {
 /// `Ok(())` on success; `Err(ToolResult)` short-circuits the caller.
 ///
 /// Mirrors macOS `tools::focus_by_pixel`. Linux differences: `pid` is `u32`,
-/// `window_id` is `u64` (the X11 XID / window id), and there is no `_session_id`
-/// field — the Linux ClickTool resolves the agent cursor from `session` /
-/// `cursor_id` only (`resolve_cursor_key`).
+/// `window_id` is `u64` (the X11 XID / window id). The numbered `cuaN`
+/// executable selects the cursor and virtual seat.
 async fn focus_by_pixel(
     state: &Arc<ToolState>,
     pid: u32,
@@ -3101,7 +3262,6 @@ async fn focus_by_pixel(
     x: f64,
     y: f64,
     foreground: bool,
-    session: Option<String>,
     from_zoom: bool,
 ) -> Result<(), ToolResult> {
     let mut click_args = json!({
@@ -3110,9 +3270,6 @@ async fn focus_by_pixel(
     });
     if let Some(wid) = window_id {
         click_args["window_id"] = json!(wid);
-    }
-    if let Some(s) = session {
-        click_args["session"] = json!(s);
     }
     if from_zoom {
         click_args["from_zoom"] = json!(true);
@@ -3147,7 +3304,6 @@ impl Tool for TypeTextTool {
             description: "Type text to a window via XSendEvent (KeyPress/KeyRelease). No focus steal.".into(),
             input_schema: json!({
                 "type":"object","required":["text"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
                     "text":{"type":"string","maxLength":crate::contract::MAX_TYPE_TEXT_CHARS},
@@ -3339,7 +3495,6 @@ impl Tool for TypeTextTool {
                 cx,
                 cy,
                 delivery.is_foreground(),
-                args.opt_str("session"),
                 from_zoom,
             )
             .await
@@ -3669,10 +3824,9 @@ impl Tool for TypeTextTool {
         // structured response stays honest. The closure can't borrow
         // a local mutably across `spawn_blocking`, so funnel the
         // decision through the success type instead.
-        // delivery_mode: background (default) = focus-free AT-SPI / XSendEvent;
-        // foreground = activate the window (EWMH), then synthesize REAL key
-        // events to it via XTest — the escalation when background didn't land
-        // (e.g. a GTK dialog whose widget ignores synthetic XSendEvent keys).
+        // Normal delivery focuses the target only on this numbered CUA seat.
+        // Explicit background may use AT-SPI or target-addressed Xwayland
+        // delivery when it can be confirmed.
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<&'static str> {
             // Terminals: write to the pty master (focus-free, below the toolkit).
             if inject_terminal_input(pid, xid, &text)? {
@@ -3793,7 +3947,6 @@ impl Tool for PressKeyTool {
             description: "Press a key via XSendEvent to a window. No focus steal.".into(),
             input_schema: json!({
                 "type":"object","required":["key"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
                     "key":{"type":"string"},
@@ -3966,7 +4119,6 @@ impl Tool for PressKeyTool {
                     cx,
                     cy,
                     delivery.is_foreground(),
-                    args.opt_str("session"),
                     from_zoom,
                 )
                 .await
@@ -4098,7 +4250,6 @@ impl Tool for HotkeyTool {
                 Sent via XSendEvent directly to the target pid; target does NOT need to be frontmost.".into(),
             input_schema: json!({
                 "type":"object","required":["keys"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
                     "keys":{"type":"array","items":{"type":"string"},"minItems":2,
@@ -4280,17 +4431,8 @@ impl Tool for HotkeyTool {
                     Ok(Err(error)) => return ToolResult::error(error.to_string()),
                     Err(error) => return ToolResult::error(format!("Task error: {error}")),
                 };
-                if let Err(error) = focus_by_pixel(
-                    &self.state,
-                    pid,
-                    Some(xid),
-                    x,
-                    y,
-                    true,
-                    args.opt_str("session"),
-                    false,
-                )
-                .await
+                if let Err(error) =
+                    focus_by_pixel(&self.state, pid, Some(xid), x, y, true, false).await
                 {
                     return error;
                 }
@@ -4328,7 +4470,6 @@ impl Tool for HotkeyTool {
                     cx,
                     cy,
                     delivery.is_foreground(),
-                    args.opt_str("session"),
                     from_zoom,
                 )
                 .await
@@ -4404,7 +4545,6 @@ impl Tool for SetValueTool {
             description: "Set value of an AT-SPI element via SetValue action.".into(),
             input_schema: json!({
                 "type":"object","required":["pid","value"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer","description":"Required when element_index is used; optional when element_token is supplied (the token carries it)."},
                     "element_index": crate::core::tool_schema::element_index_schema(),
@@ -4494,8 +4634,6 @@ impl Tool for ScrollTool {
                 // `direction` is pinned — matches the scroll→["direction"] canon
                 // in crate::core::tool_schema.
                 "type":"object","required":["direction"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
-                    "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                     "pid":{"type":"integer"},
                     "direction":{"type":"string","enum":["up","down","left","right"]},
                     "by":{"type":"string","enum":["line","page"]},
@@ -4881,8 +5019,6 @@ impl Tool for DoubleClickTool {
                 desktop x/y, window_id + x/y, or an AT-SPI element token/index. After a zoom \
                 call, pass from_zoom=true to translate zoom-image coordinates.".into(),
             input_schema: json!({"type":"object","required":[],"properties":{
-                "session": crate::core::tool_schema::session_schema(),
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer"},
                 "x":{"type":"number"},
@@ -5123,8 +5259,6 @@ impl Tool for RightClickTool {
                 an AT-SPI element token/index. After a zoom call, pass from_zoom=true to \
                 translate zoom-image coordinates.".into(),
             input_schema: json!({"type":"object","required":[],"properties":{
-                "session": crate::core::tool_schema::session_schema(),
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer"},
                 "x":{"type":"number"},
@@ -5364,8 +5498,6 @@ impl Tool for DragTool {
                           window-local screenshot pixels via XSendEvent (ButtonPress + MotionNotify × steps + ButtonRelease). \
                           duration_ms (default 500), steps (default 20). No focus steal.".into(),
             input_schema: json!({"type":"object","required":["from_x","from_y","to_x","to_y"],"properties":{
-                "session": crate::core::tool_schema::session_schema(),
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer","description":"Target window XID. Required."},
                 "from_x":{"type":"number"},
@@ -5801,6 +5933,19 @@ impl Tool for DragTool {
 
 // ── mouse_button_down / mouse_drag / mouse_button_up ────────────────────────
 
+fn held_pointer_batch_required() -> Option<ToolResult> {
+    (std::env::var_os("BUZZARDOS_CUA_BATCH").as_deref() != Some(std::ffi::OsStr::new("1")))
+        .then(|| {
+            ToolResult::error(
+                "A held pointer cannot survive process exit. Run mouse_button_down, mouse_drag, and mouse_button_up in one daemonless `cua batch` invocation, or use the standalone drag tool.",
+            )
+            .with_structured(json!({
+                "status":"refused",
+                "refusal":{"code":"batch_required","recovery":"use cua batch or drag"}
+            }))
+        })
+}
+
 pub struct MouseButtonDownTool {
     state: Arc<ToolState>,
 }
@@ -5814,10 +5959,9 @@ impl Tool for MouseButtonDownTool {
             description: "Press and hold a mouse button at (x,y). Window scope uses window-local \
                 screenshot coordinates; desktop scope uses canonical guest-output coordinates. \
                 Does not release the button; pair with mouse_drag / mouse_button_up. \
+                The three calls must be in one daemonless cua batch invocation. \
                 Returns the current held-button state.".into(),
             input_schema: json!({"type":"object","required":["x","y"],"properties":{
-                "session":{"type":"string","description":"Optional multi-cursor session id; takes precedence over cursor_id."},
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer"},
                 "x":{"type":"number"},
@@ -5831,6 +5975,9 @@ impl Tool for MouseButtonDownTool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
+        if let Some(refusal) = held_pointer_batch_required() {
+            return refusal;
+        }
         let cursor_id = resolve_cursor_key(&args);
         if let Some(held) = self
             .state
@@ -6028,10 +6175,9 @@ impl Tool for MouseDragTool {
             description: "Move a previously-held mouse button to a new point in the same window or \
                 canonical desktop coordinate scope selected by mouse_button_down. \
                 Requires an active mouse_button_down state; does not release the button. \
-                Returns the updated held-button state.".into(),
+                Must run in the same daemonless cua batch as down/up. Returns the updated \
+                held-button state.".into(),
             input_schema: json!({"type":"object","required":["x","y"],"properties":{
-                "session":{"type":"string","description":"Optional multi-cursor session id; takes precedence over cursor_id."},
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer"},
                 "x":{"type":"number"},
@@ -6046,6 +6192,9 @@ impl Tool for MouseDragTool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
+        if let Some(refusal) = held_pointer_batch_required() {
+            return refusal;
+        }
         let cursor_id = resolve_cursor_key(&args);
         let Some(mut hold) = self
             .state
@@ -6297,11 +6446,9 @@ impl Tool for MouseButtonUpTool {
     fn def(&self) -> &ToolDef {
         MUP_DEF.get_or_init(|| ToolDef {
             name: "mouse_button_up".into(),
-            description: "Release a previously-held mouse button via background X11 delivery. \
+            description: "Release a previously-held mouse button in the same daemonless cua batch. \
                 If x/y are omitted, releases at the last held position. Returns the current held-button state.".into(),
             input_schema: json!({"type":"object","properties":{
-                "session":{"type":"string","description":"Optional multi-cursor session id; takes precedence over cursor_id."},
-                "cursor_id":{"type":"string","description":"Optional multi-cursor instance id. Default: 'default'."},
                 "pid":{"type":"integer"},
                 "window_id":{"type":"integer"},
                 "x":{"type":"number"},
@@ -6314,6 +6461,9 @@ impl Tool for MouseButtonUpTool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
+        if let Some(refusal) = held_pointer_batch_required() {
+            return refusal;
+        }
         let cursor_id = resolve_cursor_key(&args);
         let Some(hold) = self
             .state
@@ -6439,263 +6589,6 @@ impl Tool for MouseButtonUpTool {
     }
 }
 
-pub struct ParallelMouseDragTool {
-    state: Arc<ToolState>,
-}
-static PMDRAG_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
-
-#[async_trait]
-impl Tool for ParallelMouseDragTool {
-    fn def(&self) -> &ToolDef {
-        PMDRAG_DEF.get_or_init(|| ToolDef {
-            name: "parallel_mouse_drag".into(),
-            description: "Run multiple mouse drag gestures concurrently via Linux MPX/XI2 virtual master pointers. \
-                Each drag item runs on its own session-scoped master pointer (true same-window concurrent draws on X11). \
-                Each item presses once, glides continuously through its whole path, and releases once — one smooth held \
-                drag, not a chain of clicks. A path is given either as a straight segment (from_x/from_y → to_x/to_y) or \
-                as a function `fn` = y(x) sampled over [x_from, x_to] in window-local pixels (e.g. fn:\"x\" is a diagonal, \
-                fn:\"300+120*sin(x/40)\" a sine wave). Functions support + - * / ^, sin/cos/tan, sqrt, abs, exp, ln, pi, e.".into(),
-            input_schema: json!({"type":"object","required":["drags"],"properties":{
-                "drags":{"type":"array","minItems":2,"items":{"type":"object","required":["session","window_id"],"properties":{
-                    "session":{"type":"string","description":"Session/cursor id; also keys the virtual master pointer."},
-                    "window_id":{"type":"integer"},
-                    "path":{"type":"array","items":{"type":"array","items":{"type":"number"}},"description":"Explicit window-local waypoints [[x,y],...] (>=2); pressed once, glided through, released once. Takes precedence over fn/from-to."},
-                    "fn":{"type":"string","description":"Expression y(x) in window-local pixels; sampled over [x_from,x_to]. Mutually exclusive with from_x/to_x."},
-                    "x_from":{"type":"number","description":"Domain start (window-local x) when `fn` is used."},
-                    "x_to":{"type":"number","description":"Domain end (window-local x) when `fn` is used."},
-                    "samples":{"type":"integer","minimum":2,"maximum":400,"description":"Waypoints sampled along `fn`. Default: 80."},
-                    "from_x":{"type":"number"},
-                    "from_y":{"type":"number"},
-                    "to_x":{"type":"number"},
-                    "to_y":{"type":"number"},
-                    "button": crate::core::tool_schema::button_schema(),
-                    "duration_ms":{"type":"integer","minimum":0,"maximum":10000,"description":"Default: 1500 for fn paths, 500 for straight."},
-                    "steps":{"type":"integer","minimum":1,"maximum":300,"description":"Motion sub-steps along the whole path. Default: scaled to path length."}
-                },"additionalProperties":false}}
-            },"additionalProperties":false}),
-            read_only: false, destructive: true, idempotent: false, open_world: true,
-        })
-    }
-
-    async fn invoke(&self, args: Value) -> ToolResult {
-        // Native Wayland: MPX/XI2 + uinput master
-        // pointers don't exist on Wayland. Surface a typed error instead of
-        // silently calling the X11 path that's guaranteed to fail.
-        if crate::platform::wayland::is_wayland() {
-            return ToolResult::error(
-                "parallel_mouse_drag is unavailable on the stock Sway seat; use separate drag calls.",
-            );
-        }
-        match tokio::task::spawn_blocking(crate::platform::input::check_parallel_pointer_support)
-            .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return ToolResult::error(e.to_string()),
-            Err(e) => return ToolResult::error(format!("Task error: {e}")),
-        }
-
-        let Some(items) = args.get("drags").and_then(|v| v.as_array()) else {
-            return ToolResult::error("drags[] is required.");
-        };
-        if items.len() < 2 {
-            return ToolResult::error("parallel_mouse_drag requires at least two drag items.");
-        }
-
-        let mut drags = Vec::with_capacity(items.len());
-        for item in items {
-            let Some(session) = item.get("session").and_then(|v| v.as_str()) else {
-                return ToolResult::error("each drag item requires session.");
-            };
-            let Some(xid) = item.get("window_id").and_then(|v| v.as_u64()) else {
-                return ToolResult::error("each drag item requires window_id.");
-            };
-
-            // Build the window-local waypoint path from one of: an explicit
-            // `path` of [x,y] points, a function `fn` (y = f(x) sampled over
-            // [x_from, x_to]), or a straight from→to segment.
-            let is_fn = item.get("fn").and_then(|v| v.as_str()).is_some();
-            let local: Vec<(f64, f64)> = if let Some(pts) =
-                item.get("path").and_then(|v| v.as_array())
-            {
-                let mut out = Vec::with_capacity(pts.len());
-                for p in pts {
-                    let a = p.as_array();
-                    let (Some(px), Some(py)) = (
-                        a.and_then(|a| a.first()).and_then(|v| v.as_f64()),
-                        a.and_then(|a| a.get(1)).and_then(|v| v.as_f64()),
-                    ) else {
-                        return ToolResult::error("each `path` entry must be [x, y].");
-                    };
-                    out.push((px, py));
-                }
-                if out.len() < 2 {
-                    return ToolResult::error("`path` needs at least 2 points.");
-                }
-                out
-            } else if let Some(expr_str) = item.get("fn").and_then(|v| v.as_str()) {
-                let Some(x_from) = item.get("x_from").and_then(|v| v.as_f64()) else {
-                    return ToolResult::error("`fn` requires x_from.");
-                };
-                let Some(x_to) = item.get("x_to").and_then(|v| v.as_f64()) else {
-                    return ToolResult::error("`fn` requires x_to.");
-                };
-                let samples = item
-                    .get("samples")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(80)
-                    .clamp(2, 400);
-                match crate::platform::input::sample_function(expr_str, x_from, x_to, samples) {
-                    Ok(pts) => pts,
-                    Err(e) => return ToolResult::error(e.to_string()),
-                }
-            } else {
-                let coerce = |k: &str| item.get(k).and_then(|v| v.as_f64());
-                match (coerce("from_x"), coerce("from_y"), coerce("to_x"), coerce("to_y")) {
-                    (Some(fx), Some(fy), Some(tx), Some(ty)) => vec![(fx, fy), (tx, ty)],
-                    _ => return ToolResult::error("each drag item requires either `fn`+x_from+x_to, or from_x/from_y/to_x/to_y."),
-                }
-            };
-
-            let button = parse_mouse_button(
-                item.get("button")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("left"),
-            );
-            let duration_ms = item
-                .get("duration_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(if is_fn { 1500 } else { 500 });
-
-            // One translate gives the window origin; the path is a pure offset.
-            let origin =
-                match tokio::task::spawn_blocking(move || window_local_to_screen(xid, 0.0, 0.0))
-                    .await
-                {
-                    Ok(Ok(o)) => o,
-                    Ok(Err(e)) => return ToolResult::error(e.to_string()),
-                    Err(e) => return ToolResult::error(format!("Task error: {e}")),
-                };
-            let path: Vec<(i32, i32)> = local
-                .iter()
-                .map(|(lx, ly)| {
-                    (
-                        (origin.0 + lx).round() as i32,
-                        (origin.1 + ly).round() as i32,
-                    )
-                })
-                .collect();
-
-            // Default sub-step count scaled to path length (smooth glide),
-            // overridable via `steps`.
-            let total_len: f64 = path
-                .windows(2)
-                .map(|w| {
-                    (((w[1].0 - w[0].0) as f64).powi(2) + ((w[1].1 - w[0].1) as f64).powi(2)).sqrt()
-                })
-                .sum();
-            let steps = item
-                .get("steps")
-                .and_then(|v| v.as_u64())
-                .map(|s| (s as usize).clamp(1, 300))
-                .unwrap_or_else(|| ((total_len / 3.0).round() as usize).clamp(24, 300));
-
-            let start = path[0];
-            self.state
-                .cursor_registry
-                .update_position(session, start.0 as f64, start.1 as f64);
-            crate::platform::overlay::send_command_for(
-                session.to_owned(),
-                crate::cursor::OverlayCommand::PinAbove(xid),
-            );
-            crate::platform::overlay::send_command_for(
-                session.to_owned(),
-                crate::cursor::OverlayCommand::SnapTo {
-                    x: start.0 as f64,
-                    y: start.1 as f64,
-                    heading_radians: None,
-                },
-            );
-            crate::platform::overlay::send_command_for(
-                session.to_owned(),
-                crate::cursor::OverlayCommand::SetPressed(true),
-            );
-
-            drags.push((
-                session.to_owned(),
-                crate::platform::input::VirtualPointerDrag {
-                    target_window: xid,
-                    button,
-                    path,
-                    duration_ms,
-                    steps,
-                },
-            ));
-        }
-
-        let drags_for_task = drags.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            crate::platform::input::send_parallel_virtual_pointer_drags(&drags_for_task)
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {
-                for (session, drag) in &drags {
-                    let n = drag.path.len();
-                    let end = drag.path[n - 1];
-                    let prev = drag.path[n.saturating_sub(2)];
-                    self.state
-                        .cursor_registry
-                        .update_position(session, end.0 as f64, end.1 as f64);
-                    crate::platform::overlay::send_command_for(
-                        session.to_owned(),
-                        crate::cursor::OverlayCommand::SnapTo {
-                            x: end.0 as f64,
-                            y: end.1 as f64,
-                            heading_radians: Some(
-                                ((end.1 - prev.1) as f64).atan2((end.0 - prev.0) as f64),
-                            ),
-                        },
-                    );
-                    crate::platform::overlay::send_command_for(
-                        session.to_owned(),
-                        crate::cursor::OverlayCommand::SetPressed(false),
-                    );
-                    crate::platform::overlay::send_command_for(
-                        session.to_owned(),
-                        crate::cursor::OverlayCommand::ClickPulse {
-                            x: end.0 as f64,
-                            y: end.1 as f64,
-                        },
-                    );
-                }
-                ToolResult::text(format!(
-                    "✅ Ran {} MPX drag gesture(s) concurrently.",
-                    drags.len()
-                ))
-                .with_structured(json!({"count": drags.len()}))
-            }
-            Ok(Err(e)) => {
-                for (session, _) in &drags {
-                    crate::platform::overlay::send_command_for(
-                        session.to_owned(),
-                        crate::cursor::OverlayCommand::SetPressed(false),
-                    );
-                }
-                ToolResult::error(e.to_string())
-            }
-            Err(e) => {
-                for (session, _) in &drags {
-                    crate::platform::overlay::send_command_for(
-                        session.to_owned(),
-                        crate::cursor::OverlayCommand::SetPressed(false),
-                    );
-                }
-                ToolResult::error(format!("Task error: {e}"))
-            }
-        }
-    }
-}
-
 // ── get_screen_size ───────────────────────────────────────────────────────────
 
 pub struct GetScreenSizeTool;
@@ -6710,9 +6603,7 @@ impl Tool for GetScreenSizeTool {
                 separately reported guest logical mode and desktop scale. Agents click in the \
                 physical coordinate space. Requires no TCC permissions."
                 .into(),
-            input_schema: json!({"type":"object","properties":{
-                "session": crate::core::tool_schema::session_schema()
-            },"additionalProperties":false}),
+            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             read_only: true,
             destructive: false,
             idempotent: true,
@@ -6811,12 +6702,10 @@ impl Tool for GetDesktopStateTool {
     fn def(&self) -> &ToolDef {
         GDS_DEF.get_or_init(|| ToolDef {
             name: "get_desktop_state".into(),
-            description: "Full-display vision screenshot in guest-output native physical pixels, \
-                for capture_scope=\"desktop\" GUI loops. Captures the complete guest monitor \
-                so screenshot pixels, AT-SPI geometry, and absolute input coordinates agree. \
-                No AT-SPI walk.".into(),
+            description: "Full-output screenshot of the caller's numbered CUA workspace in native \
+                physical pixels. Screenshot pixels, AT-SPI geometry, and absolute input coordinates \
+                agree. No AT-SPI walk.".into(),
             input_schema: json!({"type":"object","properties":{
-                "session":{"type":"string","description":"Optional session id."},
                 "screenshot_out_file":{"type":"string","description":"Write PNG here instead of base64."}
             },"additionalProperties":false}),
             read_only: true, destructive: false, idempotent: false, open_world: false,
@@ -6877,7 +6766,8 @@ impl Tool for GetDesktopStateTool {
                 let mut content = Vec::new();
                 let mut structured = json!({
                     "platform": "linux",
-                    "display": "primary",
+                    "display": std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV)
+                        .unwrap_or_else(|_| "caller-output".to_owned()),
                     "screenshot_width": shot_w,
                     "screenshot_height": shot_h,
                     "screen_width": screen_w,
@@ -6931,9 +6821,7 @@ impl Tool for GetCursorPositionTool {
             description:
                 "Return the current mouse cursor position in canonical physical pixels (origin top-left)."
                     .into(),
-            input_schema: json!({"type":"object","properties":{
-                "session": crate::core::tool_schema::session_schema()
-            },"additionalProperties":false}),
+            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             read_only: true,
             destructive: false,
             idempotent: true,
@@ -6996,7 +6884,7 @@ impl Tool for MoveCursorTool {
             name: "move_cursor".into(),
             description: "Move the agent cursor overlay, or with scope=desktop move the real OS pointer in get_desktop_state coordinates.".into(),
             input_schema: json!({"type":"object","required":["x","y"],"properties":{
-                "x":{"type":"number"},"y":{"type":"number"},"session": crate::core::tool_schema::session_schema(),"cursor_id":{"type":"string"},"scope":{"type":"string","enum":["window","desktop"],"default":"window"}
+                "x":{"type":"number"},"y":{"type":"number"},"scope":{"type":"string","enum":["window","desktop"],"default":"window"}
             },"additionalProperties":false}),
             read_only: false, destructive: false, idempotent: true, open_world: false,
         })
@@ -7098,21 +6986,24 @@ impl Tool for SetAgentCursorEnabledV2Tool {
             Some(value) => value,
             None => return ToolResult::error("Missing required boolean field `enabled`."),
         };
-        let session = resolve_cursor_key(&args);
-        self.state.cursor_registry.set_enabled(&session, enabled);
+        let cursor_key = resolve_cursor_key(&args);
+        let cua_index = crate::core::seat_context::current_index();
+        self.state.cursor_registry.set_enabled(&cursor_key, enabled);
         crate::platform::overlay::send_command_for(
-            session.clone(),
+            cursor_key,
             crate::cursor::OverlayCommand::SetEnabled(enabled),
         );
         ToolResult::text(format!(
-            "Agent cursor for session '{session}' {}.",
+            "Agent cursor for CUA{cua_index} {}.",
             if enabled { "enabled" } else { "disabled" }
         ))
-        .with_structured(json!({"session":session,"enabled":enabled}))
+        .with_structured(json!({"cua_index":cua_index,"enabled":enabled}))
     }
 }
 
-pub struct SetAgentCursorMotionV2Tool;
+pub struct SetAgentCursorMotionV2Tool {
+    state: Arc<ToolState>,
+}
 
 static CURSOR_MOTION_V2_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 
@@ -7131,8 +7022,9 @@ impl Tool for SetAgentCursorMotionV2Tool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
-        let session = resolve_cursor_key(&args);
-        let current = crate::platform::overlay::current_motion_for(&session);
+        let cursor_key = resolve_cursor_key(&args);
+        let cua_index = crate::core::seat_context::current_index();
+        let current = crate::platform::overlay::current_motion_for(&cursor_key);
         let motion = current.with_overrides(
             cursor_number(args.get("start_handle")),
             cursor_number(args.get("end_handle")),
@@ -7145,24 +7037,25 @@ impl Tool for SetAgentCursorMotionV2Tool {
             None,
             cursor_number(args.get("turn_radius")),
         );
+        self.state
+            .cursor_registry
+            .update_motion(&cursor_key, motion.clone());
         crate::platform::overlay::send_command_for(
-            session.clone(),
+            cursor_key,
             crate::cursor::OverlayCommand::SetMotion(motion.clone()),
         );
-        ToolResult::text(format!(
-            "Agent cursor motion updated for session '{session}'."
-        ))
-        .with_structured(json!({"session":session,"motion":{
-            "start_handle":motion.start_handle,
-            "end_handle":motion.end_handle,
-            "arc_size":motion.arc_size,
-            "arc_flow":motion.arc_flow,
-            "spring":motion.spring,
-            "glide_duration_ms":motion.glide_duration_ms,
-            "dwell_after_click_ms":motion.dwell_after_click_ms,
-            "idle_hide_ms":motion.idle_hide_ms,
-            "turn_radius":motion.turn_radius
-        }}))
+        ToolResult::text(format!("Agent cursor motion updated for CUA{cua_index}."))
+            .with_structured(json!({"cua_index":cua_index,"motion":{
+                "start_handle":motion.start_handle,
+                "end_handle":motion.end_handle,
+                "arc_size":motion.arc_size,
+                "arc_flow":motion.arc_flow,
+                "spring":motion.spring,
+                "glide_duration_ms":motion.glide_duration_ms,
+                "dwell_after_click_ms":motion.dwell_after_click_ms,
+                "idle_hide_ms":motion.idle_hide_ms,
+                "turn_radius":motion.turn_radius
+            }}))
     }
 }
 
@@ -7190,7 +7083,8 @@ impl Tool for SetAgentCursorThemeTool {
         let Some(theme_id) = args.get("theme_id").and_then(Value::as_str) else {
             return ToolResult::error("Missing required string field `theme_id`.");
         };
-        let session = resolve_cursor_key(&args);
+        let cursor_key = resolve_cursor_key(&args);
+        let cua_index = crate::core::seat_context::current_index();
         let resolved_theme = match crate::cursor::resolve_theme_selection(theme_id) {
             Ok(theme) => theme,
             Err(error) => {
@@ -7210,21 +7104,21 @@ impl Tool for SetAgentCursorThemeTool {
             cursor_reduced_motion(args.get("reduced_motion").and_then(Value::as_str));
         self.state
             .cursor_registry
-            .update_config(&session, |config| {
+            .update_config(&cursor_key, |config| {
                 config.theme_id = theme_id.to_owned();
                 config.reduced_motion = reduced_motion;
             });
         crate::platform::overlay::send_command_for(
-            session.clone(),
+            cursor_key,
             crate::cursor::OverlayCommand::SetTheme {
                 theme_id: theme_id.to_owned(),
                 reduced_motion,
             },
         );
         ToolResult::text(format!(
-            "Agent cursor theme for session '{session}' set to '{theme_id}'."
+            "Agent cursor theme for CUA{cua_index} set to '{theme_id}'."
         ))
-        .with_structured(json!({"session":session,"theme":{
+        .with_structured(json!({"cua_index":cua_index,"theme":{
             "id":theme_id,
             "version":version,
             "profile":profile,
@@ -7234,7 +7128,9 @@ impl Tool for SetAgentCursorThemeTool {
     }
 }
 
-pub struct GetAgentCursorStateV2Tool;
+pub struct GetAgentCursorStateV2Tool {
+    state: Arc<ToolState>,
+}
 
 static CURSOR_STATE_V2_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 
@@ -7245,19 +7141,22 @@ impl Tool for GetAgentCursorStateV2Tool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
-        let session = resolve_cursor_key(&args);
-        let enabled = crate::platform::overlay::is_enabled_for(&session);
-        let motion = crate::platform::overlay::current_motion_for(&session);
-        let (theme_id, version, profile, fallback, visual) =
-            crate::platform::overlay::current_theme_state_for(&session).unwrap_or_else(|| {
-                (
-                    crate::cursor::DEFAULT_THEME_ID.into(),
-                    crate::cursor::DEFAULT_THEME_VERSION.into(),
-                    crate::cursor::THEME_PROFILE.into(),
-                    None,
-                    crate::cursor::CursorVisualState::default(),
-                )
-            });
+        let cursor_key = resolve_cursor_key(&args);
+        let cua_index = crate::core::seat_context::current_index();
+        let persisted = self.state.cursor_registry.state(&cursor_key);
+        let enabled = persisted.config.enabled;
+        let motion = persisted.motion;
+        let (version, profile, fallback, visual) =
+            crate::platform::overlay::current_theme_state_for(&cursor_key)
+                .map(|(_, version, profile, fallback, visual)| (version, profile, fallback, visual))
+                .unwrap_or_else(|| {
+                    (
+                        crate::cursor::DEFAULT_THEME_VERSION.into(),
+                        crate::cursor::THEME_PROFILE.into(),
+                        None,
+                        crate::cursor::CursorVisualState::default(),
+                    )
+                });
         let modifiers: Vec<&str> = [
             visual.delivery.map(|value| value.as_str()),
             visual.target.map(|value| value.as_str()),
@@ -7265,39 +7164,40 @@ impl Tool for GetAgentCursorStateV2Tool {
         .into_iter()
         .flatten()
         .collect();
-        ToolResult::text(format!("Agent cursor state for session '{session}'.")).with_structured(
-            json!({
-                "session":session,
-                "enabled":enabled,
-                "position":null,
-                "theme":{
-                    "id":theme_id,
-                    "version":version,
-                    "profile":profile,
-                    "reduced_motion":visual.reduced_motion,
-                    "fallback":fallback
-                },
-                "visual_state":{
-                    "requested_action":visual.requested_action,
-                    "resolved_action":visual.resolved_action,
-                    "modifiers":modifiers,
-                    "phase":visual.phase(),
-                    "frame":visual.frame(),
-                    "preempted_count":visual.preempted_count
-                },
-                "motion":{
-                    "start_handle":motion.start_handle,
-                    "end_handle":motion.end_handle,
-                    "arc_size":motion.arc_size,
-                    "arc_flow":motion.arc_flow,
-                    "spring":motion.spring,
-                    "glide_duration_ms":motion.glide_duration_ms,
-                    "dwell_after_click_ms":motion.dwell_after_click_ms,
-                    "idle_hide_ms":motion.idle_hide_ms,
-                    "turn_radius":motion.turn_radius
-                }
-            }),
-        )
+        ToolResult::text(format!("Agent cursor state for CUA{cua_index}.")).with_structured(json!({
+            "cua_index":cua_index,
+            "enabled":enabled,
+            "position":match (persisted.x, persisted.y) {
+                (Some(x), Some(y)) => json!({"x":x,"y":y}),
+                _ => Value::Null,
+            },
+            "theme":{
+                "id":persisted.config.theme_id,
+                "version":version,
+                "profile":profile,
+                "reduced_motion":persisted.config.reduced_motion,
+                "fallback":fallback
+            },
+            "visual_state":{
+                "requested_action":visual.requested_action,
+                "resolved_action":visual.resolved_action,
+                "modifiers":modifiers,
+                "phase":visual.phase(),
+                "frame":visual.frame(),
+                "preempted_count":visual.preempted_count
+            },
+            "motion":{
+                "start_handle":motion.start_handle,
+                "end_handle":motion.end_handle,
+                "arc_size":motion.arc_size,
+                "arc_flow":motion.arc_flow,
+                "spring":motion.spring,
+                "glide_duration_ms":motion.glide_duration_ms,
+                "dwell_after_click_ms":motion.dwell_after_click_ms,
+                "idle_hide_ms":motion.idle_hide_ms,
+                "turn_radius":motion.turn_radius
+            }
+        }))
     }
 }
 
@@ -7317,7 +7217,7 @@ impl Tool for CheckPermissionsTool {
     fn def(&self) -> &ToolDef {
         PERMS_DEF.get_or_init(|| ToolDef {
             name: "check_permissions".into(),
-            description: "Check required permissions for cua-driver-rs on Linux.".into(),
+            description: "Check required permissions for Buzzard CUA on Linux.".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             read_only: true,
             destructive: false,
@@ -7350,7 +7250,7 @@ impl Tool for CheckPermissionsTool {
             }
         } else if dbus_address.is_none() {
             "❌ no session bus (DBUS_SESSION_BUS_ADDRESS unset and none auto-discovered) — \
-             AT-SPI trees will be empty; start the daemon inside the desktop session"
+             AT-SPI trees will be empty; run cua from the Buzzard desktop environment"
                 .to_string()
         } else {
             "❌ session bus present but org.a11y.Bus has no owner — enable accessibility \
@@ -7388,7 +7288,7 @@ impl Tool for GetConfigTool {
     fn def(&self) -> &ToolDef {
         GCFG_DEF.get_or_init(|| ToolDef {
             name: "get_config".into(),
-            description: "Return current cua-driver-rs configuration.".into(),
+            description: "Return current Buzzard CUA configuration.".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             read_only: true,
             destructive: false,
@@ -7398,9 +7298,9 @@ impl Tool for GetConfigTool {
     }
     async fn invoke(&self, _args: Value) -> ToolResult {
         let cfg = self.state.config.read().unwrap();
-        ToolResult::text("cua-driver-rs configuration").with_structured(json!({
+        ToolResult::text("Buzzard CUA configuration").with_structured(json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "source_sha": option_env!("CUA_DRIVER_SOURCE_SHA"),
+            "source_sha": option_env!("BUZZARD_CUA_SOURCE_SHA"),
             "platform": "linux",
             "capture_mode": cfg.capture_mode,
             "max_image_dimension": cfg.max_image_dimension
@@ -7438,18 +7338,6 @@ impl Tool for SetConfigTool {
     }
     async fn invoke(&self, args: Value) -> ToolResult {
         use crate::core::tool_args::ArgsExt;
-        if args.get("capture_scope").is_some()
-            || args.get("key").and_then(Value::as_str) == Some("capture_scope")
-        {
-            return ToolResult::error(
-                "config key 'capture_scope' is retired; pass capture_scope=auto|window|desktop to start_session",
-            )
-            .with_structured(json!({
-                "code": "config_key_retired",
-                "key": "capture_scope",
-                "replacement": "start_session.capture_scope",
-            }));
-        }
         let mut cfg = self.state.config.write().unwrap();
         let mut parts = Vec::new();
         // {key, value} shape (what the Swift/macOS and Windows callers send).
@@ -7878,7 +7766,6 @@ impl Tool for TypeTextCharsTool {
                 Otherwise identical to type_text (XSendEvent, no focus steal).".into(),
             input_schema: json!({
                 "type":"object","required":["pid","text"],"properties":{
-                    "session": crate::core::tool_schema::session_schema(),
                     "pid":{"type":"integer"},
                     "window_id":{"type":"integer"},
                     "text":{"type":"string","maxLength":crate::contract::MAX_TYPE_TEXT_CHARS},
@@ -8497,22 +8384,9 @@ impl Tool for BringToFrontTool {
         BTF_DEF.get_or_init(|| ToolDef {
             name: "bring_to_front".into(),
             description:
-                "Persistently activate a window so subsequent input lands on it. \
-                 This deliberately breaks the no-foreground contract and is not part \
-                 of the normal input ladder. For an ordinary `background_unavailable` \
-                 response, retry only the refused action with \
-                 `delivery_mode:\"foreground\"`; the input tool performs its own \
-                 activate, act, and restore sequence. Use `bring_to_front` only for a \
-                 focus-proxy surface that must remain foreground across multiple calls, \
-                 such as a remote desktop session, or when repeated action-scoped \
-                 activation prevents the remote surface from accepting input. \
-                 X11: EWMH _NET_ACTIVE_WINDOW activation (the `wmctrl -a` equivalent, \
-                 with proper timestamp handling to beat focus-stealing prevention). \
-                 Wayland: activates through a target-addressable compositor adapter \
-                 (wlroots foreign-toplevel or the GNOME Shell helper) and refuses \
-                 when the compositor offers no safe adapter. Matches the macOS / \
-                 Windows bring_to_front rung."
-                .into(),
+                "Move the exact window into this caller's cuaN workspace and focus it \
+                 for seatN. The human Desktop and other numbered seats are unaffected."
+                    .into(),
             input_schema: serde_json::json!({
                 "type":"object","required":["pid"],"properties":{
                     "pid":{"type":"integer"},
@@ -8538,17 +8412,19 @@ impl Tool for BringToFrontTool {
                     }
                 },
             };
+            let cua_index = crate::core::seat_context::current_index();
             let result = tokio::task::spawn_blocking(move || {
                 crate::platform::wayland::activate_window_for_input_target(window_id, Some(pid))
             })
             .await;
             return match result {
                 Ok(Ok(())) => {
-                    ToolResult::text(format!("Brought Wayland window {window_id} to front."))
+                    ToolResult::text(format!("Focused Wayland window {window_id} in CUA workspace {cua_index}."))
                         .with_structured(serde_json::json!({
                             "window_id": window_id,
                             "platform": "linux",
-                            "session": "wayland",
+                            "workspace_index": cua_index,
+                            "workspace": crate::platform::wayland::sway_ipc::cua_workspace_name(cua_index).ok(),
                         }))
                 }
                 Ok(Err(error)) => ToolResult::error(error.to_string()),
@@ -8597,27 +8473,11 @@ impl Tool for BringToFrontTool {
 // ── registry ─────────────────────────────────────────────────────────────────
 
 pub fn build_registry() -> ToolRegistry {
-    // Session cancellation must exist before the first keyboard Tool can be
-    // admitted and wait on consent/focus. The Wayland keyboard connection
-    // itself remains lazy and is created only by actual keyboard input.
+    // Shutdown cancellation exists before the first keyboard tool is admitted.
+    // The Wayland keyboard connection remains lazy until actual key input.
     crate::platform::wayland::initialize_keyboard_cancellation();
     let state = ToolState::new();
-    let session_end_hook = {
-        let cursor_registry = state.cursor_registry.clone();
-        let state_for_session_end = state.clone();
-        crate::core::session::register_scoped_session_end_hook(move |session_id| {
-            cursor_registry.remove(session_id);
-            crate::platform::overlay::remove_cursor(session_id.to_owned());
-            state_for_session_end
-                .mouse_hold
-                .lock()
-                .unwrap()
-                .remove(session_id);
-            crate::platform::input::forget_master_pointer(session_id);
-        })
-    };
     let mut r = ToolRegistry::new();
-    r.retain_session_end_hook(session_end_hook);
     if let Some(runtime_scope) = crate::core::tool::current_dispatch_runtime_scope() {
         let prefix = format!("__cua_runtime_{runtime_scope}:");
         let cursor_registry = state.cursor_registry.clone();
@@ -8704,9 +8564,6 @@ pub fn build_registry() -> ToolRegistry {
         },
         &pid_window_candidates,
     ));
-    r.register(Box::new(ParallelMouseDragTool {
-        state: state.clone(),
-    }));
     r.register(pid_window_guarded(
         TypeTextTool {
             state: state.clone(),
@@ -8743,8 +8600,12 @@ pub fn build_registry() -> ToolRegistry {
     r.register(Box::new(SetAgentCursorEnabledV2Tool {
         state: state.clone(),
     }));
-    r.register(Box::new(SetAgentCursorMotionV2Tool));
-    r.register(Box::new(GetAgentCursorStateV2Tool));
+    r.register(Box::new(SetAgentCursorMotionV2Tool {
+        state: state.clone(),
+    }));
+    r.register(Box::new(GetAgentCursorStateV2Tool {
+        state: state.clone(),
+    }));
     r.register(Box::new(SetAgentCursorThemeTool {
         state: state.clone(),
     }));
@@ -8768,7 +8629,6 @@ pub fn build_registry() -> ToolRegistry {
     // `type_text_chars` is a deprecated invoke-time alias for `type_text`.
     // Keep it out of tools/list, matching the macOS and Windows registries.
     let _: &TypeTextCharsTool = &TypeTextCharsTool;
-    r.register_session_tools();
     r
 }
 

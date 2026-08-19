@@ -11,11 +11,11 @@ This directory is everything Buzzard OS installs into the persistent guest:
   descriptor-bound desktop-operation backend;
 - `clipboard-agent/` owns the private guest side of explicit one-shot
   clipboard snapshots;
-- `updater/` is the fixed-operation package-update service;
 - `assets/` contains systemd, Sway, D-Bus, theme, integration, and native
   AppImage support files;
-- `third_party/trycua-cua/` is the attributed, pinned CUA fork;
-- `asset-manifest.tsv` is the authoritative source-to-rootfs mapping; and
+- `../cua/` is the independently packaged, attributed Buzzard CUA fork;
+- `runtime-asset-manifest.tsv` and `desktop-asset-manifest.tsv` are the
+  authoritative source-to-rootfs mappings; and
 - `install-rootfs-assets.sh` assembles exactly that payload for the OCI image.
 
 The host launcher's managed-asset table is unit-tested against the same TSV

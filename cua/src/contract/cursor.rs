@@ -138,13 +138,6 @@ pub enum CursorReducedMotion {
     Off,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
-pub struct CursorThemeSelection {
-    pub theme_id: String,
-    #[serde(default)]
-    pub reduced_motion: CursorReducedMotion,
-}
-
 impl CursorTarget {
     pub const fn as_str(self) -> &'static str {
         match self {

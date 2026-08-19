@@ -55,7 +55,6 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
     QT_ACCESSIBILITY=1 \
     GTK_MODULES=gail:atk-bridge \
     NO_AT_BRIDGE=0 \
-    CUA_DRIVER_RS_ENABLE_WAYLAND=1 \
     sh -lc '
         session_pid=
         WAYLAND_DISPLAY=
@@ -96,4 +95,4 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
         fi
         export WAYLAND_DISPLAY SWAYSOCK
         exec "$@"
-    ' sh /usr/bin/buzzardoscua "$tool" "$arguments"
+    ' sh /usr/bin/cua "$tool" "$arguments"

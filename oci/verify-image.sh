@@ -40,7 +40,7 @@ run_shell '
     for command in \
         Xwayland dbus-daemon dbus-run-session ffmpeg firefox-esr \
         foot fusermount3 \
-        buzzardoscua gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
+        cua cua1 cua2 buzzardoscua gsettings grim mako mousepad pipewire setpriv sway swaymsg systemctl \
         unsquashfs \
         thunar wireplumber wtype
     do
@@ -58,6 +58,9 @@ run_shell '
         "$runtime/libexec/buzzardos-fusermount" \
         "$runtime/libexec/buzzardos-fusermount-exec" \
         "$runtime/libexec/buzzardos-integration-agent" \
+        /usr/bin/cua \
+        /usr/bin/cua1 \
+        /usr/bin/cua2 \
         /usr/bin/buzzardoscua \
         /usr/bin/buzzardos-desktop \
         /usr/bin/buzzardos-settings \
@@ -95,7 +98,15 @@ run_shell '
 		test "$(cat /usr/share/buzzardoscua/version)" = "$cua_version"
 		test "$(/usr/bin/buzzardos-desktop --version)" = "Buzzard OS Desktop $desktop_version"
 		test "$(/usr/bin/buzzardos-settings --version)" = "Buzzard OS Settings $desktop_version"
+		test "$(/usr/bin/cua --version)" = "Buzzard CUA $cua_version"
+		test "$(/usr/bin/cua1 --version)" = "Buzzard CUA $cua_version"
+		test "$(/usr/bin/cua2 --version)" = "Buzzard CUA $cua_version"
 		test "$(/usr/bin/buzzardoscua --version)" = "Buzzard CUA $cua_version"
+		test "$(readlink /usr/bin/cua1)" = cua
+		test "$(readlink /usr/bin/cua2)" = cua
+		test "$(readlink /usr/bin/buzzardoscua)" = cua
+		test -s /usr/share/buzzardoscua/SKILL.md
+		test ! -e /usr/lib/systemd/system/buzzardoscua.service
 		/usr/bin/python3 -c "import apt"
 	settings_root=/tmp/buzzardos-gsettings-verifier
 	rm -rf "$settings_root"

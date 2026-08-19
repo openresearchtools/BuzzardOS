@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-# Buzzard OS exposes one classic stacking desktop. The native Rust shell
-# owns the desktop, Applications menu, and bottom taskbar through layer-shell;
-# Sway owns guest application placement, focus, resize, and decorations.
+# Buzzard OS exposes one classic stacking desktop plus numbered, guest-private
+# CUA workspaces. The native Rust shell owns the desktop, thin workspace bar,
+# Applications menu, and bottom taskbar through layer-shell; Sway owns guest
+# application placement, focus, outputs, seats, resize, and decorations.
 set $mod Mod4
 font pango:DejaVu Sans 10
 floating_modifier $mod normal
@@ -57,7 +58,7 @@ bindsym $mod+Down focus down
 bindsym $mod+Up focus up
 bindsym $mod+Right focus right
 
-workspace 1
+workspace Desktop
 exec_always --no-startup-id /opt/buzzardos/runtime/current/libexec/buzzardos-desktop-services
 
 include /run/buzzardos-host/initial-output.conf

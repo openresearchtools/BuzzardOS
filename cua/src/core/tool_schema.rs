@@ -2,13 +2,6 @@
 
 use serde_json::{json, Value};
 
-pub fn session_schema() -> Value {
-    json!({
-        "type": "string",
-        "description": "Optional agent-session identity used by cursor and capture state."
-    })
-}
-
 pub fn delivery_mode_schema_with(description: &str) -> Value {
     json!({
         "type": "string",

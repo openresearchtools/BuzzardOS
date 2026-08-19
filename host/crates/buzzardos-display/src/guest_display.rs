@@ -280,7 +280,9 @@ struct GuestState {
     toplevels: Vec<ToplevelHandle>,
     pointers: Vec<wl_pointer::WlPointer>,
     keyboards: Vec<wl_keyboard::WlKeyboard>,
-    focused_surface: Option<wl_surface::WlSurface>,
+    /// The first nested output is the sole host-facing output for this Sway
+    /// connection. Later output surfaces remain guest-private and off-screen.
+    primary_surface: Option<wl_surface::WlSurface>,
     pointer_position: Option<(f64, f64)>,
     pointer_entered: bool,
     cursor_surface: Option<wl_surface::WlSurface>,
@@ -341,7 +343,7 @@ impl GuestState {
             toplevels: Vec::new(),
             pointers: Vec::new(),
             keyboards: Vec::new(),
-            focused_surface: None,
+            primary_surface: None,
             pointer_position: None,
             pointer_entered: false,
             cursor_surface: None,
@@ -467,7 +469,7 @@ impl GuestState {
         let Some((x, y)) = self.pointer_position else {
             return;
         };
-        let Some(surface) = self.focused_surface.clone().filter(Resource::is_alive) else {
+        let Some(surface) = self.primary_surface.clone().filter(Resource::is_alive) else {
             return;
         };
         self.pointers.retain(Resource::is_alive);
@@ -475,7 +477,7 @@ impl GuestState {
             return;
         }
         let serial = self.next_serial();
-        for pointer in &self.pointers {
+        for pointer in self.pointers.iter().take(1) {
             pointer.enter(serial, &surface, x, y);
             if pointer.version() >= 5 {
                 pointer.frame();
@@ -489,11 +491,11 @@ impl GuestState {
         if !self.pointer_entered {
             return;
         }
-        let surface = self.focused_surface.clone().filter(Resource::is_alive);
+        let surface = self.primary_surface.clone().filter(Resource::is_alive);
         let serial = self.next_serial();
         self.pointers.retain(Resource::is_alive);
         if let Some(surface) = surface {
-            for pointer in &self.pointers {
+            for pointer in self.pointers.iter().take(1) {
                 pointer.leave(serial, &surface);
                 if pointer.version() >= 5 {
                     pointer.frame();
@@ -511,7 +513,7 @@ impl GuestState {
         }
         let time = monotonic_ms();
         self.pointers.retain(Resource::is_alive);
-        for pointer in &self.pointers {
+        for pointer in self.pointers.iter().take(1) {
             pointer.motion(time, x, y);
             if pointer.version() >= 5 {
                 pointer.frame();
@@ -532,7 +534,7 @@ impl GuestState {
         };
         let time = monotonic_ms();
         self.pointers.retain(Resource::is_alive);
-        for pointer in &self.pointers {
+        for pointer in self.pointers.iter().take(1) {
             pointer.button(serial, time, button, state);
             if pointer.version() >= 5 {
                 pointer.frame();
@@ -547,7 +549,7 @@ impl GuestState {
         }
         let time = monotonic_ms();
         self.pointers.retain(Resource::is_alive);
-        for pointer in &self.pointers {
+        for pointer in self.pointers.iter().take(1) {
             if pointer.version() >= 5 {
                 pointer.axis_source(wl_pointer::AxisSource::Wheel);
             }
@@ -584,7 +586,7 @@ impl GuestState {
         if self.keyboard_entered || !self.keyboard_focused {
             return;
         }
-        let Some(surface) = self.focused_surface.clone().filter(Resource::is_alive) else {
+        let Some(surface) = self.primary_surface.clone().filter(Resource::is_alive) else {
             return;
         };
         self.keyboards.retain(Resource::is_alive);
@@ -623,7 +625,7 @@ impl GuestState {
         if !self.keyboard_entered {
             return;
         }
-        let surface = self.focused_surface.clone().filter(Resource::is_alive);
+        let surface = self.primary_surface.clone().filter(Resource::is_alive);
         let serial = self.next_serial();
         self.keyboards.retain(Resource::is_alive);
         if let Some(surface) = surface {
@@ -1216,7 +1218,7 @@ impl GuestState {
                         }
                     }
                     if !leased {
-                        self.release_cursor_commit(buffer.clone(), release_point, explicit_sync);
+                        self.release_buffer_commit(buffer.clone(), release_point, explicit_sync);
                     }
                 }
                 Err(error) => {
@@ -1228,12 +1230,30 @@ impl GuestState {
                          import failure: {error:#}"
                     );
                     let _ = self.events.send(GatewayEvent::GuestCursorFallback);
-                    self.release_cursor_commit(buffer.clone(), release_point, explicit_sync);
+                    self.release_buffer_commit(buffer.clone(), release_point, explicit_sync);
                 }
             }
             for callback in callbacks {
                 callback.done(monotonic_ms());
             }
+            for feedback in feedback {
+                feedback.discarded();
+            }
+            return;
+        }
+
+        // Stock Sway creates each runtime virtual output as another nested
+        // Wayland toplevel. Only the first output may feed the native host
+        // window. Keep later outputs rendering for guest screenshots and CUA,
+        // but consume their buffers locally, pace their frame callbacks from
+        // the same internal clock, and never present or focus their surfaces.
+        let host_facing = self
+            .primary_surface
+            .as_ref()
+            .is_some_and(|primary| primary.is_alive() && primary == surface);
+        if !host_facing {
+            self.release_buffer_commit(buffer, release_point, explicit_sync);
+            self.idle_frame_callbacks.extend(callbacks);
             for feedback in feedback {
                 feedback.discarded();
             }
@@ -1438,10 +1458,10 @@ impl GuestState {
         let Some(lease) = self.cursor_leases.remove(&id) else {
             return;
         };
-        self.release_cursor_commit(lease.buffer, lease.release_point, lease.explicit_sync);
+        self.release_buffer_commit(lease.buffer, lease.release_point, lease.explicit_sync);
     }
 
-    fn release_cursor_commit(
+    fn release_buffer_commit(
         &self,
         buffer: wl_buffer::WlBuffer,
         release_point: Option<TimelinePoint>,
@@ -1473,7 +1493,7 @@ impl GuestState {
         self.idle_presentation_feedback.clear();
         self.pointers.clear();
         self.keyboards.clear();
-        self.focused_surface = None;
+        self.primary_surface = None;
         self.pointer_entered = false;
         self.keyboard_focused = false;
         self.keyboard_entered = false;
@@ -2178,11 +2198,13 @@ impl Dispatch<xdg_surface::XdgSurface, XdgSurfaceData> for GuestState {
                     xdg_surface: surface.clone(),
                 };
                 state.toplevels.push(handle);
-                state.focused_surface = Some(data.surface.clone());
-                state.pointer_entered = false;
-                state.keyboard_entered = false;
-                state.ensure_pointer_enter();
-                state.ensure_keyboard_enter();
+                if state.primary_surface.is_none() {
+                    state.primary_surface = Some(data.surface.clone());
+                    state.pointer_entered = false;
+                    state.keyboard_entered = false;
+                    state.ensure_pointer_enter();
+                    state.ensure_keyboard_enter();
+                }
             }
             xdg_surface::Request::GetPopup { id, .. } => {
                 data_init.init(id, ());
@@ -2582,12 +2604,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for GuestState {
     fn request(
         state: &mut Self,
         _client: &Client,
-        _resource: &wl_pointer::WlPointer,
+        resource: &wl_pointer::WlPointer,
         request: wl_pointer::Request,
         _data: &(),
         _handle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        state.pointers.retain(Resource::is_alive);
+        if state.pointers.first() != Some(resource) {
+            return;
+        }
         if let wl_pointer::Request::SetCursor {
             surface,
             hotspot_x,

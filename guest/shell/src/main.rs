@@ -26,9 +26,11 @@ use icons::{AppIcon, load_application_icons, load_icon};
 use model::{
     APPLICATIONS_MENU_FOOTER_HEIGHT, APPLICATIONS_MENU_HEADER_HEIGHT,
     APPLICATIONS_MENU_SECTION_HEIGHT, Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT,
-    PANEL_HEIGHT, Rect, ShellAction, TASK_PAGE_STEP, application_context_targets,
-    applications_menu_close_target, builtin_desktop_targets, menu_targets, panel_targets,
-    scan_applications, taskbar_max_offset, window_menu_targets,
+    PANEL_HEIGHT, Rect, ShellAction, TASK_PAGE_STEP, TOP_BAR_HEIGHT, WorkspaceTab,
+    application_context_targets, applications_menu_close_target, builtin_desktop_targets,
+    menu_targets, next_manual_workspace, panel_targets, scan_applications, taskbar_max_offset,
+    top_bar_targets, window_menu_height, window_menu_targets, workspace_index,
+    workspace_menu_targets, workspace_name,
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -98,7 +100,8 @@ const WINDOW_MENU_POINTER_REFRESH_DELAY: Duration = Duration::from_millis(16);
 const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
-const WINDOW_MENU_HEIGHT: u32 = 44 + 5 * MENU_ROW_HEIGHT as u32;
+const WORKSPACE_MENU_WIDTH: u32 = 260;
+const WORKSPACE_MENU_HEIGHT: u32 = 44 + MENU_ROW_HEIGHT as u32;
 const APPLICATION_CONTEXT_WIDTH: u32 = 252;
 const DESKTOP_CONTEXT_WIDTH: u32 = 272;
 const DESKTOP_DIALOG_WIDTH: u32 = 430;
@@ -112,9 +115,11 @@ const DRAG_THRESHOLD: f64 = 6.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSurface {
     Desktop,
+    TopBar,
     Panel,
     Menu,
     Context,
+    Auxiliary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -275,13 +280,14 @@ fn titlebar_menu_origin(
     decoration_height: i32,
     desktop_size: (u32, u32),
     pointer_x: f64,
+    menu_height: u32,
 ) -> (i32, i32) {
     let desktop_width = i32::try_from(desktop_size.0).unwrap_or(i32::MAX);
     let desktop_height = i32::try_from(desktop_size.1).unwrap_or(i32::MAX);
     let maximum_left = desktop_width.saturating_sub(WINDOW_MENU_WIDTH as i32);
     let maximum_top = desktop_height
         .saturating_sub(PANEL_HEIGHT)
-        .saturating_sub(WINDOW_MENU_HEIGHT as i32);
+        .saturating_sub(menu_height as i32);
     let requested_left = if pointer_x.is_finite() {
         pointer_x.floor() as i32
     } else {
@@ -598,6 +604,23 @@ fn run() -> Result<()> {
     let desktop_viewport = viewporter.get_viewport(desktop.wl_surface(), &qh, ());
     desktop.commit();
 
+    let top_bar_surface = compositor.create_surface(&qh);
+    let top_bar = layer_shell.create_layer_surface(
+        &qh,
+        top_bar_surface,
+        Layer::Top,
+        Some("buzzardos-workspaces"),
+        None,
+    );
+    top_bar.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+    top_bar.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    top_bar.set_exclusive_zone(TOP_BAR_HEIGHT);
+    top_bar.set_size(0, TOP_BAR_HEIGHT as u32);
+    let top_bar_fractional =
+        fractional_manager.get_fractional_scale(top_bar.wl_surface(), &qh, ShellSurface::TopBar);
+    let top_bar_viewport = viewporter.get_viewport(top_bar.wl_surface(), &qh, ());
+    top_bar.commit();
+
     let panel_surface = compositor.create_surface(&qh);
     let panel = layer_shell.create_layer_surface(
         &qh,
@@ -691,34 +714,41 @@ fn run() -> Result<()> {
         output_state: OutputState::new(&globals, &qh),
         shm,
         compositor,
+        layer_shell,
         foreign_toplevel_list,
         _fractional_manager: fractional_manager,
         _viewporter: viewporter,
         _fractional_scales: [
             desktop_fractional,
+            top_bar_fractional,
             panel_fractional,
             menu_fractional,
             context_fractional,
         ],
         viewports: [
             desktop_viewport,
+            top_bar_viewport,
             panel_viewport,
             menu_viewport,
             context_viewport,
         ],
         desktop,
+        top_bar,
         panel,
         menu,
         context,
+        auxiliary_outputs: Vec::new(),
         pool,
         font: load_font(),
         desktop_size: (1280, 800),
+        top_bar_size: (1280, TOP_BAR_HEIGHT as u32),
         panel_size: (1280, PANEL_HEIGHT as u32),
         menu_size: (1, 1),
         menu_origin: (0, 0),
         context_size: (1, 1),
         context_origin: (0, 0),
         desktop_configured: false,
+        top_bar_configured: false,
         panel_configured: false,
         menu_configured: false,
         context_configured: false,
@@ -739,6 +769,13 @@ fn run() -> Result<()> {
         paste_available: false,
         scale_120: 120,
         task_offset: 0,
+        workspace_tabs: vec![WorkspaceTab {
+            index: 0,
+            label: "Desktop".to_owned(),
+            active: true,
+        }],
+        current_workspace: "Desktop".to_owned(),
+        visible_workspaces: BTreeMap::new(),
         capped_task_buttons: initial_settings.appearance.capped_task_buttons,
         pinned_applications: initial_settings
             .appearance
@@ -795,7 +832,11 @@ fn run() -> Result<()> {
         if shell.dirty {
             shell.draw()?;
             shell.dirty = false;
-            if !ready_published && shell.desktop_configured && shell.panel_configured {
+            if !ready_published
+                && shell.desktop_configured
+                && shell.top_bar_configured
+                && shell.panel_configured
+            {
                 fs::write(&shell_ready, b"ready\n").with_context(|| {
                     format!("publishing shell readiness at {}", shell_ready.display())
                 })?;
@@ -816,10 +857,25 @@ struct ExactToplevel {
     window: GuestWindow,
 }
 
+struct AuxiliaryOutput {
+    output: wl_output::WlOutput,
+    name: String,
+    desktop: LayerSurface,
+    panel: LayerSurface,
+    _fractional_scales: [WpFractionalScaleV1; 2],
+    viewports: [WpViewport; 2],
+    desktop_size: (u32, u32),
+    panel_size: (u32, u32),
+    desktop_configured: bool,
+    panel_configured: bool,
+    task_offset: usize,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum MenuKind {
     Applications,
     Window(u32),
+    Workspace(u32),
 }
 
 struct Shell {
@@ -828,24 +884,29 @@ struct Shell {
     output_state: OutputState,
     shm: Shm,
     compositor: CompositorState,
+    layer_shell: LayerShell,
     foreign_toplevel_list: ForeignToplevelList,
     _fractional_manager: WpFractionalScaleManagerV1,
     _viewporter: WpViewporter,
-    _fractional_scales: [WpFractionalScaleV1; 4],
-    viewports: [WpViewport; 4],
+    _fractional_scales: [WpFractionalScaleV1; 5],
+    viewports: [WpViewport; 5],
     desktop: LayerSurface,
+    top_bar: LayerSurface,
     panel: LayerSurface,
     menu: LayerSurface,
     context: LayerSurface,
+    auxiliary_outputs: Vec<AuxiliaryOutput>,
     pool: SlotPool,
     font: Option<Font>,
     desktop_size: (u32, u32),
+    top_bar_size: (u32, u32),
     panel_size: (u32, u32),
     menu_size: (u32, u32),
     menu_origin: (i32, i32),
     context_size: (u32, u32),
     context_origin: (i32, i32),
     desktop_configured: bool,
+    top_bar_configured: bool,
     panel_configured: bool,
     menu_configured: bool,
     context_configured: bool,
@@ -866,6 +927,9 @@ struct Shell {
     paste_available: bool,
     scale_120: u32,
     task_offset: usize,
+    workspace_tabs: Vec<WorkspaceTab>,
+    current_workspace: String,
+    visible_workspaces: BTreeMap<String, String>,
     capped_task_buttons: bool,
     pinned_applications: BTreeSet<String>,
     application_search: String,
@@ -971,6 +1035,100 @@ impl Accessibility {
 }
 
 impl Shell {
+    fn ensure_auxiliary_output(&mut self, qh: &QueueHandle<Self>, output: &wl_output::WlOutput) {
+        let Some(name) = self.output_state.info(output).and_then(|info| info.name) else {
+            return;
+        };
+        let Ok(host_output) = sway_ipc::desktop_output() else {
+            return;
+        };
+        if name == host_output
+            || self
+                .auxiliary_outputs
+                .iter()
+                .any(|auxiliary| auxiliary.output == *output)
+        {
+            return;
+        }
+
+        let desktop_surface = self.compositor.create_surface(qh);
+        let desktop = self.layer_shell.create_layer_surface(
+            qh,
+            desktop_surface,
+            Layer::Background,
+            Some(format!("buzzardos-desktop-{name}")),
+            Some(output),
+        );
+        desktop.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        desktop.set_keyboard_interactivity(KeyboardInteractivity::None);
+        desktop.set_exclusive_zone(-1);
+        desktop.set_size(0, 0);
+        if let Ok(empty) = Region::new(&self.compositor) {
+            desktop.set_input_region(Some(empty.wl_region()));
+        }
+        let desktop_fractional = self._fractional_manager.get_fractional_scale(
+            desktop.wl_surface(),
+            qh,
+            ShellSurface::Auxiliary,
+        );
+        let desktop_viewport = self._viewporter.get_viewport(desktop.wl_surface(), qh, ());
+        desktop.commit();
+
+        let panel_surface = self.compositor.create_surface(qh);
+        let panel = self.layer_shell.create_layer_surface(
+            qh,
+            panel_surface,
+            Layer::Top,
+            Some(format!("buzzardos-panel-{name}")),
+            Some(output),
+        );
+        panel.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        panel.set_keyboard_interactivity(KeyboardInteractivity::None);
+        panel.set_exclusive_zone(PANEL_HEIGHT);
+        panel.set_size(0, PANEL_HEIGHT as u32);
+        if let Ok(empty) = Region::new(&self.compositor) {
+            panel.set_input_region(Some(empty.wl_region()));
+        }
+        let panel_fractional = self._fractional_manager.get_fractional_scale(
+            panel.wl_surface(),
+            qh,
+            ShellSurface::Auxiliary,
+        );
+        let panel_viewport = self._viewporter.get_viewport(panel.wl_surface(), qh, ());
+        panel.commit();
+
+        self.auxiliary_outputs.push(AuxiliaryOutput {
+            output: output.clone(),
+            name: name.clone(),
+            desktop,
+            panel,
+            _fractional_scales: [desktop_fractional, panel_fractional],
+            viewports: [desktop_viewport, panel_viewport],
+            desktop_size: self.desktop_size,
+            panel_size: self.panel_size,
+            desktop_configured: false,
+            panel_configured: false,
+            task_offset: 0,
+        });
+        eprintln!("buzzardos-shell: added workspace surfaces for {name}");
+        self.dirty = true;
+    }
+
+    fn windows_for_output(&self, output: &str) -> Vec<GuestWindow> {
+        let visible_workspace = self.visible_workspaces.get(output);
+        let mut windows = self
+            .exact_toplevels
+            .values()
+            .map(|toplevel| toplevel.window.clone())
+            .filter(|window| {
+                window.output == output
+                    && visible_workspace.is_some_and(|workspace| workspace == &window.workspace)
+            })
+            .collect::<Vec<_>>();
+        windows.sort_by_key(|window| window.id);
+        windows
+    }
+
     fn update_exact_toplevel(&mut self, handle: &ExtForeignToplevelHandleV1) {
         let Some(info) = self.foreign_toplevel_list.info(handle) else {
             return;
@@ -991,6 +1149,15 @@ impl Shell {
                     focused: existing.as_ref().is_some_and(|window| window.focused),
                     minimized: existing.as_ref().is_some_and(|window| window.minimized),
                     maximized: existing.as_ref().is_some_and(|window| window.maximized),
+                    workspace_index: existing.as_ref().and_then(|window| window.workspace_index),
+                    workspace: existing
+                        .as_ref()
+                        .map(|window| window.workspace.clone())
+                        .unwrap_or_default(),
+                    output: existing
+                        .as_ref()
+                        .map(|window| window.output.clone())
+                        .unwrap_or_default(),
                 },
             },
         );
@@ -1226,6 +1393,7 @@ impl Shell {
             .exact_toplevels
             .values()
             .map(|toplevel| toplevel.window.clone())
+            .filter(|window| window.workspace == self.current_workspace)
             .collect();
         // Focus changes must only update the active-button styling. Reordering
         // the focused window to the front made task buttons jump underneath
@@ -1251,7 +1419,68 @@ impl Shell {
             toplevel.window.focused = state.focused;
             toplevel.window.minimized = state.minimized;
             toplevel.window.maximized = state.maximized;
+            toplevel.window.workspace_index = workspace_index(&state.workspace);
+            toplevel.window.workspace = state.workspace.clone();
+            toplevel.window.output = state.output.clone();
             changed |= before != toplevel.window;
+        }
+        if let Ok(workspaces) = sway_ipc::list_workspaces() {
+            let host_workspace = sway_ipc::current_desktop_workspace()
+                .unwrap_or_else(|_| self.current_workspace.clone());
+            let visible_workspaces = workspaces
+                .iter()
+                .filter(|workspace| workspace.visible)
+                .map(|workspace| (workspace.output.clone(), workspace.name.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let mut tabs = workspaces
+                .into_iter()
+                .filter_map(|workspace| {
+                    let index = workspace_index(&workspace.name)?;
+                    Some(WorkspaceTab {
+                        index,
+                        label: workspace_name(index),
+                        active: workspace.name == host_workspace,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !tabs.iter().any(|workspace| workspace.index == 0) {
+                tabs.push(WorkspaceTab {
+                    index: 0,
+                    label: "Desktop".to_owned(),
+                    active: host_workspace == "Desktop",
+                });
+            }
+            tabs.sort_by_key(|workspace| workspace.index);
+            changed |= tabs != self.workspace_tabs
+                || host_workspace != self.current_workspace
+                || visible_workspaces != self.visible_workspaces;
+            self.workspace_tabs = tabs;
+            self.current_workspace = host_workspace;
+            self.visible_workspaces = visible_workspaces;
+        }
+        if changed {
+            self.task_offset = self.task_offset.min(taskbar_max_offset(
+                self.panel_size.0,
+                self.windows().len(),
+                self.capped_task_buttons,
+            ));
+            let counts = self
+                .auxiliary_outputs
+                .iter()
+                .map(|auxiliary| {
+                    (
+                        auxiliary.name.clone(),
+                        self.windows_for_output(&auxiliary.name).len(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            for auxiliary in &mut self.auxiliary_outputs {
+                auxiliary.task_offset = auxiliary.task_offset.min(taskbar_max_offset(
+                    auxiliary.panel_size.0,
+                    counts.get(&auxiliary.name).copied().unwrap_or_default(),
+                    self.capped_task_buttons,
+                ));
+            }
         }
         if changed {
             self.dirty = true;
@@ -1758,6 +1987,10 @@ impl Shell {
             state.decoration_height,
             self.desktop_size,
             pointer_x,
+            self.exact_toplevels
+                .get(&id)
+                .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+                .unwrap_or(WORKSPACE_MENU_HEIGHT),
         );
         self.window_menu_pending_pointer = false;
         self.window_menu_pointer_refresh_at = None;
@@ -1772,11 +2005,34 @@ impl Shell {
             .try_into()
             .unwrap_or(i32::MAX);
         let left = (pointer_x.floor() as i32).clamp(0, maximum_left);
+        let height = self
+            .exact_toplevels
+            .get(&id)
+            .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+            .unwrap_or(WORKSPACE_MENU_HEIGHT);
         let top = i32::try_from(self.desktop_size.1)
             .unwrap_or(i32::MAX)
             .saturating_sub(PANEL_HEIGHT)
-            .saturating_sub(WINDOW_MENU_HEIGHT as i32);
+            .saturating_sub(height as i32);
         self.open_window_menu(id, (left, top), false);
+    }
+
+    fn show_workspace_menu(&mut self, index: u32, pointer_x: f64) {
+        if index == 0 {
+            return;
+        }
+        let maximum_left = self.top_bar_size.0.saturating_sub(WORKSPACE_MENU_WIDTH) as i32;
+        let left = (pointer_x.floor() as i32).clamp(0, maximum_left.max(0));
+        self.menu_open = true;
+        self.menu_kind = MenuKind::Workspace(index);
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
+        self.menu_size = self.menu_overlay_size();
+        self.menu_origin = (left, TOP_BAR_HEIGHT);
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        self.apply_menu_overlay_geometry();
+        self.dirty = true;
     }
 
     fn show_titlebar_window_menu(&mut self, identifier: &str) {
@@ -2683,6 +2939,59 @@ impl Shell {
                 }
                 self.hide_menu();
             }
+            ShellAction::MoveWindowToWorkspace {
+                window_id,
+                workspace_index,
+            } => {
+                let target = workspace_name(workspace_index);
+                if workspace_index > 0
+                    && let Err(error) = sway_ipc::ensure_workspace(workspace_index)
+                {
+                    eprintln!("buzzardos-shell: creating {target} failed: {error:#}");
+                } else if let Some(toplevel) = self.exact_toplevels.get(&window_id)
+                    && let Err(error) =
+                        sway_ipc::move_window_to_workspace(&toplevel.identifier, &target, false)
+                {
+                    eprintln!("buzzardos-shell: moving window to {target} failed: {error:#}");
+                }
+                self.hide_menu();
+                self.refresh_window_states();
+            }
+            ShellAction::SwitchWorkspace(index) => {
+                let name = workspace_name(index);
+                let result = if index == 0 {
+                    sway_ipc::ensure_desktop_workspace()
+                } else {
+                    sway_ipc::ensure_workspace(index).map(|_| ())
+                }
+                .and_then(|()| sway_ipc::switch_workspace(&name));
+                if let Err(error) = result {
+                    eprintln!("buzzardos-shell: switching to {name} failed: {error:#}");
+                }
+                self.hide_menu();
+                self.refresh_window_states();
+            }
+            ShellAction::CreateWorkspace => {
+                let index = next_manual_workspace(&self.workspace_tabs);
+                let name = workspace_name(index);
+                if let Err(error) = sway_ipc::ensure_workspace(index)
+                    .and_then(|_| sway_ipc::switch_workspace(&name))
+                {
+                    eprintln!("buzzardos-shell: creating {name} failed: {error:#}");
+                }
+                self.hide_menu();
+                self.refresh_window_states();
+            }
+            ShellAction::CloseWorkspace(index) => {
+                if let Err(error) = sway_ipc::close_workspace(index) {
+                    eprintln!(
+                        "buzzardos-shell: closing {} failed: {error:#}",
+                        workspace_name(index)
+                    );
+                }
+                self.hide_menu();
+                self.refresh_window_states();
+            }
             ShellAction::TaskbarPrevious => {
                 self.task_offset = self.task_offset.saturating_sub(TASK_PAGE_STEP);
                 self.dirty = true;
@@ -2755,20 +3064,36 @@ impl Shell {
                     }
                     let local_x = x - f64::from(self.menu_origin.0);
                     let local_y = y - f64::from(self.menu_origin.1);
+                    let menu_height = self
+                        .exact_toplevels
+                        .get(&id)
+                        .map(|window| window_menu_height(&window.window, &self.workspace_tabs))
+                        .unwrap_or(WORKSPACE_MENU_HEIGHT);
                     if local_x < 0.0
                         || local_y < 0.0
                         || local_x >= f64::from(WINDOW_MENU_WIDTH)
-                        || local_y >= f64::from(WINDOW_MENU_HEIGHT)
+                        || local_y >= f64::from(menu_height)
                     {
                         return None;
                     }
                     self.exact_toplevels.get(&id).and_then(|window| {
-                        window_menu_targets(&window.window)
+                        window_menu_targets(&window.window, &self.workspace_tabs)
                             .into_iter()
                             .find(|target| target.rect.contains(local_x, local_y))
                     })
                 }
+                MenuKind::Workspace(index) => {
+                    let local_x = x - f64::from(self.menu_origin.0);
+                    let local_y = y - f64::from(self.menu_origin.1);
+                    workspace_menu_targets(index)
+                        .into_iter()
+                        .find(|target| target.rect.contains(local_x, local_y))
+                }
             }
+        } else if surface == self.top_bar.wl_surface() {
+            top_bar_targets(self.top_bar_size.0, &self.workspace_tabs)
+                .into_iter()
+                .find(|target| target.rect.contains(x, y))
         } else if surface == self.desktop.wl_surface() {
             self.desktop_hit_targets
                 .iter()
@@ -2970,6 +3295,18 @@ impl Shell {
         }
     }
 
+    fn secondary_click_top_bar(&mut self, x: f64, y: f64) {
+        if let Some(HitTarget {
+            action: ShellAction::SwitchWorkspace(index),
+            ..
+        }) = self.target_at_surface(self.top_bar.wl_surface(), x, y)
+        {
+            self.show_workspace_menu(index, x);
+        } else {
+            self.hide_menu();
+        }
+    }
+
     fn scroll_menu(&mut self, amount: f64) {
         if !self.menu_open || self.menu_kind != MenuKind::Applications || amount == 0.0 {
             return;
@@ -3013,9 +3350,13 @@ impl Shell {
         if self.desktop_configured {
             self.draw_desktop()?;
         }
+        if self.top_bar_configured {
+            self.draw_top_bar()?;
+        }
         if self.panel_configured {
             self.draw_panel()?;
         }
+        self.draw_auxiliary_outputs()?;
         if self.menu_configured {
             self.draw_menu()?;
         }
@@ -3103,10 +3444,104 @@ impl Shell {
     }
 
     fn draw_panel(&mut self) -> Result<()> {
-        let theme = self.palette;
-        let (logical_width, logical_height) = nonzero_size(self.panel_size);
-        let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let windows = self.windows();
+        draw_panel_frame(
+            &mut self.pool,
+            &self.panel,
+            &self.viewports[2],
+            self.font.as_ref(),
+            self.palette,
+            self.scale_120,
+            self.panel_size,
+            &windows,
+            self.task_offset,
+            self.capped_task_buttons,
+            self.hovered.as_ref(),
+            self.menu_open && self.menu_kind == MenuKind::Applications,
+        )
+    }
+
+    fn draw_auxiliary_outputs(&mut self) -> Result<()> {
+        let render_state = self
+            .auxiliary_outputs
+            .iter()
+            .map(|auxiliary| {
+                (
+                    auxiliary.name.clone(),
+                    auxiliary.desktop.clone(),
+                    auxiliary.panel.clone(),
+                    auxiliary.viewports[0].clone(),
+                    auxiliary.viewports[1].clone(),
+                    auxiliary.desktop_size,
+                    auxiliary.panel_size,
+                    auxiliary.desktop_configured,
+                    auxiliary.panel_configured,
+                    auxiliary.task_offset,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (
+            name,
+            desktop,
+            panel,
+            desktop_viewport,
+            panel_viewport,
+            desktop_size,
+            panel_size,
+            desktop_configured,
+            panel_configured,
+            task_offset,
+        ) in render_state
+        {
+            if desktop_configured {
+                let (logical_width, logical_height) = nonzero_size(desktop_size);
+                let (width, height) =
+                    physical_size((logical_width, logical_height), self.scale_120);
+                let (buffer, canvas) = self
+                    .pool
+                    .create_buffer(
+                        width as i32,
+                        height as i32,
+                        width as i32 * 4,
+                        wl_shm::Format::Argb8888,
+                    )
+                    .context("allocating auxiliary desktop frame")?;
+                clear(canvas, self.desktop_background);
+                attach(
+                    &desktop,
+                    &desktop_viewport,
+                    buffer,
+                    width,
+                    height,
+                    logical_width,
+                    logical_height,
+                )?;
+            }
+            if panel_configured {
+                let windows = self.windows_for_output(&name);
+                draw_panel_frame(
+                    &mut self.pool,
+                    &panel,
+                    &panel_viewport,
+                    self.font.as_ref(),
+                    self.palette,
+                    self.scale_120,
+                    panel_size,
+                    &windows,
+                    task_offset,
+                    self.capped_task_buttons,
+                    None,
+                    false,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_top_bar(&mut self) -> Result<()> {
+        let theme = self.palette;
+        let (logical_width, logical_height) = nonzero_size(self.top_bar_size);
+        let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let (buffer, canvas) = self
             .pool
             .create_buffer(
@@ -3115,148 +3550,65 @@ impl Shell {
                 width as i32 * 4,
                 wl_shm::Format::Argb8888,
             )
-            .context("allocating panel frame")?;
+            .context("allocating workspace bar frame")?;
         clear(canvas, theme.canvas.rgba());
-        fill_rect(
-            canvas,
-            width,
-            height,
-            scale_rect(
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: logical_width as i32,
-                    height: 1,
-                },
-                self.scale_120,
-            ),
-            theme.border.rgba(),
-        );
-        for target in panel_targets(
-            logical_width,
-            &windows,
-            self.task_offset,
-            self.capped_task_buttons,
-        ) {
+        for target in top_bar_targets(logical_width, &self.workspace_tabs) {
             let hovered = self.hovered.as_ref() == Some(&target.action);
-            let (color, label, active) = match target.action {
-                ShellAction::ToggleApplications => {
-                    let active = self.menu_open && self.menu_kind == MenuKind::Applications;
-                    (
-                        if active {
-                            theme.selection.rgba()
-                        } else if hovered {
-                            theme.hover.rgba()
-                        } else {
-                            theme.surface.rgba()
-                        },
-                        "Applications".to_owned(),
-                        active,
-                    )
-                }
-                ShellAction::OpenFiles => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "Files".to_owned(),
-                    false,
-                ),
-                ShellAction::OpenShared => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "Share".to_owned(),
-                    false,
-                ),
-                ShellAction::ActivateWindow(id) => {
-                    let window = windows.iter().find(|window| window.id == id);
-                    let focused = window.is_some_and(|window| window.focused);
-                    let title = window
-                        .map(|window| elide(&window.title, 25))
-                        .unwrap_or_else(|| target.label.clone());
-                    (
-                        if focused {
-                            theme.raised.rgba()
-                        } else {
-                            if hovered {
-                                theme.hover.rgba()
-                            } else {
-                                theme.surface.rgba()
-                            }
-                        },
-                        title,
-                        focused,
-                    )
-                }
-                ShellAction::TaskbarPrevious => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "<".to_owned(),
-                    false,
-                ),
-                ShellAction::TaskbarNext => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    ">".to_owned(),
-                    false,
-                ),
-                ShellAction::ShowDesktop => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    String::new(),
-                    false,
-                ),
-                _ => continue,
+            let active = match target.action {
+                ShellAction::SwitchWorkspace(index) => self
+                    .workspace_tabs
+                    .iter()
+                    .any(|workspace| workspace.index == index && workspace.active),
+                _ => false,
             };
-            let button_rect = scale_rect(target.rect, self.scale_120);
-            fill_rect(canvas, width, height, button_rect, color);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(target.rect, self.scale_120),
+                if active {
+                    theme.raised.rgba()
+                } else if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+            );
             if active {
+                let rect = scale_rect(target.rect, self.scale_120);
                 fill_rect(
                     canvas,
                     width,
                     height,
                     Rect {
-                        x: button_rect.x,
-                        y: button_rect.y
-                            + button_rect
-                                .height
-                                .saturating_sub(scale_coord(3, self.scale_120)),
-                        width: button_rect.width,
-                        height: scale_coord(3, self.scale_120),
+                        x: rect.x,
+                        y: rect.y.saturating_add(
+                            rect.height.saturating_sub(scale_coord(2, self.scale_120)),
+                        ),
+                        width: rect.width,
+                        height: scale_coord(2, self.scale_120).max(1),
                     },
                     theme.focus.rgba(),
                 );
             }
+            let label = if matches!(target.action, ShellAction::CreateWorkspace) {
+                "+"
+            } else {
+                target.label.as_str()
+            };
             draw_text_centered(
                 canvas,
                 width,
                 height,
                 self.font.as_ref(),
-                &label,
+                label,
                 scale_rect(target.rect, self.scale_120),
-                scale_font(13.0, self.scale_120),
-                if color == theme.selection.rgba() {
-                    theme.selected_text.rgba()
-                } else {
-                    theme.text.rgba()
-                },
+                scale_font(12.0, self.scale_120),
+                theme.text.rgba(),
             );
         }
         attach(
-            &self.panel,
+            &self.top_bar,
             &self.viewports[1],
             buffer,
             width,
@@ -3273,7 +3625,14 @@ impl Shell {
         let (logical_width, logical_height) = if self.menu_open {
             match self.menu_kind {
                 MenuKind::Applications => nonzero_size(self.preferred_menu_size()),
-                MenuKind::Window(_) => (WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT),
+                MenuKind::Window(id) => (
+                    WINDOW_MENU_WIDTH,
+                    self.exact_toplevels
+                        .get(&id)
+                        .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+                        .unwrap_or(WORKSPACE_MENU_HEIGHT),
+                ),
+                MenuKind::Workspace(_) => (WORKSPACE_MENU_WIDTH, WORKSPACE_MENU_HEIGHT),
             }
         } else {
             (surface_logical_width, surface_logical_height)
@@ -3608,7 +3967,7 @@ impl Shell {
                 scale_font(14.0, self.scale_120),
                 theme.text.rgba(),
             );
-            for target in window_menu_targets(&toplevel.window) {
+            for target in window_menu_targets(&toplevel.window, &self.workspace_tabs) {
                 let hovered = self.hovered.as_ref() == Some(&target.action);
                 fill_rect(
                     canvas,
@@ -3621,6 +3980,75 @@ impl Shell {
                         } else {
                             theme.hover.rgba()
                         }
+                    } else {
+                        theme.menu.rgba()
+                    },
+                );
+                draw_text(
+                    canvas,
+                    width,
+                    height,
+                    self.font.as_ref(),
+                    &target.label,
+                    scale_coord(target.rect.x + 12, self.scale_120),
+                    scale_coord(target.rect.y + 10, self.scale_120),
+                    scale_font(13.0, self.scale_120),
+                    theme.text.rgba(),
+                );
+            }
+        } else if self.menu_open
+            && let MenuKind::Workspace(index) = self.menu_kind
+        {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: logical_width as i32,
+                        height: 44,
+                    },
+                    self.scale_120,
+                ),
+                theme.raised.rgba(),
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(
+                    Rect {
+                        x: 0,
+                        y: 42,
+                        width: logical_width as i32,
+                        height: 2,
+                    },
+                    self.scale_120,
+                ),
+                theme.selection.rgba(),
+            );
+            draw_text(
+                canvas,
+                width,
+                height,
+                self.font.as_ref(),
+                &workspace_name(index),
+                scale_coord(14, self.scale_120),
+                scale_coord(13, self.scale_120),
+                scale_font(14.0, self.scale_120),
+                theme.text.rgba(),
+            );
+            for target in workspace_menu_targets(index) {
+                let hovered = self.hovered.as_ref() == Some(&target.action);
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(inset(target.rect, 2), self.scale_120),
+                    if hovered {
+                        theme.destructive.rgba()
                     } else {
                         theme.menu.rgba()
                     },
@@ -3671,7 +4099,7 @@ impl Shell {
         }
         attach(
             &self.menu,
-            &self.viewports[2],
+            &self.viewports[3],
             buffer,
             surface_width,
             surface_height,
@@ -3848,7 +4276,7 @@ impl Shell {
         }
         attach(
             &self.context,
-            &self.viewports[3],
+            &self.viewports[4],
             buffer,
             width,
             height,
@@ -4033,6 +4461,47 @@ impl Shell {
                 focus = id;
             }
         }
+        for (index, target) in top_bar_targets(self.top_bar_size.0, &self.workspace_tabs)
+            .into_iter()
+            .enumerate()
+        {
+            add_accessible_target(
+                &mut nodes,
+                &mut children,
+                &mut targets,
+                NodeId(3_000 + u64::try_from(index).unwrap_or_default()),
+                target,
+                0,
+                0,
+            );
+        }
+        for (index, workspace) in self.workspace_tabs.iter().enumerate() {
+            for (action_index, target) in workspace_menu_targets(workspace.index)
+                .into_iter()
+                .enumerate()
+            {
+                let id = NodeId(
+                    3_500
+                        + u64::try_from(index).unwrap_or_default() * 10
+                        + u64::try_from(action_index).unwrap_or_default(),
+                );
+                let mut node = A11yNode::new(Role::Button);
+                node.set_label(target.label);
+                if self.menu_open && self.menu_kind == MenuKind::Workspace(workspace.index) {
+                    node.set_bounds(a11y_rect(target.rect, menu_x, menu_y));
+                }
+                node.add_action(Action::Click);
+                children.push(id);
+                targets.insert(
+                    id,
+                    AccessibleTarget::Activate {
+                        action: target.action,
+                        menu_index: None,
+                    },
+                );
+                nodes.push((id, node));
+            }
+        }
         let panel_targets = panel_targets(
             self.panel_size.0,
             &windows,
@@ -4088,7 +4557,10 @@ impl Shell {
                 0,
                 panel_y,
             );
-            for (control_index, target) in window_menu_targets(window).into_iter().enumerate() {
+            for (control_index, target) in window_menu_targets(window, &self.workspace_tabs)
+                .into_iter()
+                .enumerate()
+            {
                 let id = NodeId(
                     30_000
                         + u64::try_from(index).unwrap_or_default() * 10
@@ -4406,8 +4878,28 @@ impl CompositorHandler for Shell {
 }
 
 impl LayerShellHandler for Shell {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if layer == &self.desktop
+            || layer == &self.top_bar
+            || layer == &self.panel
+            || layer == &self.menu
+            || layer == &self.context
+        {
+            self.exit = true;
+            return;
+        }
+        if let Some(index) = self
+            .auxiliary_outputs
+            .iter()
+            .position(|auxiliary| layer == &auxiliary.desktop || layer == &auxiliary.panel)
+        {
+            let removed = self.auxiliary_outputs.remove(index);
+            eprintln!(
+                "buzzardos-shell: removed workspace surfaces for {}",
+                removed.name
+            );
+            self.dirty = true;
+        }
     }
 
     fn configure(
@@ -4432,12 +4924,19 @@ impl LayerShellHandler for Shell {
                     // A context menu is transient state tied to the old output
                     // geometry. Dismiss it rather than leave it detached from
                     // its titlebar or task button after an output resize.
-                    MenuKind::Window(_) => self.hide_menu(),
+                    MenuKind::Window(_) | MenuKind::Workspace(_) => self.hide_menu(),
                 }
             }
             if desktop_size_changed && let Err(error) = self.rebuild_desktop_targets() {
                 eprintln!("buzzardos-shell: desktop reflow failed: {error:#}");
             }
+        } else if layer == &self.top_bar {
+            self.top_bar_size = size;
+            self.top_bar_configured = true;
+            eprintln!(
+                "buzzardos-shell: workspace bar configured {}x{}",
+                size.0, size.1
+            );
         } else if layer == &self.panel {
             self.panel_size = size;
             self.panel_configured = true;
@@ -4451,6 +4950,18 @@ impl LayerShellHandler for Shell {
             self.context_size = size;
             self.context_configured = true;
             let _ = self.set_context_input_region();
+        } else if let Some(auxiliary) = self
+            .auxiliary_outputs
+            .iter_mut()
+            .find(|auxiliary| layer == &auxiliary.desktop || layer == &auxiliary.panel)
+        {
+            if layer == &auxiliary.desktop {
+                auxiliary.desktop_size = size;
+                auxiliary.desktop_configured = true;
+            } else {
+                auxiliary.panel_size = size;
+                auxiliary.panel_configured = true;
+            }
         }
         self.dirty = true;
     }
@@ -4573,6 +5084,11 @@ impl PointerHandler for Shell {
                     self.secondary_click_panel(event.position.0, event.position.1);
                 }
                 PointerEventKind::Press { button, .. }
+                    if button == BTN_RIGHT && event.surface == *self.top_bar.wl_surface() =>
+                {
+                    self.secondary_click_top_bar(event.position.0, event.position.1);
+                }
+                PointerEventKind::Press { button, .. }
                     if button == BTN_RIGHT && event.surface == *self.menu.wl_surface() =>
                 {
                     self.secondary_click_applications_menu(event.position.0, event.position.1);
@@ -4620,6 +5136,8 @@ impl KeyboardHandler for Shell {
     ) {
         self.keyboard_focus = if surface == self.desktop.wl_surface() {
             Some(ShellSurface::Desktop)
+        } else if surface == self.top_bar.wl_surface() {
+            Some(ShellSurface::TopBar)
         } else if surface == self.panel.wl_surface() {
             Some(ShellSurface::Panel)
         } else if surface == self.menu.wl_surface() {
@@ -4644,9 +5162,11 @@ impl KeyboardHandler for Shell {
     ) {
         if self.keyboard_focus.is_some_and(|focused| match focused {
             ShellSurface::Desktop => surface == self.desktop.wl_surface(),
+            ShellSurface::TopBar => surface == self.top_bar.wl_surface(),
             ShellSurface::Panel => surface == self.panel.wl_surface(),
             ShellSurface::Menu => surface == self.menu.wl_surface(),
             ShellSurface::Context => surface == self.context.wl_surface(),
+            ShellSurface::Auxiliary => false,
         }) {
             self.keyboard_focus = None;
         }
@@ -4711,11 +5231,29 @@ impl OutputHandler for Shell {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.ensure_auxiliary_output(qh, &output);
+    }
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        self.ensure_auxiliary_output(qh, &output);
+    }
 
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        self.auxiliary_outputs
+            .retain(|auxiliary| auxiliary.output != output);
+        self.dirty = true;
+    }
 }
 
 impl ShmHandler for Shell {
@@ -5010,6 +5548,168 @@ fn rects_intersect(left: Rect, right: Rect) -> bool {
         && left.x.saturating_add(left.width) > right.x
         && left.y < right.y.saturating_add(right.height)
         && left.y.saturating_add(left.height) > right.y
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_panel_frame(
+    pool: &mut SlotPool,
+    panel: &LayerSurface,
+    viewport: &WpViewport,
+    font: Option<&Font>,
+    theme: ThemePalette,
+    scale_120: u32,
+    panel_size: (u32, u32),
+    windows: &[GuestWindow],
+    task_offset: usize,
+    capped_task_buttons: bool,
+    hovered_action: Option<&ShellAction>,
+    applications_active: bool,
+) -> Result<()> {
+    let (logical_width, logical_height) = nonzero_size(panel_size);
+    let (width, height) = physical_size((logical_width, logical_height), scale_120);
+    let (buffer, canvas) = pool
+        .create_buffer(
+            width as i32,
+            height as i32,
+            width as i32 * 4,
+            wl_shm::Format::Argb8888,
+        )
+        .context("allocating panel frame")?;
+    clear(canvas, theme.canvas.rgba());
+    fill_rect(
+        canvas,
+        width,
+        height,
+        scale_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                width: logical_width as i32,
+                height: 1,
+            },
+            scale_120,
+        ),
+        theme.border.rgba(),
+    );
+    for target in panel_targets(logical_width, windows, task_offset, capped_task_buttons) {
+        let hovered = hovered_action == Some(&target.action);
+        let (color, label, active) = match target.action {
+            ShellAction::ToggleApplications => (
+                if applications_active {
+                    theme.selection.rgba()
+                } else if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                "Applications".to_owned(),
+                applications_active,
+            ),
+            ShellAction::OpenFiles => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                "Files".to_owned(),
+                false,
+            ),
+            ShellAction::OpenShared => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                "Share".to_owned(),
+                false,
+            ),
+            ShellAction::ActivateWindow(id) => {
+                let window = windows.iter().find(|window| window.id == id);
+                let focused = window.is_some_and(|window| window.focused);
+                let title = window
+                    .map(|window| elide(&window.title, 25))
+                    .unwrap_or_else(|| target.label.clone());
+                (
+                    if focused {
+                        theme.raised.rgba()
+                    } else if hovered {
+                        theme.hover.rgba()
+                    } else {
+                        theme.surface.rgba()
+                    },
+                    title,
+                    focused,
+                )
+            }
+            ShellAction::TaskbarPrevious => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                "<".to_owned(),
+                false,
+            ),
+            ShellAction::TaskbarNext => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                ">".to_owned(),
+                false,
+            ),
+            ShellAction::ShowDesktop => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.surface.rgba()
+                },
+                String::new(),
+                false,
+            ),
+            _ => continue,
+        };
+        let button_rect = scale_rect(target.rect, scale_120);
+        fill_rect(canvas, width, height, button_rect, color);
+        if active {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: button_rect.x,
+                    y: button_rect.y + button_rect.height.saturating_sub(scale_coord(3, scale_120)),
+                    width: button_rect.width,
+                    height: scale_coord(3, scale_120),
+                },
+                theme.focus.rgba(),
+            );
+        }
+        draw_text_centered(
+            canvas,
+            width,
+            height,
+            font,
+            &label,
+            scale_rect(target.rect, scale_120),
+            scale_font(13.0, scale_120),
+            if color == theme.selection.rgba() {
+                theme.selected_text.rgba()
+            } else {
+                theme.text.rgba()
+            },
+        );
+    }
+    attach(
+        panel,
+        viewport,
+        buffer,
+        width,
+        height,
+        logical_width,
+        logical_height,
+    )
 }
 
 fn attach(
@@ -5619,10 +6319,9 @@ fn elide_to_width(font: Option<&Font>, text: &str, size: f32, maximum_width: f32
 mod scale_tests {
     use super::{
         ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT,
-        SETTINGS_POLL_INTERVAL, SettingsTracker, WINDOW_MENU_HEIGHT, WINDOW_MENU_WIDTH,
-        applications_menu_height, applications_menu_width, delete_dialog_detail,
-        gsettings_availability, load_settings, parse_uri_list, parse_window_menu_request,
-        physical_size, rect_between, rects_intersect,
+        SETTINGS_POLL_INTERVAL, SettingsTracker, WINDOW_MENU_WIDTH, applications_menu_height,
+        applications_menu_width, delete_dialog_detail, gsettings_availability, load_settings,
+        parse_uri_list, parse_window_menu_request, physical_size, rect_between, rects_intersect,
     };
     use crate::model::Application;
     use crate::model::Rect as ShellRect;
@@ -5633,6 +6332,8 @@ mod scale_tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::Instant;
+
+    const TEST_WINDOW_MENU_HEIGHT: u32 = 44 + 5 * 36;
 
     #[test]
     fn fractional_client_buffers_use_protocol_round_half_away() {
@@ -5655,6 +6356,7 @@ mod scale_tests {
                 31,
                 (1280, 800),
                 -50.0,
+                TEST_WINDOW_MENU_HEIGHT,
             ),
             (0, 51)
         );
@@ -5669,10 +6371,11 @@ mod scale_tests {
                 31,
                 (1280, 800),
                 1_200.0,
+                TEST_WINDOW_MENU_HEIGHT,
             ),
             (
                 1_280 - WINDOW_MENU_WIDTH as i32,
-                800 - PANEL_HEIGHT - WINDOW_MENU_HEIGHT as i32,
+                800 - PANEL_HEIGHT - TEST_WINDOW_MENU_HEIGHT as i32,
             )
         );
     }
@@ -5686,11 +6389,11 @@ mod scale_tests {
             height: 600,
         };
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (1280, 800), 640.75),
+            super::titlebar_menu_origin(frame, 31, (1280, 800), 640.75, TEST_WINDOW_MENU_HEIGHT),
             (640, 111)
         );
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (800, 600), 790.0).0,
+            super::titlebar_menu_origin(frame, 31, (800, 600), 790.0, TEST_WINDOW_MENU_HEIGHT).0,
             800 - WINDOW_MENU_WIDTH as i32
         );
     }

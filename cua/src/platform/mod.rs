@@ -1,4 +1,4 @@
-//! Linux platform backend for cua-driver-rs.
+//! Linux platform backend for Buzzard CUA.
 //!
 //! Background automation on Linux via:
 //! - /proc filesystem for process enumeration
@@ -89,12 +89,12 @@ pub fn no_display_hint() -> String {
     if is_wsl() {
         " — no usable display detected (WSL). WSLg provides $DISPLAY/$WAYLAND_DISPLAY \
          under a recent Windows 11 + 'wsl --update'; on older setups install an X server \
-         (e.g. VcXsrv) and export DISPLAY. cua-driver needs a real display to capture and \
+         (e.g. VcXsrv) and export DISPLAY. Buzzard CUA needs a real display to capture and \
          report screen size."
             .to_owned()
     } else if neither_display_set {
         " — no usable display detected: neither $DISPLAY (X11) nor $WAYLAND_DISPLAY is set. \
-         Start an X server / Wayland compositor (or Xvfb for headless) before running cua-driver."
+         Start an X server / Wayland compositor (or Xvfb for headless) before running cua."
             .to_owned()
     } else {
         String::new()

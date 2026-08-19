@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cua AI, Inc.
 
-use crate::contract::{CaptureScope, EscalationReason, Platform};
+use crate::contract::Platform;
 use schemars::{generate::SchemaSettings, JsonSchema};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -47,58 +47,6 @@ fn strip_schema_titles(value: &mut Value) {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectiveScope {
-    Window,
-    Desktop,
-}
-
-impl EffectiveScope {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Window => "window",
-            Self::Desktop => "desktop",
-        }
-    }
-}
-
-/// Successful structured result shared by session state and escalation tools.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct SessionStateOutput {
-    pub session: String,
-    pub capture_scope: CaptureScope,
-    pub effective_scope: EffectiveScope,
-    pub desktop_unlocked: bool,
-    #[schemars(required, schema_with = "nullable_escalation_reason_schema")]
-    pub escalation_reason: Option<EscalationReason>,
-    #[schemars(required, schema_with = "nullable_string_schema")]
-    pub escalation_detail: Option<String>,
-}
-
-impl ToolOutput for SessionStateOutput {}
-
-/// Successful structured result returned by `start_session`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct StartSessionOutput {
-    #[serde(flatten)]
-    pub state: SessionStateOutput,
-    pub active: bool,
-    pub revived: bool,
-}
-
-impl ToolOutput for StartSessionOutput {}
-
-/// Successful structured result returned by `end_session`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct EndSessionOutput {
-    pub session: String,
-    #[schemars(schema_with = "inactive_schema")]
-    pub active: bool,
-}
-
-impl ToolOutput for EndSessionOutput {}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CursorMotionOutput {
     pub start_handle: f64,
@@ -140,7 +88,7 @@ pub struct CursorPointOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SetAgentCursorEnabledOutput {
-    pub session: String,
+    pub cua_index: u32,
     pub enabled: bool,
 }
 
@@ -148,7 +96,7 @@ impl ToolOutput for SetAgentCursorEnabledOutput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SetAgentCursorMotionOutput {
-    pub session: String,
+    pub cua_index: u32,
     pub motion: CursorMotionOutput,
 }
 
@@ -156,7 +104,7 @@ impl ToolOutput for SetAgentCursorMotionOutput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SetAgentCursorThemeOutput {
-    pub session: String,
+    pub cua_index: u32,
     pub theme: CursorThemeOutput,
 }
 
@@ -164,7 +112,7 @@ impl ToolOutput for SetAgentCursorThemeOutput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct GetAgentCursorStateOutput {
-    pub session: String,
+    pub cua_index: u32,
     pub enabled: bool,
     #[schemars(required)]
     pub position: Option<CursorPointOutput>,
@@ -174,10 +122,6 @@ pub struct GetAgentCursorStateOutput {
 }
 
 impl ToolOutput for GetAgentCursorStateOutput {}
-
-fn inactive_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({ "const": false })
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct DesktopStateOutput {
@@ -320,7 +264,6 @@ pub enum ActionEscalationTarget {
     Pixel,
     Foreground,
     Page,
-    Session,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -384,24 +327,6 @@ fn platform_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 
 fn nullable_string_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({ "anyOf": [{ "type": "string" }, { "type": "null" }] })
-}
-
-fn nullable_escalation_reason_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({
-        "anyOf": [
-            {
-                "type": "string",
-                "enum": [
-                    "ax_tree_pixel_mismatch",
-                    "background_delivery_failed",
-                    "foreground_ineffective",
-                    "no_window_target",
-                    "other"
-                ]
-            },
-            { "type": "null" }
-        ]
-    })
 }
 
 #[cfg(test)]
@@ -501,7 +426,7 @@ mod tests {
         assert_eq!(escalation["required"], json!(["target", "reason"]));
         assert_eq!(
             escalation["properties"]["target"]["enum"],
-            json!(["pixel", "foreground", "page", "session"])
+            json!(["pixel", "foreground", "page"])
         );
         assert_eq!(
             escalation["properties"]["reason"]["enum"],

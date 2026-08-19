@@ -295,7 +295,7 @@ Name=Hidden Helper
 Exec=/usr/libexec/helper
 NoDisplay=true
 ";
-        let dir = std::env::temp_dir().join(format!("cua-driver-rs-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buzzard-cua-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("hidden-helper.desktop");
         std::fs::write(&path, body).unwrap();
@@ -306,7 +306,7 @@ NoDisplay=true
     #[test]
     fn hidden_high_priority_entry_suppresses_visible_system_copy() {
         let root = std::env::temp_dir().join(format!(
-            "cua-driver-rs-xdg-precedence-{}-{}",
+            "buzzard-cua-xdg-precedence-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -340,7 +340,7 @@ Type=Application
 Name=Demo App
 Exec=/opt/demo/bin/demo %U
 ";
-        let dir = std::env::temp_dir().join(format!("cua-driver-rs-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("buzzard-cua-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("demo-app.desktop");
         std::fs::write(&path, body).unwrap();

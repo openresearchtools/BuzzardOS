@@ -1,10 +1,7 @@
 //! `health_report` — single-call end-to-end driver diagnostics.
 //!
-//! The point of this tool is to let downstream consumers ship one stable
-//! diagnostic call and never have to know cua-driver internals: specific
-//! MCP tool names, TCC field names, bundle IDs, per-platform check
-//! matrix. cua-driver owns the health model entirely; consumers stay
-//! thin and the driver evolves freely.
+//! One stable diagnostic call covers the Linux/Sway checks consumers need
+//! without exposing Buzzard CUA internals.
 //!
 //! ## Stability
 //!
@@ -16,13 +13,8 @@
 //!
 //! ## Architecture
 //!
-//! This module ports the Swift `HealthReportTool` (closed PR #1905) to
-//! the canonical Rust workspace. The check matrix differs per platform,
-//! so the per-platform crates (`platform-macos`, `platform-windows`,
-//! `platform-linux`) supply a [`HealthCheckProvider`] and a list of
-//! check names; this module owns the cross-platform skeleton:
-//! schema shape, status rollup, include/skip filtering, JSON-RPC tool
-//! plumbing, and the text summary.
+//! The Linux provider supplies the concrete checks. This module owns the
+//! schema, status rollup, filtering, and compact text summary.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -48,7 +40,7 @@ pub const NAME_AX_CAPABILITY: &str = "ax_capability";
 pub const NAME_SCREEN_CAPTURE_CAPABILITY: &str = "screen_capture_capability";
 
 /// Checks whose failure marks the whole report as `failed` (vs
-/// `degraded`). Binary, platform, and the MCP session itself are
+/// `degraded`). Binary, platform, and the interactive Sway session are
 /// non-negotiable; everything else is degraded.
 ///
 /// This list is fixed across platforms — a "core" check that doesn't
@@ -90,8 +82,6 @@ pub enum Overall {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CheckData {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bundle_identifier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub executable_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub os_version: Option<String>,
@@ -108,8 +98,7 @@ impl CheckData {
     /// `data` block is omitted from the wire format rather than
     /// serialized as `{}`.
     pub fn is_empty(&self) -> bool {
-        self.bundle_identifier.is_none()
-            && self.executable_path.is_none()
+        self.executable_path.is_none()
             && self.os_version.is_none()
             && self.architecture.is_none()
             && self.display_count.is_none()
@@ -199,17 +188,10 @@ pub struct Report {
 
 // ── Provider trait ───────────────────────────────────────────────────────────
 
-/// Per-platform contract: list the canonical check names this platform
-/// supports, and run a single check by name.
-///
-/// Implementations live in each `platform-*` crate so the
-/// platform-specific TCC / UIA / AT-SPI / SCK plumbing stays out of the
-/// core. Implementations must return entries for every name in their
-/// `check_names()`; the dispatcher does not synthesize results.
+/// Linux contract: list the canonical checks and run one by name.
 #[async_trait]
 pub trait HealthCheckProvider: Send + Sync {
-    /// The platform tag for the `Report.platform` field — `"darwin"`,
-    /// `"win32"`, or `"linux"`. The documented stable contract.
+    /// The platform tag for the `Report.platform` field (`"linux"`).
     fn platform(&self) -> &'static str;
 
     /// Canonical check names, in the run order the consumer should see
@@ -288,9 +270,7 @@ pub fn parse_string_set(v: Option<&Value>) -> BTreeSet<String> {
 
 // ── Text summary ─────────────────────────────────────────────────────────────
 
-/// Compact human-readable summary of a report, for clients squinting at
-/// MCP traces. `structuredContent` is the authoritative wire format;
-/// this text is decorative.
+/// Compact human-readable summary; structured content is authoritative.
 pub fn text_summary(report: &Report) -> String {
     let overall_icon = match report.overall {
         Overall::Ok => "✅",
@@ -303,7 +283,7 @@ pub fn text_summary(report: &Report) -> String {
         Overall::Failed => "failed",
     };
     let mut lines = vec![format!(
-        "{overall_icon} cua-driver {} on {} — {overall_word}",
+        "{overall_icon} Buzzard CUA {} on {} — {overall_word}",
         report.driver_version, report.platform
     )];
     for entry in &report.checks {
@@ -317,11 +297,9 @@ pub fn text_summary(report: &Report) -> String {
     lines.join("\n")
 }
 
-// ── The MCP tool ─────────────────────────────────────────────────────────────
+// ── The tool ─────────────────────────────────────────────────────────────────
 
-/// Cross-platform `health_report` MCP tool. The platform-specific bits
-/// (which checks to run, how to run each one) are supplied by the
-/// `HealthCheckProvider` passed at construction time.
+/// Linux `health_report` tool backed by the supplied provider.
 pub struct HealthReportTool {
     provider: Arc<dyn HealthCheckProvider>,
 }
@@ -337,10 +315,7 @@ static DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 fn def() -> &'static ToolDef {
     DEF.get_or_init(|| ToolDef {
         name: "health_report".into(),
-        // The description is part of the public contract — downstream
-        // consumers depend on it spelling out `schema_version="1"` and the per-
-        // platform check matrix. A test pins this commitment.
-        description: r#"Single-call end-to-end driver diagnostics. Designed to let downstream consumers ship one stable call instead of stitching together check_permissions, doctor, version, bundle attribution, and platform capability status. On macOS, prompt-capable direct capture is deliberately skipped; use `cua-driver permissions grant` to verify it explicitly. cua-driver owns the health model; consumers stay thin.
+        description: r#"Single-call Buzzard CUA diagnostics for the Linux/Sway guest.
 
 Input — all optional:
   {
@@ -350,18 +325,13 @@ Input — all optional:
 If both are given, `include` wins.
 
 Canonical check names:
-  macOS  : binary_version, platform_supported, session_active,
-           bundle_identity, tcc_accessibility, tcc_screen_recording,
-           ax_capability, screen_capture_capability
-  Windows: binary_version, platform_supported, session_active,
-           ax_capability (via UIA), screen_capture_capability (via DXGI)
-  Linux  : binary_version, platform_supported, session_active,
-           ax_capability (via AT-SPI), screen_capture_capability (via X11)
+  binary_version, platform_supported, session_active,
+  ax_capability (via AT-SPI), screen_capture_capability (via Sway)
 
 Output — stable contract, schema_version="1":
   {
     "schema_version": "1",
-    "platform": "darwin" | "win32" | "linux",
+    "platform": "linux",
     "driver_version": "<semver>",
     "overall": "ok" | "degraded" | "failed",
     "checks": [

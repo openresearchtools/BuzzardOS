@@ -9,8 +9,12 @@
 use anyhow::{Context, Result};
 use buzzardos_desktop_core::{SolidColor, ThemePalette};
 use serde_json::Value;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -63,6 +67,8 @@ pub struct WindowState {
     pub container_id: u64,
     pub rect: Rect,
     pub workspace_rect: Option<Rect>,
+    pub workspace: String,
+    pub output: String,
     pub focused: bool,
     pub scratchpad: bool,
     pub minimized: bool,
@@ -71,6 +77,27 @@ pub struct WindowState {
     pub decoration_height: i32,
     restore_frame: Option<Rect>,
     restore_marks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceState {
+    pub name: String,
+    pub output: String,
+    pub focused: bool,
+    pub visible: bool,
+    pub rect: Rect,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct OutputState {
+    id: u64,
+    name: String,
+    active: bool,
+    rect: Rect,
+    physical_width: u32,
+    physical_height: u32,
+    refresh_millihz: u32,
+    scale_milli: u32,
 }
 
 fn restore_mark(container_id: u64, rect: Rect) -> String {
@@ -125,16 +152,27 @@ fn collect(
     node: &Value,
     parent_origin: (i32, i32),
     workspace_rect: Option<Rect>,
+    workspace_name: Option<&str>,
+    output_name: Option<&str>,
     scratchpad_workspace: bool,
     windows: &mut Vec<WindowState>,
 ) {
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
     let node_name = node.get("name").and_then(Value::as_str).unwrap_or_default();
     let node_rect = json_rect(node.get("rect"));
-    let (workspace_rect, scratchpad_workspace) = if node_type == "workspace" {
-        (Some(node_rect), node_name == SCRATCHPAD_WORKSPACE)
+    let output_name = if node_type == "output" {
+        Some(node_name)
     } else {
-        (workspace_rect, scratchpad_workspace)
+        output_name
+    };
+    let (workspace_rect, workspace_name, scratchpad_workspace) = if node_type == "workspace" {
+        (
+            Some(node_rect),
+            Some(node_name),
+            node_name == SCRATCHPAD_WORKSPACE,
+        )
+    } else {
+        (workspace_rect, workspace_name, scratchpad_workspace)
     };
 
     if let Some(identifier) = node
@@ -177,6 +215,8 @@ fn collect(
             container_id,
             rect,
             workspace_rect,
+            workspace: workspace_name.unwrap_or_default().to_owned(),
+            output: output_name.unwrap_or_default().to_owned(),
             focused: node
                 .get("focused")
                 .and_then(Value::as_bool)
@@ -205,6 +245,8 @@ fn collect(
                     child,
                     child_origin,
                     workspace_rect,
+                    workspace_name,
+                    output_name,
                     scratchpad_workspace,
                     windows,
                 );
@@ -217,8 +259,368 @@ fn parse_tree(bytes: &[u8]) -> Result<Vec<WindowState>> {
     let root: Value = serde_json::from_slice(bytes).context("parsing Sway IPC tree")?;
     let mut windows = Vec::new();
     let root_rect = json_rect(root.get("rect"));
-    collect(&root, (root_rect.x, root_rect.y), None, false, &mut windows);
+    collect(
+        &root,
+        (root_rect.x, root_rect.y),
+        None,
+        None,
+        None,
+        false,
+        &mut windows,
+    );
     Ok(windows)
+}
+
+fn swaymsg_json(message_type: &str) -> Result<Value> {
+    anyhow::ensure!(
+        std::env::var_os("SWAYSOCK").is_some(),
+        "SWAYSOCK is unavailable"
+    );
+    let output = Command::new("swaymsg")
+        .args(["-r", "-t", message_type])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("executing swaymsg {message_type}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "swaymsg {message_type} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    serde_json::from_slice(&output.stdout).with_context(|| format!("parsing Sway {message_type}"))
+}
+
+pub fn list_workspaces() -> Result<Vec<WorkspaceState>> {
+    let value = swaymsg_json("get_workspaces")?;
+    let mut workspaces = value
+        .as_array()
+        .context("Sway get_workspaces did not return an array")?
+        .iter()
+        .filter_map(|value| {
+            let name = value.get("name")?.as_str()?.to_owned();
+            (name != SCRATCHPAD_WORKSPACE).then(|| WorkspaceState {
+                name,
+                output: value
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                focused: value
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                visible: value
+                    .get("visible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                rect: json_rect(value.get("rect")),
+            })
+        })
+        .collect::<Vec<_>>();
+    workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(workspaces)
+}
+
+fn list_outputs() -> Result<Vec<OutputState>> {
+    let value = swaymsg_json("get_outputs")?;
+    Ok(value
+        .as_array()
+        .context("Sway get_outputs did not return an array")?
+        .iter()
+        .filter_map(|value| {
+            let name = value.get("name")?.as_str()?.to_owned();
+            let mode = value.get("current_mode").unwrap_or(&Value::Null);
+            let scale = value.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+            Some(OutputState {
+                id: value.get("id").and_then(Value::as_u64)?,
+                name,
+                active: value
+                    .get("active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                rect: json_rect(value.get("rect")),
+                physical_width: mode
+                    .get("width")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or_default(),
+                physical_height: mode
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or_default(),
+                refresh_millihz: mode
+                    .get("refresh")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(60_000),
+                scale_milli: (scale * 1000.0).round().clamp(1.0, f64::from(u32::MAX)) as u32,
+            })
+        })
+        .collect())
+}
+
+fn quote_sway(value: &str) -> Result<String> {
+    anyhow::ensure!(
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric()
+                    || matches!(character, ' ' | '_' | '-')),
+        "unsafe Sway identifier"
+    );
+    Ok(format!("\"{value}\""))
+}
+
+pub fn desktop_output() -> Result<String> {
+    let outputs = list_outputs()?;
+    outputs
+        .iter()
+        .filter(|output| output.active)
+        .min_by_key(|output| output.id)
+        .map(|output| output.name.clone())
+        .context("Sway has no active host-facing output")
+}
+
+pub fn current_desktop_workspace() -> Result<String> {
+    let output = desktop_output()?;
+    list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.visible && workspace.output == output)
+        .map(|workspace| workspace.name)
+        .context("host-facing Sway output has no visible workspace")
+}
+
+pub fn ensure_desktop_workspace() -> Result<()> {
+    if list_workspaces()?
+        .iter()
+        .any(|workspace| workspace.name == "Desktop")
+    {
+        return Ok(());
+    }
+    run_global_command("workspace \"Desktop\"")
+}
+
+pub fn ensure_workspace(index: u32) -> Result<WorkspaceState> {
+    anyhow::ensure!(index > 0, "Desktop does not need a virtual output");
+    ensure_numbered_workspace(index, crate::model::is_cua_workspace(index))
+}
+
+fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceState> {
+    let name = crate::model::workspace_name(index);
+    if let Some(workspace) = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+    {
+        if cua_seat {
+            run_global_command(&format!("seat \"seat{index}\" fallback false"))?;
+        }
+        return Ok(workspace);
+    }
+    ensure_desktop_workspace()?;
+    let before = list_outputs()?;
+    let primary_name = before
+        .iter()
+        .filter(|output| output.active)
+        .min_by_key(|output| output.id)
+        .map(|output| output.name.clone())
+        .context("Sway has no host-facing output to mirror")?;
+    let before_names = before
+        .iter()
+        .map(|output| output.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    run_global_command("create_output")?;
+    let outputs = list_outputs()?;
+    let created = outputs
+        .iter()
+        .find(|output| !before_names.contains(output.name.as_str()))
+        .context("Sway accepted create_output but exposed no new output")?;
+    let primary = outputs
+        .iter()
+        .find(|output| output.active && output.name == primary_name)
+        .context("Sway has no host-facing output to mirror")?;
+    let x = outputs
+        .iter()
+        .filter(|output| output.active && output.name != primary.name)
+        .fold(
+            primary.rect.x.saturating_add(primary.rect.width),
+            |right, output| right.max(output.rect.x.saturating_add(output.rect.width)),
+        );
+    let refresh_hz = f64::from(primary.refresh_millihz) / 1000.0;
+    let scale = f64::from(primary.scale_milli) / 1000.0;
+    let current = current_desktop_workspace()?;
+    let seat_command = if cua_seat {
+        format!("seat \"seat{index}\" fallback false; ")
+    } else {
+        String::new()
+    };
+    let command = format!(
+        "output {} mode {}x{}@{refresh_hz:.3}Hz scale {scale:.3} pos {x} {}; {seat_command}workspace {}; move workspace to output {}; workspace {}",
+        quote_sway(&created.name)?,
+        primary.physical_width.max(1),
+        primary.physical_height.max(1),
+        primary.rect.y,
+        quote_sway(&name)?,
+        quote_sway(&created.name)?,
+        quote_sway(&current)?,
+    );
+    run_global_command(&command)?;
+    list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("Sway did not create workspace {name}"))
+}
+
+fn runtime_lock_root() -> Result<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is unavailable")?;
+    let root = PathBuf::from(runtime).join("buzzardoscua");
+    match fs::create_dir(&root) {
+        Ok(()) => fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).context("creating Buzzard CUA runtime directory"),
+    }
+    let metadata = fs::symlink_metadata(&root)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o077 == 0,
+        "Buzzard CUA runtime directory is not private to the guest user"
+    );
+    Ok(root)
+}
+
+fn lock_cua_workspaces(names: &[&str]) -> Result<Vec<File>> {
+    let mut indices = names
+        .iter()
+        .filter_map(|name| crate::model::workspace_index(name))
+        .filter(|index| crate::model::is_cua_workspace(*index))
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    if indices.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = runtime_lock_root()?;
+    let mut locks = Vec::with_capacity(indices.len());
+    for index in indices {
+        let path = root.join(format!("seat{index}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.permissions().mode() & 0o077 == 0,
+            "Buzzard CUA seat lock is not private to the guest user"
+        );
+        // Never freeze the shell behind a long-running agent operation.
+        // The user can retry the selector after that one bounded CLI call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            anyhow::bail!(
+                "{} is busy with an active CUA operation: {error}",
+                crate::model::workspace_name(index)
+            );
+        }
+        locks.push(file);
+    }
+    Ok(locks)
+}
+
+pub fn switch_workspace(name: &str) -> Result<()> {
+    ensure_desktop_workspace()?;
+    let host_output = desktop_output()?;
+    let current = current_desktop_workspace()?;
+    if current == name {
+        return Ok(());
+    }
+    let _locks = lock_cua_workspaces(&[&current, name])?;
+    switch_workspace_unlocked(name, &host_output, &current)
+}
+
+fn switch_workspace_unlocked(name: &str, host_output: &str, current: &str) -> Result<()> {
+    let target = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("unknown workspace {name}"))?;
+    if target.output == host_output {
+        return run_global_command(&format!("workspace {}", quote_sway(name)?));
+    }
+    run_global_command(&format!(
+        "workspace {}; move workspace to output {}; workspace {}; move workspace to output {}; workspace {}",
+        quote_sway(name)?,
+        quote_sway(host_output)?,
+        quote_sway(current)?,
+        quote_sway(&target.output)?,
+        quote_sway(name)?
+    ))
+}
+
+pub fn move_window_to_workspace(identifier: &str, workspace: &str, focus: bool) -> Result<()> {
+    let state = window(identifier)?;
+    let _locks = lock_cua_workspaces(&[&state.workspace, workspace])?;
+    let workspace = quote_sway(workspace)?;
+    let mut commands = vec![format!("move container to workspace {workspace}")];
+    if focus {
+        commands.push(format!("workspace {workspace}"));
+        commands.push("focus".to_owned());
+    }
+    run_commands(state.container_id, commands)?;
+    let after = window(identifier)?;
+    anyhow::ensure!(
+        after.workspace == workspace.trim_matches('"'),
+        "Sway did not move the window to the requested workspace"
+    );
+    Ok(())
+}
+
+pub fn close_workspace(index: u32) -> Result<()> {
+    anyhow::ensure!(index > 0, "Desktop cannot be closed");
+    let name = crate::model::workspace_name(index);
+    let _locks = lock_cua_workspaces(&[&name])?;
+    let workspace = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("unknown workspace {name}"))?;
+    let host_output = desktop_output()?;
+    if workspace.output == host_output {
+        switch_workspace_unlocked("Desktop", &host_output, &name)?;
+    }
+    let output = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .map(|workspace| workspace.output)
+        .with_context(|| format!("workspace {name} disappeared before close"))?;
+    anyhow::ensure!(
+        output != host_output,
+        "refusing to unplug host output {output}"
+    );
+    let windows = list_windows()?
+        .into_iter()
+        .filter(|window| window.workspace == name)
+        .collect::<Vec<_>>();
+    for window in windows {
+        run_confirmed(
+            &window.identifier,
+            window.container_id,
+            "move to Desktop before workspace close",
+            vec!["move container to workspace \"Desktop\"".to_owned()],
+            |state| state.workspace == "Desktop",
+        )?;
+    }
+    anyhow::ensure!(
+        list_windows()?
+            .iter()
+            .all(|window| window.workspace != name),
+        "workspace {name} still owns windows; leaving its output intact"
+    );
+    run_global_command(&format!("output {} unplug", quote_sway(&output)?))
 }
 
 pub fn list_windows() -> Result<Vec<WindowState>> {

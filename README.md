@@ -28,13 +28,13 @@ buzzardoscua_<version>_amd64.deb
   normal `sway`/wlroots stack.
 - `buzzardos-desktop` installs the optional Buzzard OS desktop shell,
   Settings, themes, icons, Thunar integration, and reference applications.
-- `buzzardoscua` installs the reviewed in-guest computer-use service under the
-  Buzzard CUA identity, while retaining upstream attribution.
+- `buzzardoscua` installs the reviewed, daemonless in-guest `cua`/`cuaN`
+  computer-use commands while retaining upstream attribution.
 
 The versions come from [`VERSION`](VERSION),
 [`guest/GUEST_VERSION`](guest/GUEST_VERSION),
 [`guest/DESKTOP_VERSION`](guest/DESKTOP_VERSION), and
-[`guest/BUZZARDOSCUA_VERSION`](guest/BUZZARDOSCUA_VERSION). A future
+[`cua/VERSION`](cua/VERSION). A future
 signed APT repository can publish these same packages; the current workflow
 only builds short-lived engineering artifacts and never publishes anything.
 

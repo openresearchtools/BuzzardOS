@@ -6,7 +6,6 @@
 //! These types are transport-free. The contract generator derives JSON Schema
 //! from them, and live Rust handlers deserialize the same types before acting.
 
-use crate::contract::CursorThemeSelection;
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -111,10 +110,6 @@ fn cursor_theme_id_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "minLength": 1, "maxLength": 200 })
 }
 
-fn escalation_detail_schema(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({ "type": "string", "maxLength": 200 })
-}
-
 /// Maximum number of Unicode scalar values accepted by one keyboard typing
 /// request. Implementations must enforce this at runtime as well as advertise
 /// it in JSON Schema; schema validation is not a security boundary.
@@ -122,71 +117,6 @@ pub const MAX_TYPE_TEXT_CHARS: usize = 65_536;
 
 fn type_text_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "string", "maxLength": MAX_TYPE_TEXT_CHARS })
-}
-
-fn capture_scope_schema(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({
-        "type": "string",
-        "enum": ["auto", "window", "desktop"],
-        "default": "auto"
-    })
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureScope {
-    #[default]
-    Auto,
-    Window,
-    Desktop,
-}
-
-impl CaptureScope {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "window" => Some(Self::Window),
-            "desktop" => Some(Self::Desktop),
-            _ => None,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Window => "window",
-            Self::Desktop => "desktop",
-        }
-    }
-}
-
-impl std::fmt::Display for CaptureScope {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EscalationReason {
-    AxTreePixelMismatch,
-    BackgroundDeliveryFailed,
-    ForegroundIneffective,
-    NoWindowTarget,
-    Other,
-}
-
-impl EscalationReason {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "ax_tree_pixel_mismatch" => Some(Self::AxTreePixelMismatch),
-            "background_delivery_failed" => Some(Self::BackgroundDeliveryFailed),
-            "foreground_ineffective" => Some(Self::ForegroundIneffective),
-            "no_window_target" => Some(Self::NoWindowTarget),
-            "other" => Some(Self::Other),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,56 +181,8 @@ pub enum ScrollBy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct StartSessionInput {
-    /// Stable session id for this run (e.g. "research-run-1").
-    pub session: String,
-    /// Per-session perception/action modality. auto starts window-only and requires explicit escalation before desktop tools; window and desktop are strict. Immutable for the live session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "capture_scope_schema")]
-    pub capture_scope: Option<CaptureScope>,
-    /// Optional initial cursor theme. The host applies it before the cursor is
-    /// first made visible, avoiding a flash of the default theme.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor_theme: Option<CursorThemeSelection>,
-}
-
-impl ToolInput for StartSessionInput {
-    const TOOL_NAME: &'static str = "start_session";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct EscalateSessionInput {
-    pub session: String,
-    pub reason: EscalationReason,
-    /// Optional bounded diagnostic detail. Never use secrets or page content.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "escalation_detail_schema")]
-    pub detail: Option<String>,
-}
-
-impl ToolInput for EscalateSessionInput {
-    const TOOL_NAME: &'static str = "escalate_session";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct GetSessionStateInput {
-    pub session: String,
-}
-
-impl ToolInput for GetSessionStateInput {
-    const TOOL_NAME: &'static str = "get_session_state";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct EndSessionInput {
-    /// The session id to end.
-    pub session: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SetAgentCursorEnabledInput {
-    pub session: String,
     pub enabled: bool,
 }
 
@@ -311,7 +193,6 @@ impl ToolInput for SetAgentCursorEnabledInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SetAgentCursorMotionInput {
-    pub session: String,
     pub start_handle: Option<f64>,
     pub end_handle: Option<f64>,
     pub arc_size: Option<f64>,
@@ -330,7 +211,6 @@ impl ToolInput for SetAgentCursorMotionInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SetAgentCursorThemeInput {
-    pub session: String,
     #[schemars(schema_with = "cursor_theme_id_schema")]
     pub theme_id: String,
     #[serde(default)]
@@ -343,25 +223,15 @@ impl ToolInput for SetAgentCursorThemeInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct GetAgentCursorStateInput {
-    pub session: String,
-}
+pub struct GetAgentCursorStateInput {}
 
 impl ToolInput for GetAgentCursorStateInput {
     const TOOL_NAME: &'static str = "get_agent_cursor_state";
 }
 
-impl ToolInput for EndSessionInput {
-    const TOOL_NAME: &'static str = "end_session";
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GetDesktopStateInput {
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     /// Write the PNG here instead of returning base64.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "string_schema")]
@@ -374,12 +244,7 @@ impl ToolInput for GetDesktopStateInput {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct GetScreenSizeInput {
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
-}
+pub struct GetScreenSizeInput {}
 
 impl ToolInput for GetScreenSizeInput {
     const TOOL_NAME: &'static str = "get_screen_size";
@@ -387,12 +252,7 @@ impl ToolInput for GetScreenSizeInput {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct GetCursorPositionInput {
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
-}
+pub struct GetCursorPositionInput {}
 
 impl ToolInput for GetCursorPositionInput {
     const TOOL_NAME: &'static str = "get_cursor_position";
@@ -406,10 +266,6 @@ pub struct MoveCursorInput {
     #[schemars(schema_with = "number_schema")]
     pub y: f64,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -427,10 +283,6 @@ pub struct SetWindowFrameInput {
     pub width: f64,
     #[schemars(schema_with = "positive_number_schema")]
     pub height: f64,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for SetWindowFrameInput {
@@ -446,10 +298,6 @@ macro_rules! window_action_input {
             pub pid: u32,
             #[schemars(schema_with = "positive_integer_schema")]
             pub window_id: u64,
-            /// Optional session id.
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            #[schemars(schema_with = "string_schema")]
-            pub session: Option<String>,
         }
 
         impl ToolInput for $type_name {
@@ -475,10 +323,6 @@ pub struct InvokeMenuInput {
     pub window_id: u64,
     #[schemars(schema_with = "menu_path_schema")]
     pub path: Vec<String>,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for InvokeMenuInput {
@@ -497,10 +341,6 @@ pub struct ClickInput {
     #[schemars(schema_with = "number_schema")]
     pub y: f64,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "click_button_schema")]
     pub button: Option<ClickButton>,
@@ -525,10 +365,6 @@ pub struct DragInput {
     #[schemars(schema_with = "number_schema")]
     pub to_y: f64,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "drag_duration_schema")]
     pub duration_ms: Option<u64>,
@@ -556,10 +392,6 @@ pub struct ScrollInput {
     pub y: f64,
     pub direction: ScrollDirection,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "scroll_by_schema")]
     pub by: Option<ScrollBy>,
@@ -578,10 +410,6 @@ pub struct TypeTextInput {
     #[schemars(schema_with = "type_text_schema")]
     pub text: String,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for TypeTextInput {
@@ -592,13 +420,9 @@ impl ToolInput for TypeTextInput {
 #[serde(deny_unknown_fields)]
 pub struct ClipboardReadInput {
     /// Return plain-text clipboard content in addition to the available types.
-    /// Clipboard content is privacy-sensitive and is never retained in telemetry.
+    /// Clipboard content is privacy-sensitive and is returned only to this call.
     #[serde(default)]
     pub include_text: bool,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for ClipboardReadInput {
@@ -620,10 +444,6 @@ pub struct ClipboardWriteInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "string_schema")]
     pub file_path: Option<String>,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for ClipboardWriteInput {
@@ -635,10 +455,6 @@ impl ToolInput for ClipboardWriteInput {
 pub struct PressKeyInput {
     pub key: String,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "string_list_schema")]
     pub modifiers: Option<Vec<String>>,
@@ -654,10 +470,6 @@ pub struct HotkeyInput {
     #[schemars(length(min = 2))]
     pub keys: Vec<String>,
     pub scope: DesktopScope,
-    /// Optional session id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "string_schema")]
-    pub session: Option<String>,
 }
 
 impl ToolInput for HotkeyInput {
@@ -684,18 +496,6 @@ mod tests {
         assert_eq!(
             schema["properties"]["count"],
             json!({ "type": "integer", "minimum": 1, "maximum": 3 })
-        );
-    }
-
-    #[test]
-    fn generated_session_schema_preserves_default_and_open_input() {
-        let schema = StartSessionInput::input_schema();
-        assert_eq!(schema["additionalProperties"], true);
-        assert_eq!(schema["required"], json!(["session"]));
-        assert_eq!(schema["properties"]["capture_scope"]["default"], "auto");
-        assert_eq!(
-            schema["properties"]["capture_scope"]["enum"],
-            json!(["auto", "window", "desktop"])
         );
     }
 

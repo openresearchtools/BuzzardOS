@@ -32,9 +32,9 @@ HOST_MANIFEST = ROOT / "host/Cargo.toml"
 HOST_LOCK = ROOT / "host/Cargo.lock"
 GUEST_MANIFEST = ROOT / "guest/Cargo.toml"
 GUEST_LOCK = ROOT / "guest/Cargo.lock"
-CUA_ROOT = ROOT / "guest/third_party/trycua-cua"
-CUA_MANIFEST = CUA_ROOT / "cua-driver/rust/Cargo.toml"
-CUA_LOCK = CUA_ROOT / "cua-driver/rust/Cargo.lock"
+CUA_ROOT = ROOT / "cua"
+CUA_MANIFEST = CUA_ROOT / "Cargo.toml"
+CUA_LOCK = CUA_ROOT / "Cargo.lock"
 TARGET = "x86_64-unknown-linux-gnu"
 OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
 HOST_CLOSURE_MANIFEST = "usr/share/doc/buzzardos/host-package-closure.tsv"
@@ -50,7 +50,6 @@ DEBIAN_BINARY_PACKAGE_PATTERN = re.compile(
 NON_DPKG_APPDIR_ELFS = {
     "usr/bin/buzzardos",
     "usr/bin/buzzardos-broker",
-    "usr/bin/buzzardos-cua-driver",
     "usr/bin/buzzardos-display",
     "usr/bin/buzzardos-settings",
     "usr/bin/buzzardos-shortcut-helper",
@@ -421,7 +420,7 @@ def cargo_outputs() -> tuple[dict[Path, str], list[str]]:
         "guest-workspace", GUEST_MANIFEST, GUEST_LOCK, None, fallbacks
     )
     cua_tsv, cua_local, cua_contents = build_cargo_graph(
-        "cua-driver", CUA_MANIFEST, CUA_LOCK, "cua-driver", fallbacks
+        "buzzardoscua", CUA_MANIFEST, CUA_LOCK, "buzzardoscua", fallbacks
     )
     issues = [
         f"local Cargo package lacks license metadata: {item['package']}"
@@ -492,7 +491,7 @@ def validate_provenance() -> None:
         LICENSES / "go-source-archives.tsv",
         LICENSES / "slirp4netns-sources.tsv",
         LICENSES / "rust-runtime.toml",
-        CUA_ROOT / "LICENSE.md",
+        CUA_ROOT / "LICENSE.trycua.md",
         CUA_ROOT / "CITATION.cff",
         CUA_ROOT / "UPSTREAM.toml",
         CUA_ROOT / "CHANGES.BUZZARDOS.md",
@@ -1713,12 +1712,6 @@ def audit_appdir(appdir: Path) -> list[str]:
         "usr/share/doc/buzzardos/LICENSE": ROOT / "LICENSE",
         "usr/share/doc/buzzardos/NOTICE": ROOT / "NOTICE",
         "usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/buzzardos-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/buzzardos-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/buzzardos-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/buzzardos-cua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
-        "usr/share/doc/buzzardos-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/buzzardos-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
         "usr/libexec/buzzardos/tar": ROOT / "host/packaging/buzzardos-tar",
     }
     for source in sorted(path for path in LICENSES.rglob("*") if path.is_file()):
@@ -1917,12 +1910,12 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
         "usr/share/doc/buzzardos-desktop/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
         "usr/share/doc/buzzardos-desktop/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
         "usr/share/doc/buzzardoscua/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
-        "usr/share/doc/buzzardcua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/buzzardcua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/buzzardcua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/buzzardcua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
-        "usr/share/doc/buzzardcua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/buzzardcua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
+        "usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.trycua.md",
+        "usr/share/doc/buzzardoscua/CITATION.cff": CUA_ROOT / "CITATION.cff",
+        "usr/share/doc/buzzardoscua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
+        "usr/share/doc/buzzardoscua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
+        "usr/share/doc/buzzardoscua/Inter-OFL.txt": CUA_ROOT / "assets/cursor/Inter-OFL.txt",
+        "usr/share/doc/buzzardoscua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "protocol/virtual-keyboard-unstable-v1.xml",
     }
     for destination, source in required.items():
         verify_copy(rootfs, destination, source, issues, "OCI")

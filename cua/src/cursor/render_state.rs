@@ -409,7 +409,7 @@ pub fn paint_cursor(
 
     if let Some(theme) = core.theme.as_deref() {
         let tint = (theme.id == crate::cursor::DEFAULT_THEME_ID)
-            .then(|| crate::cursor::session_fill_rgba(&core.cfg.cursor_id));
+            .then(|| crate::cursor::seat_fill_rgba(&core.cfg.cursor_id));
         crate::cursor::paint_compiled_theme_with_tint(
             pm,
             theme,
@@ -433,7 +433,7 @@ pub fn paint_cursor(
             heading as f32,
             backing_scale.max(1.0),
             alpha_scale,
-            crate::cursor::session_fill_rgba(&core.cfg.cursor_id),
+            crate::cursor::seat_fill_rgba(&core.cfg.cursor_id),
         );
     }
 }

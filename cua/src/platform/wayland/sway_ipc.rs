@@ -4,19 +4,15 @@
 //! public CUA id is bound to Sway's opaque `foreign_toplevel_identifier`; title,
 //! app-id, PID, and Wayland object-id heuristics are never used to retarget it.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
 const SCRATCHPAD_WORKSPACE: &str = "__i3_scratch";
 const RESTORE_MARK_PREFIX: &str = "__buzzardos_restore_v1_";
-const PUBLIC_ID_START: u64 = 0xFB00_0000;
-const PUBLIC_ID_END: u64 = 0xFBFF_FFFE;
 const IPC_MAGIC: &[u8; 6] = b"i3-ipc";
 const IPC_SUBSCRIBE: u32 = 2;
 const IPC_EVENT_MASK: u32 = 1 << 31;
@@ -104,10 +100,12 @@ fn default_visible() -> bool {
     true
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Workspace {
     rect: Rect,
     scratchpad: bool,
+    name: String,
+    output: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +132,8 @@ pub struct Window {
     pub workspace_y: i32,
     pub workspace_width: u32,
     pub workspace_height: u32,
+    pub workspace: String,
+    pub output: String,
     pub focused: bool,
     pub visible: bool,
     pub scratchpad: bool,
@@ -170,12 +170,20 @@ fn collect(
     node: &Node,
     parent_origin: (i32, i32),
     workspace: Option<Workspace>,
+    output: Option<&str>,
     windows: &mut Vec<Window>,
 ) {
+    let output = if node.node_type == "output" {
+        Some(node.name.as_str())
+    } else {
+        output
+    };
     let workspace = if node.node_type == "workspace" {
         Some(Workspace {
             rect: node.rect,
             scratchpad: node.name == SCRATCHPAD_WORKSPACE,
+            name: node.name.clone(),
+            output: output.unwrap_or_default().to_owned(),
         })
     } else {
         workspace
@@ -198,7 +206,7 @@ fn collect(
             let outer = node.rect.union(decoration);
             let content_absolute_x = node.rect.x.saturating_add(node.window_rect.x);
             let content_absolute_y = node.rect.y.saturating_add(node.window_rect.y);
-            let workspace = workspace.unwrap_or_default();
+            let workspace = workspace.clone().unwrap_or_default();
             let scratchpad = node.scratchpad_state == "fresh";
             let restore_marks = node
                 .marks
@@ -237,6 +245,8 @@ fn collect(
                 workspace_y: workspace.rect.y,
                 workspace_width: workspace.rect.width.max(0) as u32,
                 workspace_height: workspace.rect.height.max(0) as u32,
+                workspace: workspace.name.clone(),
+                output: workspace.output.clone(),
                 focused: node.focused,
                 visible: node.visible && !minimized,
                 scratchpad,
@@ -254,7 +264,7 @@ fn collect(
     // for each child's parent-relative deco_rect.
     let child_origin = (node.rect.x, node.rect.y);
     for child in node.nodes.iter().chain(&node.floating_nodes) {
-        collect(child, child_origin, workspace, windows);
+        collect(child, child_origin, workspace.clone(), output, windows);
     }
 }
 
@@ -262,7 +272,7 @@ fn parse_tree(bytes: &[u8]) -> anyhow::Result<Vec<Window>> {
     let root: Node = serde_json::from_slice(bytes)
         .map_err(|error| anyhow::anyhow!("invalid Sway tree: {error}"))?;
     let mut windows = Vec::new();
-    collect(&root, (root.rect.x, root.rect.y), None, &mut windows);
+    collect(&root, (root.rect.x, root.rect.y), None, None, &mut windows);
     Ok(windows)
 }
 
@@ -289,78 +299,376 @@ pub fn list_windows() -> Option<Vec<Window>> {
     list_windows_result().ok()
 }
 
-#[derive(Default)]
-struct PublicIdRegistry {
-    by_identifier: HashMap<String, u64>,
-    by_id: HashMap<u64, String>,
-    next: u64,
+#[derive(Clone, Debug, Default)]
+struct WorkspaceInfo {
+    name: String,
+    output: String,
 }
 
-impl PublicIdRegistry {
-    fn id_for(&mut self, identifier: &str) -> anyhow::Result<u64> {
-        if identifier.is_empty() {
-            anyhow::bail!("Sway did not publish foreign_toplevel_identifier for a mapped toplevel");
-        }
-        if let Some(id) = self.by_identifier.get(identifier).copied() {
-            return Ok(id);
-        }
-        let next = if self.next == 0 {
-            PUBLIC_ID_START
-        } else {
-            self.next
-        };
-        if next > PUBLIC_ID_END {
-            anyhow::bail!("Sway public window id space is exhausted");
-        }
-        self.next = next.saturating_add(1);
-        self.by_identifier.insert(identifier.to_owned(), next);
-        self.by_id.insert(next, identifier.to_owned());
-        Ok(next)
+#[derive(Clone, Debug, Default)]
+struct OutputInfo {
+    id: u64,
+    name: String,
+    active: bool,
+    rect: Rect,
+    physical_width: u32,
+    physical_height: u32,
+    refresh_millihz: u32,
+    scale_milli: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SeatInfo {
+    name: String,
+    focus: u64,
+}
+
+fn swaymsg_value(message_type: &str) -> anyhow::Result<serde_json::Value> {
+    let output = Command::new("swaymsg")
+        .args(["-r", "-t", message_type])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| anyhow::anyhow!("could not execute swaymsg {message_type}: {error}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "swaymsg {message_type} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| anyhow::anyhow!("invalid Sway {message_type} response: {error}"))
+}
+
+fn workspaces() -> anyhow::Result<Vec<WorkspaceInfo>> {
+    let value = swaymsg_value("get_workspaces")?;
+    Ok(value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Sway get_workspaces did not return an array"))?
+        .iter()
+        .filter_map(|value| {
+            Some(WorkspaceInfo {
+                name: value.get("name")?.as_str()?.to_owned(),
+                output: value.get("output")?.as_str()?.to_owned(),
+            })
+        })
+        .collect())
+}
+
+fn json_rect(value: Option<&serde_json::Value>) -> Rect {
+    let value = value.unwrap_or(&serde_json::Value::Null);
+    Rect {
+        x: value
+            .get("x")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default(),
+        y: value
+            .get("y")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default(),
+        width: value
+            .get("width")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default(),
+        height: value
+            .get("height")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default(),
     }
 }
 
-fn public_ids() -> &'static Mutex<PublicIdRegistry> {
-    static REGISTRY: OnceLock<Mutex<PublicIdRegistry>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(PublicIdRegistry::default()))
+fn outputs() -> anyhow::Result<Vec<OutputInfo>> {
+    let value = swaymsg_value("get_outputs")?;
+    Ok(value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Sway get_outputs did not return an array"))?
+        .iter()
+        .filter_map(|value| {
+            let mode = value
+                .get("current_mode")
+                .unwrap_or(&serde_json::Value::Null);
+            let scale = value
+                .get("scale")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0);
+            Some(OutputInfo {
+                id: value.get("id").and_then(serde_json::Value::as_u64)?,
+                name: value.get("name")?.as_str()?.to_owned(),
+                active: value
+                    .get("active")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                rect: json_rect(value.get("rect")),
+                physical_width: mode
+                    .get("width")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or_default(),
+                physical_height: mode
+                    .get("height")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or_default(),
+                refresh_millihz: mode
+                    .get("refresh")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(60_000),
+                scale_milli: (scale * 1000.0).round().clamp(1.0, f64::from(u32::MAX)) as u32,
+            })
+        })
+        .collect())
 }
 
-fn identifier_for_public_id(id: u64) -> Option<String> {
-    public_ids()
-        .lock()
-        .ok()
-        .and_then(|registry| registry.by_id.get(&id).cloned())
+fn seats() -> anyhow::Result<Vec<SeatInfo>> {
+    let value = swaymsg_value("get_seats")?;
+    Ok(value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Sway get_seats did not return an array"))?
+        .iter()
+        .filter_map(|value| {
+            Some(SeatInfo {
+                name: value.get("name")?.as_str()?.to_owned(),
+                focus: value.get("focus")?.as_u64()?,
+            })
+        })
+        .collect())
+}
+
+/// Refuse focus-bound input unless Sway confirms that this invocation's
+/// numbered seat currently focuses a real window on its own CUA output.
+///
+/// Sway retains a seat's container focus when that container is moved to a
+/// different output. Without this readback, a later untargeted `cuaN`
+/// keystroke could follow the stale focus into another agent's workspace.
+pub fn require_caller_seat_focus(expected_window_id: Option<u64>) -> anyhow::Result<Window> {
+    let index = crate::core::seat_context::current_index();
+    let seat_name = format!("seat{index}");
+    let expected_workspace = cua_workspace_name(index)?;
+    let expected_output = workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == expected_workspace)
+        .map(|workspace| workspace.output)
+        .ok_or_else(|| anyhow::anyhow!("{expected_workspace} has no active output"))?;
+    let focused_id = seats()?
+        .into_iter()
+        .find(|seat| seat.name == seat_name)
+        .map(|seat| seat.focus)
+        .ok_or_else(|| anyhow::anyhow!("Sway did not expose {seat_name}"))?;
+    if let Some(expected) = expected_window_id {
+        anyhow::ensure!(
+            focused_id == expected,
+            "{seat_name} focus is {focused_id}, not requested window_id {expected}"
+        );
+    }
+    let focused = resolve_public_window(focused_id, None).map_err(|_| {
+        anyhow::anyhow!(
+            "{seat_name} has no focused application on {expected_workspace}; refusing ambiguous input"
+        )
+    })?;
+    anyhow::ensure!(
+        focused.workspace == expected_workspace && focused.output == expected_output,
+        "{seat_name} focus points to {} on {}; refusing input outside {expected_workspace} on {expected_output}",
+        focused.workspace,
+        focused.output
+    );
+    Ok(focused)
+}
+
+/// Confirm only the exact per-seat container identity. This is used while a
+/// target still lives on its source output; the full caller-output check runs
+/// immediately after the exact Sway move.
+pub fn require_caller_seat_exact_focus(expected_window_id: u64) -> anyhow::Result<Window> {
+    let index = crate::core::seat_context::current_index();
+    let seat_name = format!("seat{index}");
+    let focused_id = seats()?
+        .into_iter()
+        .find(|seat| seat.name == seat_name)
+        .map(|seat| seat.focus)
+        .ok_or_else(|| anyhow::anyhow!("Sway did not expose {seat_name}"))?;
+    anyhow::ensure!(
+        focused_id == expected_window_id,
+        "{seat_name} focus is {focused_id}, not requested window_id {expected_window_id}"
+    );
+    resolve_public_window(focused_id, None)
+}
+
+fn safe_name(value: &str) -> anyhow::Result<String> {
+    if value.is_empty()
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, ' ' | '_' | '-')
+        })
+    {
+        anyhow::bail!("unsafe Sway identifier");
+    }
+    Ok(format!("\"{value}\""))
+}
+
+fn run_global_command(command: &str) -> anyhow::Result<()> {
+    let output = Command::new("swaymsg")
+        .args(["-r", command])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| anyhow::anyhow!("could not execute swaymsg command: {error}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "swaymsg command failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let replies: Vec<CommandReply> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| anyhow::anyhow!("invalid swaymsg command reply: {error}"))?;
+    if replies.is_empty()
+        || replies
+            .iter()
+            .any(|reply| !reply.success || reply.parse_error)
+    {
+        anyhow::bail!(
+            "Sway rejected command: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    Ok(())
+}
+
+pub fn cua_workspace_name(index: u32) -> anyhow::Result<String> {
+    if index == 0 {
+        anyhow::bail!("seat0 is reserved for the human Desktop");
+    }
+    Ok(if index == 1 {
+        "CUA".to_owned()
+    } else {
+        format!("CUA{index}")
+    })
+}
+
+fn cua_workspace_index(name: &str) -> Option<u32> {
+    match name {
+        "CUA" => Some(1),
+        _ => name
+            .strip_prefix("CUA")
+            .filter(|suffix| !suffix.is_empty() && !suffix.starts_with('0'))
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .filter(|index| *index >= 2),
+    }
+}
+
+pub fn ensure_cua_workspace(index: u32) -> anyhow::Result<String> {
+    let workspace_name = cua_workspace_name(index)?;
+    if let Some(workspace) = workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == workspace_name)
+    {
+        return Ok(workspace.output);
+    }
+    let before = outputs()?;
+    let primary_name = before
+        .iter()
+        .filter(|output| output.active)
+        .min_by_key(|output| output.id)
+        .map(|output| output.name.clone())
+        .ok_or_else(|| anyhow::anyhow!("Sway has no host-facing output to mirror"))?;
+    let before_names = before
+        .iter()
+        .map(|output| output.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    run_global_command("create_output")?;
+    let after = outputs()?;
+    let created = after
+        .iter()
+        .find(|output| !before_names.contains(output.name.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("Sway accepted create_output but exposed no new output"))?;
+    let primary = after
+        .iter()
+        .find(|output| output.active && output.name == primary_name)
+        .ok_or_else(|| anyhow::anyhow!("Sway has no host-facing output to mirror"))?;
+    let previous_workspace = workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.output == primary.name)
+        .map(|workspace| workspace.name)
+        .unwrap_or_else(|| "Desktop".to_owned());
+    let x = after
+        .iter()
+        .filter(|output| output.active && output.name != primary.name)
+        .fold(
+            primary.rect.x.saturating_add(primary.rect.width),
+            |right, output| right.max(output.rect.x.saturating_add(output.rect.width)),
+        );
+    let command = format!(
+        "output {} mode {}x{}@{:.3}Hz scale {:.3} pos {} {}; seat \"seat{index}\" fallback false; workspace {}; move workspace to output {}; workspace {}",
+        safe_name(&created.name)?, primary.physical_width.max(1), primary.physical_height.max(1),
+        f64::from(primary.refresh_millihz) / 1000.0,
+        f64::from(primary.scale_milli) / 1000.0,
+        x, primary.rect.y,
+        safe_name(&workspace_name)?, safe_name(&created.name)?, safe_name(&previous_workspace)?,
+    );
+    run_global_command(&command)?;
+    let workspace = workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == workspace_name)
+        .ok_or_else(|| anyhow::anyhow!("Sway did not create {workspace_name}"))?;
+    Ok(workspace.output)
+}
+
+pub fn move_public_window_to_cua(
+    id: u64,
+    expected_pid: Option<u32>,
+    index: u32,
+) -> anyhow::Result<Window> {
+    let workspace_name = cua_workspace_name(index)?;
+    ensure_cua_workspace(index)?;
+    let window = resolve_public_window(id, expected_pid)?;
+    let _source_lock = cua_workspace_index(&window.workspace)
+        .filter(|source| *source != index)
+        .map(crate::core::seat_context::try_lock_other)
+        .transpose()?
+        .flatten();
+    if window.workspace != workspace_name {
+        run_container_command(
+            window.id,
+            &format!(
+                "move container to workspace {}",
+                safe_name(&workspace_name)?
+            ),
+        )?;
+    }
+    let moved = resolve_public_window(id, expected_pid)?;
+    anyhow::ensure!(
+        moved.workspace == workspace_name,
+        "Sway accepted the move but window_id {id} remains on {}",
+        moved.workspace
+    );
+    Ok(moved)
 }
 
 pub fn is_public_window_id(id: u64) -> bool {
-    identifier_for_public_id(id).is_some()
+    list_windows_result()
+        .ok()
+        .is_some_and(|windows| windows.iter().any(|window| window.id == id))
 }
 
 pub fn list_public_windows() -> anyhow::Result<Vec<(u64, Window)>> {
-    let windows = list_windows_result()?;
-    let mut registry = public_ids()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Sway public window id registry is unavailable"))?;
-    windows
+    Ok(list_windows_result()?
         .into_iter()
-        .map(|window| {
-            let id = registry.id_for(&window.foreign_toplevel_identifier)?;
-            Ok((id, window))
-        })
-        .collect()
+        .map(|window| (window.id, window))
+        .collect())
 }
 
 /// Resolve one CUA id through Sway's opaque identifier and verify its owner.
 pub fn resolve_public_window(id: u64, expected_pid: Option<u32>) -> anyhow::Result<Window> {
-    let identifier = identifier_for_public_id(id)
-        .ok_or_else(|| anyhow::anyhow!("unknown or stale Sway window_id {id}"))?;
     let mut matches = list_windows_result()?
         .into_iter()
-        .filter(|window| window.foreign_toplevel_identifier == identifier);
+        .filter(|window| window.id == id);
     let window = matches
         .next()
-        .ok_or_else(|| anyhow::anyhow!("Sway toplevel {identifier:?} is no longer mapped"))?;
+        .ok_or_else(|| anyhow::anyhow!("unknown or stale Sway window_id {id}"))?;
     if matches.next().is_some() {
-        anyhow::bail!("Sway published duplicate foreign toplevel identifier {identifier:?}");
+        anyhow::bail!("Sway published duplicate container id {id}");
     }
     if expected_pid.is_some_and(|pid| window.pid != pid) {
         anyhow::bail!(
@@ -453,12 +761,6 @@ fn run_container_command(id: u64, command: &str) -> anyhow::Result<()> {
         );
     }
     validate_command_reply(&output.stdout, id)
-}
-
-pub fn focus_public_window(id: u64, expected_pid: Option<u32>) -> anyhow::Result<()> {
-    let window = resolve_public_window(id, expected_pid)?;
-    control_window(window.id, WindowControlAction::Focus)?;
-    Ok(())
 }
 
 fn remove_restore_mark_commands(window: &Window, commands: &mut Vec<String>) {
@@ -574,7 +876,6 @@ fn maximize_commands(window: &Window, restore: Rect) -> Vec<String> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowControlAction {
-    Focus,
     Close,
     Minimize,
     Maximize,
@@ -615,7 +916,6 @@ impl WindowControlState {
 
 fn control_satisfied(action: WindowControlAction, state: WindowControlState) -> bool {
     match action {
-        WindowControlAction::Focus => state.present && state.focused && !state.minimized,
         WindowControlAction::Close => !state.present,
         WindowControlAction::Minimize => state.present && state.minimized,
         WindowControlAction::Maximize => {
@@ -644,28 +944,6 @@ pub fn control_window(
     }
 
     match action {
-        WindowControlAction::Focus => {
-            if before_window.minimized {
-                let shown = run_confirmed(
-                    id,
-                    "scratchpad restore",
-                    vec!["scratchpad show".to_owned()],
-                    |window| !window.minimized,
-                )?;
-                if shown.restore_frame.is_some() {
-                    let commands = maximize_commands(
-                        &shown,
-                        shown.restore_frame.expect("checked restore frame"),
-                    );
-                    run_confirmed(id, "restored maximized frame", commands, |window| {
-                        window.maximized
-                    })?;
-                }
-            }
-            run_confirmed(id, "focus", vec!["focus".to_owned()], |window| {
-                window.focused && !window.minimized
-            })?;
-        }
         WindowControlAction::Close => {
             let mut events = EventSubscription::connect(&["window"])?;
             run_container_command(id, "kill")?;
@@ -1032,6 +1310,8 @@ mod tests {
             workspace_y: 0,
             workspace_width: 1000,
             workspace_height: 700,
+            workspace: "Desktop".into(),
+            output: "Buzzard-1".into(),
             focused: false,
             visible: true,
             scratchpad: false,
@@ -1089,19 +1369,6 @@ mod tests {
         assert!(windows[1].scratchpad);
         assert!(windows[1].minimized);
         assert!(!windows[1].visible);
-    }
-
-    #[test]
-    fn opaque_identifiers_produce_distinct_stable_ids_for_duplicate_titles() {
-        let mut registry = PublicIdRegistry::default();
-        let first = registry.id_for("identifier-a").unwrap();
-        assert_eq!(registry.id_for("identifier-a").unwrap(), first);
-        let second = registry.id_for("identifier-b").unwrap();
-        assert_ne!(first, second);
-        assert_eq!(
-            registry.by_id.get(&first).map(String::as_str),
-            Some("identifier-a")
-        );
     }
 
     #[test]

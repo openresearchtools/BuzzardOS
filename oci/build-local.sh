@@ -49,7 +49,7 @@ mkdir -p "$build_root" "$output_dir" "$deb_dir"
 
 guest_version=$(tr -d '\n' <"$project_dir/guest/GUEST_VERSION")
 desktop_version=$(tr -d '\n' <"$project_dir/guest/DESKTOP_VERSION")
-cua_version=$(tr -d '\n' <"$project_dir/guest/BUZZARDOSCUA_VERSION")
+cua_version=$(tr -d '\n' <"$project_dir/cua/VERSION")
 guest_deb="$deb_dir/buzzardos-guest_${guest_version}_amd64.deb"
 desktop_deb="$deb_dir/buzzardos-desktop_${desktop_version}_amd64.deb"
 cua_deb="$deb_dir/buzzardoscua_${cua_version}_amd64.deb"

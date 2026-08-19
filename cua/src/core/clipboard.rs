@@ -50,7 +50,6 @@ fn unavailable(operation: &str, error: impl Into<String>) -> ToolResult {
             "status": "unavailable",
             "error_code": "clipboard_unavailable",
             "privacy_sensitive": true,
-            "content_redacted_from_telemetry": true,
         }),
     )
 }
@@ -241,7 +240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn text_round_trip_returns_content_and_types_without_telemetry_fields() {
+    async fn text_round_trip_returns_only_content_and_types() {
         let backend: Arc<dyn ClipboardBackend> = Arc::new(FakeClipboard::default());
         let write = ClipboardWriteTool {
             backend: backend.clone(),
@@ -261,7 +260,6 @@ mod tests {
         assert_eq!(output["text"], "private value");
         assert_eq!(output["types"], serde_json::json!(["text/plain"]));
         assert!(output.get("privacy_sensitive").is_none());
-        assert!(output.get("content_redacted_from_telemetry").is_none());
     }
 
     #[tokio::test]
@@ -291,7 +289,6 @@ mod tests {
         assert_eq!(output["supported"], false);
         assert_eq!(output["status"], "unavailable");
         assert_eq!(output["error_code"], "clipboard_unavailable");
-        assert_eq!(output["content_redacted_from_telemetry"], true);
         assert!(output
             .to_string()
             .find("no display clipboard provider")

@@ -34,86 +34,6 @@ const CLICK_DELAY_MS: u64 = 35;
 const DOUBLE_CLICK_DELAY_MS: u64 = 50;
 const KEY_DELAY_MS: u64 = 10;
 
-#[derive(Clone, Debug)]
-pub struct VirtualPointerDrag {
-    pub target_window: u64,
-    pub button: u8,
-    /// Screen-coordinate waypoints. The pointer presses once at `path[0]`,
-    /// glides through every waypoint (arc-length interpolated), and releases
-    /// once at the last point — a single continuous held drag, so a curved
-    /// path (e.g. a sampled y = f(x)) draws as one smooth stroke rather than
-    /// a chain of press/release dabs. Must contain >= 2 points.
-    pub path: Vec<(i32, i32)>,
-    pub duration_ms: u64,
-    pub steps: usize,
-}
-
-/// Cumulative segment lengths along `path` and its total length.
-fn path_cumulative(path: &[(i32, i32)]) -> (Vec<f64>, f64) {
-    let mut cum = Vec::with_capacity(path.len());
-    let mut total = 0.0;
-    cum.push(0.0);
-    for w in path.windows(2) {
-        let dx = (w[1].0 - w[0].0) as f64;
-        let dy = (w[1].1 - w[0].1) as f64;
-        total += (dx * dx + dy * dy).sqrt();
-        cum.push(total);
-    }
-    (cum, total)
-}
-
-/// Sample `y = f(x)` over `[x_from, x_to]` into `samples` window-local
-/// waypoints. Evaluated with meval (sin/cos/^/etc.); non-finite outputs
-/// (ln of a negative, 1/0, …) are dropped. Errors on a bad expression or
-/// fewer than 2 finite points.
-pub fn sample_function(
-    expr: &str,
-    x_from: f64,
-    x_to: f64,
-    samples: u64,
-) -> Result<Vec<(f64, f64)>> {
-    let parsed: meval::Expr = expr
-        .parse()
-        .map_err(|e| anyhow!("invalid fn '{expr}': {e}"))?;
-    let f = parsed
-        .bind("x")
-        .map_err(|e| anyhow!("fn must be in terms of x: {e}"))?;
-    let n = samples.max(2);
-    let mut pts = Vec::with_capacity(n as usize);
-    for i in 0..n {
-        let x = x_from + (x_to - x_from) * (i as f64) / ((n - 1) as f64);
-        let y = f(x);
-        if x.is_finite() && y.is_finite() {
-            pts.push((x, y));
-        }
-    }
-    if pts.len() < 2 {
-        bail!("fn produced fewer than 2 finite points over the domain");
-    }
-    Ok(pts)
-}
-
-/// Point at arc-length fraction `t` (0..1) along `path`.
-fn point_on_path(path: &[(i32, i32)], cum: &[f64], total: f64, t: f64) -> (i32, i32) {
-    if path.len() == 1 || total <= 0.0 {
-        return *path.last().unwrap();
-    }
-    let d = t.clamp(0.0, 1.0) * total;
-    let mut i =
-        match cum.binary_search_by(|v| v.partial_cmp(&d).unwrap_or(std::cmp::Ordering::Less)) {
-            Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
-        };
-    if i >= path.len() - 1 {
-        i = path.len() - 2;
-    }
-    let seg = cum[i + 1] - cum[i];
-    let f = if seg > 0.0 { (d - cum[i]) / seg } else { 0.0 };
-    let x = path[i].0 as f64 + (path[i + 1].0 - path[i].0) as f64 * f;
-    let y = path[i].1 as f64 + (path[i + 1].1 - path[i].1) as f64 * f;
-    (x.round() as i32, y.round() as i32)
-}
-
 #[derive(Clone, Copy, Debug)]
 struct MasterPointerIds {
     pointer_id: i32,
@@ -208,7 +128,7 @@ fn supports_parallel_pointer_injection(display: *mut x11::xlib::Display) -> Resu
     let vendor = x_server_vendor(display);
     if vendor.to_ascii_lowercase().contains("tigervnc") {
         bail!(
-            "parallel_mouse_drag is not supported on this X server ('{vendor}'). \
+            "MPX pointer injection is not supported on this X server ('{vendor}'). \
              Xtigervnc exposes only its built-in VNC/XTEST devices, so Linux uinput/libinput \
              pointers cannot become real X input devices here."
         );
@@ -216,7 +136,7 @@ fn supports_parallel_pointer_injection(display: *mut x11::xlib::Display) -> Resu
     if is_xtigervnc_process_running() {
         let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| "<unknown>".to_owned());
         bail!(
-            "parallel_mouse_drag is not supported on display {display_name} because the active X server is Xtigervnc. \
+            "MPX pointer injection is not supported on display {display_name} because the active X server is Xtigervnc. \
              Xtigervnc exposes only its built-in VNC/XTEST devices, so Linux uinput/libinput pointers \
              cannot become real X input devices in this environment."
         );
@@ -256,13 +176,6 @@ fn is_xtigervnc_process_running() -> bool {
         return comm.trim() == "Xtigervnc";
     }
     false
-}
-
-pub fn check_parallel_pointer_support() -> Result<()> {
-    let display = open_display()?;
-    let result = supports_parallel_pointer_injection(display);
-    unsafe { x11::xlib::XCloseDisplay(display) };
-    result
 }
 
 /// The file name of the X server binary backing `DISPLAY`, read from the PID in
@@ -380,9 +293,7 @@ fn ensure_master_pointer(cursor_id: &str) -> Result<MasterPointerIds> {
         (*add)._type = x11::xinput2::XIAddMaster;
         (*add).name = name.as_ptr() as *mut _;
         // Core events stay on so core-only apps (xterm, Tk, …) receive the
-        // drags too. Note this is not what makes the WM focus the dragged
-        // window — XI2-aware WMs grab buttons for XIAllMasterDevices — see
-        // the active-window save/restore in send_parallel_virtual_pointer_drags.
+        // clicks too. XI2-aware WMs grab buttons for XIAllMasterDevices.
         (*add).send_core = 1;
         (*add).enable = 1;
     }
@@ -998,29 +909,6 @@ fn emit_button(device: &mut VirtualDevice, button: u8, press: bool) -> Result<()
     Ok(())
 }
 
-fn emit_relative_motion(device: &mut VirtualDevice, dx: i32, dy: i32) -> Result<()> {
-    let mut events = Vec::with_capacity(2);
-    if dx != 0 {
-        events.push(InputEvent::new(
-            EventType::RELATIVE,
-            RelativeAxisType::REL_X.0,
-            dx,
-        ));
-    }
-    if dy != 0 {
-        events.push(InputEvent::new(
-            EventType::RELATIVE,
-            RelativeAxisType::REL_Y.0,
-            dy,
-        ));
-    }
-    if events.is_empty() {
-        return Ok(());
-    }
-    device.emit(&events)?;
-    Ok(())
-}
-
 /// Emit one wheel detent on the uinput slave. `horizontal` selects REL_HWHEEL
 /// (positive = right) over REL_WHEEL (positive = up); `value` is the signed
 /// detent count. libinput translates these into the XI2 scroll events GTK reads.
@@ -1034,199 +922,8 @@ fn emit_scroll(device: &mut VirtualDevice, horizontal: bool, value: i32) -> Resu
     Ok(())
 }
 
-pub fn send_parallel_virtual_pointer_drags(drags: &[(String, VirtualPointerDrag)]) -> Result<()> {
-    let display = open_display()?;
-    supports_parallel_pointer_injection(display)?;
-    let xi_opcode = xinput_opcode(display);
-
-    struct ActiveDrag {
-        cursor_id: String,
-        ids: MasterPointerIds,
-        device: Arc<Mutex<VirtualDevice>>,
-        drag: VirtualPointerDrag,
-        cum: Vec<f64>,
-        total: f64,
-        steps: usize,
-        step_delay: Duration,
-        current_step: usize,
-        next_at: std::time::Instant,
-        last_x: i32,
-        last_y: i32,
-    }
-
-    let start_at = std::time::Instant::now() + Duration::from_millis(120);
-    let mut active = Vec::with_capacity(drags.len());
-
-    // Click-to-focus WMs grab buttons for XIAllMasterDevices, so the drag's
-    // press activates the target window exactly like a user click would.
-    // Remember the focus state and hand it back afterwards so parallel
-    // drags don't steal it.
-    let saved_focus = save_focus_state(display);
-
-    let result = (|| -> Result<()> {
-        for (cursor_id, drag) in drags {
-            let ids = ensure_master_pointer(cursor_id)?;
-            let device = uinput_pointers()
-                .lock()
-                .unwrap()
-                .get(cursor_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("missing uinput pointer for '{cursor_id}'"))?;
-            let (cum, total) = path_cumulative(&drag.path);
-            let start = *drag.path.first().unwrap_or(&(0, 0));
-            active.push(ActiveDrag {
-                cursor_id: cursor_id.clone(),
-                ids,
-                device,
-                drag: drag.clone(),
-                cum,
-                total,
-                steps: drag.steps.max(1),
-                step_delay: if drag.steps.max(1) > 1 {
-                    Duration::from_millis(drag.duration_ms / drag.steps.max(1) as u64)
-                } else {
-                    Duration::from_millis(drag.duration_ms)
-                },
-                current_step: 0,
-                next_at: start_at,
-                last_x: start.0,
-                last_y: start.1,
-            });
-        }
-
-        let now = std::time::Instant::now();
-        if start_at > now {
-            std::thread::sleep(start_at - now);
-        }
-
-        // Shield each drag from the WM's click-to-focus grab, then press.
-        // Per item: install a device-specific sync grab on the target window,
-        // warp, press, and immediately replay the frozen press so it reaches
-        // the app while the WM stays blind to it. We replay each press before
-        // emitting the next so only ONE device is ever frozen at a time — the
-        // X server drops replayed presses when several devices are frozen on
-        // the same window and replayed together. The few-ms stagger this adds
-        // to the presses is invisible; the concurrency that matters is motion.
-        // Shielding is mandatory: if install/replay fails, abort instead of
-        // continuing with a drag that could steal focus and rely on restore.
-        let mut shielded = std::collections::HashSet::new();
-        for item in &active {
-            let opcode = xi_opcode.ok_or_else(|| {
-                anyhow!("parallel_mouse_drag requires XInput/XI2 shield grabs for no-focus-steal operation")
-            })?;
-            install_shield_grab(
-                display,
-                item.ids.pointer_id,
-                item.drag.target_window as x11::xlib::Window,
-                item.drag.button,
-            )
-            .with_context(|| format!("shield grab failed for '{}'", item.cursor_id))?;
-            shielded.insert(item.ids.pointer_id);
-            let start = *item.drag.path.first().unwrap_or(&(0, 0));
-            warp_master_pointer(display, item.ids, start.0, start.1)?;
-            {
-                let mut device = item.device.lock().unwrap();
-                emit_button(&mut device, item.drag.button, true)?;
-            }
-            let mut pending = std::collections::HashSet::from([item.ids.pointer_id]);
-            replay_shielded_presses(display, opcode, &mut pending, Duration::from_millis(1000));
-            if !pending.is_empty() {
-                return Err(anyhow!(
-                    "shield replay timed out before XI_ButtonPress arrived for '{}'",
-                    item.cursor_id
-                ));
-            }
-        }
-
-        while active.iter().any(|item| item.current_step < item.steps) {
-            let now = std::time::Instant::now();
-            let mut advanced = false;
-            let mut next_deadline = None;
-
-            for item in &mut active {
-                if item.current_step >= item.steps {
-                    continue;
-                }
-                if now >= item.next_at {
-                    item.current_step += 1;
-                    let t = item.current_step as f64 / item.steps as f64;
-                    let (ix, iy) = point_on_path(&item.drag.path, &item.cum, item.total, t);
-                    let dx = ix - item.last_x;
-                    let dy = iy - item.last_y;
-                    if dx != 0 || dy != 0 {
-                        let mut device = item.device.lock().unwrap();
-                        emit_relative_motion(&mut device, dx, dy)?;
-                        // Keep the agent cursor overlay tracking the drag so
-                        // the gesture is visible, not just its endpoints.
-                        crate::platform::overlay::send_command_for(
-                            item.cursor_id.clone(),
-                            crate::cursor::OverlayCommand::SnapTo {
-                                x: ix as f64,
-                                y: iy as f64,
-                                heading_radians: Some((dy as f64).atan2(dx as f64)),
-                            },
-                        );
-                    }
-                    item.last_x = ix;
-                    item.last_y = iy;
-                    item.next_at = now + item.step_delay;
-                    advanced = true;
-                }
-                if item.current_step < item.steps {
-                    next_deadline = Some(match next_deadline {
-                        Some(deadline) => std::cmp::min(deadline, item.next_at),
-                        None => item.next_at,
-                    });
-                }
-            }
-
-            if !advanced {
-                if let Some(deadline) = next_deadline {
-                    let now = std::time::Instant::now();
-                    if deadline > now {
-                        std::thread::sleep(deadline - now);
-                    }
-                }
-            }
-        }
-
-        for item in &active {
-            let mut device = item.device.lock().unwrap();
-            emit_button(&mut device, item.drag.button, false)?;
-        }
-
-        // Remove the shields now that the drag is done. The button is only
-        // grabbed for ButtonPress, so the shield is dormant during motion and
-        // release; this just stops it matching the next gesture's press.
-        for item in &active {
-            if shielded.contains(&item.ids.pointer_id) {
-                remove_shield_grab(
-                    display,
-                    item.ids.pointer_id,
-                    item.drag.target_window as x11::xlib::Window,
-                    item.drag.button,
-                );
-            }
-        }
-        Ok(())
-    })();
-    // Remove the per-session masters before handing focus back: non-MPX-aware
-    // WMs (xfwm4, openbox) desync their focus bookkeeping while foreign
-    // master keyboards linger, and the next call recreates masters cheaply.
-    for (cursor_id, _) in drags {
-        forget_master_pointer(cursor_id);
-    }
-    restore_focus_state(display, &saved_focus);
-    unsafe {
-        x11::xlib::XCloseDisplay(display);
-    }
-    result
-}
-
-/// A discrete no-focus-steal pointer click driven through the same real-input
-/// pipeline as [`send_parallel_virtual_pointer_drags`] — MPX master pointer +
-/// uinput slave + XI2 shield grab — reduced to a press/release (or a short
-/// press/release train for `count` > 1) at one screen point.
+/// A discrete no-focus-steal pointer click driven through an MPX master
+/// pointer, uinput slave, and XI2 shield grab.
 ///
 /// This is what lands **right / middle / double** clicks (and any left click
 /// the AT-SPI path can't actuate) on XInput2 toolkits: GTK3/4 silently drop
@@ -1245,12 +942,11 @@ pub struct VirtualPointerClick {
 }
 
 /// Land a discrete click via the MPX real-input pipeline (see
-/// [`VirtualPointerClick`]). Mirrors the per-item press/replay logic of
-/// `send_parallel_virtual_pointer_drags`: install a device-specific synchronous
-/// XI2 shield grab on the target window, warp the master pointer, then for each
+/// [`VirtualPointerClick`]). Install a device-specific synchronous XI2 shield
+/// grab on the target window, warp the master pointer, then for each
 /// press freeze→replay it so the application receives a real button event while
 /// the WM stays blind to it. The master is torn down and focus restored on exit
-/// (matching the drag) to keep non-MPX WMs' focus bookkeeping consistent.
+/// to keep non-MPX WMs' focus bookkeeping consistent.
 pub fn send_virtual_pointer_click(cursor_id: &str, click: &VirtualPointerClick) -> Result<()> {
     let display = open_display()?;
     supports_parallel_pointer_injection(display)?;
@@ -1962,7 +1658,7 @@ pub fn send_key_xtest(key: &str, modifiers: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Screen-absolute click via the XTest extension — the `capture_scope="desktop"`
+/// Screen-absolute click via the XTest extension for an Xwayland target.
 /// foreground click. It warps the real pointer to `(x, y)` and injects a true
 /// button press/release there, so the event lands on whatever window owns that
 /// screen pixel (the Linux peer of the Windows `WindowFromPoint` + macOS
@@ -2393,7 +2089,7 @@ impl Drop for RemappedKeycode<'_> {
     fn drop(&mut self) {
         // Best-effort restore: re-install the original keysyms for this keycode
         // and flush. Errors are swallowed deliberately — Drop must not panic in
-        // the daemon, and the worst case of a failed restore is a single spare
+        // the CLI process, and the worst case of a failed restore is a single spare
         // keycode left mapped (it was unused to begin with), never a crash.
         let _ = self.conn.change_keyboard_mapping(
             1,
@@ -2593,10 +2289,7 @@ exit 0"#,
 
 #[cfg(test)]
 mod path_tests {
-    use super::{
-        modifiers_to_state, path_cumulative, point_on_path, real_pointer_capabilities_available,
-        sample_function,
-    };
+    use super::{modifiers_to_state, real_pointer_capabilities_available};
     use x11rb::protocol::xproto::KeyButMask;
 
     #[test]
@@ -2619,89 +2312,5 @@ mod path_tests {
         assert!(!real_pointer_capabilities_available(true, false, false));
         assert!(!real_pointer_capabilities_available(false, false, true));
         assert!(!real_pointer_capabilities_available(true, true, true));
-    }
-
-    #[test]
-    fn sample_linear_function() {
-        let pts = sample_function("x", 0.0, 10.0, 11).unwrap();
-        assert_eq!(pts.len(), 11);
-        assert_eq!(pts.first().unwrap(), &(0.0, 0.0));
-        assert_eq!(pts.last().unwrap(), &(10.0, 10.0));
-        assert!((pts[5].0 - 5.0).abs() < 1e-9 && (pts[5].1 - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sample_affine_and_trig() {
-        let pts = sample_function("2*x+1", 0.0, 4.0, 5).unwrap();
-        for (x, y) in pts {
-            assert!((y - (2.0 * x + 1.0)).abs() < 1e-9);
-        }
-        // sin(x) parses and yields finite, bounded values.
-        let s = sample_function("100+50*sin(x)", 0.0, 6.28, 40).unwrap();
-        assert!(s.iter().all(|(_, y)| (49.9..=150.1).contains(y)));
-    }
-
-    #[test]
-    fn invalid_expression_errors() {
-        assert!(sample_function("x +", 0.0, 1.0, 4).is_err());
-        assert!(sample_function("3*z", 0.0, 1.0, 4).is_err()); // unknown var
-    }
-
-    #[test]
-    fn non_finite_points_are_dropped() {
-        // ln(x) is -inf/NaN for x<=0; the finite tail must still sample.
-        let pts = sample_function("ln(x)", -2.0, 5.0, 50).unwrap();
-        assert!(pts.iter().all(|(_, y)| y.is_finite()));
-        assert!(pts.len() >= 2);
-    }
-
-    #[test]
-    fn cumulative_lengths_and_total() {
-        // 3-4-5 triangle then a zero-length repeat.
-        let path = [(0, 0), (3, 4), (3, 4)];
-        let (cum, total) = path_cumulative(&path);
-        assert_eq!(cum.len(), 3);
-        assert!((cum[0] - 0.0).abs() < 1e-9);
-        assert!((cum[1] - 5.0).abs() < 1e-9);
-        assert!((cum[2] - 5.0).abs() < 1e-9);
-        assert!((total - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn straight_segment_interpolates_by_fraction() {
-        let path = [(0, 0), (10, 0)];
-        let (cum, total) = path_cumulative(&path);
-        assert_eq!(point_on_path(&path, &cum, total, 0.0), (0, 0));
-        assert_eq!(point_on_path(&path, &cum, total, 0.5), (5, 0));
-        assert_eq!(point_on_path(&path, &cum, total, 1.0), (10, 0));
-    }
-
-    #[test]
-    fn multi_segment_follows_arc_length() {
-        // L-shape: (0,0)->(10,0)->(10,10), total length 20.
-        let path = [(0, 0), (10, 0), (10, 10)];
-        let (cum, total) = path_cumulative(&path);
-        assert!((total - 20.0).abs() < 1e-9);
-        // Halfway by arc length lands exactly on the corner.
-        assert_eq!(point_on_path(&path, &cum, total, 0.5), (10, 0));
-        // 3/4 of the way is 5px down the second segment.
-        assert_eq!(point_on_path(&path, &cum, total, 0.75), (10, 5));
-    }
-
-    #[test]
-    fn fraction_is_clamped_and_endpoints_exact() {
-        let path = [(2, 2), (8, 2), (8, 8)];
-        let (cum, total) = path_cumulative(&path);
-        // t past the ends clamps to the terminal points (no overshoot).
-        assert_eq!(point_on_path(&path, &cum, total, -0.5), (2, 2));
-        assert_eq!(point_on_path(&path, &cum, total, 2.0), (8, 8));
-    }
-
-    #[test]
-    fn degenerate_path_returns_last_point() {
-        let path = [(5, 5), (5, 5)];
-        let (cum, total) = path_cumulative(&path);
-        assert!((total - 0.0).abs() < 1e-9);
-        assert_eq!(point_on_path(&path, &cum, total, 0.3), (5, 5));
     }
 }

@@ -30,7 +30,7 @@ bundle_notice = ["deb:/usr/share/doc/<package>/rust/COPYRIGHT-library.html"]
 status = "pinned-toolchain-and-verified-standard-library-notice-bundle"
 
 [[component]]
-id = "trycua-cua-driver"
+id = "buzzard-cua"
 surface = ["source", "deb", "oci"]
 name = "Buzzard CUA fork"
 version = "0.17.0+buzzard1"
@@ -38,9 +38,9 @@ source = "https://github.com/trycua/cua"
 source_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
 source_tag = "cua-driver-rs-v0.17.0"
 license = "MIT"
-evidence = ["guest/third_party/trycua-cua/LICENSE.md", "guest/third_party/trycua-cua/CITATION.cff", "guest/third_party/trycua-cua/UPSTREAM.toml", "guest/third_party/trycua-cua/LINUX_SCOPE.toml", "guest/third_party/trycua-cua/CHANGES.BUZZARDOS.md", "guest/third_party/trycua-cua/README.BUZZARDOS.md"]
+evidence = ["cua/LICENSE.trycua.md", "cua/CITATION.cff", "cua/UPSTREAM.toml", "cua/CHANGES.BUZZARDOS.md", "cua/README.md"]
 bundle_notice = ["deb:/usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md", "deb:/usr/share/doc/buzzardoscua/CITATION.cff", "deb:/usr/share/doc/buzzardoscua/UPSTREAM.toml", "deb:/usr/share/doc/buzzardoscua/CHANGES.BUZZARDOS.md"]
-status = "reviewed-linux-only-source-scope-and-attribution-recorded"
+status = "reviewed-single-crate-linux-source-and-attribution-recorded"
 
 [[component]]
 id = "trycua-inter-font"
@@ -48,7 +48,7 @@ surface = ["source", "deb", "oci"]
 name = "Inter font"
 source = "https://github.com/rsms/inter"
 license = "OFL-1.1"
-evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt"]
+evidence = ["cua/assets/cursor/Inter-OFL.txt"]
 status = "recorded"
 
 [[component]]
@@ -57,7 +57,7 @@ surface = ["source", "deb", "oci"]
 name = "virtual-keyboard-unstable-v1 protocol definition"
 source = "https://gitlab.freedesktop.org/wayland/wayland-protocols"
 license = "MIT"
-evidence = ["guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml"]
+evidence = ["cua/protocol/virtual-keyboard-unstable-v1.xml"]
 status = "recorded-inline"
 
 [[component]]
