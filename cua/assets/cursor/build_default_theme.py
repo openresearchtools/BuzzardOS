@@ -524,32 +524,6 @@ def action_transfer() -> dict[str, Any]:
     return lottie("action_transfer", frames, [*cursor_layers(frames), *cue])
 
 
-def action_record() -> dict[str, Any]:
-    frames = 48
-    ring = cue_layers(
-        20,
-        "Record ring",
-        [ellipse(29, 39, 34, 34, name="Record ring")],
-        frames,
-        position=static([52, 64]),
-    )
-    dot_scale = animated([(0, [72, 72]), (24, [114, 114]), (48, [72, 72])])
-    dot_opacity = animated([(0, 42), (24, 100), (48, 42)])
-    dot_geometry = [ellipse(29, 39, 10, 10, name="Record dot")]
-    dot = [
-        shape_layer(
-            30,
-            "Record dot outline",
-            [*dot_geometry, fill(BLUE), stroke(WHITE, 3)],
-            frames,
-            position=static([52, 64]),
-            scale=dot_scale,
-            opacity=dot_opacity,
-        )
-    ]
-    return lottie("action_record", frames, [*cursor_layers(frames), *ring, *dot])
-
-
 def action_system() -> dict[str, Any]:
     frames = 48
     geometry = [
@@ -596,7 +570,6 @@ def all_animations() -> dict[str, dict[str, Any]]:
         "action_navigate": action_navigate(),
         "action_app": action_app(),
         "action_transfer": action_transfer(),
-        "action_record": action_record(),
         "action_system": action_system(),
     }
 
@@ -615,7 +588,6 @@ def semantic_manifest() -> dict[str, Any]:
             "navigate",
             "app",
             "transfer",
-            "record",
             "system",
         ]
     }

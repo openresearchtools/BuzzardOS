@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Cua AI, Inc.
 
-//! Cross-platform desktop-loop contracts.
-//!
-//! These schemas intentionally expose only the intersection accepted by the
-//! macOS, Linux, and Windows backends. They generate safe client methods but
-//! do not replace the richer platform-owned runtime schemas.
+//! Typed contracts for the Buzzard OS Sway desktop tools.
 
 use crate::contract::{
     ActionResult, ClickInput, ClipboardReadInput, ClipboardReadOutput, ClipboardWriteInput,
-    ClipboardWriteOutput, CloseWindowInput, CursorAction, CursorPositionOutput, CursorSemantics,
-    DesktopStateOutput, DragInput, GetCursorPositionInput, GetDesktopStateInput,
-    GetScreenSizeInput, HotkeyInput, InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput,
-    MoveCursorInput, Platform, PressKeyInput, RestoreWindowInput, SchemaMode, ScreenSizeOutput,
-    ScrollInput, SetWindowFrameInput, ToolAnnotations, ToolContract, ToolInput, ToolOutput,
-    TypeTextInput,
+    ClipboardWriteOutput, CloseWindowInput, CursorAction, CursorPositionOutput, DesktopStateOutput,
+    DragInput, GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput, HotkeyInput,
+    InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput, PressKeyInput,
+    RestoreWindowInput, ScreenSizeOutput, ScrollInput, SetWindowFrameInput, ToolAnnotations,
+    ToolContract, ToolInput, ToolOutput, TypeTextInput,
 };
-
-const ALL_PLATFORMS: [Platform; 3] = [Platform::Macos, Platform::Windows, Platform::Linux];
 
 pub fn contracts() -> Vec<ToolContract> {
     vec![
@@ -72,28 +65,10 @@ pub(crate) fn list_windows_success_output_schema() -> serde_json::Value {
     })
 }
 
-pub(crate) fn validate_list_windows_output(value: serde_json::Value) -> Result<(), String> {
-    let windows = value
-        .get("windows")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "windows must be an array".to_owned())?;
-    for (index, window) in windows.iter().enumerate() {
-        let z_index = window
-            .get("z_index")
-            .ok_or_else(|| format!("windows[{index}].z_index is required"))?;
-        if !(z_index.is_null() || z_index.is_u64() || z_index.is_i64()) {
-            return Err(format!(
-                "windows[{index}].z_index must be an integer or null"
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn clipboard_read() -> ToolContract {
-    let mut contract = contract::<ClipboardReadInput, ClipboardReadOutput>(
+    let contract = contract::<ClipboardReadInput, ClipboardReadOutput>(
         "clipboard_read",
-        "List available system clipboard types and optionally return privacy-sensitive plain text. Clipboard content is never retained in telemetry.",
+        "List available guest clipboard types and optionally return plain text.",
         &["clipboard.read", "clipboard.types"],
         ToolAnnotations {
             read_only: true,
@@ -103,12 +78,11 @@ fn clipboard_read() -> ToolContract {
         },
         CursorAction::Observe,
     );
-    contract.schema_mode = SchemaMode::CanonicalRuntime;
     contract
 }
 
 fn clipboard_write() -> ToolContract {
-    let mut contract = contract::<ClipboardWriteInput, ClipboardWriteOutput>(
+    let contract = contract::<ClipboardWriteInput, ClipboardWriteOutput>(
         "clipboard_write",
         "Replace the system clipboard with exactly one value: plain text, an image from an absolute local path, or a file URL from an absolute local path. Returns the available types for read-back before paste.",
         &["clipboard.write", "clipboard.write.text", "clipboard.write.image", "clipboard.write.file_url", "clipboard.types"],
@@ -120,7 +94,6 @@ fn clipboard_write() -> ToolContract {
         },
         CursorAction::Text,
     );
-    contract.schema_mode = SchemaMode::CanonicalRuntime;
     contract
 }
 
@@ -129,21 +102,16 @@ fn contract<I: ToolInput, O: ToolOutput>(
     description: &str,
     capabilities: &[&str],
     annotations: ToolAnnotations,
-    cursor_action: CursorAction,
+    _cursor_action: CursorAction,
 ) -> ToolContract {
     assert_eq!(name, I::TOOL_NAME, "typed input is bound to the wrong tool");
     ToolContract {
         name: name.into(),
         description: description.into(),
-        platforms: ALL_PLATFORMS.to_vec(),
-        aliases: Vec::new(),
         capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
         annotations,
-        schema_mode: SchemaMode::PortableSubset,
-        cursor_semantics: Some(CursorSemantics::new(cursor_action)),
         input_schema: I::input_schema(),
         success_output_schema: Some(O::output_schema()),
-        output_validator: crate::contract::validate_typed_output::<O>,
     }
 }
 
@@ -229,7 +197,7 @@ fn linux_window_action<I: ToolInput>(
     destructive: bool,
     idempotent: bool,
 ) -> ToolContract {
-    let mut contract = contract::<I, ActionResult>(
+    let contract = contract::<I, ActionResult>(
         name,
         description,
         &[capability],
@@ -241,7 +209,6 @@ fn linux_window_action<I: ToolInput>(
         },
         CursorAction::App,
     );
-    contract.platforms = vec![Platform::Linux];
     contract
 }
 

@@ -7,12 +7,12 @@
 //! directly. It never re-enters `ToolRegistry::invoke`, so one outer
 //! `verify_state` admission owns authorization for the whole polling window.
 
-use async_trait::async_trait;
 use crate::contract::{
     ElementPredicate, PredicateOutcome, StatePredicate, ToolInput, UnknownReason,
     VerificationStatus, VerifyStateInput, VerifyStateOutput, WindowPredicate,
     VERIFY_STATE_DEFAULT_TIMEOUT_MS,
 };
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -773,9 +773,8 @@ fn aggregate_status(outcomes: &[PredicateOutcome]) -> VerificationStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{
-        BoundsExpectation, ElementSelector, VerificationStatus, WindowPredicate,
-    };
+    use crate::contract::verification::BoundsExpectation;
+    use crate::contract::{ElementSelector, VerificationStatus, WindowPredicate};
 
     fn window() -> Value {
         json!({

@@ -110,23 +110,6 @@ async fn shared_connection() -> Result<&'static AccessibilityConnection> {
         .await
 }
 
-/// Establish the process-lifetime listener before accessibility-aware apps are
-/// launched. Idempotent; later calls reuse the same connection.
-pub fn ensure_listener_active() -> Result<()> {
-    let connect = || runtime().block_on(async { shared_connection().await.map(|_| ()) });
-    if tokio::runtime::Handle::try_current().is_ok() {
-        // The daemon builds its registry from its Tokio entry-point. Calling
-        // Runtime::block_on there panics even though this module owns a separate
-        // runtime, so initialize the AT-SPI connection on a plain thread and
-        // wait for it before accessibility-aware apps can launch.
-        std::thread::spawn(connect)
-            .join()
-            .map_err(|_| anyhow!("AT-SPI listener initialization thread panicked"))?
-    } else {
-        connect()
-    }
-}
-
 /// A node discovered during the pre-order walk, with its proxy retained so the
 /// per-index operations can act on it without re-walking the tree.
 struct Visited<'a> {
@@ -227,7 +210,8 @@ async fn web_extents_are_physical(visited: &[Visited<'_>], pid: u32, coord: Coor
         window.width,
         window.height,
     );
-    let converted = crate::platform::wayland::physical_rect_to_logical(x, y, width as u32, height as u32);
+    let converted =
+        crate::platform::wayland::physical_rect_to_logical(x, y, width as u32, height as u32);
     let converted_fits = rect_fits_window(
         converted.0,
         converted.1,
@@ -886,11 +870,6 @@ fn is_indexable_capabilities(
 
 // ── Public (sync) entry points ───────────────────────────────────────────────
 
-pub fn walk_tree(pid: u32) -> Result<Option<(String, Vec<AtspiNode>)>> {
-    walk_tree_bounded(pid, 0, None, None)
-        .map(|snapshot| snapshot.map(|(markdown, nodes, _)| (markdown, nodes)))
-}
-
 /// Walk the AT-SPI tree with caller-supplied node + depth caps.
 /// `max_elements = None` keeps the historical 5 000-node default; `max_depth
 /// = None` keeps the historical unbounded depth. Issue #22865.
@@ -1407,7 +1386,9 @@ pub fn insert_text(pid: u32, text: &str) -> Result<bool> {
                             dlog!("GTK3 fallback: window XID {xid}, local coords ({wx},{wy})");
 
                             // Click the entry to focus the widget (widget focus, not window focus).
-                            if let Err(e) = crate::platform::input::send_click(xid as u64, wx, wy, 1, 1) {
+                            if let Err(e) =
+                                crate::platform::input::send_click(xid as u64, wx, wy, 1, 1)
+                            {
                                 dlog!("GTK3 fallback: click failed: {e}");
                                 return Ok(false);
                             };
@@ -1417,7 +1398,8 @@ pub fn insert_text(pid: u32, text: &str) -> Result<bool> {
 
                             // Now type via X11 XSendEvent — the entry widget has internal focus
                             // so it should accept the keystrokes even though the window is unfocused.
-                            if let Err(e) = crate::platform::input::send_type_text(xid as u64, text) {
+                            if let Err(e) = crate::platform::input::send_type_text(xid as u64, text)
+                            {
                                 dlog!("GTK3 fallback: send_type_text failed: {e}");
                                 return Ok(false);
                             }
@@ -2408,7 +2390,9 @@ fn window_to_screen_offset(pid: u32, xid: u64, title: Option<&str>) -> Option<(i
     let win_xid = if xid != 0 {
         xid
     } else {
-        crate::platform::x11::list_windows(Some(pid)).first().map(|w| w.xid)?
+        crate::platform::x11::list_windows(Some(pid))
+            .first()
+            .map(|w| w.xid)?
     };
     // `?` here is the GTK gate: no _GTK_FRAME_EXTENTS → non-GTK toolkit → keep
     // the legacy Screen path (which those toolkits report correctly).
@@ -2424,8 +2408,7 @@ fn authoritative_wayland_origin(pid: u32, xid: u64, title: Option<&str>) -> Opti
     if !crate::platform::wayland::is_wayland() {
         return None;
     }
-    crate::platform::wayland::inject_accessibility_offset(pid)
-        .or_else(|| crate::platform::wayland::compositor_ipc::window_origin_for_pid(pid))
+    crate::platform::wayland::compositor_ipc::window_origin_for_pid(pid)
         .or_else(|| {
             (xid != 0)
                 .then(|| crate::platform::wayland::compositor_ipc::window_for_id(xid))
@@ -2442,7 +2425,9 @@ fn authoritative_wayland_origin(pid: u32, xid: u64, title: Option<&str>) -> Opti
                 })
                 .flatten()
         })
-        .or_else(|| title.and_then(crate::platform::wayland::compositor_ipc::window_origin_for_title))
+        .or_else(|| {
+            title.and_then(crate::platform::wayland::compositor_ipc::window_origin_for_title)
+        })
 }
 
 fn prefer_authoritative_wayland_origin(

@@ -7,12 +7,11 @@
 use crate::cursor::{CursorAction, CursorVisualState};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
     io::{Cursor, Read},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Stroke, Transform};
@@ -115,14 +114,6 @@ pub struct CompiledTheme {
 }
 
 impl CompiledTheme {
-    pub fn content_hash(&self) -> String {
-        let mut hasher = Sha256::new();
-        if let Ok(bytes) = postcard::to_allocvec(self) {
-            hasher.update(bytes);
-        }
-        hex_digest(hasher.finalize().as_slice())
-    }
-
     pub fn animation_for_action(&self, action: CursorAction) -> Option<&CompiledAnimation> {
         self.actions.get(action.as_str())
     }
@@ -425,32 +416,6 @@ pub fn uninstall_theme(id: &str) -> Result<bool> {
     }
 }
 
-pub fn list_installed_themes() -> Result<Vec<String>> {
-    let mut ids = vec![crate::cursor::DEFAULT_THEME_ID.to_owned()];
-    let root = theme_store_root()?;
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
-        Err(error) => return Err(error).context("read cursor-theme store"),
-    };
-    for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if let Some(id) = name.strip_suffix(".cua-theme") {
-            if valid_theme_id(id) {
-                ids.push(id.to_owned());
-            }
-        }
-    }
-    ids.sort();
-    ids.dedup();
-    Ok(ids)
-}
-
 fn theme_cache() -> &'static Mutex<BTreeMap<String, Arc<CompiledTheme>>> {
     static CACHE: OnceLock<Mutex<BTreeMap<String, Arc<CompiledTheme>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -736,30 +701,6 @@ fn draw_layer(
     draw_frame(target, frame, transform, alpha, tint);
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn paint_compiled_theme(
-    target: &mut tiny_skia::Pixmap,
-    theme: &CompiledTheme,
-    visual: &CursorVisualState,
-    anchor_x: f32,
-    anchor_y: f32,
-    heading: f32,
-    backing_scale: f32,
-    alpha: f32,
-) {
-    paint_compiled_theme_with_tint(
-        target,
-        theme,
-        visual,
-        anchor_x,
-        anchor_y,
-        heading,
-        backing_scale,
-        alpha,
-        None,
-    );
-}
-
 /// Paint a compiled theme, optionally replacing the embedded default's blue
 /// palette key with a stable per-session fill.
 ///
@@ -777,7 +718,8 @@ pub fn paint_compiled_theme_with_tint(
     alpha: f32,
     tint: Option<[u8; 4]>,
 ) {
-    let scale = crate::cursor::theme::DISPLAY_SIZE * backing_scale / crate::cursor::theme::CANVAS_SIZE;
+    let scale =
+        crate::cursor::theme::DISPLAY_SIZE * backing_scale / crate::cursor::theme::CANVAS_SIZE;
     let (float_dx, float_dy, float_rotation) = if theme.id == crate::cursor::DEFAULT_THEME_ID {
         crate::cursor::theme::shared_float_motion(visual)
     } else {
@@ -801,24 +743,10 @@ pub fn paint_compiled_theme_with_tint(
     }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
-pub fn inspect_artifact(path: &Path) -> Result<CompiledTheme> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    decode_theme(&bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     fn frame() -> CompiledFrame {
         CompiledFrame {
@@ -920,7 +848,7 @@ mod tests {
     #[test]
     fn embedded_default_was_compiled_from_the_checked_in_lottie() {
         let source = include_bytes!("../../assets/cursor/cua.default.lottie");
-        let expected: [u8; 32] = Sha256::digest(source).into();
+        let expected: [u8; 32] = sha2::Sha256::digest(source).into();
         assert_eq!(embedded_default_theme().source_hash, expected);
     }
 

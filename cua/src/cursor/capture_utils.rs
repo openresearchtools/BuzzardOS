@@ -23,16 +23,6 @@ pub struct CropResult {
     pub scale_inv: f64,
 }
 
-impl CropResult {
-    /// Convert a zoom-image coordinate `(px, py)` back to full-window pixel coordinates.
-    pub fn zoom_to_window(&self, px: f64, py: f64) -> (f64, f64) {
-        (
-            self.origin_x + px * self.scale_inv,
-            self.origin_y + py * self.scale_inv,
-        )
-    }
-}
-
 /// Decode a PNG, crop to the given region with 20% padding on all sides,
 /// optionally scale down to `max_width`, and re-encode as JPEG.
 pub fn crop_png_to_jpeg(

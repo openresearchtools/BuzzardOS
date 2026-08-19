@@ -108,7 +108,13 @@ pub fn fire_session_end(session: &str) -> bool {
     if let Some(generation) = generations().lock().unwrap().get_mut(session) {
         *generation += 1;
     }
-    let callbacks = hooks().lock().unwrap().values().cloned().collect::<Vec<_>>();
+    crate::core::capture_scope::clear_session(session);
+    let callbacks = hooks()
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
     for callback in callbacks {
         callback(session);
     }
@@ -117,14 +123,6 @@ pub fn fire_session_end(session: &str) -> bool {
 
 pub fn end_session(session: &str) {
     fire_session_end(session);
-}
-
-pub fn forget_ended_sessions_with_prefix(prefix: &str) {
-    ended().lock().unwrap().retain(|session| !session.starts_with(prefix));
-    generations()
-        .lock()
-        .unwrap()
-        .retain(|session, _| !session.starts_with(prefix));
 }
 
 pub fn register_session_end_hook(callback: impl Fn(&str) + Send + Sync + 'static) {

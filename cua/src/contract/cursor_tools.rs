@@ -2,13 +2,11 @@
 // Copyright (c) 2026 Cua AI, Inc.
 
 use crate::contract::{
-    GetAgentCursorStateInput, GetAgentCursorStateOutput, Platform, SchemaMode,
-    SetAgentCursorEnabledInput, SetAgentCursorEnabledOutput, SetAgentCursorMotionInput,
-    SetAgentCursorMotionOutput, SetAgentCursorThemeInput, SetAgentCursorThemeOutput,
-    ToolAnnotations, ToolContract, ToolInput, ToolOutput,
+    GetAgentCursorStateInput, GetAgentCursorStateOutput, SetAgentCursorEnabledInput,
+    SetAgentCursorEnabledOutput, SetAgentCursorMotionInput, SetAgentCursorMotionOutput,
+    SetAgentCursorThemeInput, SetAgentCursorThemeOutput, ToolAnnotations, ToolContract, ToolInput,
+    ToolOutput,
 };
-
-const ALL_PLATFORMS: [Platform; 3] = [Platform::Macos, Platform::Windows, Platform::Linux];
 
 pub fn contracts() -> Vec<ToolContract> {
     vec![
@@ -49,8 +47,6 @@ fn contract<I: ToolInput, O: ToolOutput>(
     ToolContract {
         name: name.into(),
         description: description.into(),
-        platforms: ALL_PLATFORMS.to_vec(),
-        aliases: Vec::new(),
         capabilities: capabilities.iter().map(|value| (*value).into()).collect(),
         annotations: ToolAnnotations {
             read_only,
@@ -58,10 +54,7 @@ fn contract<I: ToolInput, O: ToolOutput>(
             idempotent: true,
             open_world: false,
         },
-        schema_mode: SchemaMode::CanonicalRuntime,
-        cursor_semantics: None,
         input_schema: I::input_schema(),
         success_output_schema: Some(O::output_schema()),
-        output_validator: crate::contract::validate_typed_output::<O>,
     }
 }

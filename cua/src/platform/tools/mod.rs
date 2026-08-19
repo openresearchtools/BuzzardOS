@@ -11,8 +11,3 @@ mod impl_;
 pub fn build_registry() -> ToolRegistry {
     impl_::build_registry()
 }
-
-// Keep register_all as alias for backwards compat.
-pub fn register_all() -> ToolRegistry {
-    build_registry()
-}

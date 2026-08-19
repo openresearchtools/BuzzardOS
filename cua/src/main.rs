@@ -5,8 +5,8 @@ mod core;
 mod cursor;
 mod platform;
 
-use base64::Engine as _;
 use crate::core::protocol::{Content, ToolResult};
+use base64::Engine as _;
 use serde_json::{Map, Value};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -68,7 +68,10 @@ fn write_image(path: &PathBuf, data: &str) {
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     if !parent.is_dir() {
         die(
-            format!("image output directory does not exist: {}", parent.display()),
+            format!(
+                "image output directory does not exist: {}",
+                parent.display()
+            ),
             1,
         );
     }

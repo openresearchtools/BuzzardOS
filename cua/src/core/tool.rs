@@ -74,44 +74,9 @@ impl ToolDef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtectedResourceOwnership {
-    UserOwned,
-    DriverOwned,
-}
-
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn def(&self) -> &ToolDef;
-
-    async fn protected_resource_ownership(
-        &self,
-        _adapter_id: &str,
-        _args: &Value,
-    ) -> ProtectedResourceOwnership {
-        ProtectedResourceOwnership::UserOwned
-    }
-
-    async fn protected_resource_scope(
-        &self,
-        _adapter_id: &str,
-        _args: &Value,
-    ) -> Result<Option<Value>, String> {
-        Ok(None)
-    }
-
-    async fn validate_protected_resource_scope(
-        &self,
-        adapter_id: &str,
-        args: &Value,
-        approved_scope: &Value,
-    ) -> Result<(), String> {
-        match self.protected_resource_scope(adapter_id, args).await? {
-            Some(current) if current == *approved_scope => Ok(()),
-            Some(_) => Err("the protected resource identity changed before dispatch".into()),
-            None => Err("the protected resource identity cannot be re-proven".into()),
-        }
-    }
 
     async fn invoke(&self, args: Value) -> ToolResult;
 }
@@ -187,19 +152,19 @@ impl ToolRegistry {
         })
     }
 
-    pub async fn invoke(&self, name: &str, args: Value) -> ToolResult {
-        self.invoke_direct(name, args).await
-    }
-
     pub async fn invoke_direct(&self, name: &str, args: Value) -> ToolResult {
-        let resolved_name = if name == "type_text_chars" {
-            "type_text"
-        } else {
-            name
-        };
-        let Some(tool) = self.tools.get(resolved_name) else {
+        let Some(tool) = self.tools.get(name) else {
             return ToolResult::error(format!("Unknown tool: {name}"));
         };
+        if let Err(violation) = crate::core::capture_scope::enforce_tool(name, &args) {
+            return ToolResult::error(violation.message.clone()).with_structured(
+                violation.as_json(
+                    args.get("session")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default"),
+                ),
+            );
+        }
         let session = args
             .get("session")
             .and_then(Value::as_str)

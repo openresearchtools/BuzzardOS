@@ -1325,7 +1325,6 @@ pub fn send_virtual_pointer_click(cursor_id: &str, click: &VirtualPointerClick) 
 /// `ticks` is a signed detent count (+up / +right per evdev convention).
 #[derive(Clone, Debug)]
 pub struct VirtualPointerScroll {
-    pub target_window: u64,
     pub x: i32,
     pub y: i32,
     pub horizontal: bool,
@@ -1673,101 +1672,6 @@ pub fn send_click_with_modifiers(
 /// `xid` — target window XID. `from_x/y`, `to_x/y` — window-local coords.
 /// `duration_ms` — total budget. `steps` — interpolated MotionNotify events.
 /// `button` — X11 button number (1=left, 2=middle, 3=right).
-pub fn send_drag(
-    xid: u64,
-    from_x: i32,
-    from_y: i32,
-    to_x: i32,
-    to_y: i32,
-    duration_ms: u64,
-    steps: usize,
-    button: u8,
-) -> Result<()> {
-    let (conn, _) = connect_x11_for_input()?;
-    let root = conn.setup().roots[0].root;
-    let steps = steps.max(1);
-    let step_delay_ms = if steps > 1 {
-        duration_ms / steps as u64
-    } else {
-        duration_ms
-    };
-    let press_target = resolve_event_target(&conn, xid, from_x, from_y)?;
-
-    // ButtonPress at start.
-    let press = ButtonPressEvent {
-        response_type: BUTTON_PRESS_EVENT,
-        detail: button,
-        sequence: 0,
-        time: x11rb::CURRENT_TIME,
-        root,
-        event: press_target.window,
-        child: x11rb::NONE,
-        root_x: press_target.root_x,
-        root_y: press_target.root_y,
-        event_x: press_target.local_x,
-        event_y: press_target.local_y,
-        state: KeyButMask::from(0u16),
-        same_screen: true,
-    };
-    conn.send_event(false, press_target.window, EventMask::BUTTON_PRESS, &press)?;
-    conn.flush()?;
-    sleep(Duration::from_millis(CLICK_DELAY_MS));
-
-    // Interpolated MotionNotify steps.
-    for i in 1..=steps {
-        let t = i as f64 / steps as f64;
-        let ix = from_x + ((to_x - from_x) as f64 * t).round() as i32;
-        let iy = from_y + ((to_y - from_y) as f64 * t).round() as i32;
-        let target = resolve_event_target(&conn, xid, ix, iy)?;
-        let motion = MotionNotifyEvent {
-            response_type: MOTION_NOTIFY_EVENT,
-            detail: Motion::NORMAL,
-            sequence: 0,
-            time: x11rb::CURRENT_TIME,
-            root,
-            event: target.window,
-            child: x11rb::NONE,
-            root_x: target.root_x,
-            root_y: target.root_y,
-            event_x: target.local_x,
-            event_y: target.local_y,
-            state: button_state_mask(button),
-            same_screen: true,
-        };
-        conn.send_event(false, target.window, EventMask::POINTER_MOTION, &motion)?;
-        conn.flush()?;
-        if step_delay_ms > 0 {
-            sleep(Duration::from_millis(step_delay_ms));
-        }
-    }
-
-    // ButtonRelease at end.
-    let release_target = resolve_event_target(&conn, xid, to_x, to_y)?;
-    let release = ButtonReleaseEvent {
-        response_type: BUTTON_RELEASE_EVENT,
-        detail: button,
-        sequence: 0,
-        time: x11rb::CURRENT_TIME,
-        root,
-        event: release_target.window,
-        child: x11rb::NONE,
-        root_x: release_target.root_x,
-        root_y: release_target.root_y,
-        event_x: release_target.local_x,
-        event_y: release_target.local_y,
-        state: button_state_mask(button),
-        same_screen: true,
-    };
-    conn.send_event(
-        false,
-        release_target.window,
-        EventMask::BUTTON_RELEASE,
-        &release,
-    )?;
-    conn.flush()?;
-    Ok(())
-}
-
 pub fn send_button_down(xid: u64, x: i32, y: i32, button: u8) -> Result<()> {
     let (conn, _) = connect_x11_for_input()?;
     let root = conn.setup().roots[0].root;

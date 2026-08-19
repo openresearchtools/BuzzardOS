@@ -9,10 +9,6 @@ use std::collections::BTreeMap;
 
 /// Transport-free structured result used by both the live runtime and SDK generation.
 pub trait ToolOutput: Serialize + DeserializeOwned + JsonSchema {
-    fn validate(&self) -> Result<(), String> {
-        Ok(())
-    }
-
     fn output_schema() -> Value {
         output_schema_with_additional_properties::<Self>(true)
     }
@@ -101,15 +97,7 @@ pub struct EndSessionOutput {
     pub active: bool,
 }
 
-impl ToolOutput for EndSessionOutput {
-    fn validate(&self) -> Result<(), String> {
-        if self.active {
-            Err("active must be false".into())
-        } else {
-            Ok(())
-        }
-    }
-}
+impl ToolOutput for EndSessionOutput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CursorMotionOutput {
@@ -215,15 +203,7 @@ pub struct DesktopStateOutput {
     pub extensions: BTreeMap<String, Value>,
 }
 
-impl ToolOutput for DesktopStateOutput {
-    fn validate(&self) -> Result<(), String> {
-        if self.screenshot_mime_type == "image/png" {
-            Ok(())
-        } else {
-            Err("screenshot_mime_type must be image/png".into())
-        }
-    }
-}
+impl ToolOutput for DesktopStateOutput {}
 
 fn png_mime_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({ "const": "image/png" })
@@ -269,45 +249,18 @@ pub struct ClipboardReadOutput {
     pub types: Vec<String>,
     #[schemars(required, schema_with = "nullable_string_schema")]
     pub text: Option<String>,
-    pub privacy_sensitive: bool,
-    pub content_redacted_from_telemetry: bool,
 }
 
-impl ToolOutput for ClipboardReadOutput {
-    fn validate(&self) -> Result<(), String> {
-        if !self.supported {
-            return Err("successful clipboard reads must be supported".into());
-        }
-        if !self.privacy_sensitive || !self.content_redacted_from_telemetry {
-            return Err("clipboard privacy metadata must remain enabled".into());
-        }
-        Ok(())
-    }
-}
+impl ToolOutput for ClipboardReadOutput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ClipboardWriteOutput {
     pub supported: bool,
     pub written_type: String,
     pub types: Vec<String>,
-    pub privacy_sensitive: bool,
-    pub content_redacted_from_telemetry: bool,
 }
 
-impl ToolOutput for ClipboardWriteOutput {
-    fn validate(&self) -> Result<(), String> {
-        if !self.supported {
-            return Err("successful clipboard writes must be supported".into());
-        }
-        if !matches!(self.written_type.as_str(), "text" | "image" | "file_url") {
-            return Err("written_type must be text, image, or file_url".into());
-        }
-        if !self.privacy_sensitive || !self.content_redacted_from_telemetry {
-            return Err("clipboard privacy metadata must remain enabled".into());
-        }
-        Ok(())
-    }
-}
+impl ToolOutput for ClipboardWriteOutput {}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -400,64 +353,7 @@ pub struct ActionResult {
     pub escalation: Option<ActionEscalation>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionResultValidationError {
-    ConfirmedRequiresEvidence,
-    PartialRequiresDeliveredCount,
-    RefusedCannotHaveDelivery,
-    RefusedCannotHaveEvidence,
-}
-
-impl std::fmt::Display for ActionResultValidationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::ConfirmedRequiresEvidence => "confirmed effect requires evidence",
-            Self::PartialRequiresDeliveredCount => "partial effect requires delivered_count",
-            Self::RefusedCannotHaveDelivery => "refused effect cannot include delivery",
-            Self::RefusedCannotHaveEvidence => "refused effect cannot include evidence",
-        })
-    }
-}
-
-impl std::error::Error for ActionResultValidationError {}
-
-impl ActionResult {
-    pub fn validate_invariants(&self) -> Result<(), ActionResultValidationError> {
-        match self.effect {
-            ActionEffect::Confirmed
-                if self
-                    .evidence
-                    .as_ref()
-                    .is_none_or(|evidence| evidence.is_empty()) =>
-            {
-                Err(ActionResultValidationError::ConfirmedRequiresEvidence)
-            }
-            ActionEffect::Partial
-                if self
-                    .delivery
-                    .as_ref()
-                    .and_then(|delivery| delivery.delivered_count)
-                    .is_none() =>
-            {
-                Err(ActionResultValidationError::PartialRequiresDeliveredCount)
-            }
-            ActionEffect::Refused if self.delivery.is_some() => {
-                Err(ActionResultValidationError::RefusedCannotHaveDelivery)
-            }
-            ActionEffect::Refused if self.evidence.is_some() => {
-                Err(ActionResultValidationError::RefusedCannotHaveEvidence)
-            }
-            _ => Ok(()),
-        }
-    }
-}
-
 impl ToolOutput for ActionResult {
-    fn validate(&self) -> Result<(), String> {
-        self.validate_invariants()
-            .map_err(|error| error.to_string())
-    }
-
     fn output_schema() -> Value {
         output_schema_with_additional_properties::<Self>(false)
     }
@@ -677,47 +573,5 @@ mod tests {
             }
         });
         assert!(serde_json::from_value::<ActionResult>(escalation_extension).is_err());
-    }
-
-    #[test]
-    fn action_result_enforces_effect_invariants() {
-        let mut result = confirmed_result();
-        result.evidence = None;
-        assert_eq!(
-            result.validate_invariants(),
-            Err(ActionResultValidationError::ConfirmedRequiresEvidence)
-        );
-        assert_eq!(
-            ToolOutput::validate(&result),
-            Err("confirmed effect requires evidence".into())
-        );
-
-        result.effect = ActionEffect::Partial;
-        result.delivery = Some(ActionDelivery {
-            mode: ActionDeliveryMode::Foreground,
-            delivered_count: None,
-        });
-        assert_eq!(
-            result.validate_invariants(),
-            Err(ActionResultValidationError::PartialRequiresDeliveredCount)
-        );
-        result.delivery.as_mut().expect("delivery").delivered_count = Some(1);
-        assert_eq!(result.validate_invariants(), Ok(()));
-
-        result.effect = ActionEffect::Refused;
-        assert_eq!(
-            result.validate_invariants(),
-            Err(ActionResultValidationError::RefusedCannotHaveDelivery)
-        );
-        result.delivery = None;
-        result.evidence = Some(vec![ActionEvidence {
-            kind: ActionEvidenceKind::WindowChange,
-        }]);
-        assert_eq!(
-            result.validate_invariants(),
-            Err(ActionResultValidationError::RefusedCannotHaveEvidence)
-        );
-        result.evidence = None;
-        assert_eq!(result.validate_invariants(), Ok(()));
     }
 }

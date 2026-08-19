@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Mutex};
 
-use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext, ContentFormat};
 use crate::core::clipboard::ClipboardBackend;
+use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext, ContentFormat};
 
 pub struct LinuxClipboard {
     context: Result<Mutex<ClipboardContext>, String>,

@@ -572,10 +572,6 @@ fn maximize_commands(window: &Window, restore: Rect) -> Vec<String> {
     commands
 }
 
-pub fn set_window_frame(id: u64, x: i32, y: i32, width: u32, height: u32) -> bool {
-    set_window_frame_checked(id, x, y, width, height).is_ok()
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowControlAction {
     Focus,
@@ -874,55 +870,6 @@ fn read_ipc_message(stream: &mut UnixStream) -> anyhow::Result<(u32, Vec<u8>)> {
     let mut payload = vec![0_u8; length];
     stream.read_exact(&mut payload)?;
     Ok((message_type, payload))
-}
-
-/// Briefly focus one compositor-attested container, run `body`, then restore
-/// the previously focused container.
-pub fn with_focused_container<T>(
-    id: u64,
-    body: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    let prior = list_windows_result()?
-        .into_iter()
-        .find(|window| window.focused)
-        .map(|window| window.id);
-    run_confirmed(id, "temporary focus", vec!["focus".to_owned()], |window| {
-        window.focused
-    })?;
-    let result = body();
-    let restore = prior
-        .filter(|prior| *prior != id)
-        .map(|prior| {
-            run_confirmed(
-                prior,
-                "prior focus restore",
-                vec!["focus".to_owned()],
-                |window| window.focused,
-            )?;
-            Ok(())
-        })
-        .transpose();
-    match (result, restore) {
-        (Ok(value), Ok(_)) => Ok(value),
-        (Err(error), Ok(_)) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore)) => Err(error.context(format!(
-            "the prior Sway focus also could not be restored: {restore}"
-        ))),
-    }
-}
-
-pub fn window_origin_for_pid(pid: u32) -> Option<(i32, i32)> {
-    window_for_pid(pid).map(|window| (window.x, window.y))
-}
-
-pub fn window_content_offset_for_pid(pid: u32) -> Option<(i32, i32)> {
-    window_for_pid(pid).map(|window| (window.content_x, window.content_y))
-}
-
-pub fn window_origin_for_title(title: &str) -> Option<(i32, i32)> {
-    let window = window_for_title(title)?;
-    Some((window.x, window.y))
 }
 
 #[cfg(test)]

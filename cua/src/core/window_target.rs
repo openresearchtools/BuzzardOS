@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::protocol::ToolResult;
-use crate::core::tool::{ProtectedResourceOwnership, Tool, ToolDef};
+use crate::core::tool::{Tool, ToolDef};
 
 /// Caller-recoverable metadata for an eligible top-level window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,35 +66,6 @@ impl PidOnlyWindowTargetGuard {
 impl Tool for PidOnlyWindowTargetGuard {
     fn def(&self) -> &ToolDef {
         self.inner.def()
-    }
-
-    async fn protected_resource_ownership(
-        &self,
-        adapter_id: &str,
-        args: &Value,
-    ) -> ProtectedResourceOwnership {
-        self.inner
-            .protected_resource_ownership(adapter_id, args)
-            .await
-    }
-
-    async fn protected_resource_scope(
-        &self,
-        adapter_id: &str,
-        args: &Value,
-    ) -> Result<Option<Value>, String> {
-        self.inner.protected_resource_scope(adapter_id, args).await
-    }
-
-    async fn validate_protected_resource_scope(
-        &self,
-        adapter_id: &str,
-        args: &Value,
-        approved_scope: &Value,
-    ) -> Result<(), String> {
-        self.inner
-            .validate_protected_resource_scope(adapter_id, args, approved_scope)
-            .await
     }
 
     async fn invoke(&self, mut args: Value) -> ToolResult {

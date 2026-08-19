@@ -23,8 +23,8 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::Instant;
 
+use crate::cursor::{CursorConfig, OverlayCommand, RenderStateCore};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use crate::cursor::{CursorConfig, OverlayCommand, OverlayMsg, RenderStateCore};
 use wayland_client::{
     protocol::{
         wl_buffer::WlBuffer,
@@ -50,7 +50,6 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 enum WlOverlayCmd {
     Cmd { cmd: OverlayCommand },
     Remove,
-    Shutdown,
 }
 
 static TX: OnceLock<Sender<WlOverlayCmd>> = OnceLock::new();
@@ -76,11 +75,8 @@ pub fn ensure_started() {
     });
 }
 
-/// Translate a generic [`OverlayMsg`] (the cross-platform command shape)
-/// to the layer-shell owner thread. The owner-thread render core consumes
-/// every variant the X11 path handles; only `ShowFocusRect` (macOS-only)
-/// is silently dropped here.
-pub fn forward(msg: &OverlayMsg) -> bool {
+/// Forward one cursor command to the in-process layer-shell owner thread.
+pub fn forward(command: &OverlayCommand) -> bool {
     // Lazy startup: spawning the layer-shell owner thread + connecting to
     // the Wayland compositor takes 100-300ms. Doing that at cua-driver mcp
     // boot (the old eager-init path) was tipping the borderline CI
@@ -89,29 +85,15 @@ pub fn forward(msg: &OverlayMsg) -> bool {
     // bypasses the spawn after the first call.
     ensure_started();
     let Some(tx) = tx() else { return false };
-    match msg {
-        OverlayMsg::Remove(k) => {
-            let _ = k;
-            let _ = tx.try_send(WlOverlayCmd::Remove);
-            true
-        }
-        OverlayMsg::Cmd(kc) => {
-            if matches!(&kc.cmd, OverlayCommand::ShowFocusRect(_)) {
-                return false;
-            }
-            let _ = tx.try_send(WlOverlayCmd::Cmd {
-                cmd: kc.cmd.clone(),
-            });
-            true
-        }
-    }
+    tx.try_send(WlOverlayCmd::Cmd {
+        cmd: command.clone(),
+    })
+    .is_ok()
 }
 
-/// Cleanly stop the owner thread. Tests use this; production code typically
-/// lets the thread die at process exit.
-pub fn shutdown() {
+pub fn remove() {
     if let Some(tx) = tx() {
-        let _ = tx.send(WlOverlayCmd::Shutdown);
+        let _ = tx.try_send(WlOverlayCmd::Remove);
     }
 }
 
@@ -265,10 +247,6 @@ fn owner_thread(rx: Receiver<WlOverlayCmd>) -> anyhow::Result<()> {
         let mut shutdown = false;
         loop {
             match rx.try_recv() {
-                Ok(WlOverlayCmd::Shutdown) => {
-                    shutdown = true;
-                    break;
-                }
                 Ok(WlOverlayCmd::Cmd { cmd }) => {
                     // Seed: if the cursor is still at the off-screen sentinel
                     // `(-200, -200)` from `RenderStateCore::new`, snap to a
@@ -294,7 +272,7 @@ fn owner_thread(rx: Receiver<WlOverlayCmd>) -> anyhow::Result<()> {
                     // apply_command_base consumes every variant the X11
                     // path handles. `move_to_snap_sentinel` / `click_pulse
                     // _sentinel_only` are both `false` here — same as X11.
-                    let _ = state.core.apply_command_base(cmd, false, false);
+                    let _ = state.core.apply_command_base(cmd);
                 }
                 Ok(WlOverlayCmd::Remove) => {
                     // Single-cursor overlay: removing the active cursor
@@ -403,7 +381,7 @@ fn redraw(
     // backing_scale=1.0 matches the X11 path; per-output Wayland scale is
     // a follow-up (would consume `wl_output.scale` and `preferred_buffer
     // _scale` from wl_surface v6).
-    crate::cursor::paint_cursor(&mut pm, &state.core, 0.0, 0.0, None, 1.0);
+    crate::cursor::paint_cursor(&mut pm, &state.core, 0.0, 0.0, 1.0);
 
     // CUA_OVERLAY_DEBUG=1 paints a 60x60 magenta square at the cursor's
     // current pos on top of the gradient arrow. Useful when validating

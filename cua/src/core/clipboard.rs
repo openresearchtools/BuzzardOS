@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use crate::contract::{
     ClipboardReadInput, ClipboardReadOutput, ClipboardWriteInput, ClipboardWriteOutput,
 };
+use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
@@ -93,8 +93,6 @@ impl Tool for ClipboardReadTool {
             supported: true,
             types,
             text,
-            privacy_sensitive: true,
-            content_redacted_from_telemetry: true,
         };
         ToolResult::text(format!(
             "Clipboard read succeeded ({} available type(s); text {}).",
@@ -163,8 +161,6 @@ impl Tool for ClipboardWriteTool {
             supported: true,
             written_type: written_type.into(),
             types,
-            privacy_sensitive: true,
-            content_redacted_from_telemetry: true,
         };
         ToolResult::text(format!(
             "Clipboard write succeeded as {written_type}; inspect structuredContent.types before paste."
@@ -245,7 +241,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn text_round_trip_returns_types_and_privacy_metadata() {
+    async fn text_round_trip_returns_content_and_types_without_telemetry_fields() {
         let backend: Arc<dyn ClipboardBackend> = Arc::new(FakeClipboard::default());
         let write = ClipboardWriteTool {
             backend: backend.clone(),
@@ -263,8 +259,9 @@ mod tests {
             .await;
         let output = read.structured_content.unwrap();
         assert_eq!(output["text"], "private value");
-        assert_eq!(output["privacy_sensitive"], true);
-        assert_eq!(output["content_redacted_from_telemetry"], true);
+        assert_eq!(output["types"], serde_json::json!(["text/plain"]));
+        assert!(output.get("privacy_sensitive").is_none());
+        assert!(output.get("content_redacted_from_telemetry").is_none());
     }
 
     #[tokio::test]

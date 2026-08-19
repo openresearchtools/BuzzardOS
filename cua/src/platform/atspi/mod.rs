@@ -13,10 +13,7 @@ use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
-pub mod cache;
 pub mod native;
-pub use cache::ElementCache;
-pub use native::ensure_listener_active;
 
 #[derive(Clone, Debug)]
 pub struct AtspiNode {
@@ -98,12 +95,6 @@ pub fn snapshot_element_key(pid: u32, snapshot_id: &str, index: usize) -> Option
         .keys
         .get(index)
         .copied()
-}
-
-/// Walk the AT-SPI tree for a window identified by (pid, xid).
-/// Falls back to a minimal X11 property tree if AT-SPI is unavailable.
-pub fn walk_tree(pid: u32, xid: u64, query: Option<&str>) -> AtspiTreeResult {
-    walk_tree_bounded(pid, xid, query, None, None)
 }
 
 /// Walk the AT-SPI tree with caller-supplied caps. `None` for either cap

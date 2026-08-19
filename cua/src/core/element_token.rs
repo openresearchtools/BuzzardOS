@@ -188,13 +188,6 @@ impl TokenRegistry {
         Ok((entry.window_id, idx))
     }
 
-    pub fn clear_runtime_scope(&self, runtime_scope: &str) -> usize {
-        let mut entries = self.by_runtime_and_pid.lock().unwrap();
-        let before = entries.len();
-        entries.retain(|(scope, _), _| scope != runtime_scope);
-        before - entries.len()
-    }
-
     /// Build the canonical token string for `snapshot_id` / `element_index`.
     /// Pure helper, mirrors [`format_token`] but lives on the registry so
     /// callers don't have to import the free function.
@@ -322,10 +315,6 @@ pub enum ResolvedElement {
     Element {
         window_id: Option<u32>,
         element_index: usize,
-        /// True when the caller supplied a token and we resolved
-        /// through the registry — informational, used by tools that
-        /// want to log "via token" in the success summary.
-        via_token: bool,
     },
 }
 
@@ -341,7 +330,7 @@ pub enum ResolvedElement {
 ///   snapshot and fails closed if it is stale.
 /// - **Only `element_token`**: resolves through the registry. On stale
 ///   or malformed token, returns an error. On success returns
-///   `Element { window_id: Some(<from snapshot>), element_index, via_token: true }`.
+///   `Element { window_id: Some(<from snapshot>), element_index }`.
 /// - **Token plus other target fields**: every supplied field must identify the
 ///   same snapshot, window, and element. A conflict fails closed.
 ///
@@ -358,10 +347,12 @@ pub fn resolve_element_args(
     tool_name: &str,
 ) -> Result<ResolvedElement, crate::core::protocol::ToolResult> {
     let refusal = |code: &str, message: String| {
-        crate::core::protocol::ToolResult::error(message.clone()).with_structured(serde_json::json!({
-            "status": "refused",
-            "refusal": { "code": code, "message": message }
-        }))
+        crate::core::protocol::ToolResult::error(message.clone()).with_structured(
+            serde_json::json!({
+                "status": "refused",
+                "refusal": { "code": code, "message": message }
+            }),
+        )
     };
     let resolve_token = |tok: &str| {
         let (wid, idx) = global().resolve(pid, tok).map_err(|message| {
@@ -410,7 +401,6 @@ pub fn resolve_element_args(
             Ok(ResolvedElement::Element {
                 window_id: Some(wid),
                 element_index: resolved_idx,
-                via_token: false,
             })
         }
         (idx_opt, Some(tok), snapshot_opt) => {
@@ -432,7 +422,6 @@ pub fn resolve_element_args(
             Ok(ResolvedElement::Element {
                 window_id: Some(wid),
                 element_index: idx,
-                via_token: true,
             })
         }
     }
@@ -669,11 +658,9 @@ mod tests {
             ResolvedElement::Element {
                 window_id,
                 element_index,
-                via_token,
             } => {
                 assert_eq!(window_id, Some(555), "window_id comes from the snapshot");
                 assert_eq!(element_index, 2);
-                assert!(via_token, "token path must report via_token=true");
             }
             _ => panic!("expected Element, got {resolved:?}"),
         }
@@ -701,8 +688,7 @@ mod tests {
             resolved,
             ResolvedElement::Element {
                 window_id: Some(888),
-                element_index: 2,
-                via_token: false
+                element_index: 2
             }
         ));
     }

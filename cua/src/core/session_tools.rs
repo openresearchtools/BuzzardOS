@@ -11,15 +11,17 @@
 //! fields, but lifecycle and policy tools accept only the public `session`
 //! name. Transport metadata can never mint or alter capture policy.
 
-use crate::core::capture_scope::{bind_session, escalate_session, get_session, BindError, EscalateError};
-use crate::core::protocol::ToolResult;
-use crate::core::tool::{Tool, ToolDef};
-use crate::core::tool_args::parse_typed_input;
-use async_trait::async_trait;
 use crate::contract::{
     CaptureScope, EndSessionInput, EscalateSessionInput, EscalationReason, GetSessionStateInput,
     StartSessionInput,
 };
+use crate::core::capture_scope::{
+    bind_session, escalate_session, get_session, BindError, EscalateError,
+};
+use crate::core::protocol::ToolResult;
+use crate::core::tool::{Tool, ToolDef};
+use crate::core::tool_args::parse_typed_input;
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 

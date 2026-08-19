@@ -4,11 +4,11 @@
 
 //! Diagnostics for the one supported runtime: Buzzard OS stock Sway.
 
-use async_trait::async_trait;
 use crate::core::health_report::{
     CheckData, CheckEntry, HealthCheckProvider, NAME_AX_CAPABILITY, NAME_BINARY_VERSION,
     NAME_PLATFORM_SUPPORTED, NAME_SCREEN_CAPTURE_CAPABILITY, NAME_SESSION_ACTIVE,
 };
+use async_trait::async_trait;
 
 pub const NAME_SWAY_BACKEND: &str = "sway_backend";
 
@@ -35,17 +35,16 @@ impl HealthCheckProvider for LinuxHealthProvider {
 
     async fn run_check(&self, name: &str) -> CheckEntry {
         match name {
-            NAME_BINARY_VERSION => CheckEntry::pass(
-                name,
-                format!("Buzzard CUA {}", env!("CARGO_PKG_VERSION")),
-            ),
-            NAME_PLATFORM_SUPPORTED => CheckEntry::pass(name, "Linux/Sway runtime").with_data(
-                CheckData {
+            NAME_BINARY_VERSION => {
+                CheckEntry::pass(name, format!("Buzzard CUA {}", env!("CARGO_PKG_VERSION")))
+            }
+            NAME_PLATFORM_SUPPORTED => {
+                CheckEntry::pass(name, "Linux/Sway runtime").with_data(CheckData {
                     os_version: Some("Linux".into()),
                     architecture: Some(std::env::consts::ARCH.into()),
                     ..Default::default()
-                },
-            ),
+                })
+            }
             NAME_SESSION_ACTIVE => check_session(),
             NAME_AX_CAPABILITY => check_accessibility().await,
             NAME_SCREEN_CAPTURE_CAPABILITY => check_capture().await,

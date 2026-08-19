@@ -46,11 +46,6 @@ pub fn session_fill_rgba(session_id: &str) -> [u8; 4] {
     SESSION_CURSOR_FILLS[stable_session_index(session_id, SESSION_CURSOR_FILLS.len())]
 }
 
-pub fn session_fill_hex(session_id: &str) -> String {
-    let [r, g, b, _] = session_fill_rgba(session_id);
-    format!("#{r:02X}{g:02X}{b:02X}")
-}
-
 fn stable_session_index(id: &str, count: usize) -> usize {
     let suffix = id
         .rfind(['-', '_', '.'])
@@ -199,27 +194,6 @@ pub(crate) fn shared_float_motion(visual: &CursorVisualState) -> (f32, f32, f32)
 /// `anchor_x/y` is the existing overlay's cursor centre. The Lottie canvas is
 /// centred there so the established click offset and path physics remain
 /// unchanged. `heading` rotates the artwork around the canvas centre.
-pub fn paint_default_theme(
-    pm: &mut tiny_skia::Pixmap,
-    visual: &CursorVisualState,
-    anchor_x: f32,
-    anchor_y: f32,
-    heading: f32,
-    backing_scale: f32,
-    alpha: f32,
-) {
-    paint_default_theme_with_fill(
-        pm,
-        visual,
-        anchor_x,
-        anchor_y,
-        heading,
-        backing_scale,
-        alpha,
-        DEFAULT_CURSOR_FILL,
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn paint_default_theme_with_fill(
     pm: &mut tiny_skia::Pixmap,
@@ -250,12 +224,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_profile_has_twelve_unique_actions() {
+    fn full_profile_has_only_unique_actions() {
         let mut names = std::collections::BTreeSet::new();
         for action in CursorAction::ALL {
             assert!(names.insert(action.as_str()));
         }
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), CursorAction::ALL.len());
     }
 
     #[test]
@@ -266,7 +240,6 @@ mod tests {
     #[test]
     fn default_cursor_keeps_original_blue_fill() {
         assert_eq!(session_fill_rgba("default"), DEFAULT_CURSOR_FILL);
-        assert_eq!(session_fill_hex("default"), "#5EC0E8");
     }
 
     #[test]
@@ -464,7 +437,16 @@ mod tests {
                     Some(TargetModifier::Ax),
                 );
                 visual.elapsed_secs = action.duration_secs() * 0.4;
-                paint_default_theme(&mut pm, &visual, 128.0, 128.0, 0.0, scale, 1.0);
+                paint_default_theme_with_fill(
+                    &mut pm,
+                    &visual,
+                    128.0,
+                    128.0,
+                    0.0,
+                    scale,
+                    1.0,
+                    DEFAULT_CURSOR_FILL,
+                );
                 assert!(
                     pm.data().chunks_exact(4).any(|pixel| pixel[3] != 0),
                     "{} did not render at {scale}x",

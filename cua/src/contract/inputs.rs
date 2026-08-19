@@ -132,9 +132,7 @@ fn capture_scope_schema(_: &mut SchemaGenerator) -> Schema {
     })
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq,
-)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureScope {
     #[default]
@@ -187,16 +185,6 @@ impl EscalationReason {
             "no_window_target" => Some(Self::NoWindowTarget),
             "other" => Some(Self::Other),
             _ => None,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AxTreePixelMismatch => "ax_tree_pixel_mismatch",
-            Self::BackgroundDeliveryFailed => "background_delivery_failed",
-            Self::ForegroundIneffective => "foreground_ineffective",
-            Self::NoWindowTarget => "no_window_target",
-            Self::Other => "other",
         }
     }
 }
@@ -260,15 +248,6 @@ impl ScrollDirection {
 pub enum ScrollBy {
     Line,
     Page,
-}
-
-impl ScrollBy {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Line => "line",
-            Self::Page => "page",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

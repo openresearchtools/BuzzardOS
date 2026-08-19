@@ -44,9 +44,6 @@ use crate::core::{
 pub const NAME_BINARY_VERSION: &str = "binary_version";
 pub const NAME_PLATFORM_SUPPORTED: &str = "platform_supported";
 pub const NAME_SESSION_ACTIVE: &str = "session_active";
-pub const NAME_BUNDLE_IDENTITY: &str = "bundle_identity";
-pub const NAME_TCC_ACCESSIBILITY: &str = "tcc_accessibility";
-pub const NAME_TCC_SCREEN_RECORDING: &str = "tcc_screen_recording";
 pub const NAME_AX_CAPABILITY: &str = "ax_capability";
 pub const NAME_SCREEN_CAPTURE_CAPABILITY: &str = "screen_capture_capability";
 
@@ -490,14 +487,11 @@ mod tests {
         }
     }
 
-    fn macos_names() -> &'static [&'static str] {
+    fn linux_names() -> &'static [&'static str] {
         &[
             NAME_BINARY_VERSION,
             NAME_PLATFORM_SUPPORTED,
             NAME_SESSION_ACTIVE,
-            NAME_BUNDLE_IDENTITY,
-            NAME_TCC_ACCESSIBILITY,
-            NAME_TCC_SCREEN_RECORDING,
             NAME_AX_CAPABILITY,
             NAME_SCREEN_CAPTURE_CAPABILITY,
         ]
@@ -518,7 +512,7 @@ mod tests {
         include.insert(NAME_BINARY_VERSION.to_owned());
         let mut skip = BTreeSet::new();
         skip.insert(NAME_BINARY_VERSION.to_owned());
-        let chosen = select_checks(macos_names(), &include, &skip);
+        let chosen = select_checks(linux_names(), &include, &skip);
         assert_eq!(
             chosen.into_iter().collect::<Vec<_>>(),
             vec![NAME_BINARY_VERSION.to_owned()]
@@ -530,7 +524,7 @@ mod tests {
         let mut include = BTreeSet::new();
         include.insert(NAME_BINARY_VERSION.to_owned());
         include.insert("tomorrows_check_name".to_owned());
-        let chosen = select_checks(macos_names(), &include, &BTreeSet::new());
+        let chosen = select_checks(linux_names(), &include, &BTreeSet::new());
         assert_eq!(
             chosen.into_iter().collect::<Vec<_>>(),
             vec![NAME_BINARY_VERSION.to_owned()]
@@ -539,17 +533,17 @@ mod tests {
 
     #[test]
     fn empty_filters_runs_everything() {
-        let chosen = select_checks(macos_names(), &BTreeSet::new(), &BTreeSet::new());
-        let expected: BTreeSet<String> = macos_names().iter().map(|s| (*s).to_owned()).collect();
+        let chosen = select_checks(linux_names(), &BTreeSet::new(), &BTreeSet::new());
+        let expected: BTreeSet<String> = linux_names().iter().map(|s| (*s).to_owned()).collect();
         assert_eq!(chosen, expected);
     }
 
     #[test]
     fn skip_removes_named() {
         let mut skip = BTreeSet::new();
-        skip.insert(NAME_TCC_ACCESSIBILITY.to_owned());
-        let chosen = select_checks(macos_names(), &BTreeSet::new(), &skip);
-        assert!(!chosen.contains(NAME_TCC_ACCESSIBILITY));
+        skip.insert(NAME_AX_CAPABILITY.to_owned());
+        let chosen = select_checks(linux_names(), &BTreeSet::new(), &skip);
+        assert!(!chosen.contains(NAME_AX_CAPABILITY));
         assert!(chosen.contains(NAME_BINARY_VERSION));
     }
 
@@ -557,7 +551,7 @@ mod tests {
 
     #[test]
     fn all_pass_is_ok() {
-        let checks: Vec<_> = macos_names()
+        let checks: Vec<_> = linux_names()
             .iter()
             .map(|n| CheckEntry::pass(*n, "ok"))
             .collect();
@@ -566,7 +560,7 @@ mod tests {
 
     #[test]
     fn all_skip_is_ok() {
-        let checks: Vec<_> = macos_names()
+        let checks: Vec<_> = linux_names()
             .iter()
             .map(|n| CheckEntry::skip(*n, "skipped"))
             .collect();
@@ -575,12 +569,12 @@ mod tests {
 
     #[test]
     fn non_core_fail_is_degraded() {
-        // bundle_identity is non-core.
-        let checks: Vec<_> = macos_names()
+        // Accessibility is useful but not required for basic input.
+        let checks: Vec<_> = linux_names()
             .iter()
             .map(|n| {
-                if *n == NAME_BUNDLE_IDENTITY {
-                    CheckEntry::fail(*n, "no bundle", "relaunch in .app")
+                if *n == NAME_AX_CAPABILITY {
+                    CheckEntry::fail(*n, "AT-SPI unavailable", "start the accessibility bus")
                 } else {
                     CheckEntry::pass(*n, "ok")
                 }
@@ -591,7 +585,7 @@ mod tests {
 
     #[test]
     fn core_fail_is_failed() {
-        let checks: Vec<_> = macos_names()
+        let checks: Vec<_> = linux_names()
             .iter()
             .map(|n| {
                 if *n == NAME_BINARY_VERSION {
@@ -626,8 +620,8 @@ mod tests {
     #[tokio::test]
     async fn invoke_no_args_produces_documented_schema() {
         let provider = Arc::new(FixtureProvider {
-            names: macos_names(),
-            platform: "darwin",
+            names: linux_names(),
+            platform: "linux",
             fail_names: BTreeSet::new(),
         });
         let tool = HealthReportTool::new(provider);
@@ -639,7 +633,7 @@ mod tests {
         let structured = result.structured_content.expect("structured payload");
         // Top-level keys must match the documented schema verbatim.
         assert_eq!(structured["schema_version"], "1");
-        assert_eq!(structured["platform"], "darwin");
+        assert_eq!(structured["platform"], "linux");
         assert!(structured["driver_version"].is_string());
         assert!(structured["overall"].is_string());
         let checks = structured["checks"].as_array().expect("checks array");
@@ -655,28 +649,26 @@ mod tests {
     #[tokio::test]
     async fn skip_filter_marks_check_as_skip_end_to_end() {
         let provider = Arc::new(FixtureProvider {
-            names: macos_names(),
-            platform: "darwin",
+            names: linux_names(),
+            platform: "linux",
             fail_names: BTreeSet::new(),
         });
         let tool = HealthReportTool::new(provider);
-        let result = tool
-            .invoke(json!({ "skip": [NAME_TCC_ACCESSIBILITY] }))
-            .await;
+        let result = tool.invoke(json!({ "skip": [NAME_AX_CAPABILITY] })).await;
         let structured = result.structured_content.expect("structured");
         let checks = structured["checks"].as_array().unwrap();
         let entry = checks
             .iter()
-            .find(|c| c["name"] == NAME_TCC_ACCESSIBILITY)
-            .expect("tcc_accessibility appears even when skipped");
+            .find(|c| c["name"] == NAME_AX_CAPABILITY)
+            .expect("ax_capability appears even when skipped");
         assert_eq!(entry["status"], "skip");
     }
 
     #[tokio::test]
     async fn include_filter_runs_only_named_check() {
         let provider = Arc::new(FixtureProvider {
-            names: macos_names(),
-            platform: "darwin",
+            names: linux_names(),
+            platform: "linux",
             fail_names: BTreeSet::new(),
         });
         let tool = HealthReportTool::new(provider);
@@ -698,12 +690,12 @@ mod tests {
         // Every check fails — overall should be Failed but the tool
         // result itself must NOT set isError.
         let mut fail = BTreeSet::new();
-        for n in macos_names() {
+        for n in linux_names() {
             fail.insert((*n).to_owned());
         }
         let provider = Arc::new(FixtureProvider {
-            names: macos_names(),
-            platform: "darwin",
+            names: linux_names(),
+            platform: "linux",
             fail_names: fail,
         });
         let tool = HealthReportTool::new(provider);

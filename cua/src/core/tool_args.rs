@@ -215,19 +215,14 @@ fn out_of_range(kind: &str, name: &str, raw: i128) -> ToolResult {
 /// shape the tool surface uses.
 pub trait ArgsExt {
     // ── Required scalars ──────────────────────────────────────────────────
-    fn require_i32(&self, name: &str) -> Result<i32, ToolResult>;
-    fn require_i64(&self, name: &str) -> Result<i64, ToolResult>;
     fn require_u32(&self, name: &str) -> Result<u32, ToolResult>;
     fn require_u64(&self, name: &str) -> Result<u64, ToolResult>;
-    fn require_f64(&self, name: &str) -> Result<f64, ToolResult>;
     fn require_str(&self, name: &str) -> Result<String, ToolResult>;
-    fn require_bool(&self, name: &str) -> Result<bool, ToolResult>;
 
     // ── Optional scalars ──────────────────────────────────────────────────
     /// Returns `None` if the field is absent. Returns `Err` if the
     /// field is present but doesn't fit in i32 — silent truncation
     /// is the bug class this trait exists to prevent.
-    fn opt_i32(&self, name: &str) -> Result<Option<i32>, ToolResult>;
     fn opt_u32(&self, name: &str) -> Result<Option<u32>, ToolResult>;
     fn opt_u64(&self, name: &str) -> Option<u64>;
     fn opt_i64(&self, name: &str) -> Option<i64>;
@@ -237,7 +232,6 @@ pub trait ArgsExt {
 
     // ── Default-fallback scalars (the most common pattern) ────────────────
     fn u64_or(&self, name: &str, default: u64) -> u64;
-    fn i64_or(&self, name: &str, default: i64) -> i64;
     fn f64_or(&self, name: &str, default: f64) -> f64;
     fn str_or<'a>(&'a self, name: &str, default: &'a str) -> String;
     fn bool_or(&self, name: &str, default: bool) -> bool;
@@ -250,20 +244,6 @@ pub trait ArgsExt {
 }
 
 impl ArgsExt for Value {
-    fn require_i32(&self, name: &str) -> Result<i32, ToolResult> {
-        let raw = self
-            .get(name)
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| missing("integer", name))?;
-        i32::try_from(raw).map_err(|_| out_of_range("i32", name, raw as i128))
-    }
-
-    fn require_i64(&self, name: &str) -> Result<i64, ToolResult> {
-        self.get(name)
-            .and_then(|v| v.as_i64())
-            .ok_or_else(|| missing("integer", name))
-    }
-
     fn require_u32(&self, name: &str) -> Result<u32, ToolResult> {
         let raw = self
             .get(name)
@@ -278,35 +258,11 @@ impl ArgsExt for Value {
             .ok_or_else(|| missing("integer", name))
     }
 
-    fn require_f64(&self, name: &str) -> Result<f64, ToolResult> {
-        self.get(name)
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| missing("number", name))
-    }
-
     fn require_str(&self, name: &str) -> Result<String, ToolResult> {
         self.get(name)
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .ok_or_else(|| missing("string", name))
-    }
-
-    fn require_bool(&self, name: &str) -> Result<bool, ToolResult> {
-        self.get(name)
-            .and_then(|v| v.as_bool())
-            .ok_or_else(|| missing("boolean", name))
-    }
-
-    fn opt_i32(&self, name: &str) -> Result<Option<i32>, ToolResult> {
-        match self.get(name) {
-            None | Some(Value::Null) => Ok(None),
-            Some(v) => {
-                let raw = v.as_i64().ok_or_else(|| wrong_type("integer", name))?;
-                i32::try_from(raw)
-                    .map(Some)
-                    .map_err(|_| out_of_range("i32", name, raw as i128))
-            }
-        }
     }
 
     fn opt_u32(&self, name: &str) -> Result<Option<u32>, ToolResult> {
@@ -345,10 +301,6 @@ impl ArgsExt for Value {
         self.opt_u64(name).unwrap_or(default)
     }
 
-    fn i64_or(&self, name: &str, default: i64) -> i64 {
-        self.opt_i64(name).unwrap_or(default)
-    }
-
     fn f64_or(&self, name: &str, default: f64) -> f64 {
         self.opt_f64(name).unwrap_or(default)
     }
@@ -379,29 +331,6 @@ impl ArgsExt for Value {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn require_i32_happy_path() {
-        let args = json!({ "pid": 1234 });
-        assert_eq!(args.require_i32("pid").unwrap(), 1234);
-    }
-
-    #[test]
-    fn require_i32_missing_returns_actionable_error() {
-        let args = json!({});
-        let err = args.require_i32("pid").unwrap_err();
-        let body = format!("{:?}", err.content[0]);
-        assert!(body.contains("Missing required integer field: pid"));
-    }
-
-    #[test]
-    fn require_i32_out_of_range_rejected() {
-        // i32::MAX + 1 doesn't fit in i32.
-        let args = json!({ "pid": (i32::MAX as i64) + 1 });
-        let err = args.require_i32("pid").unwrap_err();
-        let body = format!("{:?}", err.content[0]);
-        assert!(body.contains("out of range for i32"));
-    }
 
     #[test]
     fn require_u32_out_of_range_rejected() {

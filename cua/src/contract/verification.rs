@@ -6,11 +6,9 @@
 //! The caller owns the task-level meaning of success. The driver only checks
 //! bounded predicates against one explicitly authorized window.
 
-use crate::contract::{Platform, SchemaMode, ToolAnnotations, ToolContract, ToolInput, ToolOutput};
+use crate::contract::{ToolAnnotations, ToolContract, ToolInput, ToolOutput};
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
-
-const ALL_PLATFORMS: [Platform; 3] = [Platform::Macos, Platform::Windows, Platform::Linux];
 
 pub const VERIFY_STATE_DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
@@ -230,8 +228,6 @@ pub fn contracts() -> Vec<ToolContract> {
             Accessibility projections are conservative: absence remains unknown unless the \
             observed search domain is proven exhaustive."
             .into(),
-        platforms: ALL_PLATFORMS.to_vec(),
-        aliases: Vec::new(),
         capabilities: vec![
             "state.verify".into(),
             "state.verify.window".into(),
@@ -244,11 +240,8 @@ pub fn contracts() -> Vec<ToolContract> {
             idempotent: false,
             open_world: false,
         },
-        schema_mode: SchemaMode::PortableSubset,
-        cursor_semantics: None,
         input_schema: VerifyStateInput::input_schema(),
         success_output_schema: Some(VerifyStateOutput::output_schema()),
-        output_validator: crate::contract::validate_typed_output::<VerifyStateOutput>,
     }]
 }
 
@@ -298,7 +291,6 @@ mod tests {
                 observed_json: Some(json!({"role":"web_area"}).to_string()),
             }],
         };
-        assert!(output.validate().is_ok());
         assert_eq!(
             serde_json::to_value(output).unwrap()["status"],
             json!("unknown")
@@ -327,9 +319,6 @@ mod tests {
                 observed_json: None,
             }],
         };
-        assert!(
-            satisfied.validate().is_ok(),
-            "published output schema must accept runtime null optionals"
-        );
+        serde_json::to_value(satisfied).expect("output with null optionals serializes");
     }
 }

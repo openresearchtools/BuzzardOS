@@ -17,13 +17,6 @@ pub mod sway_ipc;
 mod virtual_keyboard;
 pub(crate) use virtual_keyboard::Admission as KeyboardAdmission;
 
-/// Gracefully neutralize the daemon-owned compositor keyboard before the CUA
-/// runtime exits. No Wayland connection is created when keyboard input was
-/// never used.
-pub fn shutdown_keyboard() -> anyhow::Result<()> {
-    virtual_keyboard::shutdown()
-}
-
 /// Install the session-revocation hook before any platform Tool can be
 /// admitted. This is intentionally separate from starting the Wayland owner.
 pub fn initialize_keyboard_cancellation() {
@@ -1639,7 +1632,6 @@ pub struct VptrSession {
     pub conn: Connection,
     queue: wayland_client::EventQueue<State>,
     state: State,
-    pub seat: WlSeat,
     pub vptr: ZwlrVirtualPointerV1,
     pub output_w: u32,
     pub output_h: u32,
@@ -1679,9 +1671,7 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
     }
 
     let mgr = state.vptr_manager.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Sway does not expose zwlr_virtual_pointer_manager_v1 ({NO_VPTR_MARKER})"
-        )
+        anyhow::anyhow!("Sway does not expose zwlr_virtual_pointer_manager_v1 ({NO_VPTR_MARKER})")
     })?;
 
     // foreign-toplevel is only needed to activate a specific window before
@@ -1718,7 +1708,6 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
         conn,
         queue,
         state,
-        seat,
         vptr,
         output_w,
         output_h,
@@ -1745,18 +1734,6 @@ pub fn activate_window_for_input_target(
     window_id: u64,
     target_pid: Option<u32>,
 ) -> anyhow::Result<()> {
-    if is_inject_mode() {
-        let pid = target_pid.ok_or_else(|| {
-            anyhow::anyhow!(
-                "foreground_unavailable: cua-compositor activation requires a verified target pid"
-            )
-        })?;
-        inject_send(&[format!("f {pid}")])?;
-        remember_inject_focused_target(pid, window_id);
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        return Ok(());
-    }
-
     if sway_ipc::is_public_window_id(window_id) {
         sway_ipc::focus_public_window(window_id, target_pid)?;
         return Ok(());
@@ -1965,13 +1942,7 @@ pub fn click(window_id: u64, x: i32, y: i32, count: u32, button: u8) -> anyhow::
 /// This is the Wayland peer of an XTest root-window click and is used only by
 /// the explicit desktop capture scope.
 pub fn click_desktop(x: i32, y: i32, count: u32, button: u8) -> anyhow::Result<()> {
-    with_stable_output_generation(|| {
-        if is_inject_mode() {
-            let btn = evdev_button(button as u32);
-            return inject_send(&[format!("d {x} {y} {} {btn}", count.max(1))]);
-        }
-        click_vptr(None, x, y, count, button)
-    })
+    with_stable_output_generation(|| click_vptr(None, x, y, count, button))
 }
 
 /// wlroots virtual-pointer implementation of [`click`].
@@ -2185,20 +2156,13 @@ pub fn scroll_at(
     amount: u32,
 ) -> anyhow::Result<()> {
     let direction = direction.to_string();
-    with_stable_output_generation(|| {
-        scroll_vptr(Some(window_id), point, &direction, amount)
-    })
+    with_stable_output_generation(|| scroll_vptr(Some(window_id), point, &direction, amount))
 }
 
 /// Scroll at a desktop-absolute point without activating a named toplevel.
 pub fn scroll_desktop(x: i32, y: i32, direction: &str, amount: u32) -> anyhow::Result<()> {
     let direction = direction.to_string();
-    with_stable_output_generation(|| {
-        if is_inject_mode() {
-            return inject_scroll_desktop(x, y, &direction, amount);
-        }
-        scroll_vptr(None, Some((x, y)), &direction, amount)
-    })
+    with_stable_output_generation(|| scroll_vptr(None, Some((x, y)), &direction, amount))
 }
 
 /// wlroots virtual-pointer implementation of [`scroll`].
@@ -2449,19 +2413,6 @@ pub fn type_text_focused(admission: &KeyboardAdmission, text: &str) -> anyhow::R
     virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
-/// Type text and press one key while an outer exact-container focus guard is
-/// active. Keeping both operations in one virtual-keyboard lifetime avoids a
-/// headless wlroots seat dropping the first event from a second `wtype`
-/// process after the text has landed.
-pub fn type_text_then_key_focused(
-    admission: &KeyboardAdmission,
-    text: &str,
-    key: &str,
-) -> anyhow::Result<()> {
-    let keysym = key_to_keysym(key);
-    virtual_keyboard::type_text_then_key(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS, &keysym)
-}
-
 pub fn type_text_with_delay(
     admission: &KeyboardAdmission,
     window_id: u64,
@@ -2484,10 +2435,6 @@ pub fn press_key(admission: &KeyboardAdmission, window_id: u64, key: &str) -> an
 
 /// Press one key while an outer exact-container focus guard is active.
 pub fn press_key_focused(admission: &KeyboardAdmission, key: &str) -> anyhow::Result<()> {
-    if is_inject_mode() {
-        let (pid, window_id) = inject_focused_target()?;
-        return inject_press_key(pid, window_id, key);
-    }
     virtual_keyboard::press_key(admission, key)
 }
 
@@ -2506,10 +2453,6 @@ pub fn hotkey(
 
 /// Send a chord while an outer exact-container focus guard is active.
 pub fn hotkey_focused(admission: &KeyboardAdmission, keys: &[String]) -> anyhow::Result<()> {
-    if is_inject_mode() {
-        let (pid, window_id) = inject_focused_target()?;
-        return inject_hotkey(pid, window_id, keys);
-    }
     let (mods, final_key) = partition_modifiers(keys)?;
     virtual_keyboard::hotkey(admission, &mods, &final_key)
 }
@@ -2537,634 +2480,21 @@ fn partition_modifiers(keys: &[String]) -> anyhow::Result<(Vec<String>, String)>
     Ok((mods, final_key))
 }
 
-/// Map CUA key names to XKB keysym names. Unknown values pass through (single
-/// characters and valid keysym names work as-is).
-fn key_to_keysym(key: &str) -> String {
-    match key.to_lowercase().as_str() {
-        "enter" | "return" => "Return",
-        "tab" => "Tab",
-        "esc" | "escape" => "Escape",
-        "space" => "space",
-        "backspace" => "BackSpace",
-        "delete" | "del" => "Delete",
-        "up" => "Up",
-        "down" => "Down",
-        "left" => "Left",
-        "right" => "Right",
-        "home" => "Home",
-        "end" => "End",
-        "pageup" | "page_up" => "Prior",
-        "pagedown" | "page_down" => "Next",
-        _ => return key.to_string(),
-    }
-    .to_string()
-}
-
-// ── Nested cua-compositor injection ────────────────────────────────────────
-//
-// When cua-driver's nested compositor is `cua-compositor` (our patched wlroots,
-// see nix/cua-driver/compositor/), it exposes a line-protocol control socket at
-// $CUA_INJECT_SOCKET for what stock Wayland forbids: focus-FREE per-surface
-// keyboard injection and MULTI-cursor pointer injection, routed by stable PID
-// when available and xdg app_id only as a fallback. These helpers speak that
-// protocol.
-//
-// The protocol is a simple line-based v1 exchange with per-command
-// acknowledgement: the client sends `INJECT_PROTO_HELLO` and the compositor
-// echoes it (or replies `err ...`), then every command line is answered by
-// exactly one `ok` / `err <reason>` line. The client fails on a protocol
-// mismatch, a read timeout, an EOF, or any compositor error line — an
-// acknowledgement is transport evidence only, not proof the target changed.
-
-/// Version banner exchanged at connect time: the client sends this line and the
-/// compositor must echo it back verbatim to confirm both speak v1.
-const INJECT_PROTO_HELLO: &str = "cua-inject v1";
-
-/// The exact named keys the nested compositor's `k` command can emit — the
-/// whitelist in `cua_key_named` (cua_compositor_patch.py). Compared
-/// case-insensitively, matching the compositor's `strcasecmp`.
-const INJECT_NAMED_KEYS: &[&str] = &[
-    "enter",
-    "return",
-    "tab",
-    "escape",
-    "esc",
-    "backspace",
-    "space",
-    "up",
-    "down",
-    "left",
-    "right",
-    "f1",
-    "f2",
-    "f3",
-    "f4",
-    "f5",
-    "f6",
-    "f7",
-    "f8",
-    "f9",
-    "f10",
-    "f11",
-    "f12",
-];
-
-/// The control socket path, when running against the nested cua-compositor.
-pub fn inject_socket_path() -> Option<String> {
-    std::env::var("CUA_INJECT_SOCKET")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// True when input should be routed through the nested cua-compositor's control
-/// socket (focus-free / multi-cursor) rather than wtype / virtual-pointer.
-pub fn is_inject_mode() -> bool {
-    inject_socket_path().is_some()
-}
-
-static INJECT_FOCUSED_TARGET: OnceLock<Mutex<Option<(u32, u64)>>> = OnceLock::new();
-
-fn remember_inject_focused_target(pid: u32, window_id: u64) {
-    let target = INJECT_FOCUSED_TARGET.get_or_init(|| Mutex::new(None));
-    if let Ok(mut target) = target.lock() {
-        *target = Some((pid, window_id));
-    }
-}
-
-fn inject_focused_target() -> anyhow::Result<(u32, u64)> {
-    INJECT_FOCUSED_TARGET
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|target| *target)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "foreground_unavailable: cua-compositor has no verified foreground target; \
-                 call bring_to_front before desktop keyboard input"
-            )
-        })
-}
-
-fn inject_scroll_desktop(x: i32, y: i32, direction: &str, amount: u32) -> anyhow::Result<()> {
-    let windows = crate::platform::atspi::list_windows(None);
-    let target = windows
-        .iter()
-        .filter(|window| {
-            window.is_on_screen
-                && x >= window.x
-                && y >= window.y
-                && x < window.x.saturating_add(window.width as i32)
-                && y < window.y.saturating_add(window.height as i32)
-        })
-        .max_by_key(|window| window.z_index.unwrap_or_default())
-        .or_else(|| {
-            let (pid, _) = inject_focused_target().ok()?;
-            windows.iter().find(|window| window.pid == Some(pid))
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "foreground_unavailable: no cua-compositor window contains desktop point ({x},{y})"
-            )
-        })?;
-    let pid = target.pid.ok_or_else(|| {
-        anyhow::anyhow!(
-            "foreground_unavailable: desktop point ({x},{y}) resolved to a window without a pid"
-        )
-    })?;
-    inject_scroll(
-        pid,
-        target.xid,
-        f64::from(x.saturating_sub(target.x)),
-        f64::from(y.saturating_sub(target.y)),
-        direction,
-        amount,
-    )
-}
-
-/// Reject any character the nested compositor cannot type before it reaches the
-/// wire. The compositor's chartab (`cua_init_keymap`) only covers printable
-/// ASCII (`0x20..=0x7E`) plus newline and tab; anything else — Unicode, other
-/// control bytes — would be silently dropped, so fail loudly instead.
-fn validate_injectable_text(text: &str) -> anyhow::Result<()> {
-    for ch in text.chars() {
-        let ok = ch == '\n' || ch == '\t' || (ch.is_ascii() && !ch.is_ascii_control());
-        if !ok {
-            anyhow::bail!(
-                "cua-compositor cannot type {ch:?}: only printable ASCII plus newline and tab \
-                 are supported in the v1 injection protocol"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Reject any key name outside the compositor's named-key whitelist before
-/// sending. Mirrors `cua_key_named`; unsupported names must fail here rather
-/// than being silently ignored by the compositor.
-fn validate_injectable_key(key: &str) -> anyhow::Result<()> {
-    let normalized = key.trim().to_ascii_lowercase();
-    if INJECT_NAMED_KEYS.contains(&normalized.as_str()) {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "cua-compositor does not support key {key:?}; supported keys: {}",
-            INJECT_NAMED_KEYS.join(", ")
-        );
-    }
-}
-
-fn validate_injectable_hotkey(keys: &[String]) -> anyhow::Result<(String, String)> {
-    let (key, modifiers) = keys
-        .split_last()
-        .ok_or_else(|| anyhow::anyhow!("cua-compositor hotkey requires a non-modifier key"))?;
-    let key = key.trim().to_ascii_lowercase();
-    if !(key.len() == 1 && key.is_ascii()) && !INJECT_NAMED_KEYS.contains(&key.as_str()) {
-        anyhow::bail!("cua-compositor does not support hotkey key {key:?}");
-    }
-    let mut normalized = Vec::with_capacity(modifiers.len());
-    for modifier in modifiers {
-        let modifier = modifier.trim().to_ascii_lowercase();
-        let canonical = match modifier.as_str() {
-            "ctrl" | "control" => "ctrl",
-            "shift" => "shift",
-            "alt" | "option" => "alt",
-            "meta" | "super" | "win" | "cmd" => "meta",
-            _ => anyhow::bail!("cua-compositor does not support modifier {modifier:?}"),
-        };
-        normalized.push(canonical);
-    }
-    if normalized.is_empty() {
-        anyhow::bail!("cua-compositor hotkey requires at least one modifier");
-    }
-    Ok((normalized.join(","), key))
-}
-
-/// Interpret the compositor's handshake reply. Accepts only the verbatim v1
-/// banner; a compositor `err ...` line or anything else is a protocol mismatch.
-fn parse_inject_hello(line: &str) -> anyhow::Result<()> {
-    let trimmed = line.trim();
-    if trimmed == INJECT_PROTO_HELLO {
-        Ok(())
-    } else if let Some(reason) = trimmed.strip_prefix("err") {
-        anyhow::bail!(
-            "cua-compositor rejected the v1 handshake:{}",
-            if reason.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" {}", reason.trim())
-            }
-        )
-    } else {
-        anyhow::bail!(
-            "cua-compositor protocol mismatch: expected {INJECT_PROTO_HELLO:?}, got {trimmed:?}"
-        )
-    }
-}
-
-/// Interpret a single per-command acknowledgement line. `ok` succeeds; `err
-/// <reason>` and any unrecognised line fail.
-fn parse_inject_reply(line: &str) -> anyhow::Result<()> {
-    let trimmed = line.trim();
-    if trimmed == "ok" {
-        Ok(())
-    } else if let Some(reason) = trimmed.strip_prefix("err") {
-        let reason = reason.trim();
-        if reason.is_empty() {
-            anyhow::bail!("cua-compositor rejected the command");
-        }
-        anyhow::bail!("cua-compositor rejected the command: {reason}")
-    } else {
-        anyhow::bail!("unexpected cua-compositor response: {trimmed:?}")
-    }
-}
-
-/// Read one newline-terminated response line, mapping timeout and EOF to clear
-/// errors so the caller never blocks forever on an unresponsive compositor.
-fn read_inject_line(reader: &mut impl std::io::BufRead) -> anyhow::Result<String> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).map_err(|e| {
-        if matches!(
-            e.kind(),
-            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-        ) {
-            anyhow::anyhow!("cua-compositor did not respond within the timeout")
-        } else {
-            anyhow::anyhow!("cua-compositor read failed: {e}")
-        }
-    })?;
-    if n == 0 {
-        anyhow::bail!("cua-compositor closed the connection before responding");
-    }
-    Ok(line)
-}
-
-/// Connect to the nested cua-compositor control socket, perform the v1
-/// handshake, then send each command line and require exactly one
-/// acknowledgement per command. Fails on protocol mismatch, timeout, EOF, or a
-/// compositor error line — the earlier fire-and-forget path hid all of these.
-fn inject_exchange(lines: &[String]) -> anyhow::Result<Vec<String>> {
-    use std::io::{BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    let path = inject_socket_path().ok_or_else(|| anyhow::anyhow!("CUA_INJECT_SOCKET not set"))?;
-    // The nested compositor may still be starting; retry the connect briefly.
-    let mut stream = None;
-    for _ in 0..60 {
-        match UnixStream::connect(&path) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
-        }
-    }
-    let stream =
-        stream.ok_or_else(|| anyhow::anyhow!("could not connect to inject socket {path}"))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
-
-    // v1 handshake: send our banner and require the compositor to echo it.
-    writeln!(writer, "{INJECT_PROTO_HELLO}")?;
-    writer.flush()?;
-    parse_inject_hello(&read_inject_line(&mut reader)?)?;
-
-    let mut replies = Vec::with_capacity(lines.len());
-    // One command per line; block on its response before the next.
-    for l in lines {
-        writeln!(writer, "{l}")?;
-        writer.flush()?;
-        replies.push(read_inject_line(&mut reader)?);
-    }
-    Ok(replies)
-}
-
-fn inject_send(lines: &[String]) -> anyhow::Result<()> {
-    for reply in inject_exchange(lines)? {
-        parse_inject_reply(&reply)?;
-    }
-    Ok(())
-}
-
-fn parse_inject_geometry(line: &str) -> anyhow::Result<((i32, i32), (i32, i32))> {
-    let fields = line.split_whitespace().collect::<Vec<_>>();
-    if fields.len() == 5 && fields[0] == "geometry" {
-        return Ok((
-            (fields[1].parse()?, fields[2].parse()?),
-            (fields[3].parse()?, fields[4].parse()?),
-        ));
-    }
-    if let Some(reason) = line.trim().strip_prefix("err") {
-        anyhow::bail!("cua-compositor geometry query failed: {}", reason.trim());
-    }
-    anyhow::bail!(
-        "unexpected cua-compositor geometry response: {:?}",
-        line.trim()
-    )
-}
-
-/// Return the offset that rebases native Wayland accessibility coordinates into
-/// the nested compositor's root-surface/output coordinate space.
-pub fn inject_accessibility_offset(pid: u32) -> Option<(i32, i32)> {
-    if !is_inject_mode() || pid == 0 {
-        return None;
-    }
-    let replies = inject_exchange(&[format!("g {pid}")]).ok()?;
-    replies
-        .first()
-        .and_then(|line| parse_inject_geometry(line).ok())
-        .map(|geometry| geometry.0)
-}
-
-fn inject_window_origin(pid: u32) -> Option<(i32, i32)> {
-    if !is_inject_mode() || pid == 0 {
-        return None;
-    }
-    let replies = inject_exchange(&[format!("g {pid}")]).ok()?;
-    replies
-        .first()
-        .and_then(|line| parse_inject_geometry(line).ok())
-        .map(|geometry| geometry.1)
-}
-
-/// Resolve a window_id to its xdg app_id via the stable identity registry that
-/// [`list_windows`] populates (falling back to sway IPC / AT-SPI through
-/// [`identity_for`]) — the nested cua-compositor injection protocol addresses
-/// windows by app_id. Returns `None` when no identity is registered or the
-/// resolved app_id is empty, so callers can surface a clear error.
+/// Resolve a window identifier to its compositor application identifier.
 pub fn app_id_for_window(window_id: u64) -> Option<String> {
     identity_for(window_id)
         .map(|identity| identity.app_id)
-        .filter(|s| !s.is_empty())
+        .filter(|app_id| !app_id.is_empty())
 }
 
-/// Resolve the WM_CLASS-equivalent (instance, class) pair for a window. On
-/// X11 reads `WM_CLASS`; on Wayland reuses [`app_id_for_window`] and returns
-/// `(app_id, app_id)` — the closest analogue, since foreign-toplevel exposes
-/// a single app_id and not the X11 instance/class split. Used by terminal
-/// emulator detection on `is_terminal_window` so Ghostty / kitty / alacritty
-/// are recognised on Wayland too.
+/// Return the X11 WM_CLASS pair, or the equivalent Sway application id twice
+/// for a native Wayland toplevel.
 pub fn wm_class_dispatch(window_id: u64) -> Option<(String, String)> {
     if is_wayland() {
-        let app = app_id_for_window(window_id)?;
-        return Some((app.clone(), app));
+        let app_id = app_id_for_window(window_id)?;
+        return Some((app_id.clone(), app_id));
     }
     crate::platform::x11::wm_class_for_window(window_id)
-}
-
-fn to_hex(s: &str) -> String {
-    s.bytes().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Map a cua/X11 mouse-button number to its evdev (wl_pointer) button code.
-fn evdev_button(x_button: u32) -> u32 {
-    match x_button {
-        3 => 0x111, // BTN_RIGHT
-        2 => 0x112, // BTN_MIDDLE
-        _ => 0x110, // BTN_LEFT
-    }
-}
-
-/// Sentinel error when a window_id has no registered cua-compositor identity.
-fn no_app_id(window_id: u64) -> anyhow::Error {
-    anyhow::anyhow!(
-        "no known cua-compositor app_id for window {window_id}; call list_windows first so its \
-         Wayland identity is registered"
-    )
-}
-
-/// Resolve the strongest target token understood by the private nested
-/// compositor. AT-SPI window IDs are synthetic on Wayland, but its process ID
-/// is the same credential the compositor observes on the owning wl_client.
-/// Fall back to app_id for clients whose accessibility metadata has no PID.
-pub fn inject_target_for_window(window_id: u64) -> anyhow::Result<String> {
-    inject_target_for_window_with_pid(window_id, None)
-}
-
-fn inject_target_for_window_with_pid(
-    window_id: u64,
-    target_pid: Option<u32>,
-) -> anyhow::Result<String> {
-    if let Some(pid) = target_pid {
-        anyhow::ensure!(pid > 0, "cua-compositor target pid must be positive");
-        // Electron/Chromium may create the xdg_toplevel from a renderer child
-        // rather than the public tool target. The compositor verifies the
-        // wl_client owner is this process or one of its descendants.
-        return Ok(format!("root:{pid}"));
-    }
-    let atspi = crate::platform::atspi::list_windows(None);
-    let direct_pid = atspi
-        .iter()
-        .find(|window| window.xid == window_id)
-        .and_then(|window| window.pid);
-    let correlated_pid = identity_for(window_id)
-        .as_ref()
-        .and_then(|identity| unique_atspi_pid_for_identity(identity, &atspi));
-    if let Some(pid) = direct_pid.or(correlated_pid) {
-        return Ok(format!("pid:{pid}"));
-    }
-    app_id_for_window(window_id).ok_or_else(|| no_app_id(window_id))
-}
-
-/// Correlate a connection-local native toplevel with its AT-SPI process. Exact
-/// titles are the same bridge used by window enumeration; requiring one unique
-/// PID prevents a shared toolkit app_id from silently selecting another app.
-fn unique_atspi_pid_for_identity(
-    identity: &ToplevelIdentity,
-    windows: &[WindowInfo],
-) -> Option<u32> {
-    if identity.title.is_empty() {
-        return None;
-    }
-    let mut pids = windows
-        .iter()
-        .filter(|window| window.title == identity.title)
-        .filter_map(|window| window.pid)
-        .collect::<Vec<_>>();
-    pids.sort_unstable();
-    pids.dedup();
-    (pids.len() == 1).then(|| pids[0])
-}
-
-/// Focus-free type into the window's surface (no focus change). Rejects any
-/// character the compositor cannot emit before touching the socket.
-pub fn inject_type_text(target_pid: u32, window_id: u64, text: &str) -> anyhow::Result<()> {
-    validate_injectable_text(text)?;
-    let app = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    inject_send(&[format!("t {app} {}", to_hex(text))])
-}
-
-/// Focus-free named-key press into the window's surface. Rejects any key
-/// outside the compositor's whitelist before touching the socket.
-pub fn inject_press_key(target_pid: u32, window_id: u64, key: &str) -> anyhow::Result<()> {
-    validate_injectable_key(key)?;
-    let app = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    inject_send(&[format!("k {app} {}", key.trim())])
-}
-
-/// Focus-free modifier chord into the target surface.
-pub fn inject_hotkey(target_pid: u32, window_id: u64, keys: &[String]) -> anyhow::Result<()> {
-    let (modifiers, key) = validate_injectable_hotkey(keys)?;
-    let app = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    inject_send(&[format!("h {app} {modifiers} {key}")])
-}
-
-/// Focus-free wheel/axis input at one target-local point.
-pub fn inject_scroll(
-    target_pid: u32,
-    window_id: u64,
-    x: f64,
-    y: f64,
-    direction: &str,
-    amount: u32,
-) -> anyhow::Result<()> {
-    let app = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    let (axis, value) = match direction.to_ascii_lowercase().as_str() {
-        "up" => (0, -15.0),
-        "down" | "page" => (0, 15.0),
-        "left" => (1, -15.0),
-        "right" => (1, 15.0),
-        _ => anyhow::bail!("unsupported cua-compositor scroll direction {direction:?}"),
-    };
-    let mut lines = vec![format!("m {app} 0 {x:.1} {y:.1}")];
-    lines.extend((0..amount.max(1)).map(|_| format!("a {app} 0 {axis} {value:.1}")));
-    inject_send(&lines)
-}
-
-/// Focus-free click into the window's surface via the nested cua-compositor.
-/// Coordinates are window-local, matching the rest of the inject protocol.
-pub fn inject_click(
-    target_pid: u32,
-    window_id: u64,
-    x: f64,
-    y: f64,
-    count: u32,
-    button: u8,
-) -> anyhow::Result<()> {
-    let app = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    let btn = evdev_button(button as u32);
-    let n = count.max(1);
-    let mut lines = Vec::with_capacity((n as usize) * 4);
-    for i in 0..n {
-        if i > 0 {
-            // The line protocol is batch-oriented, so use a tiny move-only
-            // separator between clicks to give the compositor a frame boundary
-            // without introducing a protocol-level sleep primitive.
-            lines.push(format!("m {app} 0 {x:.1} {y:.1}"));
-        }
-        lines.push(format!("m {app} 0 {x:.1} {y:.1}"));
-        lines.push(format!("b {app} 0 {btn} 1"));
-        lines.push(format!("b {app} 0 {btn} 0"));
-    }
-    inject_send(&lines)
-}
-
-/// A single pointer drag for `inject_parallel_drags`: window-local waypoints,
-/// driven by cursor `idx` so several run concurrently on one window.
-pub struct InjectDrag {
-    pub app_id: String,
-    pub idx: usize,
-    pub x_button: u32,
-    pub path: Vec<(f64, f64)>,
-    pub steps: usize,
-}
-
-fn resample(path: &[(f64, f64)], steps: usize) -> Vec<(f64, f64)> {
-    if path.len() < 2 || steps == 0 {
-        return path.to_vec();
-    }
-    let seglen: Vec<f64> = path
-        .windows(2)
-        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
-        .collect();
-    let total: f64 = seglen.iter().sum();
-    if total == 0.0 {
-        return vec![path[0]; steps + 1];
-    }
-    let mut out = Vec::with_capacity(steps + 1);
-    for s in 0..=steps {
-        let target = total * (s as f64) / (steps as f64);
-        let mut acc = 0.0;
-        let mut pt = path[path.len() - 1];
-        for (i, &l) in seglen.iter().enumerate() {
-            if acc + l >= target || i == seglen.len() - 1 {
-                let f = if l > 0.0 { (target - acc) / l } else { 0.0 };
-                pt = (
-                    path[i].0 + (path[i + 1].0 - path[i].0) * f,
-                    path[i].1 + (path[i + 1].1 - path[i].1) * f,
-                );
-                break;
-            }
-            acc += l;
-        }
-        out.push(pt);
-    }
-    out
-}
-
-/// Run N pointer drags concurrently on their target windows: each cursor presses
-/// at its start, glides through its (interleaved) waypoints, and releases. This
-/// is true multi-cursor — each `idx` is an independent cursor in the compositor.
-pub fn inject_parallel_drags(drags: &[InjectDrag]) -> anyhow::Result<()> {
-    if drags.is_empty() {
-        return Ok(());
-    }
-    let resampled: Vec<Vec<(f64, f64)>> = drags
-        .iter()
-        .map(|d| resample(&d.path, d.steps.max(1)))
-        .collect();
-    let max_steps = resampled.iter().map(|p| p.len()).max().unwrap_or(0);
-    let mut lines = Vec::new();
-    // Press each cursor at its start point.
-    for (d, pts) in drags.iter().zip(&resampled) {
-        let (x, y) = pts[0];
-        lines.push(format!("m {} {} {x:.1} {y:.1}", d.app_id, d.idx));
-        lines.push(format!(
-            "b {} {} {} 1",
-            d.app_id,
-            d.idx,
-            evdev_button(d.x_button)
-        ));
-    }
-    // Glide all cursors together, one interleaved step at a time.
-    for s in 1..max_steps {
-        for (d, pts) in drags.iter().zip(&resampled) {
-            let (x, y) = pts[s.min(pts.len() - 1)];
-            lines.push(format!("m {} {} {x:.1} {y:.1}", d.app_id, d.idx));
-        }
-    }
-    // Release each cursor.
-    for (d, _) in drags.iter().zip(&resampled) {
-        lines.push(format!(
-            "b {} {} {} 0",
-            d.app_id,
-            d.idx,
-            evdev_button(d.x_button)
-        ));
-    }
-    inject_send(&lines)
-}
-
-/// Focus-free single drag using the same per-surface path as parallel drags.
-pub fn inject_drag(
-    keyboard_admission: &KeyboardAdmission,
-    target_pid: u32,
-    window_id: u64,
-    from: (f64, f64),
-    to: (f64, f64),
-    steps: usize,
-    x_button: u32,
-    modifiers: &[String],
-) -> anyhow::Result<()> {
-    let app_id = inject_target_for_window_with_pid(window_id, Some(target_pid))?;
-    virtual_keyboard::with_modifiers_held(keyboard_admission, modifiers, || {
-        inject_parallel_drags(&[InjectDrag {
-            app_id,
-            idx: 0,
-            x_button,
-            path: vec![from, to],
-            steps,
-        }])
-    })
 }
 
 fn wayland_atspi_windows(filter_pid: Option<u32>) -> Vec<WindowInfo> {
@@ -3189,16 +2519,6 @@ fn wayland_atspi_windows(filter_pid: Option<u32>) -> Vec<WindowInfo> {
                 compositor.visible && compositor.width > 0 && compositor.height > 0;
         }
     }
-    if is_inject_mode() {
-        for window in &mut windows {
-            if let Some(pid) = window.pid {
-                if let Some((window_x, window_y)) = inject_window_origin(pid) {
-                    window.x = window_x;
-                    window.y = window_y;
-                }
-            }
-        }
-    }
     windows
 }
 
@@ -3206,11 +2526,9 @@ fn wayland_atspi_windows(filter_pid: Option<u32>) -> Vec<WindowInfo> {
 fn list_windows_dispatch_logical(filter_pid: Option<u32>) -> Vec<WindowInfo> {
     if wayland_enabled() && std::env::var_os("WAYLAND_DISPLAY").is_some() {
         let native = match list_windows() {
-            Ok(ws) if !ws.is_empty() => Ok(enrich_native_windows(
-                ws,
-                wayland_atspi_windows(filter_pid),
-                is_inject_mode(),
-            )),
+            Ok(ws) if !ws.is_empty() => {
+                Ok(enrich_native_windows(ws, wayland_atspi_windows(filter_pid)))
+            }
             Ok(_) => Ok(Vec::new()),
             Err(error) => Err(error),
         };
@@ -3319,7 +2637,10 @@ fn merge_atspi_windows(
     }
 }
 
-fn process_name_matches_app_id(process: &crate::platform::proc_fs::ProcessInfo, app_id: &str) -> bool {
+fn process_name_matches_app_id(
+    process: &crate::platform::proc_fs::ProcessInfo,
+    app_id: &str,
+) -> bool {
     let normalized = app_id
         .trim()
         .strip_suffix(".desktop")
@@ -3382,11 +2703,7 @@ fn unique_process_pid_for_app_id(app_id: &str) -> Option<u32> {
     (matches.len() == 1).then(|| matches[0])
 }
 
-fn enrich_native_windows(
-    mut native: Vec<WindowInfo>,
-    atspi: Vec<WindowInfo>,
-    adopt_atspi_ids: bool,
-) -> Vec<WindowInfo> {
+fn enrich_native_windows(mut native: Vec<WindowInfo>, atspi: Vec<WindowInfo>) -> Vec<WindowInfo> {
     let mut claimed = std::collections::HashSet::new();
     let mut claimed_pids = std::collections::HashSet::new();
     for window in &mut native {
@@ -3445,29 +2762,11 @@ fn enrich_native_windows(
         if let Some(pid) = candidate.pid {
             claimed_pids.insert(pid);
         }
-        if adopt_atspi_ids {
-            let toplevel = Toplevel {
-                title: undecorated_native_title(window).to_owned(),
-                app_id: window.app_name.clone(),
-                closed: false,
-                ..Toplevel::default()
-            };
-            window.xid = candidate.xid;
-            remember_identity(window.xid, &toplevel);
-        }
         if window.width == 0 || window.height == 0 {
             window.x = candidate.x;
             window.y = candidate.y;
             window.width = candidate.width;
             window.height = candidate.height;
-        }
-        if adopt_atspi_ids {
-            if let Some(pid) = candidate.pid {
-                if let Some((window_x, window_y)) = inject_window_origin(pid) {
-                    window.x = window_x;
-                    window.y = window_y;
-                }
-            }
         }
         // Either provider can prove a window is hidden. In particular AT-SPI
         // often retains its last mapped extents while the compositor reports
@@ -3517,12 +2816,6 @@ pub struct WaylandManagers {
     pub screencopy: bool,
     pub virtual_pointer: bool,
     pub wl_shm: bool,
-    /// Staging `ext-image-copy-capture-v1` manager — sway 1.10+, labwc
-    /// 0.8+, niri, KDE 6.2+, GNOME mutter 47+.
-    pub ext_image_copy_capture: bool,
-    /// Companion `ext-output-image-capture-source-v1` source manager —
-    /// required to capture a `wl_output` via the staging protocol.
-    pub ext_output_image_capture_source: bool,
 }
 
 /// Perform a single registry roundtrip and report which of the manager
@@ -3536,65 +2829,12 @@ pub fn probe_managers() -> anyhow::Result<WaylandManagers> {
     conn.display().get_registry(&qh, ());
     let mut state = State::default();
     queue.roundtrip(&mut state)?;
-    // Reuse the existing State for wlroots managers, then do a parallel
-    // probe for staging ext-image-copy-capture interfaces by walking the
-    // raw registry events (no binding required — we only need presence).
-    let ext_probe = probe_ext_interfaces().unwrap_or_default();
     Ok(WaylandManagers {
         foreign_toplevel: state.manager.is_some(),
         screencopy: state.scrcopy_manager.is_some(),
         virtual_pointer: state.vptr_manager.is_some(),
         wl_shm: state.shm.is_some(),
-        ext_image_copy_capture: ext_probe.image_copy_capture,
-        ext_output_image_capture_source: ext_probe.output_image_capture_source,
     })
-}
-
-#[derive(Default, Clone, Copy, Debug)]
-struct ExtInterfaceProbe {
-    image_copy_capture: bool,
-    output_image_capture_source: bool,
-}
-
-/// Probe registry for `ext-image-copy-capture-v1` + companion source manager
-/// presence without binding them. Cheap (one roundtrip) and side-effect
-/// free.
-fn probe_ext_interfaces() -> anyhow::Result<ExtInterfaceProbe> {
-    let conn = Connection::connect_to_env()?;
-    let mut queue = conn.new_event_queue::<ExtProbeState>();
-    let qh = queue.handle();
-    conn.display().get_registry(&qh, ());
-    let mut state = ExtProbeState::default();
-    queue.roundtrip(&mut state)?;
-    Ok(state.probe)
-}
-
-#[derive(Default)]
-struct ExtProbeState {
-    probe: ExtInterfaceProbe,
-}
-
-impl Dispatch<wl_registry::WlRegistry, ()> for ExtProbeState {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global { interface, .. } = event {
-            match interface.as_str() {
-                "ext_image_copy_capture_manager_v1" => {
-                    state.probe.image_copy_capture = true;
-                }
-                "ext_output_image_capture_source_manager_v1" => {
-                    state.probe.output_image_capture_source = true;
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 // Suppress dead-code warning for the unused BTN_LEFT alias kept for backward
@@ -3822,11 +3062,8 @@ mod tests {
         let browser_internal = window((100 << 16) + 1, Some(100), "Restore pages?");
         let shell = window(200 << 16, Some(200), "Desktop shell");
 
-        let enriched = enrich_native_windows(
-            vec![native],
-            vec![browser_frame, browser_internal, shell],
-            false,
-        );
+        let enriched =
+            enrich_native_windows(vec![native], vec![browser_frame, browser_internal, shell]);
 
         assert_eq!(enriched.len(), 2);
         assert_eq!(enriched[0].pid, Some(100));
@@ -3856,7 +3093,7 @@ mod tests {
         accessible.width = 800;
         accessible.height = 600;
 
-        let enriched = enrich_native_windows(vec![native], vec![accessible], false);
+        let enriched = enrich_native_windows(vec![native], vec![accessible]);
 
         assert_eq!(enriched[0].xid, 42);
         assert_eq!(enriched[0].pid, Some(123));
@@ -3870,7 +3107,7 @@ mod tests {
         let terminal = window(200 << 16, Some(200), "Terminal");
         let shell = window(78 << 16, Some(78), "buzzardos-shell");
 
-        let enriched = enrich_native_windows(vec![native], vec![terminal, shell], false);
+        let enriched = enrich_native_windows(vec![native], vec![terminal, shell]);
 
         assert_eq!(enriched.len(), 2);
         assert_eq!(enriched[0].pid, Some(200));
@@ -3892,7 +3129,7 @@ mod tests {
         accessible.y = 30;
         accessible.width = 800;
         accessible.height = 600;
-        let enriched = enrich_native_windows(native, vec![accessible], false);
+        let enriched = enrich_native_windows(native, vec![accessible]);
         assert_eq!(enriched[0].xid, 77);
         assert_eq!(enriched[0].pid, Some(123));
         assert_eq!(
@@ -3911,59 +3148,8 @@ mod tests {
         let mut native = window(77, None, "CuaTestHarness");
         native.is_on_screen = false;
         let accessible = window(123 << 16, Some(123), "CuaTestHarness");
-        let enriched = enrich_native_windows(vec![native], vec![accessible], false);
+        let enriched = enrich_native_windows(vec![native], vec![accessible]);
         assert!(!enriched[0].is_on_screen);
-    }
-
-    #[test]
-    fn nested_enrichment_adopts_stable_atspi_id() {
-        let native = vec![window(77, None, "CuaTestHarness")];
-        let accessible = window(123 << 16, Some(123), "CuaTestHarness");
-        let enriched = enrich_native_windows(native, vec![accessible], true);
-        assert_eq!(enriched[0].xid, 123 << 16);
-        assert_eq!(enriched[0].pid, Some(123));
-        assert_eq!(
-            identity_for(enriched[0].xid).unwrap().title,
-            "CuaTestHarness"
-        );
-    }
-
-    #[test]
-    fn inject_target_correlates_native_identity_to_unique_atspi_pid() {
-        let identity = ToplevelIdentity {
-            title: "Unique sentinel".into(),
-            app_id: "electron".into(),
-        };
-        let windows = vec![
-            window(10, Some(100), "Background fixture"),
-            window(20, Some(200), "Unique sentinel"),
-        ];
-        assert_eq!(
-            unique_atspi_pid_for_identity(&identity, &windows),
-            Some(200)
-        );
-    }
-
-    #[test]
-    fn inject_target_prefers_explicit_positive_pid() {
-        assert_eq!(
-            inject_target_for_window_with_pid(99, Some(123)).unwrap(),
-            "root:123"
-        );
-        assert!(inject_target_for_window_with_pid(99, Some(0)).is_err());
-    }
-
-    #[test]
-    fn inject_target_refuses_ambiguous_title_pid_correlation() {
-        let identity = ToplevelIdentity {
-            title: "Shared title".into(),
-            app_id: "electron".into(),
-        };
-        let windows = vec![
-            window(10, Some(100), "Shared title"),
-            window(20, Some(200), "Shared title"),
-        ];
-        assert_eq!(unique_atspi_pid_for_identity(&identity, &windows), None);
     }
 
     #[test]
@@ -4064,90 +3250,5 @@ mod tests {
                 .unwrap_err();
         assert!(error.to_string().contains("stale_output_geometry"));
         assert!(error.to_string().contains("generation 91 to 92"));
-    }
-
-    #[test]
-    fn injectable_text_accepts_printable_ascii_newline_and_tab() {
-        validate_injectable_text("Hello, World! 123 @#$%\t\n").expect("printable ASCII is typable");
-        // The full printable ASCII span the compositor chartab covers.
-        let printable: String = (0x20u8..=0x7e).map(|b| b as char).collect();
-        validate_injectable_text(&printable).expect("every printable ASCII byte is typable");
-    }
-
-    #[test]
-    fn injectable_text_rejects_unicode_and_other_controls() {
-        for bad in [
-            "café",
-            "emoji 😀",
-            "bell\u{07}",
-            "null\u{00}",
-            "delete\u{7f}",
-            "cr\r",
-        ] {
-            assert!(
-                validate_injectable_text(bad).is_err(),
-                "{bad:?} must be rejected before it reaches the compositor"
-            );
-        }
-    }
-
-    #[test]
-    fn injectable_key_accepts_whitelist_case_insensitively() {
-        for good in [
-            "enter", "Enter", "RETURN", "tab", "Escape", "esc", "space", "up", "Left", "f1", "F12",
-        ] {
-            validate_injectable_key(good).unwrap_or_else(|e| panic!("{good:?} should pass: {e}"));
-        }
-    }
-
-    #[test]
-    fn injectable_key_rejects_unsupported_names() {
-        for bad in ["f13", "ctrl", "a", "delete", "home", "pageup", ""] {
-            assert!(
-                validate_injectable_key(bad).is_err(),
-                "{bad:?} is not in the compositor whitelist"
-            );
-        }
-    }
-
-    #[test]
-    fn injectable_hotkey_normalizes_supported_chords() {
-        let keys = vec!["control".to_owned(), "SHIFT".to_owned(), "7".to_owned()];
-        assert_eq!(
-            validate_injectable_hotkey(&keys).expect("supported chord"),
-            ("ctrl,shift".to_owned(), "7".to_owned())
-        );
-        assert!(validate_injectable_hotkey(&["7".to_owned()]).is_err());
-        assert!(validate_injectable_hotkey(&["hyper".to_owned(), "k".to_owned()]).is_err());
-    }
-
-    #[test]
-    fn hello_reply_parses_exact_banner_and_rejects_mismatch() {
-        parse_inject_hello("cua-inject v1\n").expect("verbatim banner is accepted");
-        parse_inject_hello("  cua-inject v1  ").expect("surrounding whitespace is tolerated");
-        assert!(parse_inject_hello("cua-inject v2").is_err());
-        assert!(parse_inject_hello("err unsupported-version").is_err());
-        assert!(parse_inject_hello("garbage").is_err());
-    }
-
-    #[test]
-    fn command_reply_parses_ok_and_surfaces_error_reason() {
-        parse_inject_reply("ok\n").expect("ok is success");
-        parse_inject_reply("ok").expect("ok without newline is success");
-        let err = parse_inject_reply("err ambiguous-app-id\n").unwrap_err();
-        assert!(err.to_string().contains("ambiguous-app-id"));
-        assert!(parse_inject_reply("err").is_err());
-        assert!(parse_inject_reply("maybe").is_err());
-    }
-
-    #[test]
-    fn geometry_reply_is_strict_and_signed() {
-        assert_eq!(
-            parse_inject_geometry("geometry -4 23 10 20\n").unwrap(),
-            ((-4, 23), (10, 20))
-        );
-        assert!(parse_inject_geometry("geometry 1").is_err());
-        assert!(parse_inject_geometry("err target-not-found").is_err());
-        assert!(parse_inject_geometry("ok").is_err());
     }
 }

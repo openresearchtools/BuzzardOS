@@ -240,18 +240,6 @@ pub(super) fn type_text(admission: &Admission, text: &str, delay_ms: u64) -> any
     request_text(admission, text, delay_ms, None)
 }
 
-/// Type Unicode text and one named key in the same persistent-keyboard
-/// transaction. This preserves the old single-client ordering required by
-/// nested wlroots seats without destroying the active input device afterward.
-pub(super) fn type_text_then_key(
-    admission: &Admission,
-    text: &str,
-    delay_ms: u64,
-    trailing_keysym: &str,
-) -> anyhow::Result<()> {
-    request_text(admission, text, delay_ms, Some(trailing_keysym))
-}
-
 fn request_text(
     admission: &Admission,
     text: &str,
@@ -475,27 +463,6 @@ fn fail_stop_session_teardown(session: &str, generation: u64, reason: &str) -> !
     );
     let _ = session;
     std::process::abort()
-}
-
-/// Synchronously neutralize the process-global keyboard during one SDK/runtime
-/// shutdown. The owner remains reusable because multiple SDK instances can be
-/// constructed sequentially in the same daemon process. Process termination
-/// remains the final same-device wlroots release boundary.
-pub(super) fn shutdown() -> anyhow::Result<()> {
-    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
-    let Some(shutdown_tx) = TX.get() else {
-        return Ok(());
-    };
-    let started = std::time::Instant::now();
-    SHUTDOWN_EPOCH.fetch_add(1, Ordering::AcqRel);
-    let remaining = DEADLINE.saturating_sub(started.elapsed());
-    let (reply, receive) = bounded(1);
-    shutdown_tx
-        .send_timeout(Cmd::Reset { reply }, remaining)
-        .map_err(|error| anyhow::anyhow!("could not queue CUA keyboard shutdown: {error}"))?;
-    receive
-        .recv_timeout(DEADLINE.saturating_sub(started.elapsed()))
-        .map_err(|error| anyhow::anyhow!("CUA keyboard shutdown was not acknowledged: {error}"))?
 }
 
 fn tx() -> &'static Sender<Cmd> {
@@ -1686,7 +1653,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cancelled"));
-        crate::core::session::forget_ended_sessions_with_prefix(session);
     }
 
     #[test]
@@ -1699,7 +1665,6 @@ mod tests {
         let error = cancellable_delay(u64::MAX, &admission).unwrap_err();
         assert!(error.to_string().contains("cancelled"));
         assert!(started.elapsed() < std::time::Duration::from_millis(100));
-        crate::core::session::forget_ended_sessions_with_prefix(session);
     }
 
     #[test]
