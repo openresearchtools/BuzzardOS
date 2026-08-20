@@ -526,7 +526,7 @@ pub fn builtin_desktop_targets() -> Vec<HitTarget> {
         (
             Rect {
                 x: 18,
-                y: 20,
+                y: TOP_BAR_HEIGHT + 20,
                 width: 88,
                 height: 92,
             },
@@ -536,7 +536,7 @@ pub fn builtin_desktop_targets() -> Vec<HitTarget> {
         (
             Rect {
                 x: 18,
-                y: 120,
+                y: TOP_BAR_HEIGHT + 120,
                 width: 88,
                 height: 92,
             },
@@ -919,10 +919,9 @@ mod tests {
 
     #[test]
     fn desktop_has_files_and_shared_shortcuts() {
-        let labels: Vec<_> = builtin_desktop_targets()
-            .into_iter()
-            .map(|target| target.label)
-            .collect();
+        let targets = builtin_desktop_targets();
+        let labels: Vec<_> = targets.iter().map(|target| target.label.as_str()).collect();
         assert_eq!(labels, ["Files", "Shared"]);
+        assert!(targets.iter().all(|target| target.rect.y >= TOP_BAR_HEIGHT));
     }
 }

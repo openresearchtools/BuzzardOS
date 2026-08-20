@@ -8,12 +8,13 @@ use gio::prelude::AppInfoExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::model::Rect;
+use crate::model::{PANEL_HEIGHT, Rect, TOP_BAR_HEIGHT};
 
 pub const ICON_CELL_WIDTH: i32 = 96;
 pub const ICON_CELL_HEIGHT: i32 = 100;
 pub const ICON_LEFT: i32 = 14;
-pub const ICON_TOP: i32 = 16;
+const ICON_MARGIN: i32 = 16;
+pub const ICON_TOP: i32 = TOP_BAR_HEIGHT + ICON_MARGIN;
 
 #[derive(Debug, Clone)]
 pub struct PositionedDesktopItem {
@@ -286,8 +287,9 @@ fn grid_extent(desktop_size: (u32, u32)) -> (u32, u32) {
         .max(ICON_CELL_WIDTH);
     let usable_height = i32::try_from(desktop_size.1)
         .unwrap_or(i32::MAX)
-        .saturating_sub(crate::model::PANEL_HEIGHT)
-        .saturating_sub(ICON_TOP * 2)
+        .saturating_sub(TOP_BAR_HEIGHT)
+        .saturating_sub(PANEL_HEIGHT)
+        .saturating_sub(ICON_MARGIN * 2)
         .max(ICON_CELL_HEIGHT);
     (
         u32::try_from(usable_width / ICON_CELL_WIDTH)
@@ -328,7 +330,8 @@ mod tests {
 
     #[test]
     fn grid_is_adaptive_and_pages_instead_of_dropping_items() {
-        assert_eq!(grid_extent((300, 300)), (2, 2));
+        assert_eq!(grid_extent((300, 300)), (2, 1));
+        assert_eq!(grid_extent((300, 400)), (2, 2));
         let occupied = (0..4)
             .map(|slot| (0, slot / 2, slot % 2))
             .collect::<BTreeSet<_>>();

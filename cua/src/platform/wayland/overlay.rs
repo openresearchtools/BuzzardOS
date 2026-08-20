@@ -2,8 +2,8 @@
 //!
 //! Replaces the X11-only `overlay.rs` render loop on wlroots compositors
 //! (sway, labwc, kwin 5.27+, hyprland) by creating a full-screen,
-//! click-through, always-on-top `wl_surface` anchored to the first output
-//! via `zwlr_layer_shell_v1`. The surface renders the same gradient-arrow
+//! click-through, always-on-top `wl_surface` anchored to the invoking
+//! numbered CUA output via `zwlr_layer_shell_v1`. The surface renders the same gradient-arrow
 //! cursor as the X11 path by sharing `crate::cursor::RenderStateCore` —
 //! bloom, click-pulse, idle-fade, and motion all work identically.
 //!
@@ -104,6 +104,7 @@ struct OverlayState {
     shm: Option<WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
     output: Option<WlOutput>,
+    outputs: Vec<(WlOutput, String, u32, u32)>,
     output_w: u32,
     output_h: u32,
     surface: Option<WlSurface>,
@@ -136,6 +137,7 @@ impl Default for OverlayState {
             shm: None,
             layer_shell: None,
             output: None,
+            outputs: Vec::new(),
             output_w: 0,
             output_h: 0,
             surface: None,
@@ -177,10 +179,11 @@ fn owner_thread(rx: Receiver<WlOverlayCmd>) -> anyhow::Result<()> {
         .layer_shell
         .clone()
         .ok_or_else(|| anyhow::anyhow!("compositor does not expose zwlr_layer_shell_v1"))?;
-    let output = state
-        .output
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("compositor exposed no wl_output"))?;
+    let expected_output = std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV)
+        .map_err(|_| anyhow::anyhow!("numbered CUA output identity is unavailable"))?;
+    let output = state.output.clone().ok_or_else(|| {
+        anyhow::anyhow!("compositor did not expose numbered CUA output {expected_output}")
+    })?;
 
     // Build the layer surface: fullscreen, overlay layer, click-through.
     let surface = compositor.create_surface(&qh, ());
@@ -477,10 +480,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for OverlayState {
                     state.shm = Some(registry.bind::<WlShm, _, _>(name, version.min(1), qh, ()));
                 }
                 "wl_output" => {
-                    if state.output.is_none() {
-                        state.output =
-                            Some(registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ()));
-                    }
+                    let output = registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ());
+                    state.outputs.push((output, String::new(), 0, 0));
                 }
                 "zwlr_layer_shell_v1" => {
                     state.layer_shell =
@@ -519,18 +520,47 @@ impl Dispatch<WlShm, ()> for OverlayState {
 impl Dispatch<WlOutput, ()> for OverlayState {
     fn event(
         state: &mut Self,
-        _: &WlOutput,
+        output: &WlOutput,
         event: <WlOutput as wayland_client::Proxy>::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         use wayland_client::protocol::wl_output;
-        if let wl_output::Event::Mode { width, height, .. } = event {
-            if width > 0 && height > 0 {
-                state.output_w = width as u32;
-                state.output_h = height as u32;
+        match event {
+            wl_output::Event::Mode { width, height, .. } => {
+                if let Some(candidate) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|candidate| candidate.0 == *output)
+                {
+                    candidate.2 = width.max(0) as u32;
+                    candidate.3 = height.max(0) as u32;
+                    if state.output.as_ref() == Some(output) {
+                        state.output_w = candidate.2;
+                        state.output_h = candidate.3;
+                    }
+                }
             }
+            wl_output::Event::Name { name } => {
+                if let Some(candidate) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|candidate| candidate.0 == *output)
+                {
+                    candidate.1 = name.clone();
+                    if std::env::var(crate::core::seat_context::CUA_OUTPUT_ENV)
+                        .ok()
+                        .as_deref()
+                        == Some(name.as_str())
+                    {
+                        state.output = Some(output.clone());
+                        state.output_w = candidate.2;
+                        state.output_h = candidate.3;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
