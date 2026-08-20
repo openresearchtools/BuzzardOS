@@ -2,7 +2,6 @@
 
 mod contract;
 mod core;
-mod cursor;
 mod platform;
 
 use crate::core::protocol::{Content, ToolResult};

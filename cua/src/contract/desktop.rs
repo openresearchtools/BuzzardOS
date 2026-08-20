@@ -5,11 +5,11 @@
 
 use crate::contract::{
     ActionResult, ClickInput, ClipboardReadInput, ClipboardReadOutput, ClipboardWriteInput,
-    ClipboardWriteOutput, CloseWindowInput, CursorAction, CursorPositionOutput, DesktopStateOutput,
-    DragInput, GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput, HotkeyInput,
-    InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput, PressKeyInput,
-    RestoreWindowInput, ScreenSizeOutput, ScrollInput, SetWindowFrameInput, ToolAnnotations,
-    ToolContract, ToolInput, ToolOutput, TypeTextInput,
+    ClipboardWriteOutput, CloseWindowInput, CursorPositionOutput, DesktopStateOutput, DragInput,
+    GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput, HotkeyInput, InvokeMenuInput,
+    MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput, PressKeyInput, RestoreWindowInput,
+    ScreenSizeOutput, ScrollInput, SetWindowFrameInput, ToolAnnotations, ToolContract, ToolInput,
+    ToolOutput, TypeTextInput,
 };
 
 pub fn contracts() -> Vec<ToolContract> {
@@ -76,7 +76,6 @@ fn clipboard_read() -> ToolContract {
             idempotent: false,
             open_world: false,
         },
-        CursorAction::Observe,
     );
     contract
 }
@@ -92,7 +91,6 @@ fn clipboard_write() -> ToolContract {
             idempotent: true,
             open_world: false,
         },
-        CursorAction::Text,
     );
     contract
 }
@@ -102,7 +100,6 @@ fn contract<I: ToolInput, O: ToolOutput>(
     description: &str,
     capabilities: &[&str],
     annotations: ToolAnnotations,
-    _cursor_action: CursorAction,
 ) -> ToolContract {
     assert_eq!(name, I::TOOL_NAME, "typed input is bound to the wrong tool");
     ToolContract {
@@ -126,7 +123,6 @@ fn get_desktop_state() -> ToolContract {
             idempotent: false,
             open_world: false,
         },
-        CursorAction::Observe,
     )
 }
 
@@ -141,7 +137,6 @@ fn get_screen_size() -> ToolContract {
             idempotent: true,
             open_world: false,
         },
-        CursorAction::Observe,
     )
 }
 
@@ -156,7 +151,6 @@ fn get_cursor_position() -> ToolContract {
             idempotent: true,
             open_world: false,
         },
-        CursorAction::Observe,
     )
 }
 
@@ -171,7 +165,6 @@ fn move_cursor() -> ToolContract {
             idempotent: true,
             open_world: false,
         },
-        CursorAction::Navigate,
     )
 }
 
@@ -186,7 +179,6 @@ fn set_window_frame() -> ToolContract {
             idempotent: true,
             open_world: false,
         },
-        CursorAction::App,
     )
 }
 
@@ -207,7 +199,6 @@ fn linux_window_action<I: ToolInput>(
             idempotent,
             open_world: destructive,
         },
-        CursorAction::App,
     );
     contract
 }
@@ -263,7 +254,6 @@ fn invoke_menu() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::App,
     )
 }
 
@@ -282,7 +272,6 @@ fn click() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Click,
     )
 }
 
@@ -297,7 +286,6 @@ fn drag() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Drag,
     )
 }
 
@@ -312,7 +300,6 @@ fn scroll() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Scroll,
     )
 }
 
@@ -331,7 +318,6 @@ fn type_text() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Text,
     )
 }
 
@@ -346,7 +332,6 @@ fn press_key() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Key,
     )
 }
 
@@ -361,6 +346,5 @@ fn hotkey() -> ToolContract {
             idempotent: false,
             open_world: true,
         },
-        CursorAction::Key,
     )
 }

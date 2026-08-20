@@ -5,26 +5,20 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-mod cursor;
-mod cursor_tools;
 mod desktop;
 mod inputs;
 mod outputs;
 pub(crate) mod verification;
 
-pub use cursor::{CursorAction, CursorDelivery, CursorPlayback, CursorReducedMotion, CursorTarget};
 pub use inputs::{
     ClickButton, ClickInput, ClipboardReadInput, ClipboardWriteInput, CloseWindowInput, DragInput,
-    GetAgentCursorStateInput, GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput,
-    HotkeyInput, InvokeMenuInput, MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput,
-    PressKeyInput, RestoreWindowInput, ScrollBy, ScrollInput, SetAgentCursorEnabledInput,
-    SetAgentCursorMotionInput, SetAgentCursorThemeInput, SetWindowFrameInput, ToolInput,
-    TypeTextInput, MAX_TYPE_TEXT_CHARS,
+    GetCursorPositionInput, GetDesktopStateInput, GetScreenSizeInput, HotkeyInput, InvokeMenuInput,
+    MaximizeWindowInput, MinimizeWindowInput, MoveCursorInput, PressKeyInput, RestoreWindowInput,
+    ScrollBy, ScrollInput, SetWindowFrameInput, ToolInput, TypeTextInput, MAX_TYPE_TEXT_CHARS,
 };
 pub use outputs::{
     ActionResult, ClipboardReadOutput, ClipboardWriteOutput, CursorPositionOutput,
-    DesktopStateOutput, GetAgentCursorStateOutput, ScreenSizeOutput, SetAgentCursorEnabledOutput,
-    SetAgentCursorMotionOutput, SetAgentCursorThemeOutput, ToolOutput,
+    DesktopStateOutput, ScreenSizeOutput, ToolOutput,
 };
 pub use verification::{
     ElementPredicate, ElementSelector, PredicateOutcome, StatePredicate, UnknownReason,
@@ -60,7 +54,6 @@ pub enum Platform {
 
 fn contracts() -> Vec<ToolContract> {
     let mut tools = desktop::contracts();
-    tools.extend(cursor_tools::contracts());
     tools.extend(verification::contracts());
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     tools

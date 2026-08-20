@@ -11,7 +11,6 @@
 //! typed error on pure Wayland.
 
 pub(crate) mod compositor_ipc;
-pub mod overlay;
 pub mod persistent_vptr;
 pub mod sway_ipc;
 mod virtual_keyboard;
@@ -1372,6 +1371,12 @@ fn capture_via_grim() -> anyhow::Result<Vec<u8>> {
 /// request a copy, wait for Ready, swap channels, encode PNG. Returns an error
 /// if any global is missing or the compositor flags the capture as failed.
 fn capture_via_screencopy() -> anyhow::Result<Vec<u8>> {
+    // A daemonless command's virtual-pointer object disappears when that
+    // command exits. Recreate this numbered seat's native Sway pointer at its
+    // bounded last position and keep the connection alive for the capture so
+    // overlay_cursor=1 contains a normal compositor cursor, not a custom
+    // layer-shell surface.
+    let _native_cursor = open_native_cursor_for_capture()?;
     let conn = Connection::connect_to_env()?;
     let mut queue = conn.new_event_queue::<State>();
     let qh = queue.handle();
@@ -1394,7 +1399,10 @@ fn capture_via_screencopy() -> anyhow::Result<Vec<u8>> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("compositor exposed no wl_output to capture"))?;
 
-    let frame = manager.capture_output(0, &output, &qh, ());
+    // Include Sway's native cursor for this invocation's numbered seat. The
+    // output is private to that seat, so no human or other CUA cursor can be
+    // composited into this screenshot.
+    let frame = manager.capture_output(1, &output, &qh, ());
     // Make the capture request visible to the nested compositor before asking the desktop
     // shell to damage the idle nested output.
     conn.flush()?;
@@ -1821,6 +1829,22 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
         output_w,
         output_h,
     })
+}
+
+fn open_native_cursor_for_capture() -> anyhow::Result<VptrSession> {
+    let mut session = open_vptr_session(None)?;
+    let (width, height) = (session.output_w, session.output_h);
+    let default = ((width / 2) as i32, (height / 2) as i32);
+    let (x, y) = last_synth_cursor_pos().unwrap_or(default);
+    let x = x.clamp(0, width.saturating_sub(1) as i32) as u32;
+    let y = y.clamp(0, height.saturating_sub(1) as i32) as u32;
+    session
+        .vptr
+        .motion_absolute(event_time_ms(), x, y, width, height);
+    session.vptr.frame();
+    session.queue.roundtrip(&mut session.state)?;
+    record_synth_cursor(x as i32, y as i32);
+    Ok(session)
 }
 
 /// Focus and raise a specific native Wayland toplevel before focus-bound

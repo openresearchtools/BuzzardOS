@@ -35,11 +35,13 @@ dbus-send \
     string:org.a11y.Status \
     string:IsEnabled >/dev/null 2>&1 || true
 
-# Keep exactly one initial parent-Wayland output for the native Buzzard OS
-# window. Stock Sway's runtime `create_output` command creates later virtual
-# outputs through this backend; the filtered parent gateway keeps every later
-# surface off-screen and accepts host presentation/input only for the first.
-export WLR_BACKENDS=wayland
+# Keep exactly one parent-Wayland output for the native Buzzard OS window.
+# Stock Sway's `create_output` command selects the first eligible backend, so
+# put its stock headless backend first without pre-creating an output. Every
+# runtime CUA/manual output is then genuinely guest-only and cannot inherit the
+# parent Wayland seat, cursor, surface, or input devices.
+export WLR_BACKENDS=headless,wayland
+export WLR_HEADLESS_OUTPUTS=0
 export WLR_WL_OUTPUTS=1
 export WLR_LIBINPUT_NO_DEVICES=1
 

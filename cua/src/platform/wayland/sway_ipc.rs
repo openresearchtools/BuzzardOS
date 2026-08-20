@@ -575,6 +575,23 @@ fn run_global_command(command: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn normalized_output_position_commands(outputs: &[OutputInfo]) -> anyhow::Result<Vec<String>> {
+    let mut active = outputs
+        .iter()
+        .filter(|output| output.active)
+        .collect::<Vec<_>>();
+    active.sort_by_key(|output| output.id);
+    anyhow::ensure!(!active.is_empty(), "Sway has no active output to position");
+
+    let mut x = 0_i32;
+    let mut commands = Vec::with_capacity(active.len());
+    for output in active {
+        commands.push(format!("output {} pos {x} 0", safe_name(&output.name)?));
+        x = x.saturating_add(output.rect.width.max(1));
+    }
+    Ok(commands)
+}
+
 pub fn cua_workspace_name(index: u32) -> anyhow::Result<String> {
     if index == 0 {
         anyhow::bail!("seat0 is reserved for the human Desktop");
@@ -631,22 +648,24 @@ pub fn ensure_cua_workspace(index: u32) -> anyhow::Result<String> {
         .find(|workspace| workspace.output == primary.name)
         .map(|workspace| workspace.name)
         .unwrap_or_else(|| "Desktop".to_owned());
-    let x = after
-        .iter()
-        .filter(|output| output.active && output.name != primary.name)
-        .fold(
-            primary.rect.x.saturating_add(primary.rect.width),
-            |right, output| right.max(output.rect.x.saturating_add(output.rect.width)),
-        );
-    let command = format!(
-        "output {} mode {}x{}@{:.3}Hz scale {:.3} pos {} {}; seat \"seat{index}\" fallback false; workspace {}; move workspace to output {}; workspace {}",
-        safe_name(&created.name)?, primary.physical_width.max(1), primary.physical_height.max(1),
+    let mut commands = vec![format!(
+        "output {} mode {}x{}@{:.3}Hz scale {:.3}",
+        safe_name(&created.name)?,
+        primary.physical_width.max(1),
+        primary.physical_height.max(1),
         f64::from(primary.refresh_millihz) / 1000.0,
         f64::from(primary.scale_milli) / 1000.0,
-        x, primary.rect.y,
-        safe_name(&workspace_name)?, safe_name(&created.name)?, safe_name(&previous_workspace)?,
-    );
-    run_global_command(&command)?;
+    )];
+    // Host pointer coordinates are local to the first nested output. Keep its
+    // Sway origin fixed while adding a guest-only headless target.
+    commands.extend(normalized_output_position_commands(&after)?);
+    commands.extend([
+        format!("seat \"seat{index}\" fallback false"),
+        format!("workspace {}", safe_name(&workspace_name)?),
+        format!("move workspace to output {}", safe_name(&created.name)?),
+        format!("workspace {}", safe_name(&previous_workspace)?),
+    ]);
+    run_global_command(&commands.join("; "))?;
     let workspace = workspaces()?
         .into_iter()
         .find(|workspace| workspace.name == workspace_name)
@@ -1237,6 +1256,56 @@ fn read_ipc_message(stream: &mut UnixStream) -> anyhow::Result<(u32, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_layout_keeps_the_host_input_origin_fixed() {
+        let outputs = [
+            OutputInfo {
+                id: 9,
+                name: "WL-3".into(),
+                active: true,
+                rect: Rect {
+                    x: 6400,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputInfo::default()
+            },
+            OutputInfo {
+                id: 3,
+                name: "WL-1".into(),
+                active: true,
+                rect: Rect {
+                    x: 7680,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputInfo::default()
+            },
+            OutputInfo {
+                id: 6,
+                name: "WL-2".into(),
+                active: true,
+                rect: Rect {
+                    x: 2560,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputInfo::default()
+            },
+        ];
+        assert_eq!(
+            normalized_output_position_commands(&outputs).unwrap(),
+            [
+                "output \"WL-1\" pos 0 0",
+                "output \"WL-2\" pos 1280 0",
+                "output \"WL-3\" pos 2560 0",
+            ]
+        );
+    }
 
     #[test]
     fn reconstructs_exact_live_sway_outer_frame_and_content() {

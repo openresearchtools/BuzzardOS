@@ -106,10 +106,6 @@ fn scroll_amount_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "integer", "minimum": 1, "maximum": 50 })
 }
 
-fn cursor_theme_id_schema(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({ "type": "string", "minLength": 1, "maxLength": 200 })
-}
-
 /// Maximum number of Unicode scalar values accepted by one keyboard typing
 /// request. Implementations must enforce this at runtime as well as advertise
 /// it in JSON Schema; schema validation is not a security boundary.
@@ -178,55 +174,6 @@ impl ScrollDirection {
 pub enum ScrollBy {
     Line,
     Page,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SetAgentCursorEnabledInput {
-    pub enabled: bool,
-}
-
-impl ToolInput for SetAgentCursorEnabledInput {
-    const TOOL_NAME: &'static str = "set_agent_cursor_enabled";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SetAgentCursorMotionInput {
-    pub start_handle: Option<f64>,
-    pub end_handle: Option<f64>,
-    pub arc_size: Option<f64>,
-    pub arc_flow: Option<f64>,
-    pub spring: Option<f64>,
-    pub glide_duration_ms: Option<f64>,
-    pub dwell_after_click_ms: Option<f64>,
-    pub idle_hide_ms: Option<f64>,
-    pub turn_radius: Option<f64>,
-}
-
-impl ToolInput for SetAgentCursorMotionInput {
-    const TOOL_NAME: &'static str = "set_agent_cursor_motion";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SetAgentCursorThemeInput {
-    #[schemars(schema_with = "cursor_theme_id_schema")]
-    pub theme_id: String,
-    #[serde(default)]
-    pub reduced_motion: crate::contract::CursorReducedMotion,
-}
-
-impl ToolInput for SetAgentCursorThemeInput {
-    const TOOL_NAME: &'static str = "set_agent_cursor_theme";
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct GetAgentCursorStateInput {}
-
-impl ToolInput for GetAgentCursorStateInput {
-    const TOOL_NAME: &'static str = "get_agent_cursor_state";
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]

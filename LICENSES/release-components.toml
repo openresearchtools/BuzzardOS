@@ -43,15 +43,6 @@ bundle_notice = ["deb:/usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md", "deb:/
 status = "reviewed-single-crate-linux-source-and-attribution-recorded"
 
 [[component]]
-id = "trycua-inter-font"
-surface = ["source", "deb", "oci"]
-name = "Inter font"
-source = "https://github.com/rsms/inter"
-license = "OFL-1.1"
-evidence = ["cua/assets/cursor/Inter-OFL.txt"]
-status = "recorded"
-
-[[component]]
 id = "wayland-virtual-keyboard-protocol"
 surface = ["source", "deb", "oci"]
 name = "virtual-keyboard-unstable-v1 protocol definition"

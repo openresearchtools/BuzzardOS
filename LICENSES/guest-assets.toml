@@ -52,20 +52,6 @@ notes = "Independently authored simple folder SVG geometry and symbolic paths. A
 status = "project-authored-and-licensed"
 
 [[asset]]
-id = "trycua-default-cursor-assets"
-paths = ["cua/assets/cursor/cua.default.lottie", "cua/assets/cursor/cua.default.cua-theme"]
-license = "MIT"
-evidence = ["cua/LICENSE.trycua.md", "cua/UPSTREAM.toml"]
-status = "covered-by-vendored-upstream-license"
-
-[[asset]]
-id = "trycua-inter-font"
-paths = ["cua/assets/cursor/Inter.ttf"]
-license = "OFL-1.1"
-evidence = ["cua/assets/cursor/Inter-OFL.txt"]
-status = "recorded"
-
-[[asset]]
 id = "wayland-virtual-keyboard-protocol"
 paths = ["cua/protocol/virtual-keyboard-unstable-v1.xml"]
 license = "MIT"

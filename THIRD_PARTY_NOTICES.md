@@ -13,8 +13,6 @@ Buzzard OS. Machine-readable component and asset records are under
   `10279552e2bbe479e367a082f78b1b98ee85a697`, under the MIT License. Its
   preserved notice, source record, reviewed reduction notes, and downstream
   changelog are in `cua/`.
-- **Inter** is bundled by the Buzzard CUA cursor overlay under OFL-1.1. Its
-  complete license is preserved beside the source asset.
 - The vendored **virtual-keyboard-unstable-v1** protocol XML preserves its MIT
   copyright and permission notice inline.
 - Locked Cargo graphs record registry checksums, license expressions,

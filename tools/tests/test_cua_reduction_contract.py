@@ -38,16 +38,16 @@ class CuaReductionContractTests(unittest.TestCase):
         self.assertNotIn("buzzardoscua.service", packaging + guest_assets)
         self.assertNotIn("buzzardoscua serve", packaging + guest_assets)
 
-    def test_numbered_outputs_are_filtered_from_host_presentation_and_input(self) -> None:
+    def test_numbered_outputs_never_enter_parent_wayland_input_or_presentation(self) -> None:
         session = (ROOT / "guest/assets/buzzardos-sway-session").read_text(
             encoding="utf-8"
         )
         gateway = (
             ROOT / "host/crates/buzzardos-display/src/guest_display.rs"
         ).read_text(encoding="utf-8")
-        self.assertIn("export WLR_BACKENDS=wayland", session)
+        self.assertIn("export WLR_BACKENDS=headless,wayland", session)
+        self.assertIn("export WLR_HEADLESS_OUTPUTS=0", session)
         self.assertIn("export WLR_WL_OUTPUTS=1", session)
-        self.assertNotIn("WLR_HEADLESS_OUTPUTS", session)
         self.assertIn("if state.primary_surface.is_none()", gateway)
         self.assertIn("if !host_facing", gateway)
         self.assertIn("self.pointers.iter().take(1)", gateway)
@@ -69,6 +69,31 @@ class CuaReductionContractTests(unittest.TestCase):
         self.assertNotIn("end_session", active)
         self.assertNotIn("TELEMETRY_ENABLED", active)
         self.assertNotIn("posthog", active.lower())
+
+    def test_cua_uses_only_native_numbered_seat_cursors(self) -> None:
+        active = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in sorted(CUA.rglob("*.rs"))
+        )
+        manifest = (CUA / "Cargo.toml").read_text(encoding="utf-8")
+        self.assertFalse((CUA / "src/cursor").exists())
+        self.assertFalse((CUA / "src/platform/overlay.rs").exists())
+        self.assertFalse((CUA / "src/platform/wayland/overlay.rs").exists())
+        self.assertFalse((CUA / "assets/cursor").exists())
+        for obsolete in (
+            "set_agent_cursor_enabled",
+            "set_agent_cursor_motion",
+            "set_agent_cursor_theme",
+            "get_agent_cursor_state",
+            "OverlayCommand",
+            "CursorRegistry",
+        ):
+            self.assertNotIn(obsolete, active)
+        for dependency in ("fontdue", "postcard", "tiny-skia", "zstd"):
+            self.assertNotIn(dependency, manifest)
+        wayland = (CUA / "src/platform/wayland/mod.rs").read_text(encoding="utf-8")
+        self.assertIn("move_cursor_absolute", wayland)
+        self.assertIn("capture_output(1, &output", wayland)
 
     def test_launched_apps_cannot_hold_one_shot_cli_transports_open(self) -> None:
         tools = (CUA / "src/platform/tools/impl_.rs").read_text(encoding="utf-8")

@@ -378,6 +378,23 @@ fn quote_sway(value: &str) -> Result<String> {
     Ok(format!("\"{value}\""))
 }
 
+fn normalized_output_position_commands(outputs: &[OutputState]) -> Result<Vec<String>> {
+    let mut active = outputs
+        .iter()
+        .filter(|output| output.active)
+        .collect::<Vec<_>>();
+    active.sort_by_key(|output| output.id);
+    anyhow::ensure!(!active.is_empty(), "Sway has no active output to position");
+
+    let mut x = 0_i32;
+    let mut commands = Vec::with_capacity(active.len());
+    for output in active {
+        commands.push(format!("output {} pos {x} 0", quote_sway(&output.name)?));
+        x = x.saturating_add(output.rect.width.max(1));
+    }
+    Ok(commands)
+}
+
 pub fn desktop_output() -> Result<String> {
     let outputs = list_outputs()?;
     outputs
@@ -445,32 +462,28 @@ fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceStat
         .iter()
         .find(|output| output.active && output.name == primary_name)
         .context("Sway has no host-facing output to mirror")?;
-    let x = outputs
-        .iter()
-        .filter(|output| output.active && output.name != primary.name)
-        .fold(
-            primary.rect.x.saturating_add(primary.rect.width),
-            |right, output| right.max(output.rect.x.saturating_add(output.rect.width)),
-        );
     let refresh_hz = f64::from(primary.refresh_millihz) / 1000.0;
     let scale = f64::from(primary.scale_milli) / 1000.0;
     let current = current_desktop_workspace()?;
-    let seat_command = if cua_seat {
-        format!("seat \"seat{index}\" fallback false; ")
-    } else {
-        String::new()
-    };
-    let command = format!(
-        "output {} mode {}x{}@{refresh_hz:.3}Hz scale {scale:.3} pos {x} {}; {seat_command}workspace {}; move workspace to output {}; workspace {}",
+    let mut commands = vec![format!(
+        "output {} mode {}x{}@{refresh_hz:.3}Hz scale {scale:.3}",
         quote_sway(&created.name)?,
         primary.physical_width.max(1),
         primary.physical_height.max(1),
-        primary.rect.y,
-        quote_sway(&name)?,
-        quote_sway(&created.name)?,
-        quote_sway(&current)?,
-    );
-    run_global_command(&command)?;
+    )];
+    // The parent gateway translates human input in the first output's local
+    // coordinate space. Pin that host-facing output at (0,0) and pack every
+    // guest-only headless output to its right in one atomic command.
+    commands.extend(normalized_output_position_commands(&outputs)?);
+    if cua_seat {
+        commands.push(format!("seat \"seat{index}\" fallback false"));
+    }
+    commands.extend([
+        format!("workspace {}", quote_sway(&name)?),
+        format!("move workspace to output {}", quote_sway(&created.name)?),
+        format!("workspace {}", quote_sway(&current)?),
+    ]);
+    run_global_command(&commands.join("; "))?;
     list_workspaces()?
         .into_iter()
         .find(|workspace| workspace.name == name)
@@ -1276,6 +1289,56 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
 mod tests {
     use super::*;
     use buzzardos_desktop_core::ThemeMode;
+
+    #[test]
+    fn output_layout_keeps_the_host_input_origin_fixed() {
+        let outputs = [
+            OutputState {
+                id: 9,
+                name: "WL-3".into(),
+                active: true,
+                rect: Rect {
+                    x: 6400,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+            OutputState {
+                id: 3,
+                name: "WL-1".into(),
+                active: true,
+                rect: Rect {
+                    x: 7680,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+            OutputState {
+                id: 6,
+                name: "WL-2".into(),
+                active: true,
+                rect: Rect {
+                    x: 2560,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+        ];
+        assert_eq!(
+            normalized_output_position_commands(&outputs).unwrap(),
+            [
+                "output \"WL-1\" pos 0 0",
+                "output \"WL-2\" pos 1280 0",
+                "output \"WL-3\" pos 2560 0",
+            ]
+        );
+    }
 
     #[test]
     fn decoration_commands_change_only_typed_palette_values() {

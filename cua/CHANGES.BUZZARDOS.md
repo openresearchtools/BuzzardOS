@@ -53,8 +53,9 @@ Buzzard-specific correctness changes include:
 - screenshots remain guest-only and exclude host chrome. No host Wayland,
   clipboard, accessibility, input, or automation socket is exposed.
 
-The reviewed cursor source archive (`cua.default.lottie`), compiled bounded
-vector artifact (`cua.default.cua-theme`), Inter font, and Wayland virtual
-keyboard protocol are retained with their original license evidence.
+The inherited animated agent-cursor overlay, cursor themes, cursor registry,
+and cursor-configuration tools are removed. Pointer tools use only Sway's
+native cursor for the invoking numbered virtual seat/output. The Wayland
+virtual-keyboard protocol remains with its original license evidence.
 
 This fork is not endorsed by Cua AI, Inc.

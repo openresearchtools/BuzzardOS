@@ -293,9 +293,6 @@ build_cua() {
     install -D -m 0644 "$project_dir/cua/CITATION.cff" \
         "$root/usr/share/doc/buzzardoscua/CITATION.cff"
     install -D -m 0644 \
-        "$project_dir/cua/assets/cursor/Inter-OFL.txt" \
-        "$root/usr/share/doc/buzzardoscua/Inter-OFL.txt"
-    install -D -m 0644 \
         "$project_dir/cua/protocol/virtual-keyboard-unstable-v1.xml" \
         "$root/usr/share/doc/buzzardoscua/virtual-keyboard-unstable-v1.xml"
     install -D -m 0644 "$project_dir/cua/Skills/buzzard-cua/SKILL.md" \

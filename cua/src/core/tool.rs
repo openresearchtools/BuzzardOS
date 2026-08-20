@@ -73,20 +73,9 @@ pub trait Tool: Send + Sync {
     async fn invoke(&self, args: Value) -> ToolResult;
 }
 
-struct RuntimeCleanup(Option<Box<dyn FnOnce() + Send + Sync>>);
-
-impl Drop for RuntimeCleanup {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.0.take() {
-            cleanup();
-        }
-    }
-}
-
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     order: Vec<String>,
-    runtime_cleanups: Vec<RuntimeCleanup>,
 }
 
 impl ToolRegistry {
@@ -94,7 +83,6 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             order: Vec::new(),
-            runtime_cleanups: Vec::new(),
         }
     }
 
@@ -102,11 +90,6 @@ impl ToolRegistry {
         let name = tool.def().name.clone();
         self.order.push(name.clone());
         self.tools.insert(name, tool);
-    }
-
-    pub fn retain_runtime_cleanup(&mut self, cleanup: impl FnOnce() + Send + Sync + 'static) {
-        self.runtime_cleanups
-            .push(RuntimeCleanup(Some(Box::new(cleanup))));
     }
 
     pub fn tool_names(&self) -> Vec<String> {

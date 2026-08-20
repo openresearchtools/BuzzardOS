@@ -539,6 +539,11 @@ keys/chords/text for Wayland and Xwayland. Each raw visual/input command binds
 to the invoking `cuaN` seat and numbered output. It cannot inject through human
 `seat0` or operate in another CUA caller's coordinate space.
 
+Each numbered CUA seat uses Sway's normal native cursor on its own numbered
+output. Buzzard CUA has no layer-shell cursor overlay, animated/vector cursor
+theme, cursor registry, or cursor-theme/motion configuration tools. Human
+`seat0` retains its independent normal Sway cursor.
+
 Canonical coordinates are physical dmabuf pixels of the caller's numbered
 output from `(0,0)` at its top-left. Screenshots contain exactly that output,
 exclude host chrome and all other guest outputs, and are not downscaled for

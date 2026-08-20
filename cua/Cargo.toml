@@ -20,15 +20,12 @@ base64 = "0.22"
 clipboard-rs = { version = "0.3.5", features = ["wayland"] }
 crossbeam-channel = "0.5"
 evdev = "0.12"
-fontdue = { version = "0.9", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 libc = "0.2"
-postcard = { version = "1", features = ["alloc"] }
 schemars = "1.2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
@@ -42,7 +39,3 @@ x11 = { version = "2.21", features = ["xlib", "xinput", "xtest"] }
 x11rb = { version = "0.13", features = ["xinput", "randr", "xfixes", "composite", "shape", "xtest"] }
 xkbcommon = "0.9"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
-zstd = "0.13"
-
-[dev-dependencies]
-sha2 = "0.10"

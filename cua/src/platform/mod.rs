@@ -13,7 +13,6 @@
 use crate::core::tool::ToolRegistry;
 
 pub mod health_report;
-pub mod overlay;
 pub mod tools;
 
 #[cfg(target_os = "linux")]

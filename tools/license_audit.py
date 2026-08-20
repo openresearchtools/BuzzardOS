@@ -1914,7 +1914,6 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
         "usr/share/doc/buzzardoscua/CITATION.cff": CUA_ROOT / "CITATION.cff",
         "usr/share/doc/buzzardoscua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
         "usr/share/doc/buzzardoscua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
-        "usr/share/doc/buzzardoscua/Inter-OFL.txt": CUA_ROOT / "assets/cursor/Inter-OFL.txt",
         "usr/share/doc/buzzardoscua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "protocol/virtual-keyboard-unstable-v1.xml",
     }
     for destination, source in required.items():

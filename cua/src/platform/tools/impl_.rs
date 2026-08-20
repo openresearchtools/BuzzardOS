@@ -18,12 +18,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
-use crate::cursor::CursorRegistry;
-
-// The Buzzard OS guest cursor animation can occupy a 96×84 region extending
-// right/down from its hotspot. A 128-pixel corridor safely covers that measured
-// footprint at all animation headings and fractional scales.
-const CURSOR_EVIDENCE_MASK_RADIUS: i32 = 128;
+// Ignore only the small native Sway cursor footprint when comparing pre/post
+// action frames; pointer motion alone is not evidence that a click succeeded.
+const CURSOR_EVIDENCE_MASK_RADIUS: i32 = 48;
 
 fn keyboard_admission(
     _args: &Value,
@@ -637,7 +634,6 @@ fn bound_pid_map_before_insert<T>(state: &mut std::collections::HashMap<u32, T>,
 }
 
 pub struct ToolState {
-    pub cursor_registry: Arc<CursorRegistry>,
     pub resize_registry: Arc<ResizeRegistry>,
     pub zoom_registry: Arc<ZoomRegistry>,
     pub mouse_hold: std::sync::Mutex<std::collections::HashMap<String, MouseHoldState>>,
@@ -656,37 +652,7 @@ pub struct MouseHoldState {
 
 impl ToolState {
     pub fn new() -> Arc<Self> {
-        let cursor_registry = Arc::new(CursorRegistry::new());
-        for cursor in cursor_registry.all_states() {
-            let key = cursor.config.cursor_id.clone();
-            crate::platform::overlay::send_command_for(
-                key.clone(),
-                crate::cursor::OverlayCommand::SetEnabled(cursor.config.enabled),
-            );
-            crate::platform::overlay::send_command_for(
-                key.clone(),
-                crate::cursor::OverlayCommand::SetMotion(cursor.motion.clone()),
-            );
-            crate::platform::overlay::send_command_for(
-                key.clone(),
-                crate::cursor::OverlayCommand::SetTheme {
-                    theme_id: cursor.config.theme_id,
-                    reduced_motion: cursor.config.reduced_motion,
-                },
-            );
-            if let (Some(x), Some(y)) = (cursor.x, cursor.y) {
-                crate::platform::overlay::send_command_for(
-                    key,
-                    crate::cursor::OverlayCommand::SnapTo {
-                        x,
-                        y,
-                        heading_radians: None,
-                    },
-                );
-            }
-        }
         Arc::new(Self {
-            cursor_registry,
             resize_registry: Arc::new(ResizeRegistry::new()),
             zoom_registry: Arc::new(ZoomRegistry::new()),
             mouse_hold: std::sync::Mutex::new(Default::default()),
@@ -2524,77 +2490,6 @@ fn held_target_mismatch(
     }
 }
 
-fn overlay_snap_to_for(cursor_id: &str, sx: f64, sy: f64, heading: Option<f64>) {
-    crate::platform::overlay::send_command_for(
-        cursor_id.to_owned(),
-        crate::cursor::OverlayCommand::SnapTo {
-            x: sx,
-            y: sy,
-            heading_radians: heading,
-        },
-    );
-}
-
-fn overlay_move_to_for(cursor_id: &str, sx: f64, sy: f64, heading: Option<f64>) {
-    crate::platform::overlay::send_command_for(
-        cursor_id.to_owned(),
-        crate::cursor::OverlayCommand::MoveTo {
-            x: sx,
-            y: sy,
-            end_heading_radians: heading.unwrap_or(std::f64::consts::FRAC_PI_4),
-        },
-    );
-}
-
-async fn overlay_glide_to_for(cursor_id: &str, sx: f64, sy: f64) {
-    if !crate::platform::overlay::is_enabled_for(cursor_id) {
-        return;
-    }
-    let pos = crate::platform::overlay::current_position_for(cursor_id);
-    if pos.0 < 0.0 && pos.1 < 0.0 {
-        crate::platform::overlay::send_command_for(
-            cursor_id.to_owned(),
-            crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-        );
-        return;
-    }
-    crate::platform::overlay::animate_cursor_to_for(cursor_id.to_owned(), sx, sy).await;
-}
-
-async fn track_overlay_drag_for(
-    cursor_id: String,
-    from: (f64, f64),
-    to: (f64, f64),
-    duration_ms: u64,
-    steps: usize,
-) {
-    if !crate::platform::overlay::is_enabled_for(&cursor_id) {
-        return;
-    }
-    crate::platform::overlay::send_command_for(
-        cursor_id.clone(),
-        crate::cursor::OverlayCommand::SetPressed(true),
-    );
-    let steps = steps.max(1);
-    let step_delay = std::time::Duration::from_millis(duration_ms / steps as u64);
-    for index in 0..=steps {
-        let t = index as f64 / steps as f64;
-        let x = from.0 + (to.0 - from.0) * t;
-        let y = from.1 + (to.1 - from.1) * t;
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::track_pointer_command(x, y),
-        );
-        if index < steps && !step_delay.is_zero() {
-            tokio::time::sleep(step_delay).await;
-        }
-    }
-    crate::platform::overlay::send_command_for(
-        cursor_id,
-        crate::cursor::OverlayCommand::SetPressed(false),
-    );
-}
-
 fn process_name(pid: u32) -> Option<String> {
     let cmdline = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let first = String::from_utf8_lossy(&cmdline)
@@ -2809,13 +2704,8 @@ impl Tool for ClickTool {
                 return ToolResult::error("click.count must be at least 1.")
                     .with_structured(json!({ "code": "invalid_arguments" }));
             }
-            // Glide the agent-cursor overlay to the click point first (the macOS
-            // / Windows desktop paths already do this). Without it the overlay
-            // sits idle elsewhere while only the real pointer warps, so a viewer
-            // sees the cursor "click somewhere else."
-            overlay_glide_to_for(&cursor_id, sx as f64, sy as f64).await;
-            // Capture only after cursor positioning. Otherwise a no-op click
-            // could be falsely confirmed merely because the pointer moved.
+            // Position this numbered seat's native pointer before capturing
+            // the baseline so cursor travel cannot masquerade as app evidence.
             let (visual_before, cursor_masks) = capture_guest_output_after_pointer_at(sx, sy).await;
             let r = tokio::task::spawn_blocking(move || {
                 if crate::platform::wayland::wayland_input_enabled() {
@@ -2934,43 +2824,20 @@ impl Tool for ClickTool {
                     }
                 }));
             }
-            let xid_hint = window_id_resolved;
-            // Resolve the element's screen center + its window FIRST, so the
-            // agent cursor glides to the target *before* the click fires —
-            // matching the coordinate path below and the macOS/Windows backends.
-            // Previously perform_action ran inside this spawn_blocking, so the
-            // app updated before the cursor visibly arrived.
-            let (xid, sx, sy) = tokio::task::spawn_blocking(move || -> (u64, f64, f64) {
-                let (cx, cy) = element_screen_center(pid, idx).unwrap_or((0.0, 0.0));
-                let xid = xid_hint
-                    .or_else(|| {
-                        crate::platform::x11::list_windows(Some(pid))
-                            .into_iter()
-                            .next()
-                            .map(|w| w.xid)
-                    })
-                    .unwrap_or(0);
-                (xid, cx, cy)
+            // Resolve the element's screen center before taking the visual
+            // baseline. The native seat cursor is positioned by the capture
+            // helper below; no compositor overlay participates.
+            let (sx, sy) = tokio::task::spawn_blocking(move || {
+                element_screen_center(pid, idx).unwrap_or((0.0, 0.0))
             })
             .await
-            .unwrap_or((0, 0.0, 0.0));
-            if xid != 0 {
-                crate::platform::overlay::send_command_for(
-                    cursor_id.clone(),
-                    crate::cursor::OverlayCommand::PinAbove(xid),
-                );
-            }
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-            );
-            // Cursor animation is presentation, not evidence that the target
-            // accepted the action. Take the baseline only after positioning
-            // the cursor at the target.
+            .unwrap_or((0.0, 0.0));
+            // Take the baseline only after positioning the seat's native
+            // cursor at the target.
             let cursor_point = (sx.round() as i32, sy.round() as i32);
             let (visual_before, cursor_masks) =
                 capture_guest_output_after_pointer_at(cursor_point.0, cursor_point.1).await;
+            let xid_hint = window_id_resolved;
 
             // Chromium can execute a genuine AT-SPI action without focus. Try
             // that route before applying its background synthetic-input gate.
@@ -3098,11 +2965,7 @@ impl Tool for ClickTool {
             y *= ratio;
         }
 
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::PinAbove(xid),
-        );
-        // Resolve the screen point the cursor glides to. Tool coordinates are
+        // Resolve the screen point for the native seat cursor. Tool coordinates are
         // always window-local screenshot pixels; native Wayland translates
         // through compositor/AT-SPI geometry while X11 uses XTranslateCoordinates.
         let wayland_output_point = if crate::platform::wayland::wayland_input_enabled() {
@@ -3122,14 +2985,7 @@ impl Tool for ClickTool {
                 .ok()
                 .and_then(|r| r.ok())
         };
-        if let Some((sx, sy)) = glide_target {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-            );
-        }
-        // Do not count cursor travel as an observable application effect.
+        // Do not count native cursor travel as an observable application effect.
         let (visual_before, cursor_masks) = match glide_target {
             Some((sx, sy)) => {
                 capture_guest_output_after_pointer_at(sx.round() as i32, sy.round() as i32).await
@@ -3461,22 +3317,6 @@ impl Tool for TypeTextTool {
             return ToolResult::error(
                 "Pass either element_index (ax) or x,y (px) to type_text, not both.",
             );
-        }
-
-        let cursor_id = resolve_cursor_key(&args);
-        if let Some(idx) = resolved_elem_idx {
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::PinAbove(xid),
-            );
-            if let Ok(Ok((screen_x, screen_y))) =
-                tokio::task::spawn_blocking(move || element_screen_center(pid, idx)).await
-            {
-                overlay_glide_to_for(&cursor_id, screen_x, screen_y).await;
-                self.state
-                    .cursor_registry
-                    .update_position(&cursor_id, screen_x, screen_y);
-            }
         }
 
         let text_len = text.chars().count();
@@ -4614,24 +4454,7 @@ impl Tool for SetValueTool {
                 "set_value requires element_index or element_token to address the target element.",
             ),
         };
-        let cursor_id = resolve_cursor_key(&args);
         let value_for_task = value.clone();
-        // Pulse the agent cursor onto the target element before writing, so a
-        // value write gets the same visual feedback as a click — the viewer can
-        // see *where* the agent is acting. No-op when the element bounds can't
-        // be resolved or the overlay is disabled.
-        if let Ok(Ok((sx, sy))) =
-            tokio::task::spawn_blocking(move || element_screen_center(pid, idx)).await
-        {
-            let window_id = args.u64_or("window_id", 0);
-            if window_id != 0 {
-                crate::platform::overlay::send_command_for(
-                    cursor_id.clone(),
-                    crate::cursor::OverlayCommand::PinAbove(window_id),
-                );
-            }
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-        }
         let result = tokio::task::spawn_blocking(move || {
             crate::platform::atspi::set_value(pid, idx, &value_for_task)
         })
@@ -4706,7 +4529,6 @@ impl Tool for ScrollTool {
     }
 
     async fn invoke(&self, args: Value) -> ToolResult {
-        let cursor_id = resolve_cursor_key(&args);
         if args.opt_str("scope").as_deref() == Some("desktop")
             && args.get("pid").is_none()
             && args.get("window_id").is_none()
@@ -4997,6 +4819,7 @@ impl Tool for ScrollTool {
             "right" => 7,
             _ => 5,
         };
+        let cursor_id = resolve_cursor_key(&args);
         let cursor_id_for_task = cursor_id.clone();
         let direction_for_wayland = direction.clone();
         let amount_u32 = amount as u32;
@@ -5188,19 +5011,6 @@ impl Tool for DoubleClickTool {
             .await;
             return match result {
                 Ok(Ok((xid, lx, ly))) => {
-                    if let Ok(Ok((sx, sy))) =
-                        tokio::task::spawn_blocking(move || element_screen_center(pid, idx)).await
-                    {
-                        crate::platform::overlay::send_command_for(
-                            cursor_id.clone(),
-                            crate::cursor::OverlayCommand::PinAbove(xid),
-                        );
-                        overlay_glide_to_for(&cursor_id, sx, sy).await;
-                        crate::platform::overlay::send_command_for(
-                            cursor_id.clone(),
-                            crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-                        );
-                    }
                     let lxi = lx as i32;
                     let lyi = ly as i32;
                     let wayland_point = crate::platform::wayland::wayland_input_enabled()
@@ -5261,10 +5071,6 @@ impl Tool for DoubleClickTool {
             x *= ratio;
             y *= ratio;
         }
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::PinAbove(xid),
-        );
         let wayland_output_point = if crate::platform::wayland::wayland_input_enabled() {
             Some(crate::platform::wayland::window_local_to_output(
                 xid,
@@ -5274,21 +5080,6 @@ impl Tool for DoubleClickTool {
         } else {
             None
         };
-        let glide_target = if let Some((sx, sy)) = wayland_output_point {
-            Some((sx as f64, sy as f64))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, x, y))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-        };
-        if let Some((sx, sy)) = glide_target {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-            );
-        }
         let (xi, yi) = (x as i32, y as i32);
         let cursor_id_for_task = cursor_id.clone();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -5429,19 +5220,6 @@ impl Tool for RightClickTool {
             .await;
             return match result {
                 Ok(Ok((xid, lx, ly))) => {
-                    if let Ok(Ok((sx, sy))) =
-                        tokio::task::spawn_blocking(move || element_screen_center(pid, idx)).await
-                    {
-                        crate::platform::overlay::send_command_for(
-                            cursor_id.clone(),
-                            crate::cursor::OverlayCommand::PinAbove(xid),
-                        );
-                        overlay_glide_to_for(&cursor_id, sx, sy).await;
-                        crate::platform::overlay::send_command_for(
-                            cursor_id.clone(),
-                            crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-                        );
-                    }
                     let lxi = lx as i32;
                     let lyi = ly as i32;
                     let wayland_point = crate::platform::wayland::wayland_input_enabled()
@@ -5502,10 +5280,6 @@ impl Tool for RightClickTool {
             x *= ratio;
             y *= ratio;
         }
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::PinAbove(xid),
-        );
         let wayland_output_point = if crate::platform::wayland::wayland_input_enabled() {
             Some(crate::platform::wayland::window_local_to_output(
                 xid,
@@ -5515,21 +5289,6 @@ impl Tool for RightClickTool {
         } else {
             None
         };
-        let glide_target = if let Some((sx, sy)) = wayland_output_point {
-            Some((sx as f64, sy as f64))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, x, y))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-        };
-        if let Some((sx, sy)) = glide_target {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-            );
-        }
         let (xi, yi) = (x as i32, y as i32);
         let cursor_id_for_task = cursor_id.clone();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -5611,7 +5370,6 @@ impl Tool for DragTool {
             Ok(admission) => admission,
             Err(error) => return error,
         };
-        let cursor_id = resolve_cursor_key(&args);
         if args.opt_str("scope").as_deref() == Some("desktop")
             && args.get("pid").is_none()
             && args.get("window_id").is_none()
@@ -5658,20 +5416,8 @@ impl Tool for DragTool {
                         steps,
                     )
                 }
-            });
-            let visual_drag = track_overlay_drag_for(
-                cursor_id.clone(),
-                (from_x, from_y),
-                (to_x, to_y),
-                duration_ms,
-                steps,
-            );
-            let (result, ()) = tokio::join!(result, visual_drag);
-            if matches!(&result, Ok(Ok(()))) {
-                self.state
-                    .cursor_registry
-                    .update_position(&cursor_id, to_x, to_y);
-            }
+            })
+            .await;
             return match result {
                 Ok(Ok(())) => {
                     let observation =
@@ -5757,10 +5503,6 @@ impl Tool for DragTool {
             to_y *= ratio;
         }
 
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::PinAbove(xid),
-        );
         let wayland_points = crate::platform::wayland::wayland_input_enabled().then(|| {
             (
                 crate::platform::wayland::window_local_to_output(
@@ -5775,28 +5517,6 @@ impl Tool for DragTool {
                 ),
             )
         });
-        let screen_from = if let Some((from, _)) = wayland_points {
-            Some((from.0 as f64, from.1 as f64))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, from_x, from_y))
-                .await
-                .ok()
-                .and_then(|result| result.ok())
-        };
-        if let Some((sx_from, sy_from)) = screen_from {
-            overlay_glide_to_for(&cursor_id, sx_from, sy_from).await;
-            self.state
-                .cursor_registry
-                .update_position(&cursor_id, sx_from, sy_from);
-            overlay_snap_to_for(&cursor_id, sx_from, sy_from, None);
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse {
-                    x: sx_from,
-                    y: sy_from,
-                },
-            );
-        }
         // Native Wayland: emit press + interpolated motion + release as one
         // virtual-pointer (wlroots) or libei (GNOME/KDE) sequence, output-relative
         // coords. Returns early so we don't fall into the X11 XSendEvent loop below.
@@ -5820,27 +5540,8 @@ impl Tool for DragTool {
                     button,
                     &modifiers,
                 )
-            });
-            let ((from_output_x, from_output_y), (to_output_x, to_output_y)) = wayland_points
-                .unwrap_or((
-                    (from_x.round() as i32, from_y.round() as i32),
-                    (to_x.round() as i32, to_y.round() as i32),
-                ));
-            let visual_drag = track_overlay_drag_for(
-                cursor_id.clone(),
-                (f64::from(from_output_x), f64::from(from_output_y)),
-                (f64::from(to_output_x), f64::from(to_output_y)),
-                duration_ms,
-                steps,
-            );
-            let (drag_result, ()) = tokio::join!(drag_result, visual_drag);
-            if matches!(&drag_result, Ok(Ok(()))) {
-                self.state.cursor_registry.update_position(
-                    &cursor_id,
-                    f64::from(to_output_x),
-                    f64::from(to_output_y),
-                );
-            }
+            })
+            .await;
             return match drag_result {
                 Ok(Ok(())) => ToolResult::text(format!(
                     "✅ Posted drag ({button_str}) to pid {pid} \
@@ -5877,20 +5578,8 @@ impl Tool for DragTool {
                         steps,
                     )
                 })
-            });
-            let visual_drag = track_overlay_drag_for(
-                cursor_id.clone(),
-                (screen_from_x, screen_from_y),
-                (screen_to_x, screen_to_y),
-                duration_ms,
-                steps,
-            );
-            let (drag_result, ()) = tokio::join!(drag_result, visual_drag);
-            if matches!(&drag_result, Ok(Ok(()))) {
-                self.state
-                    .cursor_registry
-                    .update_position(&cursor_id, screen_to_x, screen_to_y);
-            }
+            })
+            .await;
             return match drag_result {
                 Ok(Ok(())) => ToolResult::text(format!(
                     "Dragged ({button_str}) to pid {pid} from ({from_x:.0}, {from_y:.0}) \
@@ -5907,10 +5596,6 @@ impl Tool for DragTool {
             };
         }
 
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::SetPressed(true),
-        );
         let press_result = tokio::task::spawn_blocking(move || {
             crate::platform::input::send_button_down(
                 xid,
@@ -5947,18 +5632,6 @@ impl Tool for DragTool {
                 .await;
                 match motion_result {
                     Ok(Ok(())) => {
-                        if let Ok(Ok((sx, sy))) =
-                            tokio::task::spawn_blocking(move || window_local_to_screen(xid, ix, iy))
-                                .await
-                        {
-                            self.state
-                                .cursor_registry
-                                .update_position(&cursor_id, sx, sy);
-                            crate::platform::overlay::send_command_for(
-                                cursor_id.clone(),
-                                crate::cursor::track_pointer_command(sx, sy),
-                            );
-                        }
                         if step_delay_ms > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(step_delay_ms))
                                 .await;
@@ -5992,25 +5665,6 @@ impl Tool for DragTool {
                 Err(e) => Err(anyhow::anyhow!("Task error: {e}")),
             };
         }
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::SetPressed(false),
-        );
-
-        if result.is_ok() {
-            if let Ok(Ok((sx_to, sy_to))) =
-                tokio::task::spawn_blocking(move || window_local_to_screen(xid, to_x, to_y)).await
-            {
-                crate::platform::overlay::send_command_for(
-                    cursor_id.clone(),
-                    crate::cursor::track_pointer_command(sx_to, sy_to),
-                );
-                self.state
-                    .cursor_registry
-                    .update_position(&cursor_id, sx_to, sy_to);
-            }
-        }
-
         match result {
             Ok(()) => ToolResult::text(format!(
                 "✅ Posted drag ({button_str}) to pid {pid} \
@@ -6142,30 +5796,6 @@ impl Tool for MouseButtonDownTool {
         } else {
             (xi, yi)
         };
-        let screen_point = if desktop {
-            Some((x, y))
-        } else if crate::platform::wayland::wayland_input_enabled() {
-            Some((f64::from(output_point.0), f64::from(output_point.1)))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, x, y))
-                .await
-                .ok()
-                .and_then(Result::ok)
-        };
-        if !desktop {
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::PinAbove(xid),
-            );
-        }
-        if let Some((sx, sy)) = screen_point {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-            );
-        }
-
         // Native Wayland: route through the persistent virtual-pointer module
         // so the held button survives across tool calls; the X11 path keeps
         // the existing input::send_button_down behaviour.
@@ -6219,16 +5849,6 @@ impl Tool for MouseButtonDownTool {
                     .lock()
                     .unwrap()
                     .insert(cursor_id.clone(), hold.clone());
-                if let Some((sx, sy)) = screen_point {
-                    self.state
-                        .cursor_registry
-                        .update_position(&cursor_id, sx, sy);
-                    overlay_snap_to_for(&cursor_id, sx, sy, None);
-                    crate::platform::overlay::send_command_for(
-                        cursor_id.clone(),
-                        crate::cursor::OverlayCommand::SetPressed(true),
-                    );
-                }
                 ToolResult::text(format!(
                     "✅ Cursor '{cursor_id}' held {} button down at ({x:.1}, {y:.1}).",
                     mouse_button_name(button),
@@ -6338,39 +5958,6 @@ impl Tool for MouseDragTool {
         let from_y = hold.y;
         let duration_ms = args.u64_or("duration_ms", 500);
         let steps = args.u64_or("steps", 20).max(1) as usize;
-        if !hold.desktop {
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::PinAbove(xid),
-            );
-        }
-        let initial_screen_point = if hold.desktop {
-            Some((from_x, from_y))
-        } else if crate::platform::wayland::wayland_input_enabled() {
-            let (sx, sy) = crate::platform::wayland::window_local_to_output(
-                xid,
-                from_x.round() as i32,
-                from_y.round() as i32,
-            );
-            Some((f64::from(sx), f64::from(sy)))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, from_x, from_y))
-                .await
-                .ok()
-                .and_then(Result::ok)
-        };
-        if let Some((sx, sy)) = initial_screen_point {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-            self.state
-                .cursor_registry
-                .update_position(&cursor_id, sx, sy);
-            overlay_snap_to_for(&cursor_id, sx, sy, None);
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::SetPressed(true),
-            );
-        }
-
         let button = hold.button;
         let step_delay_ms = if steps > 1 {
             duration_ms / steps as u64
@@ -6378,8 +5965,6 @@ impl Tool for MouseDragTool {
             duration_ms
         };
         let mut result: anyhow::Result<()> = Ok(());
-        let mut prev_x = from_x;
-        let mut prev_y = from_y;
         let is_wl = crate::platform::wayland::is_wayland();
         let desktop = hold.desktop;
         for i in 1..=steps {
@@ -6427,36 +6012,6 @@ impl Tool for MouseDragTool {
             };
             match move_result {
                 Ok(Ok(())) => {
-                    let screen_point = if desktop {
-                        Some((ix, iy))
-                    } else if crate::platform::wayland::wayland_input_enabled() {
-                        let (sx, sy) = crate::platform::wayland::window_local_to_output(
-                            xid,
-                            ix.round() as i32,
-                            iy.round() as i32,
-                        );
-                        Some((f64::from(sx), f64::from(sy)))
-                    } else {
-                        tokio::task::spawn_blocking(move || window_local_to_screen(xid, ix, iy))
-                            .await
-                            .ok()
-                            .and_then(Result::ok)
-                    };
-                    if let Some((sx, sy)) = screen_point {
-                        let heading = if (ix - prev_x).abs() > f64::EPSILON
-                            || (iy - prev_y).abs() > f64::EPSILON
-                        {
-                            Some((iy - prev_y).atan2(ix - prev_x))
-                        } else {
-                            None
-                        };
-                        self.state
-                            .cursor_registry
-                            .update_position(&cursor_id, sx, sy);
-                        overlay_move_to_for(&cursor_id, sx, sy, heading);
-                    }
-                    prev_x = ix;
-                    prev_y = iy;
                     if step_delay_ms > 0 {
                         tokio::time::sleep(std::time::Duration::from_millis(step_delay_ms)).await;
                     }
@@ -6481,36 +6036,6 @@ impl Tool for MouseDragTool {
                     .lock()
                     .unwrap()
                     .insert(cursor_id.clone(), hold.clone());
-                let final_screen_point = if desktop {
-                    Some((to_x, to_y))
-                } else if crate::platform::wayland::wayland_input_enabled() {
-                    let (sx, sy) = crate::platform::wayland::window_local_to_output(
-                        xid,
-                        to_x.round() as i32,
-                        to_y.round() as i32,
-                    );
-                    Some((f64::from(sx), f64::from(sy)))
-                } else {
-                    tokio::task::spawn_blocking(move || window_local_to_screen(xid, to_x, to_y))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                };
-                if let Some((sx, sy)) = final_screen_point {
-                    self.state
-                        .cursor_registry
-                        .update_position(&cursor_id, sx, sy);
-                    overlay_snap_to_for(
-                        &cursor_id,
-                        sx,
-                        sy,
-                        Some((to_y - from_y).atan2(to_x - from_x)),
-                    );
-                    crate::platform::overlay::send_command_for(
-                        cursor_id.clone(),
-                        crate::cursor::OverlayCommand::ClickPulse { x: sx, y: sy },
-                    );
-                }
                 ToolResult::text(format!(
                     "✅ Cursor '{cursor_id}' dragged held {} button to ({to_x:.1}, {to_y:.1}).",
                     mouse_button_name(hold.button),
@@ -6603,31 +6128,6 @@ impl Tool for MouseButtonUpTool {
             }
         }
 
-        if !hold.desktop {
-            crate::platform::overlay::send_command_for(
-                cursor_id.clone(),
-                crate::cursor::OverlayCommand::PinAbove(xid),
-            );
-        }
-        let screen_point = if hold.desktop {
-            Some((x, y))
-        } else if crate::platform::wayland::wayland_input_enabled() {
-            let (sx, sy) = crate::platform::wayland::window_local_to_output(
-                xid,
-                x.round() as i32,
-                y.round() as i32,
-            );
-            Some((f64::from(sx), f64::from(sy)))
-        } else {
-            tokio::task::spawn_blocking(move || window_local_to_screen(xid, x, y))
-                .await
-                .ok()
-                .and_then(Result::ok)
-        };
-        if let Some((sx, sy)) = screen_point {
-            overlay_glide_to_for(&cursor_id, sx, sy).await;
-        }
-
         let button = hold.button;
         let xi = x as i32;
         let yi = y as i32;
@@ -6653,16 +6153,6 @@ impl Tool for MouseButtonUpTool {
         };
         match result {
             Ok(Ok(())) => {
-                if let Some((sx, sy)) = screen_point {
-                    self.state
-                        .cursor_registry
-                        .update_position(&cursor_id, sx, sy);
-                    overlay_snap_to_for(&cursor_id, sx, sy, None);
-                }
-                crate::platform::overlay::send_command_for(
-                    cursor_id.clone(),
-                    crate::cursor::OverlayCommand::SetPressed(false),
-                );
                 self.state.mouse_hold.lock().unwrap().remove(&cursor_id);
                 let cleared =
                     mouse_hold_success_json(&cursor_id, None, mouse_hold_path(hold.desktop));
@@ -6962,9 +6452,7 @@ impl Tool for GetCursorPositionTool {
 
 // ── move_cursor ───────────────────────────────────────────────────────────────
 
-pub struct MoveCursorTool {
-    state: Arc<ToolState>,
-}
+pub struct MoveCursorTool;
 
 static MCURSOR_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 
@@ -6973,329 +6461,47 @@ impl Tool for MoveCursorTool {
     fn def(&self) -> &ToolDef {
         MCURSOR_DEF.get_or_init(|| ToolDef {
             name: "move_cursor".into(),
-            description: "Move the agent cursor overlay, or with scope=desktop move the real OS pointer in get_desktop_state coordinates.".into(),
+            description: "Move this numbered CUA seat's native Sway pointer in get_desktop_state coordinates.".into(),
             input_schema: json!({"type":"object","required":["x","y"],"properties":{
-                "x":{"type":"number"},"y":{"type":"number"},"scope":{"type":"string","enum":["window","desktop"],"default":"window"}
+                "x":{"type":"number"},"y":{"type":"number"},"scope":{"const":"desktop"}
             },"additionalProperties":false}),
             read_only: false, destructive: false, idempotent: true, open_world: false,
         })
     }
     async fn invoke(&self, args: Value) -> ToolResult {
-        use crate::core::tool_args::ArgsExt;
-        if args.opt_str("scope").as_deref() == Some("desktop") {
-            let input = match parse_typed_projection::<MoveCursorInput>("move_cursor", &args) {
-                Ok(input) => input,
-                Err(result) => return result,
-            };
-            let (x, y) = (input.x, input.y);
-            let xi = x.round() as i32;
-            let yi = y.round() as i32;
-            let wayland = crate::platform::wayland::wayland_input_enabled();
-            let path = if wayland {
-                "wayland_desktop"
-            } else {
-                "xtest_desktop"
-            };
-            let result = if wayland {
-                tokio::task::spawn_blocking(move || {
-                    crate::platform::wayland::move_cursor_absolute(None, xi, yi)
-                })
-                .await
-            } else {
-                tokio::task::spawn_blocking(move || {
-                    crate::platform::input::send_move_xtest_desktop(xi, yi)
-                })
-                .await
-            };
-            return match result {
-                Ok(Ok(())) => ToolResult::text(format!(
-                    "Moved the real desktop pointer to ({xi}, {yi})."
-                ))
-                .with_structured(
-                    json!({"scope":"desktop","path":path,"x":xi,"y":yi,"effect":"unverifiable"}),
-                ),
-                Ok(Err(error)) => ToolResult::error(error.to_string()),
-                Err(error) => ToolResult::error(format!("Task error: {error}")),
-            };
-        }
-        let x = args.f64_or("x", 0.0);
-        let y = args.f64_or("y", 0.0);
-        let window_id = args.get("window_id").and_then(|v| v.as_u64());
-        let cursor_id = resolve_cursor_key(&args);
-        self.state.cursor_registry.update_position(&cursor_id, x, y);
-        // End pointing upper-left (45°) — matches Swift's
-        // `AgentCursor.animateAndWait(endAngleDegrees: 45)` convention so the
-        // overlay arrow settles to the natural macOS-style pose.
-        crate::platform::overlay::send_command_for(
-            cursor_id.clone(),
-            crate::cursor::OverlayCommand::MoveTo {
-                x,
-                y,
-                end_heading_radians: std::f64::consts::FRAC_PI_4,
-            },
-        );
-        // Native Wayland: also warp the real cursor via zwlr_virtual_pointer.
-        // Off-thread because the wayland-client roundtrip is blocking. Best-effort
-        // — overlay update + registry write already succeeded; surface a warning
-        // only if the warp itself failed.
-        let real_warp_note = if crate::platform::wayland::wayland_input_enabled() {
-            let xi = x.round() as i32;
-            let yi = y.round() as i32;
-            match tokio::task::spawn_blocking(move || {
-                crate::platform::wayland::move_cursor_absolute(window_id, xi, yi)
+        let input = match parse_typed_projection::<MoveCursorInput>("move_cursor", &args) {
+            Ok(input) => input,
+            Err(result) => return result,
+        };
+        let (xi, yi) = (input.x.round() as i32, input.y.round() as i32);
+        let wayland = crate::platform::wayland::wayland_input_enabled();
+        let path = if wayland {
+            "wayland_numbered_seat"
+        } else {
+            "xtest_desktop"
+        };
+        let result = if wayland {
+            tokio::task::spawn_blocking(move || {
+                crate::platform::wayland::move_cursor_absolute(None, xi, yi)
             })
             .await
-            {
-                Ok(Ok(())) => " (real cursor warped via virtual-pointer)",
-                Ok(Err(_)) | Err(_) => " (overlay updated; real-cursor warp failed)",
-            }
         } else {
-            ""
+            tokio::task::spawn_blocking(move || {
+                crate::platform::input::send_move_xtest_desktop(xi, yi)
+            })
+            .await
         };
-        ToolResult::text(format!(
-            "Agent cursor '{cursor_id}' moved to ({x:.1}, {y:.1}).{real_warp_note}"
-        ))
+        match result {
+            Ok(Ok(())) => ToolResult::text(format!(
+                "Moved this CUA seat's native pointer to ({xi}, {yi})."
+            ))
+            .with_structured(json!({
+                "scope":"desktop","path":path,"x":xi,"y":yi,"effect":"unverifiable"
+            })),
+            Ok(Err(error)) => ToolResult::error(error.to_string()),
+            Err(error) => ToolResult::error(format!("Task error: {error}")),
+        }
     }
-}
-
-// ── set_agent_cursor_enabled ──────────────────────────────────────────────────
-
-pub struct SetAgentCursorEnabledV2Tool {
-    state: Arc<ToolState>,
-}
-
-static CURSOR_ENABLED_V2_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
-
-#[async_trait]
-impl Tool for SetAgentCursorEnabledV2Tool {
-    fn def(&self) -> &ToolDef {
-        CURSOR_ENABLED_V2_DEF.get_or_init(|| canonical_cursor_def("set_agent_cursor_enabled"))
-    }
-
-    async fn invoke(&self, args: Value) -> ToolResult {
-        let enabled = match args.get("enabled").and_then(Value::as_bool) {
-            Some(value) => value,
-            None => return ToolResult::error("Missing required boolean field `enabled`."),
-        };
-        let cursor_key = resolve_cursor_key(&args);
-        let cua_index = crate::core::seat_context::current_index();
-        self.state.cursor_registry.set_enabled(&cursor_key, enabled);
-        crate::platform::overlay::send_command_for(
-            cursor_key,
-            crate::cursor::OverlayCommand::SetEnabled(enabled),
-        );
-        ToolResult::text(format!(
-            "Agent cursor for CUA{cua_index} {}.",
-            if enabled { "enabled" } else { "disabled" }
-        ))
-        .with_structured(json!({"cua_index":cua_index,"enabled":enabled}))
-    }
-}
-
-pub struct SetAgentCursorMotionV2Tool {
-    state: Arc<ToolState>,
-}
-
-static CURSOR_MOTION_V2_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
-
-fn cursor_number(value: Option<&Value>) -> Option<f64> {
-    value.and_then(|value| {
-        value
-            .as_f64()
-            .or_else(|| value.as_i64().map(|integer| integer as f64))
-    })
-}
-
-#[async_trait]
-impl Tool for SetAgentCursorMotionV2Tool {
-    fn def(&self) -> &ToolDef {
-        CURSOR_MOTION_V2_DEF.get_or_init(|| canonical_cursor_def("set_agent_cursor_motion"))
-    }
-
-    async fn invoke(&self, args: Value) -> ToolResult {
-        let cursor_key = resolve_cursor_key(&args);
-        let cua_index = crate::core::seat_context::current_index();
-        let current = crate::platform::overlay::current_motion_for(&cursor_key);
-        let motion = current.with_overrides(
-            cursor_number(args.get("start_handle")),
-            cursor_number(args.get("end_handle")),
-            cursor_number(args.get("arc_size")),
-            cursor_number(args.get("arc_flow")),
-            cursor_number(args.get("spring")),
-            cursor_number(args.get("glide_duration_ms")),
-            cursor_number(args.get("dwell_after_click_ms")),
-            cursor_number(args.get("idle_hide_ms")),
-            None,
-            cursor_number(args.get("turn_radius")),
-        );
-        self.state
-            .cursor_registry
-            .update_motion(&cursor_key, motion.clone());
-        crate::platform::overlay::send_command_for(
-            cursor_key,
-            crate::cursor::OverlayCommand::SetMotion(motion.clone()),
-        );
-        ToolResult::text(format!("Agent cursor motion updated for CUA{cua_index}."))
-            .with_structured(json!({"cua_index":cua_index,"motion":{
-                "start_handle":motion.start_handle,
-                "end_handle":motion.end_handle,
-                "arc_size":motion.arc_size,
-                "arc_flow":motion.arc_flow,
-                "spring":motion.spring,
-                "glide_duration_ms":motion.glide_duration_ms,
-                "dwell_after_click_ms":motion.dwell_after_click_ms,
-                "idle_hide_ms":motion.idle_hide_ms,
-                "turn_radius":motion.turn_radius
-            }}))
-    }
-}
-
-pub struct SetAgentCursorThemeTool {
-    state: Arc<ToolState>,
-}
-
-static CURSOR_THEME_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
-
-fn cursor_reduced_motion(value: Option<&str>) -> crate::cursor::ReducedMotion {
-    match value {
-        Some("on") => crate::cursor::ReducedMotion::On,
-        Some("off") => crate::cursor::ReducedMotion::Off,
-        _ => crate::cursor::ReducedMotion::Auto,
-    }
-}
-
-#[async_trait]
-impl Tool for SetAgentCursorThemeTool {
-    fn def(&self) -> &ToolDef {
-        CURSOR_THEME_DEF.get_or_init(|| canonical_cursor_def("set_agent_cursor_theme"))
-    }
-
-    async fn invoke(&self, args: Value) -> ToolResult {
-        let Some(theme_id) = args.get("theme_id").and_then(Value::as_str) else {
-            return ToolResult::error("Missing required string field `theme_id`.");
-        };
-        let cursor_key = resolve_cursor_key(&args);
-        let cua_index = crate::core::seat_context::current_index();
-        let resolved_theme = match crate::cursor::resolve_theme_selection(theme_id) {
-            Ok(theme) => theme,
-            Err(error) => {
-                return ToolResult::error(format!(
-                    "Cursor theme '{theme_id}' cannot be selected: {error}"
-                ));
-            }
-        };
-        let (version, profile) = resolved_theme
-            .as_deref()
-            .map(|theme| (theme.version.as_str(), theme.profile.as_str()))
-            .unwrap_or((
-                crate::cursor::DEFAULT_THEME_VERSION,
-                crate::cursor::THEME_PROFILE,
-            ));
-        let reduced_motion =
-            cursor_reduced_motion(args.get("reduced_motion").and_then(Value::as_str));
-        self.state
-            .cursor_registry
-            .update_config(&cursor_key, |config| {
-                config.theme_id = theme_id.to_owned();
-                config.reduced_motion = reduced_motion;
-            });
-        crate::platform::overlay::send_command_for(
-            cursor_key,
-            crate::cursor::OverlayCommand::SetTheme {
-                theme_id: theme_id.to_owned(),
-                reduced_motion,
-            },
-        );
-        ToolResult::text(format!(
-            "Agent cursor theme for CUA{cua_index} set to '{theme_id}'."
-        ))
-        .with_structured(json!({"cua_index":cua_index,"theme":{
-            "id":theme_id,
-            "version":version,
-            "profile":profile,
-            "reduced_motion":reduced_motion,
-            "fallback":null
-        }}))
-    }
-}
-
-pub struct GetAgentCursorStateV2Tool {
-    state: Arc<ToolState>,
-}
-
-static CURSOR_STATE_V2_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
-
-#[async_trait]
-impl Tool for GetAgentCursorStateV2Tool {
-    fn def(&self) -> &ToolDef {
-        CURSOR_STATE_V2_DEF.get_or_init(|| canonical_cursor_def("get_agent_cursor_state"))
-    }
-
-    async fn invoke(&self, args: Value) -> ToolResult {
-        let cursor_key = resolve_cursor_key(&args);
-        let cua_index = crate::core::seat_context::current_index();
-        let persisted = self.state.cursor_registry.state(&cursor_key);
-        let enabled = persisted.config.enabled;
-        let motion = persisted.motion;
-        let (version, profile, fallback, visual) =
-            crate::platform::overlay::current_theme_state_for(&cursor_key)
-                .map(|(_, version, profile, fallback, visual)| (version, profile, fallback, visual))
-                .unwrap_or_else(|| {
-                    (
-                        crate::cursor::DEFAULT_THEME_VERSION.into(),
-                        crate::cursor::THEME_PROFILE.into(),
-                        None,
-                        crate::cursor::CursorVisualState::default(),
-                    )
-                });
-        let modifiers: Vec<&str> = [
-            visual.delivery.map(|value| value.as_str()),
-            visual.target.map(|value| value.as_str()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        ToolResult::text(format!("Agent cursor state for CUA{cua_index}.")).with_structured(json!({
-            "cua_index":cua_index,
-            "enabled":enabled,
-            "position":match (persisted.x, persisted.y) {
-                (Some(x), Some(y)) => json!({"x":x,"y":y}),
-                _ => Value::Null,
-            },
-            "theme":{
-                "id":persisted.config.theme_id,
-                "version":version,
-                "profile":profile,
-                "reduced_motion":persisted.config.reduced_motion,
-                "fallback":fallback
-            },
-            "visual_state":{
-                "requested_action":visual.requested_action,
-                "resolved_action":visual.resolved_action,
-                "modifiers":modifiers,
-                "phase":visual.phase(),
-                "frame":visual.frame(),
-                "preempted_count":visual.preempted_count
-            },
-            "motion":{
-                "start_handle":motion.start_handle,
-                "end_handle":motion.end_handle,
-                "arc_size":motion.arc_size,
-                "arc_flow":motion.arc_flow,
-                "spring":motion.spring,
-                "glide_duration_ms":motion.glide_duration_ms,
-                "dwell_after_click_ms":motion.dwell_after_click_ms,
-                "idle_hide_ms":motion.idle_hide_ms,
-                "turn_radius":motion.turn_radius
-            }
-        }))
-    }
-}
-
-fn canonical_cursor_def(name: &str) -> ToolDef {
-    let contract = crate::contract::tool_contract(name)
-        .unwrap_or_else(|| panic!("missing canonical cursor contract for {name}"));
-    ToolDef::from_contract(&contract)
 }
 
 // ── check_permissions ─────────────────────────────────────────────────────────
@@ -7800,7 +7006,7 @@ impl Tool for ZoomTool {
             // supported yet" error instead of accidentally calling the
             // X11-only path with a foreign-toplevel id.
             let png = crate::platform::wayland::screenshot_window_dispatch(xid)?;
-            crate::cursor::capture_utils::crop_png_to_jpeg(&png, x1, y1, x2, y2, 500)
+            crate::core::image_utils::crop_png_to_jpeg(&png, x1, y1, x2, y2, 500)
         })
         .await;
 
@@ -8569,20 +7775,6 @@ pub fn build_registry() -> ToolRegistry {
     crate::platform::wayland::initialize_keyboard_cancellation();
     let state = ToolState::new();
     let mut r = ToolRegistry::new();
-    if let Some(runtime_scope) = crate::core::tool::current_dispatch_runtime_scope() {
-        let prefix = format!("__cua_runtime_{runtime_scope}:");
-        let cursor_registry = state.cursor_registry.clone();
-        r.retain_runtime_cleanup(move || {
-            for cursor in cursor_registry
-                .all_states()
-                .into_iter()
-                .filter(|cursor| cursor.config.cursor_id.starts_with(&prefix))
-            {
-                cursor_registry.remove(&cursor.config.cursor_id);
-                crate::platform::overlay::remove_cursor(cursor.config.cursor_id);
-            }
-        });
-    }
     r.register(Box::new(ListAppsTool));
     r.register(Box::new(ListWindowsTool));
     r.register(Box::new(GetWindowStateTool {
@@ -8685,21 +7877,7 @@ pub fn build_registry() -> ToolRegistry {
     r.register(Box::new(GetScreenSizeTool));
     r.register(Box::new(GetDesktopStateTool));
     r.register(Box::new(GetCursorPositionTool));
-    r.register(Box::new(MoveCursorTool {
-        state: state.clone(),
-    }));
-    r.register(Box::new(SetAgentCursorEnabledV2Tool {
-        state: state.clone(),
-    }));
-    r.register(Box::new(SetAgentCursorMotionV2Tool {
-        state: state.clone(),
-    }));
-    r.register(Box::new(GetAgentCursorStateV2Tool {
-        state: state.clone(),
-    }));
-    r.register(Box::new(SetAgentCursorThemeTool {
-        state: state.clone(),
-    }));
+    r.register(Box::new(MoveCursorTool));
     r.register(Box::new(CheckPermissionsTool));
     // `health_report` — single-call cross-platform driver diagnostics.
     // Stable schema_version="1" contract for downstream consumers. Linux skips
