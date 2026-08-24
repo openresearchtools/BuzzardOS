@@ -2646,6 +2646,7 @@ fn allowed_nvidia_cdi_source(path: &Path) -> bool {
             .and_then(Path::file_name)
             .is_some_and(|name| name.to_string_lossy().starts_with("nvidia-"))
         || path == Path::new("/usr/sbin/nvidia-cuda-mps-server")
+        || path == Path::new("/usr/share/X11/xorg.conf.d/10-nvidia.conf")
         || path == Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf")
 }
 
@@ -2665,6 +2666,7 @@ fn allowed_nvidia_cdi_destination(path: &Path) -> bool {
             .and_then(Path::file_name)
             .is_some_and(|name| name.to_string_lossy().starts_with("nvidia-"))
         || path == Path::new("/usr/sbin/nvidia-cuda-mps-server")
+        || path == Path::new("/usr/share/X11/xorg.conf.d/10-nvidia.conf")
         || path == Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf")
 }
 
@@ -3902,6 +3904,7 @@ mod tests {
         )));
         for generated_driver_file in [
             Path::new("/usr/sbin/nvidia-cuda-mps-server"),
+            Path::new("/usr/share/X11/xorg.conf.d/10-nvidia.conf"),
             Path::new("/usr/share/X11/xorg.conf.d/nvidia-drm-outputclass.conf"),
         ] {
             assert!(allowed_nvidia_cdi_source(generated_driver_file));
