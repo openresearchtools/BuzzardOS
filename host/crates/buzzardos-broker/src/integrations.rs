@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
@@ -94,6 +94,7 @@ impl SlirpRuntime {
         resources: &ResourceLocator,
         container_pid: u32,
         api_socket: &Path,
+        network_owner_user_namespace: RawFd,
     ) -> Result<Self> {
         let slirp = resources.helper_or_path("slirp4netns")?;
         if api_socket.as_os_str().as_encoded_bytes().len() >= 100 {
@@ -108,9 +109,12 @@ impl SlirpRuntime {
         }
         let (ready_read, ready_write) = pipe().context("creating network readiness pipe")?;
         let ready_fd = std::os::fd::AsRawFd::as_raw_fd(&ready_write).to_string();
+        let user_namespace = format!("/proc/self/fd/{network_owner_user_namespace}");
         let parent_pid = unsafe { libc::getpid() };
         let mut command = Command::new(&slirp);
         command
+            .arg("--userns-path")
+            .arg(&user_namespace)
             .args([
                 "--configure",
                 "--disable-host-loopback",
@@ -123,18 +127,15 @@ impl SlirpRuntime {
             ])
             .arg(api_socket)
             .args([&container_pid.to_string(), "tap0"])
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped());
         // SAFETY: only async-signal-safe libc calls run between fork and exec.
         unsafe {
             use std::os::unix::process::CommandExt;
             command.pre_exec(move || {
-                // slirp creates the API socket after joining the subordinate
-                // user namespace, so its apparent owner on the host is the
-                // mapped container root UID. The containing directory is
-                // host-owned 0700 and is never guest-mounted; a 0777 socket
-                // within it lets only this broker reach the endpoint while
-                // avoiding an impossible host-side chmod of subordinate-owned
-                // metadata.
+                // The containing API directory is host-owned 0700 and is
+                // never guest-mounted. A 0777 socket within it remains
+                // reachable only by this broker through that private parent.
                 libc::umask(0);
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
                     return Err(std::io::Error::last_os_error());
@@ -159,6 +160,16 @@ impl SlirpRuntime {
         let mut byte = [0_u8; 1];
         if let Err(error) = ready.read_exact(&mut byte) {
             terminate(&mut child);
+            let mut diagnostic = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = stderr.read_to_string(&mut diagnostic);
+            }
+            if !diagnostic.trim().is_empty() {
+                bail!(
+                    "network helper exited before configuring the namespace: {error}: {}",
+                    diagnostic.trim()
+                );
+            }
             return Err(error).context("network helper exited before configuring the namespace");
         }
         let deadline = Instant::now() + Duration::from_secs(2);

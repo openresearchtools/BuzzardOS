@@ -114,6 +114,22 @@ enum Commands {
         #[arg(long)]
         release_fd: RawFd,
     },
+    #[command(name = "__hold-nested-user-namespace", hide = true)]
+    HoldNestedUserNamespace {
+        #[arg(long)]
+        ready_fd: RawFd,
+        #[arg(long)]
+        release_fd: RawFd,
+    },
+    #[command(name = "__map-nested-user-namespace", hide = true)]
+    MapNestedUserNamespace {
+        #[arg(long)]
+        holder_pid: u32,
+        #[arg(long)]
+        start_fd: RawFd,
+        #[arg(long)]
+        done_fd: RawFd,
+    },
     #[command(name = "__private-network-sandbox", hide = true)]
     PrivateNetworkSandbox {
         #[arg(long)]
@@ -153,6 +169,15 @@ fn run() -> Result<()> {
             ready_fd,
             release_fd,
         } => hold_user_namespace(ready_fd, release_fd),
+        Commands::HoldNestedUserNamespace {
+            ready_fd,
+            release_fd,
+        } => hold_nested_user_namespace(ready_fd, release_fd),
+        Commands::MapNestedUserNamespace {
+            holder_pid,
+            start_fd,
+            done_fd,
+        } => map_nested_user_namespace(holder_pid, start_fd, done_fd),
         Commands::PrivateNetworkSandbox {
             bwrap,
             host_network,
@@ -476,12 +501,16 @@ fn launch_container(
     // namespace-local capabilities needed by systemd. Starting as the keep-id
     // user would make Bubblewrap discard those capabilities before the final
     // setpriv transition, which cannot be recovered under no_new_privs.
-    let mut user_namespace = create_mapped_user_namespace(unshare, &broker, &id_map)?;
+    let mut user_namespaces = create_mapped_user_namespaces(unshare, &broker, &id_map)?;
     let host_apparmor_access = Path::new("/sys/kernel/security/apparmor/.access");
     let mut command = Command::new(&bwrap);
     command.env_clear();
     command.current_dir("/");
-    add_guest_user_namespace(&mut command, &user_namespace.descriptor);
+    add_guest_user_namespaces(
+        &mut command,
+        &user_namespaces.mount_setup.descriptor,
+        &user_namespaces.guest.descriptor,
+    );
     if !matches!(config.network, NetworkMode::Host) {
         command.arg("--unshare-net");
     }
@@ -576,16 +605,8 @@ fn launch_container(
     }
     cgroup.move_command_on_exec(&mut command)?;
 
-    command
-        .arg("--")
-        .args([
-            "/usr/bin/setpriv",
-            "--reuid=0",
-            "--regid=0",
-            "--clear-groups",
-        ])
-        .arg("/opt/buzzardos/runtime/current/libexec/buzzardos-init")
-        .stdin(Stdio::null());
+    add_guest_init_command(&mut command);
+    command.stdin(Stdio::null());
 
     let mut container = TerminateOnDrop {
         child: command
@@ -598,7 +619,7 @@ fn launch_container(
     let container_pid = read_container_pid(info_read).inspect_err(|_| {
         terminate(&mut container.child);
     })?;
-    user_namespace.release_holder()?;
+    user_namespaces.release_holders()?;
     state.container_pid = Some(container_pid);
     state.detail = Some("waiting for desktop readiness".into());
     state.save(machine_dir)?;
@@ -608,6 +629,7 @@ fn launch_container(
             resources,
             container_pid,
             &host_status.join("slirp-api.sock"),
+            user_namespaces.mount_setup.descriptor.as_raw_fd(),
         ) {
             Ok(child) => Some(child),
             Err(error) => {
@@ -3420,11 +3442,35 @@ fn inherited_bind_descriptor(path: &Path, label: &str) -> Result<File> {
     Ok(descriptor)
 }
 
-fn add_guest_user_namespace(command: &mut Command, namespace: &File) {
+fn add_guest_user_namespaces(command: &mut Command, mount_setup: &File, guest: &File) {
     command
         .arg("--userns")
-        .arg(namespace.as_raw_fd().to_string())
+        .arg(mount_setup.as_raw_fd().to_string())
+        .arg("--userns2")
+        .arg(guest.as_raw_fd().to_string())
         .args(["--uid", "0", "--gid", "0"]);
+}
+
+fn add_guest_init_command(command: &mut Command) {
+    // Bubblewrap constructs the host-backed mount tree while it is in the
+    // keep-id setup namespace, then `--userns2` enters the nested subordinate
+    // guest namespace.  A mount namespace remains owned by the user namespace
+    // in which it was created, so guest root cannot perform even private
+    // systemd/FUSE mounts in Bubblewrap's setup mount namespace.  Create the
+    // final mount namespace only after entering the guest user namespace.  It
+    // inherits the already prepared flat-rootfs tree, is recursively private,
+    // and grants no mount authority over either the setup namespace or host.
+    command.arg("--").args([
+        "/usr/bin/unshare",
+        "--mount",
+        "--propagation",
+        "private",
+        "/usr/bin/setpriv",
+        "--reuid=0",
+        "--regid=0",
+        "--clear-groups",
+        "/opt/buzzardos/runtime/current/libexec/buzzardos-init",
+    ]);
 }
 
 fn validate_machine_layout(machine_dir: &Path, rootfs: &Path) -> Result<()> {
@@ -3507,10 +3553,123 @@ fn hold_user_namespace(ready_fd: RawFd, release_fd: RawFd) -> Result<()> {
     Ok(())
 }
 
+fn hold_nested_user_namespace(ready_fd: RawFd, release_fd: RawFd) -> Result<()> {
+    if ready_fd < 3 || release_fd < 3 || ready_fd == release_fd {
+        bail!("nested user namespace holder received invalid descriptors");
+    }
+    let holder_pid = std::process::id();
+    let (start_read, mut start_write) = pipe().context("creating nested-map start pipe")?;
+    let (done_read, done_write) = pipe().context("creating nested-map completion pipe")?;
+    let broker = std::env::current_exe().context("locating nested namespace mapper")?;
+    let mut mapper_command = Command::new(&broker);
+    mapper_command
+        .arg("__map-nested-user-namespace")
+        .arg("--holder-pid")
+        .arg(holder_pid.to_string())
+        .arg("--start-fd")
+        .arg(start_read.to_string())
+        .arg("--done-fd")
+        .arg(done_write.as_raw_fd().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    let unused_start_write = start_write.as_raw_fd();
+    // SAFETY: only async-signal-safe close calls run between fork and exec.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        mapper_command.pre_exec(move || {
+            libc::close(unused_start_write);
+            libc::close(done_read);
+            Ok(())
+        });
+    }
+    let mut mapper = mapper_command
+        .spawn()
+        .context("starting nested user namespace mapper")?;
+    close_fd(start_read);
+    drop(done_write);
+
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
+        terminate(&mut mapper);
+        return Err(std::io::Error::last_os_error())
+            .context("creating nested guest user namespace");
+    }
+    start_write
+        .write_all(&[1])
+        .context("releasing nested user namespace mapper")?;
+    drop(start_write);
+    // SAFETY: the parent owns the read end returned by `pipe`.
+    let mut done_read = unsafe { File::from_raw_fd(done_read) };
+    let mut signal = [0_u8; 1];
+    if let Err(error) = done_read.read_exact(&mut signal) {
+        terminate(&mut mapper);
+        return Err(error).context("waiting for nested guest identity mapping");
+    }
+    let status = mapper
+        .wait()
+        .context("reaping nested user namespace mapper")?;
+    if !status.success() {
+        bail!("nested user namespace mapper exited with {status}");
+    }
+    if unsafe { libc::setresgid(0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("becoming guest root group in nested user namespace");
+    }
+    if unsafe { libc::setresuid(0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("becoming guest root in nested user namespace");
+    }
+    hold_user_namespace(ready_fd, release_fd)
+}
+
+fn map_nested_user_namespace(holder_pid: u32, start_fd: RawFd, done_fd: RawFd) -> Result<()> {
+    if holder_pid != unsafe { libc::getppid() as u32 }
+        || start_fd < 3
+        || done_fd < 3
+        || start_fd == done_fd
+    {
+        bail!("nested user namespace mapper received invalid authority");
+    }
+    // SAFETY: these descriptors are transferred exclusively to this hidden
+    // helper by its direct parent.
+    let mut start = unsafe { File::from_raw_fd(start_fd) };
+    // SAFETY: see above.
+    let mut done = unsafe { File::from_raw_fd(done_fd) };
+    let mut signal = [0_u8; 1];
+    start
+        .read_exact(&mut signal)
+        .context("waiting for nested namespace creation")?;
+    let process = PathBuf::from(format!("/proc/{holder_pid}"));
+    fs::write(
+        process.join("uid_map"),
+        b"0 1 1000\n1000 0 1\n1001 1001 64535\n",
+    )
+    .context("installing nested guest UID map")?;
+    fs::write(
+        process.join("gid_map"),
+        b"0 1 1000\n1000 0 1\n1001 1001 64535\n",
+    )
+    .context("installing nested guest GID map")?;
+    done.write_all(&[1])
+        .context("reporting nested guest identity mapping")?;
+    Ok(())
+}
+
 struct MappedUserNamespace {
     descriptor: File,
     holder: Option<Child>,
     release: Option<File>,
+}
+
+struct MappedUserNamespaces {
+    mount_setup: MappedUserNamespace,
+    guest: MappedUserNamespace,
+}
+
+impl MappedUserNamespaces {
+    fn release_holders(&mut self) -> Result<()> {
+        self.guest.release_holder()?;
+        self.mount_setup.release_holder()
+    }
 }
 
 impl MappedUserNamespace {
@@ -3540,17 +3699,106 @@ impl Drop for MappedUserNamespace {
     }
 }
 
-fn create_mapped_user_namespace(
+fn create_mapped_user_namespaces(
     unshare: &Path,
     broker: &Path,
     id_map: &IdMap,
+) -> Result<MappedUserNamespaces> {
+    let mount_setup = create_held_user_namespace(
+        unshare,
+        broker,
+        id_map,
+        id_map.mount_setup_namespace_args(),
+        None,
+    )?;
+    let guest = create_held_nested_user_namespace(broker, mount_setup.descriptor.as_raw_fd())?;
+    Ok(MappedUserNamespaces { mount_setup, guest })
+}
+
+fn create_held_nested_user_namespace(
+    broker: &Path,
+    parent_user_namespace: RawFd,
+) -> Result<MappedUserNamespace> {
+    let (ready_read, ready_write) = pipe()?;
+    let (release_read, release_write) = pipe()?;
+    let mut command = Command::new(broker);
+    command
+        .arg("__hold-nested-user-namespace")
+        .arg("--ready-fd")
+        .arg(ready_write.as_raw_fd().to_string())
+        .arg("--release-fd")
+        .arg(release_read.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // SAFETY: setns and close are async-signal-safe. The descriptor is a
+    // validated user-namespace fd owned by the immediately preceding held
+    // setup namespace and is inherited into this child only.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setns(parent_user_namespace, libc::CLONE_NEWUSER) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::close(parent_user_namespace);
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .context("creating nested mapped user namespace")?;
+    drop(ready_write);
+    close_fd(release_read);
+    // SAFETY: the parent owns the read end returned by `pipe`.
+    let mut ready_read = unsafe { File::from_raw_fd(ready_read) };
+    let mut signal = [0_u8; 1];
+    if let Err(error) = ready_read.read_exact(&mut signal) {
+        terminate(&mut child);
+        let mut diagnostic = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut diagnostic);
+        }
+        if diagnostic.trim().is_empty() {
+            return Err(error).context("waiting for nested mapped user namespace");
+        }
+        bail!(
+            "waiting for nested mapped user namespace: {error}: {}",
+            diagnostic.trim()
+        );
+    }
+    let namespace_path = PathBuf::from(format!("/proc/{}/ns/user", child.id()));
+    let namespace = File::open(&namespace_path).with_context(|| {
+        format!(
+            "opening nested mapped user namespace {}",
+            namespace_path.display()
+        )
+    })?;
+    let fd = namespace.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        terminate(&mut child);
+        return Err(std::io::Error::last_os_error())
+            .context("making nested mapped user namespace descriptor inheritable");
+    }
+    Ok(MappedUserNamespace {
+        descriptor: namespace,
+        holder: Some(child),
+        release: Some(release_write),
+    })
+}
+
+fn create_held_user_namespace(
+    unshare: &Path,
+    broker: &Path,
+    id_map: &IdMap,
+    namespace_args: Vec<OsString>,
+    parent_user_namespace: Option<RawFd>,
 ) -> Result<MappedUserNamespace> {
     let (ready_read, ready_write) = pipe()?;
     let (release_read, release_write) = pipe()?;
     let mut command = Command::new(unshare);
     id_map.configure_command(&mut command);
     command
-        .args(id_map.namespace_args())
+        .args(namespace_args)
         .arg(broker)
         .arg("__hold-user-namespace")
         .arg("--ready-fd")
@@ -3560,6 +3808,20 @@ fn create_mapped_user_namespace(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(parent_user_namespace) = parent_user_namespace {
+        // SAFETY: setns and close are async-signal-safe. The descriptor is a
+        // validated user-namespace fd owned by the immediately preceding
+        // held setup namespace and is inherited into this child only.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setns(parent_user_namespace, libc::CLONE_NEWUSER) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(parent_user_namespace);
+                Ok(())
+            });
+        }
+    }
     let mut child = command.spawn().context("creating mapped user namespace")?;
     drop(ready_write);
     close_fd(release_read);
@@ -3716,26 +3978,57 @@ mod tests {
     }
 
     #[test]
-    fn bubblewrap_enters_the_mapped_namespace_as_subordinate_guest_root() {
-        let namespace = File::open("/proc/self/ns/user").unwrap();
+    fn bubblewrap_mounts_as_the_host_user_then_enters_subordinate_guest_root() {
+        let mount_setup = File::open("/proc/self/ns/user").unwrap();
+        let guest = File::open("/proc/self/ns/user").unwrap();
         let mut command = Command::new("bwrap");
 
-        add_guest_user_namespace(&mut command, &namespace);
+        add_guest_user_namespaces(&mut command, &mount_setup, &guest);
 
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        let namespace_fd = namespace.as_raw_fd().to_string();
+        let mount_setup_fd = mount_setup.as_raw_fd().to_string();
+        let guest_fd = guest.as_raw_fd().to_string();
         assert_eq!(
             arguments,
             [
                 "--userns".to_owned(),
-                namespace_fd,
+                mount_setup_fd,
+                "--userns2".to_owned(),
+                guest_fd,
                 "--uid".to_owned(),
                 "0".to_owned(),
                 "--gid".to_owned(),
                 "0".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn guest_pid_one_owns_a_private_mount_namespace_after_the_userns_transition() {
+        let mut command = Command::new("bwrap");
+
+        add_guest_init_command(&mut command);
+
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            [
+                "--",
+                "/usr/bin/unshare",
+                "--mount",
+                "--propagation",
+                "private",
+                "/usr/bin/setpriv",
+                "--reuid=0",
+                "--regid=0",
+                "--clear-groups",
+                "/opt/buzzardos/runtime/current/libexec/buzzardos-init",
             ]
         );
     }

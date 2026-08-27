@@ -10,7 +10,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::MachineConfig;
+use crate::{MachineConfig, MachineState, RuntimeState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisteredMachine {
@@ -93,16 +93,54 @@ impl MachineRegistry {
             .canonicalize()
             .with_context(|| format!("resolving machine directory {}", machine_dir.display()))?;
         let config = MachineConfig::load(&machine_dir)?;
-        if let Some(entry) = self
+        if let Some(index) = self
             .machines
             .iter()
-            .find(|entry| entry.name == config.name || entry.id == config.id)
+            .position(|entry| entry.name == config.name || entry.id == config.id)
         {
+            let entry = &self.machines[index];
             if entry.name == config.name
                 && entry.id == config.id
                 && entry.machine_dir == machine_dir
             {
                 return Ok(());
+            }
+            let same_identity = entry.name == config.name && entry.id == config.id;
+            let old_directory_is_missing = matches!(
+                fs::symlink_metadata(&entry.machine_dir),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            );
+            if same_identity && old_directory_is_missing {
+                if RuntimeState::load(&machine_dir)?.is_some_and(|state| {
+                    matches!(
+                        state.state,
+                        MachineState::Starting | MachineState::Running | MachineState::Stopping
+                    ) && state
+                        .launcher_pid
+                        .is_some_and(|pid| Path::new("/proc").join(pid.to_string()).exists())
+                }) {
+                    bail!(
+                        "machine '{}' is still running and cannot be re-registered at its moved directory",
+                        config.name
+                    );
+                }
+                if let Some(other) = self
+                    .machines
+                    .iter()
+                    .enumerate()
+                    .find(|(other_index, other)| {
+                        *other_index != index && other.machine_dir == machine_dir
+                    })
+                    .map(|(_, other)| other)
+                {
+                    bail!(
+                        "machine directory {} is already registered as '{}'",
+                        machine_dir.display(),
+                        other.name
+                    );
+                }
+                self.machines[index].machine_dir = machine_dir;
+                return self.save();
             }
             bail!(
                 "machine '{}' conflicts with registered machine '{}' at {}",
@@ -253,5 +291,97 @@ mod tests {
         let reopened = MachineRegistry::open(registry_path).unwrap();
         assert_eq!(reopened.entries().len(), 1);
         assert_eq!(reopened.entries()[0].name, "demo");
+    }
+
+    #[test]
+    fn registering_the_same_identity_relocates_a_missing_old_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("data-disk/demo");
+        let moved = temp.path().join("other-folder/demo");
+        fs::create_dir_all(original.join("rootfs")).unwrap();
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        let config = MachineConfig::new(
+            "demo".into(),
+            "oci:example".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(&original).unwrap();
+
+        let registry_path = temp.path().join("config/buzzardos/machines.json");
+        let mut registry = MachineRegistry::open(registry_path.clone()).unwrap();
+        registry.register(&original).unwrap();
+        fs::rename(&original, &moved).unwrap();
+
+        registry.register(&moved).unwrap();
+        assert_eq!(registry.entries().len(), 1);
+        assert_eq!(
+            registry.resolve("demo").unwrap(),
+            moved.canonicalize().unwrap()
+        );
+        let reopened = MachineRegistry::open(registry_path).unwrap();
+        assert_eq!(
+            reopened.entries()[0].machine_dir,
+            moved.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn registering_a_duplicate_identity_does_not_replace_a_live_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original/demo");
+        let duplicate = temp.path().join("duplicate/demo");
+        fs::create_dir_all(original.join("rootfs")).unwrap();
+        fs::create_dir_all(duplicate.join("rootfs")).unwrap();
+        let config = MachineConfig::new(
+            "demo".into(),
+            "oci:example".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(&original).unwrap();
+        config.save(&duplicate).unwrap();
+
+        let registry_path = temp.path().join("config/buzzardos/machines.json");
+        let mut registry = MachineRegistry::open(registry_path).unwrap();
+        registry.register(&original).unwrap();
+        let error = registry.register(&duplicate).unwrap_err().to_string();
+
+        assert!(error.contains("conflicts with registered machine"));
+        assert_eq!(
+            registry.resolve("demo").unwrap(),
+            original.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn registering_a_moved_running_machine_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("data-disk/demo");
+        let moved = temp.path().join("other-folder/demo");
+        fs::create_dir_all(original.join("rootfs")).unwrap();
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        let config = MachineConfig::new(
+            "demo".into(),
+            "oci:example".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(&original).unwrap();
+        let mut state = RuntimeState::new(MachineState::Running);
+        state.launcher_pid = Some(std::process::id());
+        state.save(&original).unwrap();
+
+        let registry_path = temp.path().join("config/buzzardos/machines.json");
+        let mut registry = MachineRegistry::open(registry_path).unwrap();
+        registry.register(&original).unwrap();
+        fs::rename(&original, &moved).unwrap();
+
+        let error = registry.register(&moved).unwrap_err().to_string();
+        assert!(error.contains("is still running"));
+        assert_eq!(registry.entries()[0].machine_dir, original);
     }
 }

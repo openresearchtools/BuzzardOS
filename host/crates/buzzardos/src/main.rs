@@ -4220,34 +4220,59 @@ fn start(paths: &WbPaths, name: &str, detach: bool) -> Result<()> {
             return Ok(());
         }
         if supervisor_is_live(&state, &machine_dir) {
-            let rootfs = machine_dir.join("rootfs");
-            validate_extracted_rootfs(&rootfs)?;
-            for diagnostic in guest_settings_runtime_diagnostics(&rootfs)? {
-                eprintln!("buzzardos: {diagnostic}");
-            }
-            let supervisor_pid = state.launcher_pid;
-            let reused = send_host_control(&machine_dir, "start")
-                .and_then(|()| wait_for_supervised_start(&machine_dir, Duration::from_secs(95)));
-            match reused {
-                Ok(()) => {
-                    println!("Started '{name}' in its existing host window");
-                    return Ok(());
+            let supervisor_pid = state
+                .launcher_pid
+                .context("live host window has no supervisor process")?;
+            let installed_broker = ResourceLocator::discover()?
+                .helper_or_path("buzzardos-broker")
+                .context("locating the installed Buzzard OS broker")?;
+            if !process_uses_executable(supervisor_pid, &installed_broker) {
+                signal_process(supervisor_pid, libc::SIGTERM)
+                    .context("closing the host window from the previous package version")?;
+                if !wait_for_process_exit(supervisor_pid, Duration::from_secs(10)) {
+                    bail!("the host window from the previous package version did not close");
                 }
-                Err(error) => {
-                    if let Some(pid) = supervisor_pid {
-                        let _ = wait_for_process_exit(pid, Duration::from_secs(5));
+                println!("Closed the host window from the previous package version before restart");
+            } else {
+                let rootfs = machine_dir.join("rootfs");
+                validate_extracted_rootfs(&rootfs)?;
+                for diagnostic in guest_settings_runtime_diagnostics(&rootfs)? {
+                    eprintln!("buzzardos: {diagnostic}");
+                }
+                let reused = send_host_control(&machine_dir, "start").and_then(|()| {
+                    wait_for_supervised_start(&machine_dir, Duration::from_secs(95))
+                });
+                match reused {
+                    Ok(()) => {
+                        println!("Started '{name}' in its existing host window");
+                        return Ok(());
                     }
-                    if RuntimeState::load(&machine_dir)?
-                        .as_ref()
-                        .is_some_and(|latest| supervisor_is_live(latest, &machine_dir))
-                    {
-                        return Err(error);
+                    Err(error) => {
+                        let _ = wait_for_process_exit(supervisor_pid, Duration::from_secs(5));
+                        if RuntimeState::load(&machine_dir)?
+                            .as_ref()
+                            .is_some_and(|latest| supervisor_is_live(latest, &machine_dir))
+                        {
+                            return Err(error);
+                        }
+                        eprintln!(
+                            "The previous host window completed closing during start; opening a new native window"
+                        );
                     }
-                    eprintln!(
-                        "The previous host window completed closing during start; opening a new native window"
-                    );
                 }
             }
+        }
+        if let Some(pid) = stale_relocated_supervisor(&state, &machine_dir) {
+            signal_process(pid, libc::SIGTERM)
+                .context("closing the stale stopped machine window after relocation")?;
+            if !wait_for_process_exit(pid, Duration::from_secs(10)) {
+                bail!(
+                    "the stale stopped machine window did not close after the machine directory was moved"
+                );
+            }
+            println!(
+                "Closed the stopped host window that still referenced the machine's previous directory"
+            );
         }
     }
 
@@ -5041,6 +5066,48 @@ fn broker_matches_machine(pid: u32, machine_dir: &Path) -> bool {
         && fields.contains(&expected)
 }
 
+fn stale_relocated_supervisor(state: &RuntimeState, machine_dir: &Path) -> Option<u32> {
+    if !matches!(state.state, MachineState::Stopped | MachineState::Failed) {
+        return None;
+    }
+    let pid = state.launcher_pid?;
+    if !pid_alive(pid) || broker_matches_machine(pid, machine_dir) {
+        return None;
+    }
+    let executable = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    if executable.file_name() != Some(OsStr::new("buzzardos-broker")) {
+        return None;
+    }
+    process_holds_path(pid, &machine_dir.join("machine.lock")).then_some(pid)
+}
+
+fn process_holds_path(pid: u32, path: &Path) -> bool {
+    let Ok(expected) = fs::metadata(path) else {
+        return false;
+    };
+    if !expected.is_file() {
+        return false;
+    }
+    let Ok(descriptors) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return false;
+    };
+    descriptors.filter_map(Result::ok).any(|descriptor| {
+        fs::metadata(descriptor.path()).is_ok_and(|metadata| {
+            metadata.dev() == expected.dev() && metadata.ino() == expected.ino()
+        })
+    })
+}
+
+fn process_uses_executable(pid: u32, executable: &Path) -> bool {
+    let Ok(process) = fs::metadata(format!("/proc/{pid}/exe")) else {
+        return false;
+    };
+    let Ok(installed) = fs::metadata(executable) else {
+        return false;
+    };
+    installed.is_file() && process.dev() == installed.dev() && process.ino() == installed.ino()
+}
+
 fn signal_process(pid: u32, signal: i32) -> Result<()> {
     let result = unsafe { libc::kill(pid as i32, signal) };
     if result == 0 {
@@ -5118,6 +5185,31 @@ mod layer_tests {
         assert!(state_desktop_readiness_deadline(&state).is_none());
         state.detail = Some("desktop-readiness-deadline:9999: forged".into());
         assert!(state_desktop_readiness_deadline(&state).is_none());
+    }
+
+    #[test]
+    fn process_lock_matching_uses_the_open_file_inode() {
+        let temp = tempfile::tempdir().unwrap();
+        let held = temp.path().join("machine.lock");
+        let other = temp.path().join("other.lock");
+        let descriptor = File::create(&held).unwrap();
+        File::create(&other).unwrap();
+
+        assert!(process_holds_path(std::process::id(), &held));
+        assert!(!process_holds_path(std::process::id(), &other));
+        drop(descriptor);
+        assert!(!process_holds_path(std::process::id(), &held));
+    }
+
+    #[test]
+    fn package_restart_rejects_a_different_broker_inode() {
+        let current = std::env::current_exe().unwrap();
+        assert!(process_uses_executable(std::process::id(), &current));
+
+        let temp = tempfile::tempdir().unwrap();
+        let replacement = temp.path().join("buzzardos-broker");
+        fs::copy(&current, &replacement).unwrap();
+        assert!(!process_uses_executable(std::process::id(), &replacement));
     }
 
     #[test]

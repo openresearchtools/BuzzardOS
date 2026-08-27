@@ -26,10 +26,12 @@ class GuestInitTests(unittest.TestCase):
             run = sandbox / "run"
             commands = sandbox / "commands"
             usr_bin = sandbox / "usr-bin"
+            init = sandbox / "buzzardos-init"
             etc.mkdir(parents=True)
             run.mkdir()
             commands.mkdir()
             usr_bin.mkdir()
+            shutil.copy2(INIT, init)
             (etc / "machine-id").write_bytes(machine_id)
             (etc / "passwd").write_text(
                 "root:x:0:0:root:/root:/bin/sh\n"
@@ -51,9 +53,32 @@ class GuestInitTests(unittest.TestCase):
             machine_id_setup.chmod(0o755)
 
             shutil.copy2("/bin/sh", usr_bin / "sh", follow_symlinks=True)
-            install = shutil.which("install")
-            self.assertIsNotNone(install)
-            shutil.copy2(install, usr_bin / "install", follow_symlinks=True)
+            for command_name in ("mkdir", "chmod"):
+                command_path = shutil.which(command_name)
+                self.assertIsNotNone(command_path)
+                shutil.copy2(
+                    command_path,
+                    usr_bin / command_name,
+                    follow_symlinks=True,
+                )
+            install = commands / "install"
+            install.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "mode=0755\n"
+                "while [ \"$#\" -gt 1 ]; do\n"
+                "  case \"$1\" in\n"
+                "    -d) shift ;;\n"
+                "    -m) mode=$2; shift 2 ;;\n"
+                "    -o|-g) shift 2 ;;\n"
+                "    *) break ;;\n"
+                "  esac\n"
+                "done\n"
+                "mkdir -p -- \"$1\"\n"
+                "chmod \"$mode\" -- \"$1\"\n",
+                encoding="utf-8",
+            )
+            install.chmod(0o755)
 
             systemd = commands / "systemd"
             systemd.write_text(
@@ -93,7 +118,7 @@ class GuestInitTests(unittest.TestCase):
                 "PATH",
                 f"{commands}:/usr/bin:/bin",
                 "/bin/sh",
-                str(INIT),
+                str(init),
             ]
             completed = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(

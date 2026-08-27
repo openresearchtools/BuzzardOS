@@ -1,11 +1,12 @@
 schema = 1
-audited_at = "2026-08-10"
+audited_at = "2026-08-27"
 
 [[asset]]
 id = "buzzardos-project-assets"
 paths = [
   "guest/assets/**",
   "host/packaging/BuzzardOS.desktop",
+  "host/packaging/buzzardos.apparmor",
   "host/packaging/buzzardos-nvidia-container-cli",
   "host/packaging/generate-icons.sh",
 ]
