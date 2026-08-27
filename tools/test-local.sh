@@ -64,6 +64,7 @@ done
 for script in \
     "$project_dir/host/packaging/generate-icons.sh" \
     "$project_dir/packaging/build-debs.sh" \
+    "$project_dir/tools/test-host-package-matrix.sh" \
     "$project_dir/oci/build-local.sh" \
     "$project_dir/oci/verify-image.sh" \
     "$project_dir/tests/acceptance/hardware-acceptance.sh"; do
@@ -116,10 +117,9 @@ PY
 trap - EXIT
 cleanup
 
-# Local source validation must remain usable while an explicitly recorded
-# distribution-policy blocker (currently the proprietary CUDA payload) keeps
-# public binary releases fail-closed. Artifact builds are audited separately,
-# and the release gate intentionally runs without --structural.
+# Local source validation and exact binary-package audits are separate. A
+# locally built machine may also be inspected, but no resulting OCI/rootfs is
+# a Buzzard release artifact.
 "$project_dir/tools/check-licenses.sh" --structural
 
 printf 'All local source tests passed; outputs are under %s\n' "$test_root"

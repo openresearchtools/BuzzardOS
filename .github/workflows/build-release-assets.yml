@@ -56,7 +56,8 @@ jobs:
           version=$(tr -d '\n' <VERSION)
           guest_version=$(tr -d '\n' <guest/GUEST_VERSION)
           desktop_version=$(tr -d '\n' <guest/DESKTOP_VERSION)
-          cua_version=$(tr -d '\n' <guest/BUZZARDOSCUA_VERSION)
+          cua_version=$(tr -d '\n' <cua/VERSION)
+          license_audit=(./tools/check-licenses.sh --structural)
           for package in \
             "$output/buzzardos_${version}_amd64.deb" \
             "$output/buzzardos-guest_${guest_version}_amd64.deb" \
@@ -65,19 +66,22 @@ jobs:
             test -s "$package"
             dpkg-deb --info "$package" >/dev/null
             dpkg-deb --contents "$package" >/dev/null
-            sha256sum --check --strict "$package.sha256"
+            (
+              cd "$output"
+              sha256sum --check --strict "$(basename "$package").sha256"
+            )
+            license_audit+=(--deb "$package")
           done
+          "${license_audit[@]}"
 
-      - name: Install-smoke the host package on Ubuntu 24.04
+      - name: Install-smoke the host package on every supported host distribution
         shell: bash
         run: |
           set -euo pipefail
           version=$(tr -d '\n' <VERSION)
-          sudo apt-get install --yes \
-            "$RUNNER_TEMP/buzzardos-debs/buzzardos_${version}_amd64.deb"
-          test "$(buzzardos --version)" = "Buzzard OS $version"
-          test -s /usr/share/applications/org.openresearchtools.buzzardos.desktop
-          test -s /usr/share/metainfo/org.openresearchtools.buzzardos.metainfo.xml
+          BUZZARDOS_CONTAINER_RUNTIME=docker \
+            tools/test-host-package-matrix.sh \
+              "$RUNNER_TEMP/buzzardos-debs/buzzardos_${version}_amd64.deb"
 
       - name: Build and verify the stock-Sway reference OCI locally
         shell: bash

@@ -38,15 +38,22 @@ and Remove controls; the CLI has repeatable `--share PATH` flags.
 
 ## Reference guest
 
-`oci/desktop/Containerfile` installs three prebuilt guest packages into a
-pinned Debian-snapshot rootfs. Package compilation is a separate step outside
-the OCI context. Sway and wlroots come exclusively from
-the Debian package set. No Sway/wlroots source checkout, Meson build, private
-fork, or compositor toolchain is present.
+`oci/desktop/Containerfile` and `Containerfile.cuda` are distributed in the
+host package as guest-building recipes. The manager copies the selected recipe
+and three separately supplied Buzzard guest package artifacts into a temporary
+Buildah context; it does not bundle those guest packages into the host package.
+A future release recipe can instead install those same packages from the
+Buzzard APT repository. It assembles a Debian-snapshot rootfs on the builder's
+machine.
+Buzzard does not publish that resulting Debian rootfs or an OCI image. Package
+compilation is separate from the recipe. Sway and wlroots come exclusively
+from the Debian package set. No Sway/wlroots source checkout, Meson build,
+private fork, or compositor toolchain is present.
 
-The host launcher does not inject guest source assets during machine creation
-or startup. OCI input must already contain the installed guest package and
-systemd desktop contract. This keeps guest updates under dpkg/APT ownership.
+The host launcher does not inject source assets into an existing OCI input or
+running machine. Built-in recipe creation is an explicit Buildah build step;
+pulled and imported OCI input must already contain the installed guest packages
+and systemd desktop contract. This keeps guest updates under dpkg/APT ownership.
 
 ## Developer environment
 
@@ -71,7 +78,7 @@ Before a package revision is handed off:
 1. run Rust format, Clippy, unit, Python contract, shell syntax, and structural
    licensing checks;
 2. build and inspect all four `.deb` files;
-3. time a cold reference OCI build and run `oci/verify-image.sh`; and
+3. time a cold local Containerfile build and run `oci/verify-image.sh`; and
 4. install the host package on each supported host and all three guest packages
    in the reference guest; verify versions, stock Sway, desktop files, and
    package ownership on the existing Ubuntu 24.04, Debian 13, and Ubuntu 26.04

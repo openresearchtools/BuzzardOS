@@ -1,11 +1,15 @@
-# Reference OCI assembly
+# Local guest assembly from the distributed Containerfile
 
-`build-local.sh` assembles the Debian reference guest from
-`desktop/Containerfile` with Buildah. Package compilation happens first and
-outside the OCI build. The one-stage Containerfile receives only the three
-prebuilt guest packages: `buzzardos-guest`, `buzzardos-desktop`, and
-`buzzardoscua`. APT resolves their dependencies, including distribution Sway
-and wlroots. No compiler or source tree enters the image build context.
+`build-local.sh` locally assembles a Debian guest from
+`desktop/Containerfile` with Buildah. The Containerfile is the distributed
+recipe; Buzzard does not publish the resulting rootfs or OCI payload. Package
+compilation happens first and outside the local OCI build. The current
+developer workflow supplies only the three prebuilt Buzzard guest packages:
+`buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua`; the release recipe
+will obtain those same packages from the Buzzard APT repository. APT resolves
+all non-Buzzard dependencies, including distribution Sway and wlroots, from
+their own repositories. No compiler or source tree enters the image build
+context.
 
 The final image includes systemd, Sway, Xwayland, Foot, Firefox ESR, Mousepad,
 Thunar, AT-SPI, PipeWire/WirePlumber, graphics runtimes, guest AppImage support,

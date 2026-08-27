@@ -17,6 +17,9 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         cls.packager = (ROOT / "packaging/build-debs.sh").read_text(
             encoding="utf-8"
         )
+        cls.host_matrix = (ROOT / "tools/test-host-package-matrix.sh").read_text(
+            encoding="utf-8"
+        )
         cls.containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
@@ -72,9 +75,10 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
             "dpkg-deb --info",
             "dpkg-deb --contents",
             "sha256sum --check --strict",
-            "buzzardos --version",
         ):
             self.assertIn(required, self.workflow)
+        self.assertIn("test-host-package-matrix.sh", self.workflow)
+        self.assertIn("buzzardos --version", self.host_matrix)
         self.assertIn("$project_dir/VERSION", self.packager)
         self.assertIn("Package: $package", self.packager)
         self.assertIn("Depends: $depends", self.packager)

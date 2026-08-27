@@ -65,8 +65,14 @@ does not create or mount a mandatory global shared directory.
 ## GUI and CLI
 
 Run `buzzardos` from the application menu or a terminal. The native manager
-asks for the OCI source, machine name, and destination folder on every create
-or import. It also provides the optional share pickers.
+shows every registered machine in a conventional list with Start/Stop,
+Settings, and a compact menu for open, export, clone, and confirmed deletion.
+**Add Machine** offers an official build with a CUDA-support/Standard variant
+dropdown (CUDA recommended), OCI pull, custom Containerfile/Dockerfile build,
+and OCI import. Creation always
+asks for the exact destination folder and provides optional share pickers.
+Built-in recipes consume the three separately distributed Buzzard guest `.deb`
+artifacts; they are not embedded in the host package.
 
 The same operations are fully scriptable. `--machine-dir` is the exact machine
 directory, not a global parent:
@@ -97,27 +103,33 @@ buzzardos unregister research
 
 Import accepts a local OCI image-layout directory, tar/gzip/zstd OCI archive,
 Buzzard OS export, or remote OCI reference. OCI indexes with multiple matching
-images require `--manifest`. Restore retains a Buzzard OS export's machine
-identity; clone removes machine-local identity material before committing the
-destination. Pulled and built install media is discarded by default;
+images require `--manifest`. Restore retains a Buzzard OS export's portable
+host metadata identity, while every exported rootfs has its guest machine ID,
+random seed, and any stale SSH host keys cleared in a private copy. The source
+machine is never modified. Clone also assigns a fresh host metadata identity
+before committing the destination. Pulled and built install media is discarded by default;
 `--keep-oci-archive` retains a verified OCI archive in the machine's cache.
 
 Buildah is the only end-user OCI tool dependency. Pull and build use isolated
 temporary Buildah storage beside the selected destination, never the user's
 normal Buildah cache; builds use `--no-cache`, and temporary images/layers are
 deleted after rootfs import. Export requires a stopped, exclusively locked
-machine. It emits a canonical
+machine. It emits an identity-free canonical
 OCI archive with numeric guest IDs, hardlinks, symlinks, modes, timestamps,
 xattrs, ACLs, capabilities, and sparse files. Runtime mounts and configured
 host shares are excluded. Docker and Podman are not end-user dependencies.
 
 ## Guest desktop
 
-The reference OCI is a Debian-family system containing systemd, distro Sway
-and wlroots, Xwayland, private D-Bus and PipeWire services, AT-SPI, Buzzard OS
-Guest Desktop, and Buzzard CUA. The four preinstalled general applications are
-Firefox ESR, Thunar, Mousepad, and Foot. Guest applications may also use native
-Type-2 AppImages; Buzzard OS itself is not an AppImage.
+The repository distributes a Containerfile recipe for building a Debian-family
+guest containing systemd, distro Sway and wlroots, Xwayland, private D-Bus and
+PipeWire services, AT-SPI, Buzzard OS Guest Desktop, and Buzzard CUA. Buzzard OS
+does not distribute the resulting Debian rootfs or OCI image. Debian and other
+non-Buzzard packages are obtained by the builder from their own repositories
+and retain their own package licenses. The four preinstalled general
+applications selected by the recipe are Firefox ESR, Thunar, Mousepad, and
+Foot. Guest applications may also use native Type-2 AppImages; Buzzard OS
+itself is not an AppImage.
 
 All guest windows remain inside one nested Sway output. Guest applications
 cannot create host windows, enumerate or capture the host desktop, observe

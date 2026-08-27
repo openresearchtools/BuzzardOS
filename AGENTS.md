@@ -299,11 +299,13 @@ metadata, but systemd remains guest PID 1.
 
 Export requires a stopped, exclusively locked machine. It snapshots flat
 rootfs as canonical content-addressed OCI, excludes runtime mounts and shares,
-verifies output, and commits atomically without overwriting. Restore preserves
-a Buzzard export identity and rejects duplicates. Clone assigns a new host
-metadata UUID and clears `/etc/machine-id` plus guest random seed in staging so
-first boot generates destination-local identity. Generic OCI sources receive
-fresh destination-local identity.
+verifies output, and commits atomically without overwriting. Export snapshots a
+private copy with `/etc/machine-id`, the guest random seed, and any stale SSH
+host keys cleared; it never mutates the source rootfs. Restore preserves a
+Buzzard export's host metadata identity and rejects duplicates, while first
+boot generates destination-local guest identity. Clone assigns a new host
+metadata UUID and independently verifies the same identity clearing in staging.
+Generic OCI sources receive fresh host metadata and guest identity.
 
 Imported port rules start disabled; devices/media start off. Annotations never
 pin host GPU nodes, monitor data, PipeWire/camera nodes, sockets, or capture.

@@ -4,16 +4,21 @@ This directory is the release-compliance source of truth for Buzzard OS. It
 complements the project-level `LICENSE` and the copyright records shipped by
 Debian packages.
 
-The maintained binary surfaces are the four Buzzard OS `.deb` packages and the
-reference OCI image assembled from the three guest packages. The host package
-declares Buildah and its other host tools as distro dependencies; it does not
-copy Crane, Skopeo, or another downloaded OCI client into its payload. The OCI
-image installs stock Sway/wlroots and all other normal Debian dependencies from
-the pinned distro snapshot.
+The maintained binary surfaces are the four Buzzard OS `.deb` packages. The
+distributed guest Containerfiles are build recipes, not prebuilt machine
+images. A person running a recipe obtains Debian, Sway/wlroots, CUDA when
+selected, and all other non-Buzzard packages from their respective package
+repositories; those packages are not bundled into a Buzzard `.deb`.
+
+Each Buzzard package has an independent copyright record, third-party notice,
+locked Cargo inventory, and retained Rust notice bundle. Host, guest mechanics,
+desktop, and CUA notices must not be combined. The host About window exposes
+only the host package's embedded material and clearly excludes machine and
+guest-package licensing.
 
 `release-components.toml` records direct non-Cargo inputs.
-`package-inputs.toml` mirrors the ordered APT and direct-download blocks in the
-reference Containerfile. `nvidia-go-dependencies.toml` and `go-runtime.toml`
+`package-inputs.toml` mirrors the ordered APT and direct-download blocks used
+when locally verifying the Containerfiles. `nvidia-go-dependencies.toml` and `go-runtime.toml`
 record the dependency closure of separately reviewed NVIDIA helper artifacts.
 `rust-runtime.toml` records compiler-runtime licensing that does not appear in
 Cargo metadata.
@@ -23,10 +28,11 @@ locked Linux release graphs. Registry checksums come from each `Cargo.lock`;
 license expressions and repository locations come from `cargo metadata`; and
 shipped notice files are hashed from checksum-verified crate sources.
 
-For Debian-family payloads, the authoritative per-package notice is
+For Debian-format Buzzard packages, the authoritative per-package notice is
 `/usr/share/doc/<package>/copyright`. A candidate release audit must inspect the
-exact four `.deb` files and the exact OCI package/version inventory rather than
-inferring the transitive closure from a Containerfile.
+exact four `.deb` files. An optional local machine-build audit may inspect the
+resulting package/version inventory, but that local rootfs is not a Buzzard
+release artifact.
 
 Regenerate deterministic Cargo evidence after an intentional lockfile change:
 
@@ -42,12 +48,14 @@ tools/check-licenses.sh
 
 `--structural` suppresses only explicitly recorded policy blockers. It never
 suppresses stale generated evidence, checksum mismatches, unclassified assets,
-or missing notices. The current known publication blocker is the required
-distribution-rights review for the proprietary CUDA runtime payload.
+or missing notices. CUDA packages named by the optional recipe are downloaded
+from NVIDIA by the person building the machine; Buzzard does not redistribute
+their payload.
 
-The manually dispatched workflow builds and checks four `.deb` files and a
-disposable reference OCI image. It has no publishing authority and uploads only
-the `.deb` artifacts for inspection. A later publication workflow requires its
-own reviewed signing, approval, and strict artifact gates.
+The manually dispatched workflow builds and checks four `.deb` files and may
+build a disposable local machine for acceptance testing. It has no OCI
+publishing authority and uploads only the `.deb` artifacts for inspection. A
+later APT publication workflow requires its own reviewed signing, approval, and
+strict artifact gates.
 
 The audit is evidence collection, not legal advice.

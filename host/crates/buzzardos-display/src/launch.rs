@@ -64,6 +64,12 @@ pub(crate) struct Launch {
     #[arg(long)]
     pub(crate) guest_scale_120: Option<u32>,
 
+    /// linux-dmabuf version exposed by the private gateway to nested Sway.
+    /// This is negotiated from the host compositor, not inferred from the
+    /// presence of a local DRM render node.
+    #[arg(long)]
+    pub(crate) dmabuf_version: u32,
+
     /// DRM render node used to import guest syncobj timelines.
     ///
     /// When omitted, the private display does not advertise explicit sync.
@@ -95,6 +101,12 @@ impl Launch {
         self.output_state_dir =
             canonical_directory(&self.output_state_dir, "output state directory")?;
         self.xkb_config_root = canonical_directory(&self.xkb_config_root, "XKB config root")?;
+        if !(3..=4).contains(&self.dmabuf_version) {
+            bail!(
+                "private linux-dmabuf version must be 3 or 4, got {}",
+                self.dmabuf_version
+            );
+        }
         for required in ["rules/evdev", "symbols", "keycodes", "types", "compat"] {
             let path = self.xkb_config_root.join(required);
             let resolved = path
@@ -295,6 +307,7 @@ mod tests {
                 initial_width: 1920,
                 initial_height: 1080,
                 guest_scale_120: None,
+                dmabuf_version: 3,
                 sync_drm_device: None,
                 title: "machine".into(),
                 app_id: "org.example.machine/escape".into(),

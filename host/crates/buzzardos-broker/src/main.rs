@@ -174,7 +174,8 @@ fn run_machine(machine_dir: &Path, detach: bool) -> Result<()> {
     let host_wayland =
         WaylandCapabilities::probe(&wayland).context("probing host Wayland capabilities")?;
     let runtime = LifecycleRuntime::create()?;
-    let sync_drm_device = render_node_for_device(host_wayland.dmabuf_main_device);
+    let render_device = preferred_render_node(host_wayland.dmabuf_main_device);
+    let private_dmabuf_version = private_dmabuf_version(&host_wayland)?;
     let mut display = start_display_gateway(
         &resources,
         DisplayGatewayPaths {
@@ -185,7 +186,8 @@ fn run_machine(machine_dir: &Path, detach: bool) -> Result<()> {
             machine_dir: &machine_dir,
         },
         &initial_config,
-        sync_drm_device.as_deref(),
+        private_dmabuf_version,
+        render_device.as_deref(),
     )?;
     let machine_name = initial_config.name.clone();
 
@@ -413,7 +415,7 @@ fn launch_container(
         ("WLR_RENDERER".into(), "gles2".into()),
     ];
     if config.gpus == ["all"]
-        && let Some(render_node) = render_node_for_device(host_wayland.dmabuf_main_device)
+        && let Some(render_node) = preferred_render_node(host_wayland.dmabuf_main_device)
     {
         service_environment.push((
             "WLR_RENDER_DRM_DEVICE".into(),
@@ -440,23 +442,24 @@ fn launch_container(
     let rootfs = rootfs
         .canonicalize()
         .with_context(|| format!("resolving machine rootfs {}", rootfs.display()))?;
+    let rootfs_descriptor = inherited_bind_descriptor(&rootfs, "machine rootfs")?;
     let broker = std::env::current_exe()
         .context("locating Buzzard OS broker")?
         .canonicalize()
         .context("resolving Buzzard OS broker")?;
-    // Bubblewrap must open the selected rootfs and share paths while it still
-    // has the host desktop identity. It then joins this already-authorized
-    // full subordinate-ID namespace through the pinned descriptor. Launching
-    // Bubblewrap from inside that namespace would make private host ancestors
-    // unsearchable before it could open the exact paths.
+    // Bubblewrap opens every host-side bind source before it changes identity,
+    // then enters this authorized full subordinate-ID namespace as guest root.
+    // Guest UID/GID 0 map to subordinate host IDs (never host root); selecting
+    // them here is nevertheless required so Bubblewrap can retain the
+    // namespace-local capabilities needed by systemd. Starting as the keep-id
+    // user would make Bubblewrap discard those capabilities before the final
+    // setpriv transition, which cannot be recovered under no_new_privs.
     let mut user_namespace = create_mapped_user_namespace(unshare, &broker, &id_map)?;
     let host_apparmor_access = Path::new("/sys/kernel/security/apparmor/.access");
     let mut command = Command::new(&bwrap);
     command.env_clear();
     command.current_dir("/");
-    command
-        .arg("--userns")
-        .arg(user_namespace.descriptor.as_raw_fd().to_string());
+    add_guest_user_namespace(&mut command, &user_namespace.descriptor);
     if !matches!(config.network, NetworkMode::Host) {
         command.arg("--unshare-net");
     }
@@ -476,8 +479,8 @@ fn launch_container(
         ])
         .arg("--hostname")
         .arg(&config.name)
-        .arg("--bind")
-        .arg(&rootfs)
+        .arg("--bind-fd")
+        .arg(rootfs_descriptor.as_raw_fd().to_string())
         .arg("/");
     add_guest_pseudo_filesystems(&mut command);
     command
@@ -919,7 +922,14 @@ fn display_diagnostics(
             .filter(|node| node.starts_with("/dev/dri/"))
             .find(|node| {
                 fs::metadata(node)
-                    .map(|metadata| metadata.rdev() == main_device)
+                    .map(|metadata| {
+                        metadata.rdev() == main_device
+                            || drm_devices_share_backing_device(
+                                main_device,
+                                metadata.rdev(),
+                                Path::new("/sys/dev/char"),
+                            )
+                    })
                     .unwrap_or(false)
             })
             .cloned()
@@ -1674,6 +1684,7 @@ fn start_display_gateway(
     resources: &ResourceLocator,
     paths: DisplayGatewayPaths<'_>,
     config: &MachineConfig,
+    dmabuf_version: u32,
     sync_drm_device: Option<&Path>,
 ) -> Result<TerminateOnDrop> {
     let control_socket = host_control_socket(paths.machine_dir)?;
@@ -1708,6 +1719,8 @@ fn start_display_gateway(
         .arg(&guest_scale_control)
         .arg("--guest-clipboard-control")
         .arg(&guest_clipboard_control)
+        .arg("--dmabuf-version")
+        .arg(dmabuf_version.to_string())
         .arg("--xkb-config-root")
         .arg(&xkb_config_root)
         .arg("--machine-dir")
@@ -1785,8 +1798,8 @@ fn start_display_gateway(
     }
 }
 
-fn machine_window_app_id(machine_name: &str) -> String {
-    format!("{BUZZARDOS_HOST_APP_ID}.{machine_name}")
+fn machine_window_app_id(_machine_name: &str) -> String {
+    BUZZARDOS_HOST_APP_ID.to_owned()
 }
 
 /// Preserve caller-selected GDK diagnostics while ensuring GTK emits the
@@ -2303,14 +2316,25 @@ fn generate_nvidia_cdi(
     config: &MachineConfig,
 ) -> Result<NvidiaCdiSelection> {
     let toolkit = resources
-        .helper_or_path("nvidia-ctk")
+        .helper("nvidia-ctk")
         .context("locating bundled NVIDIA Container Toolkit")?;
+    let toolkit_directory = toolkit
+        .parent()
+        .context("bundled NVIDIA Container Toolkit has no parent directory")?;
+    let toolkit_path = std::env::join_paths([
+        toolkit_directory,
+        Path::new("/usr/sbin"),
+        Path::new("/usr/bin"),
+        Path::new("/sbin"),
+        Path::new("/bin"),
+    ])
+    .context("constructing the bounded NVIDIA toolkit helper path")?;
     let spec_path = runtime.join("nvidia-cdi.json");
     let log_path = runtime.join("nvidia-ctk.log");
     let mut command = Command::new(&toolkit);
     command
         .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("PATH", &toolkit_path)
         .args(["cdi", "generate", "--format", "json"])
         .arg("--output")
         .arg(&spec_path)
@@ -2333,7 +2357,7 @@ fn generate_nvidia_cdi(
 
     let version_output = Command::new(&toolkit)
         .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("PATH", &toolkit_path)
         .arg("--version")
         .output()
         .with_context(|| {
@@ -2717,9 +2741,103 @@ fn render_node_for_device(device: Option<u64>) -> Option<PathBuf> {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("renderD"))
                 && fs::metadata(path)
-                    .map(|metadata| metadata.rdev() == device)
+                    .map(|metadata| {
+                        metadata.rdev() == device
+                            || drm_devices_share_backing_device(
+                                device,
+                                metadata.rdev(),
+                                Path::new("/sys/dev/char"),
+                            )
+                    })
                     .unwrap_or(false)
         })
+}
+
+/// Select the renderer independently from linux-dmabuf feedback version.
+///
+/// v4 feedback identifies the compositor GPU and wins whenever available.
+/// v3 has no main-device event, so use the host's normal DRM ordering.  The
+/// boot VGA device wins on multi-GPU systems; otherwise the lowest render
+/// minor is deterministic.  Every candidate is a real DRM render character
+/// device, never a hard-coded path.
+fn preferred_render_node(main_device: Option<u64>) -> Option<PathBuf> {
+    render_node_for_device(main_device).or_else(|| {
+        let mut nodes = fs::read_dir("/dev/dri")
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.strip_prefix("renderD")
+                            .is_some_and(|minor| minor.parse::<u32>().is_ok())
+                    })
+                    && fs::metadata(path).is_ok_and(|metadata| {
+                        metadata.file_type().is_char_device() && libc::major(metadata.rdev()) == 226
+                    })
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|path| {
+            fs::metadata(path)
+                .map(|metadata| libc::minor(metadata.rdev()))
+                .unwrap_or(u32::MAX)
+        });
+        nodes
+            .iter()
+            .find(|path| render_node_is_boot_vga(path))
+            .cloned()
+            .or_else(|| nodes.into_iter().next())
+    })
+}
+
+fn render_node_is_boot_vga(render_node: &Path) -> bool {
+    render_node
+        .file_name()
+        .and_then(|name| {
+            fs::read_to_string(
+                Path::new("/sys/class/drm")
+                    .join(name)
+                    .join("device/boot_vga"),
+            )
+            .ok()
+        })
+        .is_some_and(|value| value.trim() == "1")
+}
+
+fn private_dmabuf_version(host: &WaylandCapabilities) -> Result<u32> {
+    if !host.linux_dmabuf || host.linux_dmabuf_version < 3 {
+        bail!("host Wayland compositor must advertise zwp_linux_dmabuf_v1 version 3 or newer");
+    }
+    // Feedback v4 is useful only when the host actually supplied its main
+    // device.  A missing/withheld feedback device falls back to the v3
+    // format/modifier contract without disabling the local renderer.
+    Ok(
+        if host.linux_dmabuf_version >= 4 && host.dmabuf_main_device.is_some() {
+            4
+        } else {
+            3
+        },
+    )
+}
+
+/// Linux-dmabuf feedback is allowed to identify a DRM primary node even when
+/// clients must open that GPU's render node.  The two nodes have different
+/// `dev_t` values but their sysfs `device` links resolve to the same backing
+/// GPU.  Comparing only `st_rdev` therefore drops the render node on Mutter
+/// configurations that report `cardN` as the feedback main device.
+fn drm_devices_share_backing_device(first: u64, second: u64, sysfs_char: &Path) -> bool {
+    let backing = |device| {
+        sysfs_char
+            .join(format!(
+                "{}:{}/device",
+                libc::major(device),
+                libc::minor(device)
+            ))
+            .canonicalize()
+            .ok()
+    };
+    matches!((backing(first), backing(second)), (Some(first), Some(second)) if first == second)
 }
 
 fn scan_nvidia_libraries(directory: &Path, aliases: &mut BTreeMap<String, PathBuf>) -> Result<()> {
@@ -3256,6 +3374,29 @@ fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+fn inherited_bind_descriptor(path: &Path, label: &str) -> Result<File> {
+    let descriptor = File::open(path)
+        .with_context(|| format!("opening {label} {} for a pinned bind", path.display()))?;
+    let fd = descriptor.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "making the pinned {label} descriptor inheritable for {}",
+                path.display()
+            )
+        });
+    }
+    Ok(descriptor)
+}
+
+fn add_guest_user_namespace(command: &mut Command, namespace: &File) {
+    command
+        .arg("--userns")
+        .arg(namespace.as_raw_fd().to_string())
+        .args(["--uid", "0", "--gid", "0"]);
+}
+
 fn validate_machine_layout(machine_dir: &Path, rootfs: &Path) -> Result<()> {
     if rootfs.parent() != Some(machine_dir)
         || rootfs.file_name().and_then(|name| name.to_str()) != Some("rootfs")
@@ -3510,6 +3651,41 @@ mod tests {
     }
 
     #[test]
+    fn bubblewrap_enters_the_mapped_namespace_as_subordinate_guest_root() {
+        let namespace = File::open("/proc/self/ns/user").unwrap();
+        let mut command = Command::new("bwrap");
+
+        add_guest_user_namespace(&mut command, &namespace);
+
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let namespace_fd = namespace.as_raw_fd().to_string();
+        assert_eq!(
+            arguments,
+            [
+                "--userns".to_owned(),
+                namespace_fd,
+                "--uid".to_owned(),
+                "0".to_owned(),
+                "--gid".to_owned(),
+                "0".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn machine_rootfs_bind_descriptor_survives_exec() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = inherited_bind_descriptor(directory.path(), "test rootfs").unwrap();
+        let flags = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GETFD) };
+
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::FD_CLOEXEC, 0);
+    }
+
+    #[test]
     fn reads_complete_multiline_one_shot_bubblewrap_information() {
         let (info_read, mut info_write) = pipe().unwrap();
         info_write
@@ -3700,10 +3876,55 @@ mod tests {
     }
 
     #[test]
+    fn primary_and_render_nodes_for_one_gpu_share_the_dmabuf_device() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let gpu0 = sysfs.path().join("devices/gpu0");
+        let gpu1 = sysfs.path().join("devices/gpu1");
+        fs::create_dir_all(&gpu0).unwrap();
+        fs::create_dir_all(&gpu1).unwrap();
+        let chars = sysfs.path().join("char");
+        for (node, target) in [("226:0", &gpu0), ("226:128", &gpu0), ("226:1", &gpu1)] {
+            let directory = chars.join(node);
+            fs::create_dir_all(&directory).unwrap();
+            std::os::unix::fs::symlink(target, directory.join("device")).unwrap();
+        }
+
+        assert!(drm_devices_share_backing_device(
+            libc::makedev(226, 0),
+            libc::makedev(226, 128),
+            &chars,
+        ));
+        assert!(!drm_devices_share_backing_device(
+            libc::makedev(226, 0),
+            libc::makedev(226, 1),
+            &chars,
+        ));
+    }
+
+    #[test]
+    fn private_dmabuf_protocol_follows_host_version_not_render_node_presence() {
+        let mut host = WaylandCapabilities {
+            linux_dmabuf: true,
+            linux_dmabuf_version: 3,
+            ..WaylandCapabilities::default()
+        };
+        assert_eq!(private_dmabuf_version(&host).unwrap(), 3);
+
+        host.linux_dmabuf_version = 4;
+        assert_eq!(private_dmabuf_version(&host).unwrap(), 3);
+
+        host.dmabuf_main_device = Some(libc::makedev(226, 0));
+        assert_eq!(private_dmabuf_version(&host).unwrap(), 4);
+
+        host.linux_dmabuf = false;
+        assert!(private_dmabuf_version(&host).is_err());
+    }
+
+    #[test]
     fn host_visible_machine_id_uses_buzzard_os_branding() {
         assert_eq!(
             machine_window_app_id("default"),
-            "org.openresearchtools.buzzardos.default"
+            "org.openresearchtools.buzzardos"
         );
     }
 

@@ -101,6 +101,7 @@ pub(crate) fn run(
     events: EventSender,
     commands: Receiver<GatewayCommand>,
     command_notify: UnixStream,
+    dmabuf_version: u32,
     sync_drm_device: Option<PathBuf>,
     xkb_config_root: PathBuf,
 ) -> Result<()> {
@@ -117,7 +118,7 @@ pub(crate) fn run(
         .transpose()?;
     let mut display = Display::<GuestState>::new().context("creating private Wayland display")?;
     let handle = display.handle();
-    create_globals(&handle, sync_device.is_some());
+    create_globals(&handle, dmabuf_version, sync_device.is_some());
     let mut state = GuestState::new(events.clone(), formats, mode, sync_device, xkb_config_root)?;
 
     loop {
@@ -181,13 +182,18 @@ fn wait_for_configuration(
     }
 }
 
-fn create_globals(handle: &DisplayHandle, explicit_sync: bool) {
+fn create_globals(handle: &DisplayHandle, dmabuf_version: u32, explicit_sync: bool) {
     handle.create_global::<GuestState, wl_compositor::WlCompositor, _>(4, ());
     handle.create_global::<GuestState, wl_shm::WlShm, _>(2, ());
     handle.create_global::<GuestState, wl_seat::WlSeat, _>(9, ());
     handle.create_global::<GuestState, xdg_wm_base::XdgWmBase, _>(1, ());
     handle.create_global::<GuestState, wp_viewporter::WpViewporter, _>(1, ());
-    handle.create_global::<GuestState, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _>(4, ());
+    // Mirror the negotiated host protocol.  Hosts such as Debian 13's Mutter
+    // may expose only the v3 format/modifier path even though a perfectly
+    // usable DRM render node exists.  Renderer selection is therefore kept
+    // independent from this protocol version.
+    handle
+        .create_global::<GuestState, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _>(dmabuf_version, ());
     handle.create_global::<GuestState, wp_presentation::WpPresentation, _>(1, ());
     if explicit_sync {
         handle.create_global::<GuestState, wp_linux_drm_syncobj_manager_v1::WpLinuxDrmSyncobjManagerV1, _>(

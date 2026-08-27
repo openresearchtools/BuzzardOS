@@ -402,6 +402,7 @@ impl GatewaySockets {
         };
 
         let guest_events = events.clone();
+        let dmabuf_version = launch.dmabuf_version;
         let sync_drm_device = launch.sync_drm_device.clone();
         let xkb_config_root = launch.xkb_config_root.clone();
         let guest_thread = thread::Builder::new()
@@ -412,6 +413,7 @@ impl GatewaySockets {
                     guest_events,
                     commands_rx,
                     command_read,
+                    dmabuf_version,
                     sync_drm_device,
                     xkb_config_root,
                 )
@@ -740,6 +742,7 @@ fn accept_guest(
     events: EventSender,
     commands: Receiver<GatewayCommand>,
     command_notify: UnixStream,
+    dmabuf_version: u32,
     sync_drm_device: Option<PathBuf>,
     xkb_config_root: PathBuf,
 ) {
@@ -748,6 +751,7 @@ fn accept_guest(
         events.clone(),
         commands,
         command_notify,
+        dmabuf_version,
         sync_drm_device,
         xkb_config_root,
     ) {

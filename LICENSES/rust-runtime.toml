@@ -12,5 +12,5 @@ standard_library_notice = "share/doc/rust/COPYRIGHT-library.html"
 standard_library_notice_size = 425651
 standard_library_notice_sha256 = "78c163fcec50e64bfd85fedb850c273595602fafa2b41f30f75d4e410b80ee83"
 notice_license_expressions = ["Apache-2.0 OR MIT", "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT", "BSD-2-Clause AND (Apache-2.0 OR MIT)", "MIT", "MIT OR Apache-2.0", "MIT OR Apache-2.0 OR LGPL-2.1-or-later", "MIT/Apache-2.0", "MPL-2.0", "Unicode-3.0", "Zlib"]
-notes = "Cargo metadata does not enumerate libstd, compiler-builtins, panic runtime, allocator, unwind glue, or their bundled third-party code. Package compilation uses the repository-pinned Rust toolchain before OCI assembly; the OCI Containerfile contains no Rust toolchain or source build."
+notes = "Cargo metadata does not enumerate libstd, compiler-builtins, panic runtime, allocator, unwind glue, or their bundled third-party code. Each Buzzard Debian package carries the checksum-verified standard-library notice for the Rust executables it ships. The distributed guest Containerfile contains no Rust toolchain or source build."
 status = "pinned-toolchain-and-verified-standard-library-notice-bundle"

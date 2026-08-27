@@ -659,6 +659,7 @@ impl NativeWindow {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title(&launch.title)
+            .icon_name("buzzardos")
             .default_width(launch.initial_width as i32)
             .default_height(launch.initial_height as i32)
             .resizable(true)
@@ -713,10 +714,15 @@ impl NativeWindow {
         detail_label.set_justify(gtk::Justification::Center);
         detail_label.set_max_width_chars(72);
         let state_overlay = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        // Apply the normal view background to lifecycle UI only. Applying it
-        // to `monitor_view` can add theme border/padding around the offloaded
-        // child, making a 1600x1000 guest dmabuf occupy 1599x999 host pixels.
-        state_overlay.add_css_class("view");
+        // Keep lifecycle information as a compact dark monitor OSD.  The
+        // generic `view` class painted a glaring content-sized white panel on
+        // light themes, while applying any background to `monitor_view`
+        // itself can disturb the exact offload allocation.
+        state_overlay.add_css_class("osd");
+        state_overlay.set_margin_start(24);
+        state_overlay.set_margin_end(24);
+        state_overlay.set_margin_top(24);
+        state_overlay.set_margin_bottom(24);
         state_overlay.set_halign(gtk::Align::Center);
         state_overlay.set_valign(gtk::Align::Center);
         state_overlay.append(&spinner);
@@ -1542,6 +1548,15 @@ impl NativeWindow {
                 MachineState::Failed => MonitorState::Failed,
             }
         };
+        if state == MonitorState::Failed
+            && self.failure.borrow().is_none()
+            && let Some(detail) = runtime
+                .detail
+                .as_deref()
+                .filter(|detail| !detail.is_empty())
+        {
+            *self.failure.borrow_mut() = Some(detail.to_owned());
+        }
         if matches!(state, MonitorState::Stopped | MonitorState::Failed) {
             self.detach_monitor("runtime-terminal-state");
         }
@@ -3168,7 +3183,6 @@ impl NativeWindow {
         let save_dialog = dialog.clone();
         apply.connect_clicked(move |_| {
             let mut updated = config.clone();
-            updated.schema = 4;
             updated.integrations.ports = rows
                 .borrow()
                 .iter()
@@ -3303,7 +3317,6 @@ impl NativeWindow {
         let save_dialog = dialog.clone();
         apply.connect_clicked(move |_| {
             let mut updated = config.clone();
-            updated.schema = 4;
             updated.integrations.media.guest_audio_output = audio.is_active();
             updated.integrations.media.host_microphone = microphone.is_active();
             updated.integrations.media.host_camera = camera.is_active();

@@ -1,27 +1,25 @@
 schema = 2
-audited_at = "2026-08-17"
+audited_at = "2026-08-25"
 
 [[component]]
 id = "buzzardos-project-notice"
-surface = ["source", "deb", "oci"]
+surface = ["source", "deb"]
 name = "Buzzard OS project license and attribution"
 license = "AGPL-3.0-or-later"
 evidence = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 status = "recorded-project-copyright-and-license"
 
 [[component]]
-id = "rust-mpl-source-availability"
-surface = ["deb", "oci"]
-name = "MPL-2.0 Rust dependency source availability"
-packages = ["option-ext 0.2.0", "uniffi 0.31.0", "uniffi_core 0.31.0", "uniffi_internal_macros 0.31.0", "uniffi_macros 0.31.0", "uniffi_meta 0.31.0", "uniffi_pipeline 0.31.0"]
-license = "MPL-2.0"
-evidence = ["LICENSES/generated/cargo-cua.tsv", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.txt", "LICENSES/mpl-sources.tsv", "tools/fetch-mpl-sources.sh"]
-source_code_form = "Each binary package contains the checksum-verified original .crate Source Code Form archives under its /usr/share/doc/<package>/sources/mpl directory."
-status = "exact-source-code-form-bundled-and-checksummed"
+id = "rust-dependency-notices"
+surface = ["deb"]
+name = "Package-specific locked Rust dependency inventories and notices"
+license = "per-crate license expression and retained notice"
+evidence = ["LICENSES/generated/cargo-host.tsv", "LICENSES/generated/cargo-buzzardos-guest.tsv", "LICENSES/generated/cargo-buzzardos-desktop.tsv", "LICENSES/generated/cargo-cua.tsv", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardos.txt", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardos-guest.txt", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardos-desktop.txt", "LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardoscua.txt"]
+status = "separated-by-binary-package-payload"
 
 [[component]]
 id = "rust-standard-library"
-surface = ["deb", "oci"]
+surface = ["deb"]
 name = "Rust standard library and compiler runtime"
 version = "1.96.0"
 license = "Apache-2.0 OR MIT AND bundled-third-party-terms"
@@ -30,8 +28,37 @@ bundle_notice = ["deb:/usr/share/doc/<package>/rust/COPYRIGHT-library.html"]
 status = "pinned-toolchain-and-verified-standard-library-notice-bundle"
 
 [[component]]
+id = "nvidia-container-toolkit"
+surface = ["deb"]
+name = "NVIDIA Container Toolkit base"
+version = "1.19.1-1"
+source = "https://github.com/NVIDIA/nvidia-container-toolkit"
+source_commit = "09ceee5dde66ba9ce25c7cc69b1ebd5e6e3266fa"
+source_tag = "v1.19.1"
+artifacts = ["nvidia-container-toolkit-base_1.19.1-1_amd64.deb"]
+sha256 = "b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132"
+license = "Apache-2.0 AND per-Go-module terms"
+evidence = ["LICENSES/nvidia-go-dependencies.toml", "LICENSES/go-source-archives.tsv", "LICENSES/go-runtime.toml", "tools/fetch-go-source-archives.sh"]
+bundle_notice = ["deb:/usr/share/doc/buzzardos/licenses/nvidia/nvidia-container-toolkit-base.copyright", "deb:/usr/share/doc/buzzardos/sources/go/"]
+status = "unmodified-checksum-pinned-helper-with-exact-go-sources-and-notices"
+
+[[component]]
+id = "libnvidia-container"
+surface = ["deb"]
+name = "libnvidia-container tools and runtime"
+version = "1.19.1-1"
+source = "https://github.com/NVIDIA/libnvidia-container"
+source_commit = "7585946c6471402577e14474d7c56ca5be0348d7"
+source_tag = "v1.19.1"
+artifacts = ["libnvidia-container-tools_1.19.1-1_amd64.deb", "libnvidia-container1_1.19.1-1_amd64.deb"]
+sha256 = "5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268,d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b"
+license = "Apache-2.0 AND BSD-3-Clause AND MIT AND LGPL-3.0-or-later"
+bundle_notice = ["deb:/usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container-tools.copyright", "deb:/usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container1.copyright"]
+status = "unmodified-checksum-pinned-private-helper-runtime-with-upstream-notices"
+
+[[component]]
 id = "buzzard-cua"
-surface = ["source", "deb", "oci"]
+surface = ["source", "deb"]
 name = "Buzzard CUA fork"
 version = "0.17.0+buzzard1"
 source = "https://github.com/trycua/cua"
@@ -44,7 +71,7 @@ status = "reviewed-single-crate-linux-source-and-attribution-recorded"
 
 [[component]]
 id = "wayland-virtual-keyboard-protocol"
-surface = ["source", "deb", "oci"]
+surface = ["source", "deb"]
 name = "virtual-keyboard-unstable-v1 protocol definition"
 source = "https://gitlab.freedesktop.org/wayland/wayland-protocols"
 license = "MIT"
@@ -63,69 +90,68 @@ status = "distro-owned-host-dependency"
 
 [[component]]
 id = "sway"
-surface = ["oci"]
+surface = ["containerfile-external-dependency"]
 name = "Sway"
 source = "https://github.com/swaywm/sway"
 package = "sway"
 license = "MIT"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-bundle_notice = ["oci:/usr/share/doc/sway/copyright"]
-status = "distro-owned-package-and-notice"
+status = "installed-by-apt-when-user-builds-machine-not-bundled"
 
 [[component]]
 id = "wlroots"
-surface = ["oci"]
+surface = ["containerfile-external-dependency"]
 name = "wlroots"
 source = "https://gitlab.freedesktop.org/wlroots/wlroots"
 package = "resolved distribution dependency of sway"
 license = "MIT"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-status = "distro-owned-package-and-notice"
+status = "resolved-by-apt-when-user-builds-machine-not-bundled"
 
 [[component]]
 id = "xkeyboard-config-data"
-surface = ["host-dependency", "oci"]
+surface = ["host-dependency", "containerfile-external-dependency"]
 name = "xkeyboard-config rules and symbols"
 source = "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config"
 package = "xkb-data"
 license = "Expat AND HPND-sell-variant"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-status = "distro-owned-package-and-notice"
+status = "separately-installed-package-not-bundled"
 
 [[component]]
 id = "libxkbcommon-keymap-runtime"
-surface = ["host-dependency", "oci"]
+surface = ["host-dependency", "containerfile-external-dependency"]
 name = "libxkbcommon keymap compiler runtime"
 source = "https://github.com/xkbcommon/libxkbcommon"
 package = "libxkbcommon0"
 license = "MIT"
 evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv"]
-status = "distro-owned-package-and-notice"
+status = "separately-installed-package-not-bundled"
 
 [[component]]
 id = "cuda-cudart"
-surface = ["oci"]
+surface = ["containerfile-external-dependency"]
 name = "NVIDIA CUDA Runtime"
 version = "13.3.29-1"
 package = "cuda-cudart-13-3"
 source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
 license = "LicenseRef-NVIDIA-CUDA-EULA"
-status = "requires-distribution-rights-review"
+status = "downloaded-from-nvidia-by-user-build-not-bundled"
 
 [[component]]
 id = "cuda-cublas"
-surface = ["oci"]
+surface = ["containerfile-external-dependency"]
 name = "NVIDIA cuBLAS runtime"
 version = "13.6.0.2-1"
 package = "libcublas-13-3"
 source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
 license = "LicenseRef-NVIDIA-CUDA-EULA AND LicenseRef-NVIDIA-Bundled-Third-Party"
-status = "requires-distribution-rights-review"
+status = "downloaded-from-nvidia-by-user-build-not-bundled"
 
 [[component]]
-id = "oci-debian-package-closure"
-surface = ["oci"]
-name = "Debian sid base and APT dependency closure"
+id = "local-machine-build-evidence"
+surface = ["local-containerfile-verification"]
+name = "Locally built Debian machine package closure"
 version = "standard reference image built 2026-08-18"
 source = "docker.io/library/debian:sid plus the pinned Debian snapshot"
 license = "per-package Debian copyright"
@@ -133,4 +159,4 @@ image_id = "sha256:4a22cda5928aef6e1e8b1f2599df6882da5c94ffc502a943db170f2d426ee
 package_count = 626
 package_inventory_sha256 = "9f21a5a47164dfefbedb70d0f6c6cb51ea2c2a835775c22eadc72e92abca141c"
 evidence = ["LICENSES/generated/oci-packages.tsv"]
-status = "reference-image-package-inventory-recorded"
+status = "local-verification-evidence-not-a-distributed-buzzard-artifact"

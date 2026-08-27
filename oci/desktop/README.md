@@ -1,7 +1,8 @@
 # Desktop image
 
-`Containerfile` defines the persistent Debian-family guest image for Buzzard
-OS.
+`Containerfile` is the distributed recipe for a persistent Debian-family guest
+for Buzzard OS. The resulting Debian rootfs/OCI payload is built by the user
+and is not distributed by Buzzard OS.
 
 The target image contains:
 

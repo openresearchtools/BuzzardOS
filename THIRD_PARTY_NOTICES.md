@@ -25,20 +25,18 @@ Buzzard OS. Machine-readable component and asset records are under
   `LICENSES/rust-runtime.toml` records the exact standard-library notice
   bundle which package and OCI audits require.
 
-## Reference OCI image
+## Guest-building Containerfiles
 
-- **Sway** and **wlroots** are installed only from the pinned Debian snapshot.
-  Buzzard OS does not build or ship a private compositor fork. Exact package
-  versions appear in the generated OCI inventory and distro copyright notices
-  remain under `/usr/share/doc/`.
-- All other Debian packages likewise retain their package copyright files.
-  The image pins the Debian amd64 base manifest and resolves build-time
-  packages from dated snapshots. The finished persistent guest restores the
-  live Debian repository so its owner can request normal updates.
-- NVIDIA CUDA Runtime 13.3.29-1 and cuBLAS 13.6.0.2-1 use the NVIDIA CUDA EULA
-  plus bundled third-party notices. Their package copyright/EULA files must
-  remain in the guest. Inclusion in NVIDIA's redistributable-file list does
-  not replace a project-level distribution-rights review.
+- The Containerfiles are recipes; Buzzard OS does not distribute their
+  resulting Debian root filesystem or an OCI image.
+- **Sway**, **wlroots**, and all other non-Buzzard Debian packages are resolved
+  by APT when the person building a machine runs the recipe. Buzzard OS does
+  not build or ship a private compositor fork, copy those packages into a
+  Buzzard `.deb`, or replace their package-owned notices.
+- The optional CUDA recipe downloads NVIDIA packages directly from NVIDIA's
+  authenticated repository during the user's build. Buzzard does not convey
+  the CUDA or cuBLAS package payloads. Their terms and notices remain those of
+  the packages selected by the builder.
 
 ## Native Debian packages
 
@@ -49,23 +47,22 @@ Buzzard OS. Machine-readable component and asset records are under
 - OCI pull and build operations use the distribution's normal `buildah`
   executable with isolated temporary storage. No Crane, Skopeo, or downloaded
   Go executable is shipped by Buzzard OS.
-- `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` carry the project, dependency, and
-  upstream-fork evidence for their own payloads. Sway/wlroots remain owned by
-  their distro packages rather than either Buzzard OS package.
+- `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` each
+  carry only the project, embedded dependency, asset, and upstream-fork
+  evidence applicable to that package. Their notice bundles are intentionally
+  separate. Sway/wlroots remain owned by their distro packages.
 
 ## Current release gates
 
 The statuses in `LICENSES/release-components.toml` are authoritative. The
 following gates remain and must not be inferred away:
 
-1. Public redistribution of the CUDA Runtime and cuBLAS payloads needs a
-   project-level review against the NVIDIA CUDA EULA. Checksums, installed
-   EULA files, and redistributable-file-list entries are evidence, not the
-   conclusion of that review.
-2. Every candidate OCI archive must audit its exact manifest, size, installed
-   package/version inventory, and package copyright closure. Every candidate
-   `.deb` must be audited as the exact package to be published. An earlier
-   successful build is not evidence for a later artifact.
+1. Every candidate `.deb` must be audited as the exact package to be
+   published. An earlier successful build is not evidence for a later
+   artifact.
+2. If Buzzard ever starts distributing a prebuilt machine or OCI archive, that
+   becomes a new release surface and requires a separate complete license and
+   redistribution review before publication.
 
 `NOASSERTION` means unknown, never public domain or probably compatible. The
 licensing audit is evidence collection and is not legal advice.

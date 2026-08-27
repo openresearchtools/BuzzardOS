@@ -1,0 +1,34 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Buzzard OS host
+Source: https://github.com/openresearchtools/BuzzardOS
+Comment:
+ This record covers only files delivered by the buzzardos binary package.
+ Machine root filesystems, guest packages, and separately installed host
+ packages are not part of this package. Exact notices for Rust crates linked
+ into the host executables are shipped in RUST_DEPENDENCY_LICENSES.txt.
+
+Files: host/* clipboard-protocol/*
+Copyright: 2026 Open Research Tools contributors
+License: AGPL-3.0-or-later
+ On Debian-family systems, the complete GNU Affero General Public License
+ version 3 is available at /usr/share/common-licenses/AGPL-3.
+
+Files: host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml
+Copyright: 2026 Open Research Tools contributors
+License: CC0-1.0
+ On Debian-family systems, the complete CC0 1.0 Universal legal code is
+ available at /usr/share/common-licenses/CC0-1.0.
+
+Files: usr/libexec/buzzardos/nvidia-ctk usr/libexec/buzzardos/nvidia-cdi-hook
+Copyright: 2017-2026 NVIDIA CORPORATION
+License: Apache-2.0
+ The complete upstream package record is installed at
+ /usr/share/doc/buzzardos/licenses/nvidia/nvidia-container-toolkit-base.copyright.
+
+Files: usr/libexec/buzzardos/nvidia-container-cli.real
+ usr/libexec/buzzardos/nvidia-libs/*
+Copyright: 2017-2026 NVIDIA CORPORATION
+License: Apache-2.0 and BSD-3-Clause and MIT and LGPL-3+
+ The exact applicable upstream records are installed at
+ /usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container-tools.copyright
+ and /usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container1.copyright.

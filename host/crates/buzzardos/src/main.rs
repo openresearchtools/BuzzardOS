@@ -13,7 +13,7 @@ use std::ffi::{CString, OsStr};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -565,7 +565,100 @@ fn creation_paths(machine_dir: Option<&Path>, operation: &str) -> Result<WbPaths
         .with_context(|| format!("{operation} requires --machine-dir /path/to/this-machine"))?;
     let paths = WbPaths::for_machine(machine_dir)?;
     paths.ensure()?;
+    validate_machine_storage(&paths)?;
     Ok(paths)
+}
+
+fn validate_machine_storage(paths: &WbPaths) -> Result<()> {
+    let parent = paths.machines();
+    let parent_c = CString::new(parent.as_os_str().as_bytes())
+        .context("machine parent path contains a NUL byte")?;
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(parent_c.as_ptr(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("inspecting machine storage at {}", parent.display()));
+    }
+    let filesystem = unsafe { filesystem.assume_init() };
+    let filesystem_type = filesystem.f_type as u64;
+    let incompatible = match filesystem_type {
+        0x0000_4d44 => Some("FAT"),
+        0x2011_bab0 => Some("exFAT"),
+        0x5346_544e => Some("NTFS"),
+        _ => None,
+    };
+    if let Some(name) = incompatible {
+        bail!(
+            "the selected machine location uses {name}, which cannot preserve the Linux ownership, permissions, links, and extended attributes required by a persistent machine; choose a Linux filesystem such as ext4, XFS, or Btrfs"
+        );
+    }
+
+    let probe = tempfile::Builder::new()
+        .prefix(".buzzardos-storage-check-")
+        .tempdir_in(&parent)
+        .with_context(|| {
+            format!(
+                "creating a machine-storage capability check in {}",
+                parent.display()
+            )
+        })?;
+    let original = probe.path().join("original");
+    let renamed = probe.path().join("renamed");
+    let hardlink = probe.path().join("hardlink");
+    let symlink = probe.path().join("symlink");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o640)
+        .open(&original)
+        .context("machine storage cannot create a regular file with Linux permissions")?;
+    file.write_all(b"buzzardos-storage-check")
+        .context("machine storage cannot write a regular file")?;
+    file.sync_all()
+        .context("machine storage cannot durably flush a regular file")?;
+    fs::hard_link(&original, &hardlink).context("machine storage does not support hard links")?;
+    std::os::unix::fs::symlink("original", &symlink)
+        .context("machine storage does not support symbolic links")?;
+    fs::rename(&original, &renamed).context("machine storage does not support atomic rename")?;
+
+    let path = CString::new(renamed.as_os_str().as_bytes())
+        .context("machine storage check path contains a NUL byte")?;
+    let name = c"user.buzzardos-storage-check";
+    let value = b"supported";
+    if unsafe {
+        libc::lsetxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context(
+            "machine storage does not support the extended attributes required by OCI images",
+        );
+    }
+    let mut returned = [0_u8; 16];
+    let length = unsafe {
+        libc::lgetxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            returned.as_mut_ptr().cast(),
+            returned.len(),
+        )
+    };
+    if length < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("machine storage cannot read back extended attributes");
+    }
+    if &returned[..length as usize] != value {
+        bail!("machine storage changed an extended attribute during the capability check");
+    }
+    if unsafe { libc::lremovexattr(path.as_ptr(), name.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("machine storage cannot remove extended attributes");
+    }
+    Ok(())
 }
 
 fn registered_paths(
@@ -921,11 +1014,7 @@ fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) 
         .context("reading Buildah image ID")?
         .trim()
         .to_owned();
-    if image_id.is_empty()
-        || !image_id
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-    {
+    if !valid_buildah_image_id(&image_id) {
         bail!("Buildah returned an invalid image ID");
     }
     let destination = format!("oci-archive:{}", archive.display());
@@ -964,6 +1053,11 @@ fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) 
     );
     cleanup_buildah_store(&buildah, &storage, &runroot);
     result
+}
+
+fn valid_buildah_image_id(image_id: &str) -> bool {
+    let digest = image_id.strip_prefix("sha256:").unwrap_or(image_id);
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 struct ImportMachineRequest<'a> {
@@ -1177,18 +1271,27 @@ fn sanitize_imported_machine_config(config: &mut MachineConfig) {
 
 fn reject_duplicate_machine_identity(identity: uuid::Uuid) -> Result<()> {
     let registry = MachineRegistry::discover()?;
-    for entry in registry.entries() {
-        if let Ok(existing) = MachineConfig::load(&entry.machine_dir)
-            && existing.id == identity
-        {
-            bail!(
-                "the imported machine identity already exists as '{}'; use `BuzzardOS clone {} NEW_NAME` to create an independent copy",
-                existing.name,
-                existing.name
-            );
-        }
+    if let Some(existing_name) = registered_machine_name_for_identity(&registry, identity) {
+        bail!(
+            "the imported machine identity already exists as '{existing_name}'; use `BuzzardOS clone {existing_name} NEW_NAME` to create an independent copy"
+        );
     }
     Ok(())
+}
+
+fn registered_machine_name_for_identity(
+    registry: &MachineRegistry,
+    identity: uuid::Uuid,
+) -> Option<&str> {
+    // The registry is deliberately only an index, but its recorded UUID is
+    // still authoritative for duplicate-restore protection. Do not silently
+    // permit a second copy merely because the original machine directory is
+    // currently moved, disconnected, or otherwise unreadable.
+    registry
+        .entries()
+        .iter()
+        .find(|entry| entry.id == identity)
+        .map(|entry| entry.name.as_str())
 }
 
 fn read_oci_index(layout: &Path) -> Result<OciIndex> {
@@ -1427,10 +1530,7 @@ fn export_machine(
     let namespace_program = id_map.namespace_program(&unshare)?;
     let mut namespace = PortableNamespaceContext::discover("OCI export")?;
     let rootfs = namespace.relative(&machine_dir.join("rootfs"), "machine rootfs")?;
-    let machine_config = namespace.relative(
-        &machine_dir.join(MachineConfig::FILE),
-        "machine configuration",
-    )?;
+    let machine_config = namespace.relative(&machine_dir, "machine configuration directory")?;
     // Build inside the portable cache, then copy through the already-open
     // host-user temporary file. This keeps arbitrary export destinations
     // usable even when their parent directories are private to the host UID.
@@ -1539,18 +1639,23 @@ fn lock_stopped_machine_for_export(machine_dir: &Path) -> Result<File> {
     {
         bail!("machine must be fully stopped before export");
     }
-    if supervisor_is_live(&state, machine_dir) {
-        send_host_control(machine_dir, "close")
-            .context("closing the stopped machine window before export")?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while RuntimeState::load(machine_dir)?
-            .as_ref()
-            .is_some_and(|latest| supervisor_is_live(latest, machine_dir))
-        {
-            if Instant::now() >= deadline {
-                bail!("the stopped machine window did not close before export");
-            }
-            std::thread::sleep(Duration::from_millis(50));
+    let verified_supervisor = state
+        .launcher_pid
+        .filter(|pid| pid_alive(*pid) && broker_matches_machine(*pid, machine_dir));
+    if let Some(pid) = verified_supervisor {
+        if supervisor_is_live(&state, machine_dir) {
+            send_host_control(machine_dir, "close")
+                .context("closing the stopped machine window before export")?;
+        } else {
+            // Early launch failures can retain the native failure window and
+            // machine lock before the host-control socket exists.  The PID is
+            // safe to signal only after exact executable and machine-directory
+            // verification above.
+            signal_process(pid, libc::SIGTERM)
+                .context("closing failed machine supervisor before export")?;
+        }
+        if !wait_for_process_exit(pid, Duration::from_secs(10)) {
+            bail!("the stopped machine window did not close before export");
         }
     }
     let path = machine_dir.join("machine.lock");
@@ -1577,29 +1682,36 @@ fn export_oci_archive(
 ) -> Result<()> {
     validate_guest_rootfs(rootfs)?;
     reject_rootfs_submounts(rootfs)?;
-    let config = MachineConfig::load(
+    let machine_config_metadata = fs::metadata(machine_config_path).with_context(|| {
+        format!(
+            "inspecting machine configuration path {}",
+            machine_config_path.display()
+        )
+    })?;
+    let machine_config_dir = if machine_config_metadata.is_dir() {
+        machine_config_path
+    } else {
         machine_config_path
             .parent()
-            .context("machine config has no machine directory")?,
-    )?;
+            .context("machine config has no machine directory")?
+    };
+    let config = MachineConfig::load(machine_config_dir)?;
     let resources = ResourceLocator::discover()?;
     let tar = resources.helper_or_path("tar")?;
     let layout = work_dir.join("layout");
     let blob_dir = layout.join("blobs/sha256");
     fs::create_dir_all(&blob_dir).context("creating OCI layout blob directory")?;
 
-    // Generic install media must not retain an imported machine identity, but
-    // export must also remain read-only with respect to its source machine.
-    // Make the reset in a private, exact tar copy inside this same guest-ID
-    // namespace, then snapshot only that private copy.
-    let generic_rootfs = generic_seed_source_date_epoch
-        .map(|timestamp| copy_rootfs_for_generic_seed(&tar, rootfs, work_dir, timestamp))
-        .transpose()?;
-    let export_rootfs = generic_rootfs.as_deref().unwrap_or(rootfs);
+    // A portable archive must never copy the running installation's machine
+    // identity.  Export remains read-only with respect to its source: make an
+    // exact private copy in this same guest-ID namespace, clear identity only
+    // in that copy, validate it, and snapshot the copy.
+    let export_rootfs =
+        copy_rootfs_without_identity(&tar, rootfs, work_dir, generic_seed_source_date_epoch)?;
 
     let layer_temporary = work_dir.join("rootfs-layer.tar.zst");
     let (diff_digest, layer_digest, layer_size) =
-        write_rootfs_layer(&tar, export_rootfs, &layer_temporary)?;
+        write_rootfs_layer(&tar, &export_rootfs, &layer_temporary)?;
     let layer_hex = validate_sha256_digest(&layer_digest)?;
     fs::rename(&layer_temporary, blob_dir.join(layer_hex))
         .context("committing OCI filesystem layer blob")?;
@@ -1667,7 +1779,7 @@ fn export_oci_archive(
             "comment": if generic_seed_source_date_epoch.is_some() {
                 "identity-free flattened rootfs install seed"
             } else {
-                "full persistent rootfs snapshot"
+                "identity-free persistent rootfs snapshot"
             }
         }]
     });
@@ -1804,14 +1916,14 @@ fn write_rootfs_layer(tar: &Path, rootfs: &Path, output: &Path) -> Result<(Strin
     ))
 }
 
-fn copy_rootfs_for_generic_seed(
+fn copy_rootfs_without_identity(
     tar: &Path,
     source: &Path,
     work_dir: &Path,
-    source_date_epoch: i64,
+    source_date_epoch: Option<i64>,
 ) -> Result<PathBuf> {
-    let destination = work_dir.join("generic-rootfs");
-    fs::create_dir(&destination).context("creating private generic-seed rootfs stage")?;
+    let destination = work_dir.join("portable-rootfs");
+    fs::create_dir(&destination).context("creating private identity-free rootfs stage")?;
 
     let mut producer = Command::new(tar)
         .args(["--create", "--file=-", "--directory"])
@@ -1857,6 +1969,7 @@ fn copy_rootfs_for_generic_seed(
         .args([
             "--numeric-owner",
             "--same-owner",
+            "--same-permissions",
             "--acls",
             "--selinux",
             "--xattrs",
@@ -1881,17 +1994,20 @@ fn copy_rootfs_for_generic_seed(
         .context("waiting for private seed copy reader")?;
     if !producer_status.success() || !consumer_status.success() {
         bail!(
-            "private generic-seed rootfs copy failed: writer={producer_status}, reader={consumer_status}"
+            "private identity-free rootfs copy failed: writer={producer_status}, reader={consumer_status}"
         );
     }
 
-    reset_cloned_rootfs_identity(&destination)?;
-    for relative in ["", "etc/machine-id", "etc", "etc/ssh", "var/lib/systemd"] {
-        let path = destination.join(relative);
-        match fs::symlink_metadata(&path) {
-            Ok(_) => set_link_mtime(&path, (source_date_epoch, 0))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+    reset_cloned_rootfs_identity(&destination)
+        .context("clearing identity from portable rootfs staging")?;
+    if let Some(source_date_epoch) = source_date_epoch {
+        for relative in ["", "etc/machine-id", "etc", "etc/ssh", "var/lib/systemd"] {
+            let path = destination.join(relative);
+            match fs::symlink_metadata(&path) {
+                Ok(_) => set_link_mtime(&path, (source_date_epoch, 0))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     validate_identity_free_rootfs(&destination)?;
@@ -1899,22 +2015,26 @@ fn copy_rootfs_for_generic_seed(
 }
 
 fn validate_identity_free_rootfs(rootfs: &Path) -> Result<()> {
-    if !fs::read(rootfs.join("etc/machine-id"))?.is_empty() {
-        bail!("generic seed staging rootfs retains a machine ID");
+    let machine_id = rootfs.join("etc/machine-id");
+    if !fs::read(&machine_id)
+        .with_context(|| format!("reading portable machine ID {}", machine_id.display()))?
+        .is_empty()
+    {
+        bail!("portable staging rootfs retains a machine ID");
     }
     if rootfs.join("var/lib/systemd/random-seed").exists() {
-        bail!("generic seed staging rootfs retains a systemd random seed");
+        bail!("portable staging rootfs retains a systemd random seed");
     }
     let ssh = rootfs.join("etc/ssh");
     match fs::symlink_metadata(&ssh) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
             for entry in fs::read_dir(&ssh)? {
                 if entry?.file_name().as_bytes().starts_with(b"ssh_host_") {
-                    bail!("generic seed staging rootfs retains an SSH host identity");
+                    bail!("portable staging rootfs retains an SSH host identity");
                 }
             }
         }
-        Ok(_) => bail!("generic seed staging SSH directory has an unsafe type"),
+        Ok(_) => bail!("portable staging SSH directory has an unsafe type"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
@@ -1981,7 +2101,11 @@ fn write_compressed_layout_archive(
         .stdout
         .take()
         .context("layout tar stdout was not piped")?;
-    let mut encoder = zstd::stream::write::Encoder::new(file, 19)
+    // OCI layer blobs are already compressed.  A high outer level spends
+    // minutes recompressing largely incompressible data for negligible gain;
+    // use a fast deterministic wrapper while keeping the layer compression
+    // level unchanged.
+    let mut encoder = zstd::stream::write::Encoder::new(file, 3)
         .context("initializing OCI archive compressor")?;
     enable_zstd_multithreading(&mut encoder);
     std::io::copy(&mut BufReader::new(stdout), &mut encoder)
@@ -2017,7 +2141,14 @@ fn enable_zstd_multithreading<W: Write>(encoder: &mut zstd::stream::write::Encod
 }
 
 fn reject_rootfs_submounts(rootfs: &Path) -> Result<()> {
-    let canonical = rootfs.canonicalize()?;
+    let canonical = inherited_descriptor_target(rootfs)?.map_or_else(
+        || {
+            rootfs
+                .canonicalize()
+                .with_context(|| format!("resolving export rootfs {}", rootfs.display()))
+        },
+        Ok,
+    )?;
     let mountinfo = fs::read_to_string("/proc/self/mountinfo").context("reading mountinfo")?;
     for line in mountinfo.lines() {
         let Some(field) = line.split_whitespace().nth(4) else {
@@ -2037,6 +2168,33 @@ fn reject_rootfs_submounts(rootfs: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn inherited_descriptor_target(path: &Path) -> Result<Option<PathBuf>> {
+    let Ok(relative) = path.strip_prefix("/proc/self/fd") else {
+        return Ok(None);
+    };
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(descriptor)) = components.next() else {
+        return Ok(None);
+    };
+    if components.next().is_some()
+        || descriptor.is_empty()
+        || !descriptor.as_bytes().iter().all(u8::is_ascii_digit)
+    {
+        return Ok(None);
+    }
+    let descriptor_path = Path::new("/proc/self/fd").join(descriptor);
+    let target = fs::read_link(&descriptor_path).with_context(|| {
+        format!(
+            "resolving inherited rootfs descriptor {}",
+            descriptor_path.display()
+        )
+    })?;
+    if !target.is_absolute() {
+        bail!("inherited rootfs descriptor resolved to a relative path");
+    }
+    Ok(Some(target))
 }
 
 fn sync_tree_metadata(root: &Path) -> Result<()> {
@@ -2154,8 +2312,10 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
             return Err(error).with_context(|| format!("resetting {}", machine_id.display()));
         }
     };
-    file.flush()?;
-    file.sync_all()?;
+    file.flush()
+        .with_context(|| format!("flushing reset machine ID {}", machine_id.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing reset machine ID {}", machine_id.display()))?;
 
     for relative in ["var/lib/systemd/random-seed", "var/lib/dbus/machine-id"] {
         let path = rootfs.join(relative);
@@ -2165,10 +2325,12 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
                 // link; the target was reset above. Other identity material is
                 // removed only when it is a regular file.
                 if relative != "var/lib/dbus/machine-id" {
-                    fs::remove_file(&path)?;
+                    fs::remove_file(&path)
+                        .with_context(|| format!("removing identity link {}", path.display()))?;
                 }
             }
-            Ok(metadata) if metadata.is_file() => fs::remove_file(&path)?,
+            Ok(metadata) if metadata.is_file() => fs::remove_file(&path)
+                .with_context(|| format!("removing identity file {}", path.display()))?,
             Ok(_) => bail!("clone identity path {} has an unsafe type", path.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -2177,13 +2339,19 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
     let ssh = rootfs.join("etc/ssh");
     match fs::symlink_metadata(&ssh) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            for entry in fs::read_dir(&ssh)? {
-                let entry = entry?;
+            for entry in fs::read_dir(&ssh)
+                .with_context(|| format!("reading SSH identity directory {}", ssh.display()))?
+            {
+                let entry = entry.context("reading SSH identity entry")?;
                 let name = entry.file_name();
                 if name.as_bytes().starts_with(b"ssh_host_") {
-                    let metadata = fs::symlink_metadata(entry.path())?;
+                    let metadata = fs::symlink_metadata(entry.path()).with_context(|| {
+                        format!("inspecting SSH identity entry {}", entry.path().display())
+                    })?;
                     if metadata.is_file() || metadata.file_type().is_symlink() {
-                        fs::remove_file(entry.path())?;
+                        fs::remove_file(entry.path()).with_context(|| {
+                            format!("removing SSH identity entry {}", entry.path().display())
+                        })?;
                     } else {
                         bail!("SSH host identity entry has an unsafe type");
                     }
@@ -2194,7 +2362,12 @@ fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    sync_parent_directory(&machine_id)?;
+    sync_parent_directory(&machine_id).with_context(|| {
+        format!(
+            "syncing machine identity directory for {}",
+            machine_id.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -2213,8 +2386,12 @@ fn cleanup_failed_machine_stage(
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
     let mut namespace = PortableNamespaceContext::discover("machine staging cleanup")?;
-    let namespace_staging = namespace.relative(staging, "machine staging directory")?;
+    let staging_name = staging
+        .file_name()
+        .context("machine staging directory has no name")?
+        .to_owned();
     let namespace_machines = namespace.relative(machines, "Machines directory")?;
+    let namespace_staging = namespace_machines.join(staging_name);
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     namespace.configure(&mut command);
@@ -2255,8 +2432,12 @@ fn cleanup_export_stage(resources: &ResourceLocator, staging: &Path, cache: &Pat
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
     let mut namespace = PortableNamespaceContext::discover("export staging cleanup")?;
-    let namespace_staging = namespace.relative(staging, "export staging directory")?;
+    let staging_name = staging
+        .file_name()
+        .context("export staging directory has no name")?
+        .to_owned();
     let namespace_cache = namespace.relative(cache, "portable cache")?;
+    let namespace_staging = namespace_cache.join(staging_name);
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     namespace.configure(&mut command);
@@ -2299,8 +2480,12 @@ fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
     let id_map = IdMap::discover()?;
     let namespace_program = id_map.namespace_program(&unshare)?;
     let mut namespace = PortableNamespaceContext::discover("machine deletion")?;
-    let machine_dir = namespace.relative(&machine_dir, "machine directory")?;
+    let machine_name = machine_dir
+        .file_name()
+        .context("machine directory has no name")?
+        .to_owned();
     let machines = namespace.relative(&paths.machines(), "Machines directory")?;
+    let machine_dir = machines.join(machine_name);
     let mut command = Command::new(namespace_program);
     id_map.configure_command(&mut command);
     namespace.configure(&mut command);
@@ -2323,14 +2508,26 @@ fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
 }
 
 fn remove_persistent_machine_tree(machine: &Path, machines: &Path) -> Result<()> {
-    let machines = machines
-        .canonicalize()
-        .with_context(|| format!("resolving {}", machines.display()))?;
-    let parent = machine
-        .parent()
-        .context("machine has no parent")?
-        .canonicalize()?;
-    if parent != machines {
+    let machines_metadata = fs::symlink_metadata(machines)
+        .with_context(|| format!("inspecting machine parent {}", machines.display()))?;
+    if machines_metadata.file_type().is_symlink() || !machines_metadata.is_dir() {
+        bail!("machine parent must be a real directory");
+    }
+    let parent = machine.parent().context("machine has no parent")?;
+    // `Path::parent` can lexically remove the trailing `/.` from an inherited
+    // `/proc/self/fd/N/.` directory, leaving `/proc/self/fd/N` as the parent.
+    // Follow that procfs magic link for this identity comparison; the target
+    // still has to be the same device/inode as the separately validated
+    // selected parent below.
+    let parent_metadata = fs::metadata(parent).context("inspecting machine deletion parent")?;
+    // Portable deletion addresses the selected parent through an inherited
+    // /proc/self/fd descriptor. Canonicalizing that descriptor would resolve
+    // it back through host-private ancestors which subordinate guest root is
+    // intentionally unable to traverse. Device/inode identity proves it is
+    // the same already-open directory without widening namespace access.
+    if (parent_metadata.dev(), parent_metadata.ino())
+        != (machines_metadata.dev(), machines_metadata.ino())
+    {
         bail!("machine deletion target is outside the portable Machines directory");
     }
     let name = machine
@@ -2348,7 +2545,7 @@ fn remove_persistent_machine_tree(machine: &Path, machines: &Path) -> Result<()>
     }
     fs::remove_dir_all(machine)
         .with_context(|| format!("removing machine tree {}", machine.display()))?;
-    File::open(&machines)?.sync_all()?;
+    File::open(machines)?.sync_all()?;
     Ok(())
 }
 
@@ -2370,15 +2567,17 @@ fn remove_machine_staging_tree(staging: &Path, machines: &Path) -> Result<()> {
     if !is_machine_staging_name(name) {
         bail!("refusing to remove a path that is not a machine create/import staging directory");
     }
-    let expected_parent = machines
-        .canonicalize()
-        .with_context(|| format!("resolving machine directory {}", machines.display()))?;
     let actual_parent = staging
         .parent()
-        .context("machine staging path has no parent")?
-        .canonicalize()
-        .context("resolving machine staging parent")?;
-    if actual_parent != expected_parent {
+        .context("machine staging path has no parent")?;
+    // `parent()` may strip the trailing `/.` from an inherited procfs
+    // descriptor path. Follow that exact descriptor for the identity check;
+    // it must still resolve to the separately validated selected directory.
+    let actual_parent_metadata =
+        fs::metadata(actual_parent).context("inspecting machine staging parent")?;
+    if (actual_parent_metadata.dev(), actual_parent_metadata.ino())
+        != (machines_metadata.dev(), machines_metadata.ino())
+    {
         bail!("machine staging directory is outside the expected machine directory");
     }
     fs::remove_dir_all(staging)
@@ -2405,15 +2604,16 @@ fn remove_export_staging_tree(staging: &Path, cache: &Path) -> Result<()> {
         .filter(|nonce| !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_alphanumeric()))
         .context("refusing to remove a path that is not an OCI export staging directory")?;
     debug_assert!(!nonce.is_empty());
-    let expected_parent = cache
-        .canonicalize()
-        .with_context(|| format!("resolving export cache directory {}", cache.display()))?;
     let actual_parent = staging
         .parent()
-        .context("export staging path has no parent")?
-        .canonicalize()
-        .context("resolving export staging parent")?;
-    if actual_parent != expected_parent {
+        .context("export staging path has no parent")?;
+    // See the machine-staging check above: an inherited `/proc/self/fd/N/.`
+    // parent can become `/proc/self/fd/N` after lexical parent extraction.
+    let actual_parent_metadata =
+        fs::metadata(actual_parent).context("inspecting export staging parent")?;
+    if (actual_parent_metadata.dev(), actual_parent_metadata.ino())
+        != (cache_metadata.dev(), cache_metadata.ino())
+    {
         bail!("export staging directory is outside the expected cache directory");
     }
     fs::remove_dir_all(staging)
@@ -5043,6 +5243,62 @@ mod layer_tests {
     }
 
     #[test]
+    fn accepts_the_buildah_iidfile_digest_formats() {
+        let digest = "a".repeat(64);
+        assert!(valid_buildah_image_id(&digest));
+        assert!(valid_buildah_image_id(&format!("sha256:{digest}")));
+        assert!(!valid_buildah_image_id("sha256:short"));
+        assert!(!valid_buildah_image_id(&format!(
+            "sha256:{}z",
+            "a".repeat(63)
+        )));
+    }
+
+    #[test]
+    fn deletes_an_exact_machine_below_its_selected_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let machine = temp.path().join("delete-me");
+        fs::create_dir(&machine).unwrap();
+        MachineConfig::new(
+            "delete-me".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        )
+        .save(&machine)
+        .unwrap();
+
+        remove_persistent_machine_tree(&machine, temp.path()).unwrap();
+
+        assert!(!machine.exists());
+    }
+
+    #[test]
+    fn deletes_a_machine_below_an_inherited_parent_descriptor() {
+        let temp = tempfile::tempdir().unwrap();
+        let machine = temp.path().join("delete-through-descriptor");
+        fs::create_dir(&machine).unwrap();
+        MachineConfig::new(
+            "delete-through-descriptor".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        )
+        .save(&machine)
+        .unwrap();
+        let parent_descriptor = File::open(temp.path()).unwrap();
+        let inherited_parent =
+            PathBuf::from(format!("/proc/self/fd/{}/.", parent_descriptor.as_raw_fd()));
+        let inherited_machine = inherited_parent.join("delete-through-descriptor");
+
+        remove_persistent_machine_tree(&inherited_machine, &inherited_parent).unwrap();
+
+        assert!(!machine.exists());
+    }
+
+    #[test]
     fn applies_whiteouts_opaque_directories_and_new_content() {
         let temp = tempfile::tempdir().unwrap();
         let rootfs = temp.path().join("rootfs");
@@ -5430,6 +5686,76 @@ mod layer_tests {
     }
 
     #[test]
+    fn duplicate_restore_identity_remains_reserved_when_machine_directory_is_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let machine_dir = temp.path().join("machine");
+        fs::create_dir(&machine_dir).unwrap();
+        let config = MachineConfig::new(
+            "original".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["all".into()],
+        );
+        config.save(&machine_dir).unwrap();
+        let registry_path = temp.path().join("config/buzzardos/machines.json");
+        let mut registry = MachineRegistry::open(registry_path.clone()).unwrap();
+        registry.register(&machine_dir).unwrap();
+
+        fs::remove_dir_all(&machine_dir).unwrap();
+        let registry = MachineRegistry::open(registry_path).unwrap();
+
+        assert_eq!(
+            registered_machine_name_for_identity(&registry, config.id),
+            Some("original")
+        );
+    }
+
+    #[test]
+    fn imported_machine_config_disables_host_bound_runtime_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared = temp.path().join("host-share");
+        fs::write(&shared, b"host-only").unwrap();
+        let mut config = MachineConfig::new(
+            "portable".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            NetworkMode::User,
+            vec!["GPU-f832efd8-97ec-6d10-046f-f7a8e84b1c3b".into()],
+        );
+        config.integrations.ports = vec![wb_core::PortForward::new(
+            wb_core::PortDirection::HostToGuest,
+        )];
+        config.integrations.media.guest_audio_output = true;
+        config.integrations.media.host_microphone = true;
+        config.integrations.media.host_camera = true;
+        config.integrations.media.audio_target = Some("host-output".into());
+        config.integrations.media.microphone_target = Some("host-input".into());
+        config.integrations.media.camera_target = Some("host-camera".into());
+        config.shares = vec![SharedPath::from_host_path(shared).unwrap()];
+        config.retained_oci_archive = Some(RetainedOciArchive {
+            relative_path: "cache/source.oci.tar".into(),
+            sha256: "a".repeat(64),
+            size: 1,
+        });
+
+        sanitize_imported_machine_config(&mut config);
+
+        assert_eq!(config.gpus, ["all"]);
+        assert!(matches!(config.network, NetworkMode::User));
+        assert_eq!(config.integrations.ports.len(), 1);
+        assert!(!config.integrations.ports[0].enabled);
+        assert!(!config.integrations.media.guest_audio_output);
+        assert!(!config.integrations.media.host_microphone);
+        assert!(!config.integrations.media.host_camera);
+        assert!(config.integrations.media.audio_target.is_none());
+        assert!(config.integrations.media.microphone_target.is_none());
+        assert!(config.integrations.media.camera_target.is_none());
+        assert!(config.shares.is_empty());
+        assert!(config.retained_oci_archive.is_none());
+    }
+
+    #[test]
     fn failed_machine_staging_cleanup_rejects_unrelated_paths() {
         let temp = tempfile::tempdir().unwrap();
         let machines = temp.path().join("vm");
@@ -5456,6 +5782,23 @@ mod layer_tests {
         fs::write(staging.join("layout/index.json"), b"partial export").unwrap();
 
         remove_export_staging_tree(&staging, &cache).unwrap();
+
+        assert!(!staging.exists());
+        assert!(cache.is_dir());
+    }
+
+    #[test]
+    fn export_staging_cleanup_accepts_an_inherited_cache_descriptor() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let staging = cache.join("oci-export-Ab19zQ");
+        fs::create_dir_all(&staging).unwrap();
+        let cache_descriptor = File::open(&cache).unwrap();
+        let inherited_cache =
+            PathBuf::from(format!("/proc/self/fd/{}/.", cache_descriptor.as_raw_fd()));
+        let inherited_staging = inherited_cache.join("oci-export-Ab19zQ");
+
+        remove_export_staging_tree(&inherited_staging, &inherited_cache).unwrap();
 
         assert!(!staging.exists());
         assert!(cache.is_dir());
@@ -5491,6 +5834,21 @@ mod layer_tests {
     }
 
     #[test]
+    fn export_mount_scan_resolves_an_inherited_directory_without_retraversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let descriptor = File::open(temp.path()).unwrap();
+        let inherited = PathBuf::from(format!("/proc/self/fd/{}/.", descriptor.as_raw_fd()));
+        assert_eq!(
+            inherited_descriptor_target(&inherited).unwrap(),
+            Some(temp.path().canonicalize().unwrap())
+        );
+        assert_eq!(
+            inherited_descriptor_target(Path::new("/ordinary/rootfs")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn oci_export_round_trip_preserves_files_links_xattrs_and_machine_annotation() {
         let temp = tempfile::tempdir().unwrap();
         let machine = temp.path().join("machine");
@@ -5501,8 +5859,26 @@ mod layer_tests {
             fs::create_dir_all(rootfs.join(ephemeral)).unwrap();
             fs::write(rootfs.join(ephemeral).join("must-not-export"), ephemeral).unwrap();
         }
+        fs::create_dir_all(rootfs.join("etc/ssh")).unwrap();
+        fs::create_dir_all(rootfs.join("var/lib/systemd")).unwrap();
+        fs::write(rootfs.join("etc/machine-id"), b"source-machine-id\n").unwrap();
+        fs::write(rootfs.join("etc/ssh/ssh_host_ed25519_key"), b"source-key").unwrap();
+        fs::write(rootfs.join("var/lib/systemd/random-seed"), b"source-seed").unwrap();
+        let source_machine_id = fs::read(rootfs.join("etc/machine-id")).unwrap();
+        let source_ssh_key = fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap();
+        let source_random_seed = fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap();
         fs::create_dir(&work).unwrap();
         fs::write(rootfs.join("opt/data/original"), b"portable state").unwrap();
+        let numeric_owner = rootfs.join("opt/data/numeric-owner");
+        fs::write(&numeric_owner, b"guest-owned").unwrap();
+        if Uid::effective().is_root() {
+            chown(
+                &numeric_owner,
+                Some(Uid::from_raw(2345)),
+                Some(Gid::from_raw(3456)),
+            )
+            .unwrap();
+        }
         let sparse_path = rootfs.join("opt/data/sparse.img");
         let mut sparse = OpenOptions::new()
             .write(true)
@@ -5519,6 +5895,18 @@ mod layer_tests {
             rootfs.join("opt/data/hardlink"),
         )
         .unwrap();
+        assert_eq!(
+            fs::read(rootfs.join("etc/machine-id")).unwrap(),
+            source_machine_id
+        );
+        assert_eq!(
+            fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap(),
+            source_ssh_key
+        );
+        assert_eq!(
+            fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap(),
+            source_random_seed
+        );
         std::os::unix::fs::symlink("original", rootfs.join("opt/data/symlink")).unwrap();
         fs::set_permissions(rootfs.join("opt/data"), fs::Permissions::from_mode(0o2750)).unwrap();
         set_link_mtime(
@@ -5635,14 +6023,6 @@ mod layer_tests {
         // on identity normalization rather than filesystem allocation maps.
         fs::remove_file(&sparse_path).unwrap();
 
-        fs::create_dir_all(rootfs.join("etc/ssh")).unwrap();
-        fs::create_dir_all(rootfs.join("var/lib/systemd")).unwrap();
-        fs::write(rootfs.join("etc/machine-id"), b"builder-machine-id\n").unwrap();
-        fs::write(rootfs.join("etc/ssh/ssh_host_ed25519_key"), b"builder-key").unwrap();
-        fs::write(rootfs.join("var/lib/systemd/random-seed"), b"builder-seed").unwrap();
-        let source_machine_id = fs::read(rootfs.join("etc/machine-id")).unwrap();
-        let source_ssh_key = fs::read(rootfs.join("etc/ssh/ssh_host_ed25519_key")).unwrap();
-        let source_random_seed = fs::read(rootfs.join("var/lib/systemd/random-seed")).unwrap();
         let generic_work = temp.path().join("generic-work");
         fs::create_dir(&generic_work).unwrap();
         let generic_output = temp.path().join("rootfs-seed.oci.tar.zst");
@@ -5782,6 +6162,12 @@ mod layer_tests {
             fs::read(restored.join("opt/data/original")).unwrap(),
             b"portable state"
         );
+        if Uid::effective().is_root() {
+            let restored_owner =
+                fs::symlink_metadata(restored.join("opt/data/numeric-owner")).unwrap();
+            assert_eq!(restored_owner.uid(), 2345);
+            assert_eq!(restored_owner.gid(), 3456);
+        }
         assert_eq!(
             fs::metadata(restored.join("opt/data/original"))
                 .unwrap()
@@ -5817,6 +6203,9 @@ mod layer_tests {
             assert!(restored.join(ephemeral).is_dir());
             assert!(!restored.join(ephemeral).join("must-not-export").exists());
         }
+        assert_eq!(fs::read(restored.join("etc/machine-id")).unwrap(), b"");
+        assert!(!restored.join("etc/ssh/ssh_host_ed25519_key").exists());
+        assert!(!restored.join("var/lib/systemd/random-seed").exists());
         if result == 0 {
             let restored_path =
                 CString::new(restored.join("opt/data/original").as_os_str().as_bytes()).unwrap();
