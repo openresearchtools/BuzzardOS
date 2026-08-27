@@ -13,9 +13,9 @@ pub struct WaylandCapabilities {
     pub linux_dmabuf: bool,
     /// Highest zwp_linux_dmabuf_v1 version advertised by the host.
     ///
-    /// Version 4 adds feedback and a main-device identity.  Version 3 hosts
-    /// remain fully capable of importing dma-bufs, but do not identify their
-    /// renderer through that feedback protocol.
+    /// Version 4 adds feedback and a main-device identity. Buzzard OS requires
+    /// that identity so it can bind nested scanout to the compositor-selected
+    /// GPU instead of guessing from host device ordering.
     #[serde(default)]
     pub linux_dmabuf_version: u32,
     pub explicit_sync: bool,

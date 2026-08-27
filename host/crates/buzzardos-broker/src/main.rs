@@ -54,8 +54,30 @@ impl std::fmt::Display for DesktopReadinessDeadline {
 
 impl std::error::Error for DesktopReadinessDeadline {}
 
+#[derive(Debug)]
+struct DesktopFrameReadinessDeadline {
+    seconds: u64,
+}
+
+impl std::fmt::Display for DesktopFrameReadinessDeadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "desktop compositor became ready but did not submit and paint a dmabuf frame within {} seconds; verify that the host display provides working DRM render-node and 3D acceleration support",
+            self.seconds
+        )
+    }
+}
+
+impl std::error::Error for DesktopFrameReadinessDeadline {}
+
 fn machine_session_failure_detail(error: &anyhow::Error) -> String {
     if let Some(deadline) = error.downcast_ref::<DesktopReadinessDeadline>() {
+        format!(
+            "{DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX}{}: {error:#}",
+            deadline.seconds
+        )
+    } else if let Some(deadline) = error.downcast_ref::<DesktopFrameReadinessDeadline>() {
         format!(
             "{DESKTOP_READINESS_DEADLINE_DETAIL_PREFIX}{}: {error:#}",
             deadline.seconds
@@ -1221,7 +1243,7 @@ fn wait_for_desktop(
     marker: &Path,
     expected_session_token: &str,
     _window_marker: &Path,
-    _presentation_marker: &Path,
+    presentation_marker: &Path,
     host_status: &Path,
     machine_dir: &Path,
     machine_name: &str,
@@ -1231,7 +1253,8 @@ fn wait_for_desktop(
     let deadline = Instant::now() + timeout;
     let mut requested_restart = None;
     loop {
-        if desktop_ready_for_session(marker, expected_session_token)? {
+        let desktop_ready = desktop_ready_for_session(marker, expected_session_token)?;
+        if desktop_ready && presentation_has_first_frame(presentation_marker) {
             return Ok(DesktopWait::Ready);
         }
         if requested_restart.is_none()
@@ -1279,6 +1302,12 @@ fn wait_for_desktop(
         }
         if Instant::now() >= deadline {
             terminate(container);
+            if desktop_ready {
+                return Err(DesktopFrameReadinessDeadline {
+                    seconds: timeout.as_secs(),
+                }
+                .into());
+            }
             return Err(DesktopReadinessDeadline {
                 seconds: timeout.as_secs(),
             }
@@ -1286,6 +1315,12 @@ fn wait_for_desktop(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn presentation_has_first_frame(path: &Path) -> bool {
+    read_presentation_diagnostics(path).is_some_and(|frame| {
+        frame.transport == "dmabuf" && frame.submitted_frames > 0 && frame.painted_frames > 0
+    })
 }
 
 fn desktop_ready_for_session(path: &Path, expected_session_token: &str) -> Result<bool> {
@@ -2753,13 +2788,10 @@ fn render_node_for_device(device: Option<u64>) -> Option<PathBuf> {
         })
 }
 
-/// Select the renderer independently from linux-dmabuf feedback version.
-///
-/// v4 feedback identifies the compositor GPU and wins whenever available.
-/// v3 has no main-device event, so use the host's normal DRM ordering.  The
-/// boot VGA device wins on multi-GPU systems; otherwise the lowest render
-/// minor is deterministic.  Every candidate is a real DRM render character
-/// device, never a hard-coded path.
+/// Select the renderer identified by linux-dmabuf feedback when available.
+/// The deterministic DRM scan remains useful for diagnostics, but launch
+/// compatibility is validated separately and never treats that scan as a
+/// replacement for the host compositor's v4 main-device feedback.
 fn preferred_render_node(main_device: Option<u64>) -> Option<PathBuf> {
     render_node_for_device(main_device).or_else(|| {
         let mut nodes = fs::read_dir("/dev/dri")
@@ -2806,19 +2838,17 @@ fn render_node_is_boot_vga(render_node: &Path) -> bool {
 }
 
 fn private_dmabuf_version(host: &WaylandCapabilities) -> Result<u32> {
-    if !host.linux_dmabuf || host.linux_dmabuf_version < 3 {
-        bail!("host Wayland compositor must advertise zwp_linux_dmabuf_v1 version 3 or newer");
+    if !host.linux_dmabuf || host.linux_dmabuf_version < 4 {
+        bail!(
+            "host display does not provide the required accelerated graphics contract: zwp_linux_dmabuf_v1 version 4 or newer is required; enable DRM render-node and 3D acceleration support"
+        );
     }
-    // Feedback v4 is useful only when the host actually supplied its main
-    // device.  A missing/withheld feedback device falls back to the v3
-    // format/modifier contract without disabling the local renderer.
-    Ok(
-        if host.linux_dmabuf_version >= 4 && host.dmabuf_main_device.is_some() {
-            4
-        } else {
-            3
-        },
-    )
+    if host.dmabuf_main_device.is_none() {
+        bail!(
+            "host display does not provide the required accelerated graphics contract: linux-dmabuf feedback supplied no DRM main device; enable DRM render-node and 3D acceleration support"
+        );
+    }
+    Ok(4)
 }
 
 /// Linux-dmabuf feedback is allowed to identify a DRM primary node even when
@@ -3585,6 +3615,41 @@ mod tests {
             machine_session_failure_detail(&anyhow::anyhow!("ordinary startup failure")),
             "ordinary startup failure"
         );
+
+        let frame_error = anyhow::Error::new(DesktopFrameReadinessDeadline { seconds: 90 })
+            .context("nested compositor log: no frame fixture");
+        let frame_detail = machine_session_failure_detail(&frame_error);
+        assert!(frame_detail.starts_with("desktop-readiness-deadline:90: "));
+        assert!(frame_detail.contains("did not submit and paint a dmabuf frame"));
+        assert!(frame_detail.contains("no frame fixture"));
+    }
+
+    #[test]
+    fn desktop_readiness_requires_a_real_painted_dmabuf_frame() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("presentation.json");
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&PresentationDiagnostics::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(!presentation_has_first_frame(&path));
+
+        let mut submitted = PresentationDiagnostics {
+            submitted_frames: 1,
+            ..PresentationDiagnostics::default()
+        };
+        fs::write(&path, serde_json::to_vec(&submitted).unwrap()).unwrap();
+        assert!(!presentation_has_first_frame(&path));
+
+        submitted.painted_frames = 1;
+        fs::write(&path, serde_json::to_vec(&submitted).unwrap()).unwrap();
+        assert!(presentation_has_first_frame(&path));
+
+        submitted.transport = "shm".into();
+        fs::write(&path, serde_json::to_vec(&submitted).unwrap()).unwrap();
+        assert!(!presentation_has_first_frame(&path));
     }
 
     #[test]
@@ -3902,16 +3967,16 @@ mod tests {
     }
 
     #[test]
-    fn private_dmabuf_protocol_follows_host_version_not_render_node_presence() {
+    fn private_dmabuf_protocol_requires_v4_main_device_feedback() {
         let mut host = WaylandCapabilities {
             linux_dmabuf: true,
             linux_dmabuf_version: 3,
             ..WaylandCapabilities::default()
         };
-        assert_eq!(private_dmabuf_version(&host).unwrap(), 3);
+        assert!(private_dmabuf_version(&host).is_err());
 
         host.linux_dmabuf_version = 4;
-        assert_eq!(private_dmabuf_version(&host).unwrap(), 3);
+        assert!(private_dmabuf_version(&host).is_err());
 
         host.dmabuf_main_device = Some(libc::makedev(226, 0));
         assert_eq!(private_dmabuf_version(&host).unwrap(), 4);

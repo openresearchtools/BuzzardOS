@@ -188,10 +188,9 @@ fn create_globals(handle: &DisplayHandle, dmabuf_version: u32, explicit_sync: bo
     handle.create_global::<GuestState, wl_seat::WlSeat, _>(9, ());
     handle.create_global::<GuestState, xdg_wm_base::XdgWmBase, _>(1, ());
     handle.create_global::<GuestState, wp_viewporter::WpViewporter, _>(1, ());
-    // Mirror the negotiated host protocol.  Hosts such as Debian 13's Mutter
-    // may expose only the v3 format/modifier path even though a perfectly
-    // usable DRM render node exists.  Renderer selection is therefore kept
-    // independent from this protocol version.
+    // The broker admits only hosts with v4 main-device feedback. Keep the
+    // explicit version argument as an internal protocol guard between the
+    // independently packaged broker and display helper.
     handle
         .create_global::<GuestState, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _>(dmabuf_version, ());
     handle.create_global::<GuestState, wp_presentation::WpPresentation, _>(1, ());
