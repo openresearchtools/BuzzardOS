@@ -46,7 +46,13 @@ NVIDIA_HOST_PAYLOAD_HASHES = {
     "usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container-tools.copyright": "c44943edebbb69663b2c48e75730fa43e22445a30621d8b86a9088d28653aef6",
     "usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container1.copyright": "c44943edebbb69663b2c48e75730fa43e22445a30621d8b86a9088d28653aef6",
 }
-OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
+OCI_PACKAGE_INVENTORIES = {
+    "standard": GENERATED / "oci-packages.tsv",
+    "cuda": GENERATED / "oci-packages.cuda.tsv",
+}
+CUDA_KEYRING_LICENSE_SHA256 = (
+    "be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d"
+)
 HOST_CLOSURE_MANIFEST = "usr/share/doc/buzzardos/host-package-closure.tsv"
 HOST_CLOSURE_HEADER = (
     "# Buzzard OS portable host package copyright closure v3",
@@ -1035,12 +1041,12 @@ def component_blockers() -> list[str]:
     return issues
 
 
-def load_oci_package_inventory() -> tuple[list[tuple[str, str]], str]:
+def load_oci_package_inventory(path: Path) -> tuple[list[tuple[str, str]], str]:
     try:
-        raw = OCI_PACKAGE_INVENTORY.read_bytes()
+        raw = path.read_bytes()
     except OSError as error:
         raise AuditError(
-            f"missing generated OCI inventory {OCI_PACKAGE_INVENTORY.relative_to(ROOT)}"
+            f"missing generated OCI inventory {path.relative_to(ROOT)}"
         ) from error
     if not raw or not raw.endswith(b"\n") or b"\r" in raw:
         raise AuditError("OCI package inventory must be non-empty LF-terminated UTF-8")
@@ -1069,30 +1075,51 @@ def load_oci_package_inventory() -> tuple[list[tuple[str, str]], str]:
 
 
 def validate_oci_package_inventory_record() -> None:
-    rows, digest = load_oci_package_inventory()
     data = read_toml(LICENSES / "release-components.toml")
-    matches = [
-        component
-        for component in data.get("component", [])
-        if component.get("id") == "local-machine-build-evidence"
-    ]
-    if len(matches) != 1:
-        raise AuditError("local machine-build evidence component is missing or duplicated")
-    component = matches[0]
-    expected_evidence = str(OCI_PACKAGE_INVENTORY.relative_to(ROOT))
-    if expected_evidence not in component.get("evidence", []):
-        raise AuditError("local machine-build evidence does not cite its inventory")
-    if component.get("package_count") != len(rows):
-        raise AuditError("local machine-build count differs from generated inventory")
-    if component.get("package_inventory_sha256") != digest:
-        raise AuditError("local machine-build checksum differs from generated inventory")
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", str(component.get("image_id", ""))) is None:
-        raise AuditError("local machine-build evidence has invalid image_id")
-    if (
-        component.get("status")
-        != "local-verification-evidence-not-a-distributed-buzzard-artifact"
-    ):
-        raise AuditError("local machine-build status must exclude release distribution")
+    component_ids = {
+        "standard": "local-machine-build-evidence",
+        "cuda": "local-cuda-machine-build-evidence",
+    }
+    for variant, inventory in OCI_PACKAGE_INVENTORIES.items():
+        rows, digest = load_oci_package_inventory(inventory)
+        identifier = component_ids[variant]
+        matches = [
+            component
+            for component in data.get("component", [])
+            if component.get("id") == identifier
+        ]
+        if len(matches) != 1:
+            raise AuditError(
+                f"{variant} machine-build evidence component is missing or duplicated"
+            )
+        component = matches[0]
+        expected_evidence = str(inventory.relative_to(ROOT))
+        if expected_evidence not in component.get("evidence", []):
+            raise AuditError(
+                f"{variant} machine-build evidence does not cite its inventory"
+            )
+        if component.get("package_count") != len(rows):
+            raise AuditError(
+                f"{variant} machine-build count differs from generated inventory"
+            )
+        if component.get("package_inventory_sha256") != digest:
+            raise AuditError(
+                f"{variant} machine-build checksum differs from generated inventory"
+            )
+        if (
+            re.fullmatch(
+                r"sha256:[0-9a-f]{64}", str(component.get("image_id", ""))
+            )
+            is None
+        ):
+            raise AuditError(f"{variant} machine-build evidence has invalid image_id")
+        if (
+            component.get("status")
+            != "local-verification-evidence-not-a-distributed-buzzard-artifact"
+        ):
+            raise AuditError(
+                f"{variant} machine-build status must exclude release distribution"
+            )
 
 
 def elf_files(root: Path) -> Iterable[Path]:
@@ -2095,7 +2122,9 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
         raise AuditError(f"guest rootfs does not exist: {rootfs}")
     issues: list[str] = []
     packages = dpkg_status(rootfs)
-    recorded_inventory, _digest = load_oci_package_inventory()
+    is_cuda = any(package["Package"] == "cuda-keyring" for package in packages)
+    inventory = OCI_PACKAGE_INVENTORIES["cuda" if is_cuda else "standard"]
+    recorded_inventory, _digest = load_oci_package_inventory(inventory)
     observed_inventory = sorted(
         (
             package["Package"]
@@ -2111,7 +2140,7 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
     if observed_inventory != recorded_inventory:
         issues.append(
             "OCI installed package inventory differs from "
-            f"{OCI_PACKAGE_INVENTORY.relative_to(ROOT)}"
+            f"{inventory.relative_to(ROOT)}"
         )
     for package in packages:
         name = package["Package"]
@@ -2178,12 +2207,30 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
                 issues,
                 "OCI",
             )
-    for relative in [
-        "usr/share/doc/cuda-cudart-13-1/copyright",
-        "usr/share/doc/libcublas-13-1/copyright",
-    ]:
-        if not (rootfs / relative).is_file():
-            issues.append(f"OCI notice missing: {relative}")
+    if is_cuda:
+        for relative in [
+            "usr/share/doc/cuda-cudart-13-3/copyright",
+            "usr/share/doc/libcublas-13-3/copyright",
+        ]:
+            if not (rootfs / relative).is_file():
+                issues.append(f"OCI notice missing: {relative}")
+        verify_hash(
+            rootfs,
+            "usr/share/doc/cuda-keyring/copyright",
+            CUDA_KEYRING_LICENSE_SHA256,
+            issues,
+            "OCI",
+        )
+        cudart_notice = rootfs / "usr/share/doc/cuda-cudart-13-3/copyright"
+        meta_notice = rootfs / "usr/share/doc/cuda-libraries-13-3/copyright"
+        if (
+            cudart_notice.is_file()
+            and meta_notice.is_file()
+            and sha256_file(cudart_notice) != sha256_file(meta_notice)
+        ):
+            issues.append(
+                "OCI CUDA libraries metapackage notice differs from the installed CUDA EULA"
+            )
     print(f"inspected OCI rootfs: {len(packages)} installed dpkg packages")
     return issues
 

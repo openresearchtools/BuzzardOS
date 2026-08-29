@@ -70,6 +70,8 @@ CMD ["/lib/systemd/systemd", "--system"]
 # remains the final image command above instead of NVIDIA's shell entrypoint.
 ARG CUDA_KEYRING_VERSION=1.1-1
 ARG CUDA_KEYRING_SHA256=d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f
+ARG CUDA_KEYRING_SOURCE_COMMIT=c63770f25b9ece2006956c9be86a72b20c2e67ba
+ARG CUDA_KEYRING_LICENSE_SHA256=be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d
 ARG NV_CUDA_CUDART_VERSION=13.3.29-1
 ARG NV_CUDA_LIB_VERSION=13.3.1-1
 ARG NV_CUDA_COMPAT_VERSION=610.43.02-1
@@ -86,6 +88,10 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_${CUDA_KEYRING_VERSION}_all.deb" && \
     printf '%s  %s\n' "$CUDA_KEYRING_SHA256" /tmp/cuda-keyring.deb \
         | sha256sum --check --strict - && \
+    wget --tries=4 --output-document=/tmp/cuda-keyring.LICENSE \
+        "https://raw.githubusercontent.com/NVIDIA/apt-packaging-cuda-keyring/${CUDA_KEYRING_SOURCE_COMMIT}/LICENSE" && \
+    printf '%s  %s\n' "$CUDA_KEYRING_LICENSE_SHA256" \
+        /tmp/cuda-keyring.LICENSE | sha256sum --check --strict - && \
     dpkg --install /tmp/cuda-keyring.deb && \
     rm -f /tmp/cuda-keyring.deb && \
     apt-get -o Acquire::ForceIPv4=true update && \
@@ -101,6 +107,11 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         libcusparse-13-3="$NV_LIBCUSPARSE_VERSION" \
         libcublas-13-3="$NV_LIBCUBLAS_VERSION" \
         libnccl2="$NV_LIBNCCL_PACKAGE_VERSION" && \
+    install -m 0644 /tmp/cuda-keyring.LICENSE \
+        /usr/share/doc/cuda-keyring/copyright && \
+    install -m 0644 /usr/share/doc/cuda-cudart-13-3/copyright \
+        /usr/share/doc/cuda-libraries-13-3/copyright && \
+    rm -f /tmp/cuda-keyring.LICENSE && \
     apt-mark hold libcublas-13-3 libnccl2 && \
     printf '%s\n' /usr/local/cuda/lib64 >>/etc/ld.so.conf.d/nvidia.conf && \
     ldconfig && \

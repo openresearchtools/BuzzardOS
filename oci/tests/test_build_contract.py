@@ -303,6 +303,10 @@ class OciBuildContractTests(unittest.TestCase):
             "NVIDIA_VISIBLE_DEVICES=all",
             "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
             "NVIDIA_PRODUCT_NAME=CUDA",
+            "CUDA_KEYRING_SOURCE_COMMIT=c63770f25b9ece2006956c9be86a72b20c2e67ba",
+            "CUDA_KEYRING_LICENSE_SHA256=be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d",
+            "/usr/share/doc/cuda-keyring/copyright",
+            "/usr/share/doc/cuda-libraries-13-3/copyright",
             "sha256sum --check --strict",
         ):
             self.assertIn(required, cuda_tail)

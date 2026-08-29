@@ -1,5 +1,5 @@
 schema = 1
-audited_at = "2026-08-11"
+audited_at = "2026-08-30"
 containerfile = "oci/desktop/Containerfile"
 notes = "The standard Containerfile bootstraps the signed Open Research Tools APT repository with a checksum-pinned archive-keyring package and installs exact versions of the three independently published Buzzard OS guest packages. Their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source during construction, while the installed live Debian and Open Research Tools sources keep the persistent machine APT-updatable. The optional CUDA variant adds exact-version NVIDIA repository packages after the complete standard definition. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
 
@@ -33,4 +33,9 @@ surface = "oci"
 containerfile = "oci/desktop/Containerfile.cuda"
 resolution = "exact package versions from NVIDIA's Debian 13 repository authenticated by the pinned cuda-keyring package"
 repository_key_sha256 = "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
+keyring_source = "https://github.com/NVIDIA/apt-packaging-cuda-keyring"
+keyring_source_tag = "v1.1"
+keyring_source_commit = "c63770f25b9ece2006956c9be86a72b20c2e67ba"
+keyring_license = "MIT"
+keyring_license_sha256 = "be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d"
 packages = ["cuda-cudart-13-3=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-3-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-compat-13-3=${NV_CUDA_COMPAT_VERSION}", "cuda-libraries-13-3=${NV_CUDA_LIB_VERSION}", "libnpp-13-3=${NV_LIBNPP_VERSION}", "cuda-nvtx-13-3=${NV_NVTX_VERSION}", "libcusparse-13-3=${NV_LIBCUSPARSE_VERSION}", "libcublas-13-3=${NV_LIBCUBLAS_VERSION}", "libnccl2=${NV_LIBNCCL_PACKAGE_VERSION}"]

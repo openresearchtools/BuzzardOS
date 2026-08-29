@@ -18,8 +18,10 @@ guest-package licensing.
 
 `release-components.toml` records direct non-Cargo inputs.
 `package-inputs.toml` mirrors the ordered APT and direct-download blocks used
-when locally verifying the Containerfiles. `nvidia-go-dependencies.toml` and `go-runtime.toml`
-record the dependency closure of separately reviewed NVIDIA helper artifacts.
+when locally verifying the Containerfiles. The Standard and CUDA recipes have
+separate exact package inventories because the CUDA choice intentionally adds
+NVIDIA's independently installed package closure. `nvidia-go-dependencies.toml` and
+`go-runtime.toml` record the dependency closure of separately reviewed NVIDIA helper artifacts.
 `rust-runtime.toml` records compiler-runtime licensing that does not appear in
 Cargo metadata.
 
@@ -50,7 +52,9 @@ tools/check-licenses.sh
 suppresses stale generated evidence, checksum mismatches, unclassified assets,
 or missing notices. CUDA packages named by the optional recipe are downloaded
 from NVIDIA by the person building the machine; Buzzard does not redistribute
-their payload.
+their payload. The recipe retains NVIDIA's checksum-pinned MIT notice for the
+repository keyring and the installed CUDA EULA for the CUDA libraries
+metapackage because those two upstream packages omit Debian `copyright` files.
 
 The manually dispatched workflow builds and checks four `.deb` files and may
 build a disposable local machine for acceptance testing. It has no OCI

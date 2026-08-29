@@ -1,5 +1,14 @@
 # Buzzard OS host changelog
 
+## 0.1.4
+
+- Split reproducible Standard and CUDA machine-package inventories so each
+  reference build is audited against its own exact APT closure.
+- Retained NVIDIA's pinned MIT notice for `cuda-keyring` and the installed CUDA
+  EULA for NVIDIA's CUDA libraries metapackage inside CUDA machine root filesystems.
+- Updated CUDA notice validation from the obsolete CUDA 13.1 paths to the
+  installed CUDA 13.3 package paths.
+
 ## 0.1.3
 
 - Updated the built-in Standard and CUDA image recipes to install the first

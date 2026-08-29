@@ -1,5 +1,5 @@
 schema = 2
-audited_at = "2026-08-25"
+audited_at = "2026-08-30"
 
 [[component]]
 id = "buzzardos-project-notice"
@@ -129,6 +129,20 @@ evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.tsv
 status = "separately-installed-package-not-bundled"
 
 [[component]]
+id = "cuda-keyring"
+surface = ["containerfile-external-dependency"]
+name = "NVIDIA CUDA APT repository keyring"
+version = "1.1-1"
+source = "https://github.com/NVIDIA/apt-packaging-cuda-keyring"
+source_commit = "c63770f25b9ece2006956c9be86a72b20c2e67ba"
+source_tag = "v1.1"
+package = "cuda-keyring"
+license = "MIT"
+sha256 = "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.cuda.tsv"]
+status = "downloaded-by-user-build-with-checksum-pinned-upstream-license-not-bundled"
+
+[[component]]
 id = "cuda-cudart"
 surface = ["containerfile-external-dependency"]
 name = "NVIDIA CUDA Runtime"
@@ -136,6 +150,7 @@ version = "13.3.29-1"
 package = "cuda-cudart-13-3"
 source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
 license = "LicenseRef-NVIDIA-CUDA-EULA"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.cuda.tsv"]
 status = "downloaded-from-nvidia-by-user-build-not-bundled"
 
 [[component]]
@@ -146,17 +161,31 @@ version = "13.6.0.2-1"
 package = "libcublas-13-3"
 source = "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/"
 license = "LicenseRef-NVIDIA-CUDA-EULA AND LicenseRef-NVIDIA-Bundled-Third-Party"
+evidence = ["LICENSES/package-inputs.toml", "LICENSES/generated/oci-packages.cuda.tsv"]
 status = "downloaded-from-nvidia-by-user-build-not-bundled"
 
 [[component]]
 id = "local-machine-build-evidence"
 surface = ["local-containerfile-verification"]
 name = "Locally built Debian machine package closure"
-version = "standard reference image built 2026-08-18"
+version = "standard reference image built 2026-08-29"
 source = "docker.io/library/debian:sid plus the pinned Debian snapshot"
 license = "per-package Debian copyright"
-image_id = "sha256:4a22cda5928aef6e1e8b1f2599df6882da5c94ffc502a943db170f2d426ee3b7"
-package_count = 626
-package_inventory_sha256 = "9f21a5a47164dfefbedb70d0f6c6cb51ea2c2a835775c22eadc72e92abca141c"
+image_id = "sha256:c786bdb71f67cda5a4611d89c696adc52dd72721bfa8aa0c367da931ef5bdd8c"
+package_count = 628
+package_inventory_sha256 = "561955b92243016cc655fdbf47116f126e93ccf367f9db4904018873df6de298"
 evidence = ["LICENSES/generated/oci-packages.tsv"]
+status = "local-verification-evidence-not-a-distributed-buzzard-artifact"
+
+[[component]]
+id = "local-cuda-machine-build-evidence"
+surface = ["local-containerfile-verification"]
+name = "Locally built Debian CUDA machine package closure"
+version = "CUDA reference image built 2026-08-30"
+source = "docker.io/library/debian:sid plus the pinned Debian snapshot and NVIDIA Debian 13 repository"
+license = "per-package Debian and NVIDIA terms"
+image_id = "sha256:14f341380c12ea04b4f9342e4dd84ad02564735c168bf5b481f19de524d1db3f"
+package_count = 662
+package_inventory_sha256 = "bb506b043924a35069982d6e325480fdcc1328b235ea225b05a287ce7efe0f1f"
+evidence = ["LICENSES/generated/oci-packages.cuda.tsv"]
 status = "local-verification-evidence-not-a-distributed-buzzard-artifact"

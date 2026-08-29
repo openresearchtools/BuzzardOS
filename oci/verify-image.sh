@@ -346,6 +346,13 @@ PY
 	    test "$(dpkg-query -W -f="\${Version}" cuda-compat-13-3)" = 610.43.02-1
 	    test "$(dpkg-query -W -f="\${Version}" libcublas-13-3)" = 13.6.0.2-1
 	    test "$(dpkg-query -W -f="\${Version}" libnccl2)" = 2.30.7-1+cuda13.3
+	    test -s /usr/share/doc/cuda-keyring/copyright
+	    printf '%s  %s\n' \
+	        be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d \
+	        /usr/share/doc/cuda-keyring/copyright | sha256sum --check --strict -
+	    cmp -s /usr/share/doc/cuda-cudart-13-3/copyright \
+	        /usr/share/doc/cuda-libraries-13-3/copyright
+	    test -s /usr/share/doc/libcublas-13-3/copyright
 	    test -L /usr/local/cuda
 	    test -d /usr/local/cuda-13.3/compat
 	    test -s /etc/apt/sources.list.d/cuda-debian13-x86_64.list
