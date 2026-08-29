@@ -25,54 +25,6 @@ export ELECTRON_OZONE_PLATFORM_HINT=wayland
 export XKB_CONFIG_ROOT=/usr/share/X11/xkb
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-install -d -m 0700 \
-    "$XDG_RUNTIME_DIR" \
-    "$XDG_CONFIG_HOME" \
-    "$XDG_CONFIG_HOME/gtk-3.0" \
-    "$XDG_DATA_HOME" \
-    "$XDG_CACHE_HOME" \
-    "$XDG_STATE_HOME"
-
-# Seed Thunar's standard GTK bookmark as the interactive user. Existing
-# bookmarks and labels are preserved, and later launches never duplicate the
-# /shared entry.
-bookmarks="$XDG_CONFIG_HOME/gtk-3.0/bookmarks"
-if [ ! -e "$bookmarks" ]; then
-    install -m 0600 /dev/null "$bookmarks"
-fi
-if [ -f "$bookmarks" ]; then
-    bookmark_tmp=$(mktemp "$XDG_CONFIG_HOME/gtk-3.0/.bookmarks.buzzardos.XXXXXX")
-    awk '
-        $1 == "file:///shared" {
-            if (!shared) {
-                print "file:///shared Shared"
-                shared = 1
-            }
-            next
-        }
-        { print }
-        END {
-            if (!shared)
-                print "file:///shared Shared"
-        }
-    ' "$bookmarks" >"$bookmark_tmp"
-    chmod 0600 "$bookmark_tmp"
-    if cmp -s "$bookmarks" "$bookmark_tmp"; then
-        rm -f "$bookmark_tmp"
-    else
-        mv -f "$bookmark_tmp" "$bookmarks"
-    fi
-fi
-
-# Thunar resolves one uca.xml through XDG rather than merging the system and
-# user files. Refresh only Buzzard OS's fixed AppImage actions in the user's
-# file, preserving all user-created custom actions. A malformed or unsafe user
-# file is deliberately left untouched; the actionable error is recorded in
-# the guest session log without preventing the desktop from booting.
-if ! /usr/libexec/buzzardos-shortcut-helper install-thunar-actions >/dev/null; then
-    echo "Buzzard OS could not refresh Thunar AppImage actions; inspect the preceding shortcut-helper diagnostic and ~/.config/Thunar/uca.xml" >&2
-fi
-
 export WAYLAND_DISPLAY=/run/buzzardos-host/wayland-0
 unset WAYLAND_SOCKET
 unset DISPLAY
@@ -113,7 +65,7 @@ fi
 # configuration, and updates GSettings. Do not force a mode here: doing so
 # would overwrite the user's persisted Light selection on every Stop/Start.
 
-/opt/buzzardos/runtime/current/libexec/buzzardos-sway-session &
+/usr/lib/buzzardos/runtime/current/libexec/buzzardos-sway-session &
 session_pid=$!
 
 cleanup() {

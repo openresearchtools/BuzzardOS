@@ -747,9 +747,10 @@ def validate_build_pins() -> None:
         [
             "# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720",
             "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b",
-            "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb",
-            "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb",
-            "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb",
+            "https://keyring.openresearchtools.com",
+            '"buzzardoscua=${BUZZARDOS_CUA_VERSION}"',
+            '"buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"',
+            '"buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"',
         ],
     )
     require_literals(
@@ -772,7 +773,12 @@ def containerfile_apt_blocks() -> list[list[str]]:
         r"(.*?)\s+&&"
     )
     blocks = [shlex.split(match) for match in pattern.findall(normalized)]
-    return [block for block in blocks if not all(item.startswith("/tmp/") for item in block)]
+    return [
+        block
+        for block in blocks
+        if not all(item.startswith("/tmp/") for item in block)
+        and not any("=" in item for item in block)
+    ]
 
 
 def validate_package_inputs() -> None:

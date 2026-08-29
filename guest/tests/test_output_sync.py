@@ -50,6 +50,25 @@ def state(host_scale, preset, generation=9, width=1919, height=1079):
 
 
 class OutputScaleContractTests(unittest.TestCase):
+    @staticmethod
+    def sway_output(identifier, name, value, index=0):
+        return {
+            "id": identifier,
+            "name": name,
+            "active": True,
+            "scale": value["guest_ui_scale_120"] / 120,
+            "rect": {
+                "x": index * value["logical_width"],
+                "y": 0,
+                "width": value["logical_width"],
+                "height": value["logical_height"],
+            },
+            "current_mode": {
+                "width": value["physical_width"],
+                "height": value["physical_height"],
+            },
+        }
+
     def test_host_scale_and_guest_preset_matrix_preserves_physical_mode(self):
         for host_scale in (120, 150, 160, 180, 210, 240):
             for preset in OUTPUT_SYNC.SCALE_PRESETS:
@@ -136,6 +155,56 @@ class OutputScaleContractTests(unittest.TestCase):
             result = OUTPUT_SYNC.wait_for_sway_commit(response)
         self.assertEqual(result, response)
         configure.assert_not_called()
+
+    def test_every_active_output_must_match_the_resized_geometry_and_layout(self):
+        value = state(120, "automatic", width=1600, height=900)
+        outputs = [
+            self.sway_output(3, "WL-1", value, 0),
+            self.sway_output(6, "HEADLESS-1", value, 1),
+            self.sway_output(9, "HEADLESS-2", value, 2),
+        ]
+        self.assertTrue(OUTPUT_SYNC.sway_matches(value, outputs))
+
+        stale_mode = json.loads(json.dumps(outputs))
+        stale_mode[1]["current_mode"]["width"] = 1280
+        self.assertFalse(OUTPUT_SYNC.sway_matches(value, stale_mode))
+
+        overlapping = json.loads(json.dumps(outputs))
+        overlapping[2]["rect"]["x"] = 2560
+        self.assertFalse(OUTPUT_SYNC.sway_matches(value, overlapping))
+
+    def test_resize_atomically_resizes_and_repacks_all_active_outputs(self):
+        value = state(150, "automatic", width=2000, height=1200)
+        stale = state(150, "automatic", width=1280, height=800)
+        outputs = [
+            self.sway_output(9, "HEADLESS-2", stale, 2),
+            self.sway_output(3, "WL-1", value, 0),
+            self.sway_output(6, "HEADLESS-1", stale, 1),
+        ]
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(OUTPUT_SYNC, "sway_outputs", return_value=outputs), mock.patch.object(
+            OUTPUT_SYNC.subprocess, "run", return_value=completed
+        ) as run:
+            self.assertTrue(OUTPUT_SYNC.configure_sway(value))
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "swaymsg",
+                "--quiet",
+                "output WL-1 mode 2000x1200 scale 1.250000000 pos 0 0; "
+                "output HEADLESS-1 mode 2000x1200 scale 1.250000000 pos 1600 0; "
+                "output HEADLESS-2 mode 2000x1200 scale 1.250000000 pos 3200 0",
+            ],
+        )
+
+    def test_invalid_output_name_cannot_become_a_sway_command(self):
+        value = state(120, "automatic")
+        outputs = [self.sway_output(3, "WL-1; exec foot", value, 0)]
+        with mock.patch.object(OUTPUT_SYNC, "sway_outputs", return_value=outputs), mock.patch.object(
+            OUTPUT_SYNC.subprocess, "run"
+        ) as run:
+            self.assertFalse(OUTPUT_SYNC.configure_sway(value))
+        run.assert_not_called()
 
     def test_protocol_accepts_exactly_one_bounded_newline_delimited_request(self):
         left, right = socket.socketpair()

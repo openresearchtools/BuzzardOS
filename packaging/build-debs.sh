@@ -51,7 +51,7 @@ if [[ "$output_dir/" == "$project_dir/"* ]]; then
     echo "refusing to place generated Debian packages inside the repository: $output_dir" >&2
     exit 1
 fi
-for command_name in cargo curl dpkg-deb install rustc sha256sum strip; do
+for command_name in cargo curl dpkg-deb gzip install md5sum rustc sha256sum strip; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "Debian package build dependency missing: $command_name" >&2
         exit 1
@@ -92,12 +92,36 @@ EOF
     cat >>"$root/DEBIAN/control" <<EOF
 Homepage: https://github.com/openresearchtools/BuzzardOS
 Description: $description
+ This package is one independently versioned component of Buzzard OS.
 EOF
     chmod 0644 "$root/DEBIAN/control"
 }
 
 finish_package() {
     local root=$1 package=$2 package_version=$3 output filename
+    local changelog="$root/usr/share/doc/$package/changelog.Debian"
+    install -d -m 0755 "$(dirname -- "$changelog")"
+    cat >"$changelog" <<EOF
+$package ($package_version) stable; urgency=medium
+
+  * Publish the independently versioned Buzzard OS package.
+
+ -- Open Research Tools <maintainers@openresearchtools.org>  Sat, 29 Aug 2026 00:00:00 +0000
+EOF
+    gzip -n -9 "$changelog"
+    if [[ -d "$root/etc" ]]; then
+        (
+            cd "$root"
+            find etc -type f -printf '/%p\n' | LC_ALL=C sort
+        ) >"$root/DEBIAN/conffiles"
+        [[ -s "$root/DEBIAN/conffiles" ]] || rm -f "$root/DEBIAN/conffiles"
+    fi
+    (
+        cd "$root"
+        find . -type f ! -path './DEBIAN/*' -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 md5sum
+    ) >"$root/DEBIAN/md5sums"
     output="$output_dir/${package}_${package_version}_amd64.deb"
     filename=${output##*/}
     find "$root" -type d -exec chmod 0755 {} +
@@ -106,6 +130,14 @@ finish_package() {
     dpkg-deb --contents "$output" >/dev/null
     (cd "$output_dir" && sha256sum "$filename") >"$output.sha256"
     printf 'Built %s\n' "$output"
+}
+
+install_upstream_changelog() {
+    local root=$1 package=$2 source=$3 destination
+    destination="$root/usr/share/doc/$package/changelog.gz"
+    install -d -m 0755 "$(dirname -- "$destination")"
+    gzip -n -9 -c "$source" >"$destination"
+    chmod 0644 "$destination"
 }
 
 install_rust_licensing() {
@@ -175,10 +207,10 @@ stage_nvidia_toolkit() {
         "$root/usr/libexec/buzzardos/nvidia-container-cli.real"
     install -D -m 0755 "$project_dir/host/packaging/buzzardos-nvidia-container-cli" \
         "$root/usr/libexec/buzzardos/nvidia-container-cli"
-    install -D -m 0755 \
+    install -D -m 0644 \
         "$extract/usr/lib/x86_64-linux-gnu/libnvidia-container.so.1.19.1" \
         "$root/usr/libexec/buzzardos/nvidia-libs/libnvidia-container.so.1.19.1"
-    install -D -m 0755 \
+    install -D -m 0644 \
         "$extract/usr/lib/x86_64-linux-gnu/libnvidia-container-go.so.1.19.1" \
         "$root/usr/libexec/buzzardos/nvidia-libs/libnvidia-container-go.so.1.19.1"
     ln -s libnvidia-container.so.1.19.1 \
@@ -240,8 +272,7 @@ build_host() {
         "$root/usr/share/doc/buzzardos/LICENSE"
     install -D -m 0644 "$project_dir/host/LICENSE" \
         "$root/usr/share/doc/buzzardos/COMPONENT-LICENSE"
-    install -D -m 0644 "$project_dir/host/CHANGELOG.md" \
-        "$root/usr/share/doc/buzzardos/changelog"
+    install_upstream_changelog "$root" buzzardos "$project_dir/host/CHANGELOG.md"
     install -D -m 0644 "$project_dir/NOTICE" "$root/usr/share/doc/buzzardos/NOTICE"
     install -D -m 0644 "$project_dir/LICENSES/package-notices/buzzardos.md" \
         "$root/usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md"
@@ -269,8 +300,16 @@ build_host() {
         "$root/usr/share/buzzardos/containerfiles/desktop/apt/debian-sid-live.sources"
     install -D -m 0644 "$project_dir/oci/desktop/apt/99buzzardos-snapshot" \
         "$root/usr/share/buzzardos/containerfiles/desktop/apt/99buzzardos-snapshot"
+    install -d -m 0755 "$root/usr/share/lintian/overrides"
+    cat >"$root/usr/share/lintian/overrides/buzzardos" <<'EOF'
+# Lintian's byte signature identifies Rust's separately inventoried
+# miniz_oxide implementation as embedded C zlib. No zlib source or library is
+# copied into this package; the exact Rust crate/license closure is shipped in
+# /usr/share/doc/buzzardos.
+buzzardos: embedded-library zlib [usr/libexec/buzzardos/buzzardos-display]
+EOF
     write_control "$root" buzzardos "$version" \
-        'apparmor, bubblewrap, buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libcap2, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libseccomp2, libwayland-client0, libxkbcommon0, passt, pipewire-bin, slirp4netns, tar, uidmap, util-linux, xkb-data' \
+        'apparmor, bubblewrap, buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libcap2, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libseccomp2, libwayland-client0, libxkbcommon0, passt, pipewire-bin, slirp4netns, uidmap, xkb-data' \
         'Buzzard OS rootless persistent desktop-machine manager'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
@@ -317,8 +356,8 @@ build_guest() {
         "$root/usr/share/doc/buzzardos-guest/COMPONENT-LICENSE"
     install -D -m 0644 "$project_dir/guest/packages/buzzardos-guest/README.md" \
         "$root/usr/share/doc/buzzardos-guest/README"
-    install -D -m 0644 "$project_dir/guest/packages/buzzardos-guest/CHANGELOG.md" \
-        "$root/usr/share/doc/buzzardos-guest/changelog"
+    install_upstream_changelog "$root" buzzardos-guest \
+        "$project_dir/guest/packages/buzzardos-guest/CHANGELOG.md"
     install -D -m 0644 "$project_dir/NOTICE" \
         "$root/usr/share/doc/buzzardos-guest/NOTICE"
     install -D -m 0644 "$project_dir/LICENSES/package-notices/buzzardos-guest.md" \
@@ -333,7 +372,7 @@ build_guest() {
     install -d -m 0755 "$root/usr/share/buzzardos-guest"
     printf '%s\n' "$guest_version" >"$root/usr/share/buzzardos-guest/version"
     write_control "$root" buzzardos-guest "$guest_version" \
-        'at-spi2-core, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libfuse2t64 | libfuse2, libgbm1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, pkexec, polkitd, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, util-linux, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
+        'at-spi2-core, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libfuse2t64 | libfuse2, libgbm1, libgcc-s1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, pkexec, polkitd, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
         'Buzzard OS guest session, integration, and persistent-machine mechanics'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
@@ -367,8 +406,8 @@ build_desktop() {
         "$root/usr/share/doc/buzzardos-desktop/COMPONENT-LICENSE"
     install -D -m 0644 "$project_dir/guest/packages/buzzardos-desktop/README.md" \
         "$root/usr/share/doc/buzzardos-desktop/README"
-    install -D -m 0644 "$project_dir/guest/packages/buzzardos-desktop/CHANGELOG.md" \
-        "$root/usr/share/doc/buzzardos-desktop/changelog"
+    install_upstream_changelog "$root" buzzardos-desktop \
+        "$project_dir/guest/packages/buzzardos-desktop/CHANGELOG.md"
     install -D -m 0644 "$project_dir/NOTICE" \
         "$root/usr/share/doc/buzzardos-desktop/NOTICE"
     install -D -m 0644 "$project_dir/LICENSES/package-notices/buzzardos-desktop.md" \
@@ -383,8 +422,8 @@ build_desktop() {
     install -d -m 0755 "$root/usr/share/buzzardos-desktop"
     printf '%s\n' "$desktop_version" >"$root/usr/share/buzzardos-desktop/version"
     write_control "$root" buzzardos-desktop "$desktop_version" \
-        "buzzardos-guest (>= $guest_version), dconf-gsettings-backend, firefox-esr, fonts-dejavu-core, fonts-noto-cjk, fonts-noto-color-emoji, fonts-noto-core, foot, gsettings-desktop-schemas, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1, mako-notifier, mousepad, thunar, xdg-utils" \
-        'Buzzard OS optional classic desktop, Settings, themes, and file-manager integration'
+        "buzzardos-guest (>= $guest_version), dconf-gsettings-backend, firefox-esr, fonts-dejavu-core, fonts-noto-cjk, fonts-noto-color-emoji, fonts-noto-core, foot, gsettings-desktop-schemas, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1, mako-notifier, mousepad, thunar, xdg-user-dirs, xdg-utils" \
+        'Buzzard OS optional classic desktop and Settings'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
@@ -403,6 +442,7 @@ build_cua() {
     local root="$build_root/root-buzzardoscua"
     rm -rf -- "$root"
     install -D -m 0755 "$cua_target/release/cua" "$root/usr/bin/cua"
+    strip --strip-unneeded "$root/usr/bin/cua"
     ln -s cua "$root/usr/bin/cua1"
     local index
     for index in $(seq 2 64); do
@@ -419,8 +459,8 @@ build_cua() {
         "$root/usr/share/doc/buzzardoscua/COMPONENT-LICENSE"
     install -D -m 0644 "$project_dir/guest/packages/buzzardoscua/README.md" \
         "$root/usr/share/doc/buzzardoscua/README"
-    install -D -m 0644 "$project_dir/guest/packages/buzzardoscua/CHANGELOG.md" \
-        "$root/usr/share/doc/buzzardoscua/changelog"
+    install_upstream_changelog "$root" buzzardoscua \
+        "$project_dir/guest/packages/buzzardoscua/CHANGELOG.md"
     install -D -m 0644 "$project_dir/NOTICE" \
         "$root/usr/share/doc/buzzardoscua/NOTICE"
     install -D -m 0644 "$project_dir/LICENSES/package-notices/buzzardoscua.md" \

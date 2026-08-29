@@ -27,9 +27,9 @@ use model::{
     APPLICATIONS_MENU_FOOTER_HEIGHT, APPLICATIONS_MENU_HEADER_HEIGHT,
     APPLICATIONS_MENU_SECTION_HEIGHT, Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT,
     PANEL_HEIGHT, Rect, ShellAction, TASK_PAGE_STEP, TOP_BAR_HEIGHT, WorkspaceTab,
-    application_context_targets, applications_menu_close_target, builtin_desktop_targets,
-    menu_targets, next_manual_workspace, panel_targets, scan_applications, taskbar_max_offset,
-    top_bar_targets, window_menu_height, window_menu_targets, workspace_index,
+    application_context_targets, applications_menu_close_target, applications_menu_search_target,
+    builtin_desktop_targets, menu_targets, next_manual_workspace, panel_targets, scan_applications,
+    taskbar_max_offset, top_bar_targets, window_menu_height, window_menu_targets, workspace_index,
     workspace_menu_targets, workspace_name,
 };
 use smithay_client_toolkit::{
@@ -96,7 +96,11 @@ const SHELL_READY: &str = "shell-ready";
 const SHELL_CONTROL_SOCKET: &str = "buzzardos-shell-control.sock";
 const REQUEST_FOCUSED_WINDOW_MENU: &str = "--request-focused-window-menu";
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
+const WINDOW_REFLOW_DEBOUNCE: Duration = Duration::from_millis(160);
 const WINDOW_MENU_POINTER_REFRESH_DELAY: Duration = Duration::from_millis(16);
+const WORKSPACE_REFRESH_RETRY: Duration = Duration::from_millis(100);
+const SINGLE_INSTANCE_FALLBACK_DELAY: Duration = Duration::from_secs(2);
+const APPLICATION_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
 const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
@@ -260,19 +264,34 @@ fn request_focused_window_menu() -> Result<()> {
     Ok(())
 }
 
-fn parse_window_menu_request(bytes: &[u8]) -> Option<String> {
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
-        && let Some(identifier) = value
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShellControlRequest {
+    WindowMenu(String),
+    DesktopChanged,
+}
+
+fn parse_shell_control_request(bytes: &[u8]) -> Option<ShellControlRequest> {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if value
+            .get("desktop_changed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return Some(ShellControlRequest::DesktopChanged);
+        }
+        if let Some(identifier) = value
             .get("identifier")
             .and_then(serde_json::Value::as_str)
             .filter(|identifier| !identifier.is_empty())
-    {
-        return Some(identifier.to_owned());
+        {
+            return Some(ShellControlRequest::WindowMenu(identifier.to_owned()));
+        }
     }
     std::str::from_utf8(bytes)
         .ok()
         .filter(|identifier| !identifier.is_empty())
         .map(str::to_owned)
+        .map(ShellControlRequest::WindowMenu)
 }
 
 fn titlebar_menu_origin(
@@ -306,7 +325,7 @@ fn dispatch_with_timeout(
     event_queue: &mut EventQueue<Shell>,
     shell: &mut Shell,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<GuestEventReadiness> {
     event_queue
         .dispatch_pending(shell)
         .context("dispatching pending guest Wayland events")?;
@@ -318,29 +337,70 @@ fn dispatch_with_timeout(
         event_queue
             .dispatch_pending(shell)
             .context("dispatching guest Wayland events before polling")?;
-        return Ok(());
+        return Ok(GuestEventReadiness::default());
     };
     let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut descriptor = libc::pollfd {
+    let mut descriptors = vec![libc::pollfd {
         fd: guard.connection_fd().as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
-    };
+    }];
+    let control_index = descriptors.len();
+    descriptors.push(libc::pollfd {
+        fd: shell.control_socket.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    let application_index = shell.application_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let desktop_index = shell.desktop_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let mut readiness = GuestEventReadiness::default();
     loop {
-        // SAFETY: `descriptor` is one initialized pollfd, and the Wayland
-        // read guard keeps its borrowed connection fd valid for this call.
-        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        // SAFETY: every element is an initialized pollfd. The Wayland read
+        // guard keeps its borrowed connection fd valid; the shell owns the
+        // independent control and inotify descriptors for this call.
+        let descriptor_count =
+            libc::nfds_t::try_from(descriptors.len()).unwrap_or(libc::nfds_t::MAX);
+        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), descriptor_count, timeout_ms) };
         if result > 0 {
-            guard
-                .read()
-                .context("reading guest Wayland events after poll")?;
+            let signalled = |descriptor: &libc::pollfd| {
+                descriptor.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)
+                    != 0
+            };
+            readiness.control_socket = signalled(&descriptors[control_index]);
+            readiness.application_watch =
+                application_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.desktop_watch =
+                desktop_index.is_some_and(|index| signalled(&descriptors[index]));
+            if signalled(&descriptors[0]) {
+                guard
+                    .read()
+                    .context("reading guest Wayland events after poll")?;
+            } else {
+                drop(guard);
+            }
             break;
         }
         if result == 0 {
-            // Dropping a prepared read guard cancels it. This timeout is what
-            // lets the shell process repaint files, AT-SPI actions, and newly
-            // installed .desktop entries while the compositor is otherwise
-            // completely idle.
+            // Dropping a prepared read guard cancels it. The existing bounded
+            // shell deadline still services resize settling, accessibility,
+            // and Sway state; filesystem models are handled only when their
+            // event descriptors signal above.
             drop(guard);
             break;
         }
@@ -354,7 +414,17 @@ fn dispatch_with_timeout(
     event_queue
         .dispatch_pending(shell)
         .context("dispatching guest Wayland events after polling")?;
-    Ok(())
+    Ok(readiness)
+}
+
+/// Independent readiness flags for guest-local shell event sources. These
+/// descriptors share one blocking wait only to avoid idle wakeups; their data
+/// and handlers remain isolated from Wayland and from the host gateway.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GuestEventReadiness {
+    control_socket: bool,
+    application_watch: bool,
+    desktop_watch: bool,
 }
 
 #[derive(Debug)]
@@ -704,6 +774,10 @@ fn run() -> Result<()> {
         .context("watching XDG Desktop")?;
     let applications = scan_applications().unwrap_or_default();
     let application_icons = load_application_icons(&applications);
+    let desktop_theme_icons = ["folder", "user-home", "folder-publicshare"]
+        .into_iter()
+        .filter_map(|name| load_icon(name).map(|icon| (name.to_owned(), icon)))
+        .collect();
     let pool = SlotPool::new(3840 * 2160 * 4, &shm).context("creating shell render pool")?;
     let repaint_request = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -757,6 +831,7 @@ fn run() -> Result<()> {
         window_menu_pending_pointer: false,
         window_menu_pointer_refresh_at: None,
         menu_scroll: 0,
+        application_search_focused: false,
         context_state: ContextState::Hidden,
         desktop_selection: BTreeSet::new(),
         desktop_selection_anchor: None,
@@ -792,6 +867,7 @@ fn run() -> Result<()> {
         seat: None,
         applications,
         application_icons,
+        desktop_theme_icons,
         desktop_icons: BTreeMap::new(),
         application_watch_roots,
         application_watcher,
@@ -804,7 +880,10 @@ fn run() -> Result<()> {
         exact_toplevels: BTreeMap::new(),
         pending_window_normalization: BTreeSet::new(),
         window_normalization_retry_after: None,
+        window_reflow_after: None,
         process_workspace_affinity: BTreeMap::new(),
+        pending_application_launches: Vec::new(),
+        workspace_refresh_retry_after: None,
         sway_window_changes: sway_ipc::subscribe_window_changes()
             .context("subscribing to authoritative Sway window events")?,
         repaint_request,
@@ -830,8 +909,9 @@ fn run() -> Result<()> {
     let mut ready_published = false;
 
     while !shell.exit {
-        dispatch_with_timeout(&mut event_queue, &mut shell, Duration::from_millis(16))?;
-        shell.poll();
+        let readiness =
+            dispatch_with_timeout(&mut event_queue, &mut shell, Duration::from_millis(16))?;
+        shell.poll(readiness);
         if shell.dirty {
             shell.draw()?;
             shell.dirty = false;
@@ -858,6 +938,15 @@ fn run() -> Result<()> {
 struct ExactToplevel {
     identifier: String,
     window: GuestWindow,
+}
+
+#[derive(Debug, Clone)]
+struct PendingApplicationLaunch {
+    application: Application,
+    destination_workspace: String,
+    baseline_toplevels: BTreeSet<u32>,
+    single_instance_after: Instant,
+    expires_at: Instant,
 }
 
 struct AuxiliaryOutput {
@@ -918,6 +1007,7 @@ struct Shell {
     window_menu_pending_pointer: bool,
     window_menu_pointer_refresh_at: Option<Instant>,
     menu_scroll: usize,
+    application_search_focused: bool,
     context_state: ContextState,
     desktop_selection: BTreeSet<PathBuf>,
     desktop_selection_anchor: Option<PathBuf>,
@@ -944,6 +1034,7 @@ struct Shell {
     seat: Option<wl_seat::WlSeat>,
     applications: Vec<Application>,
     application_icons: BTreeMap<String, AppIcon>,
+    desktop_theme_icons: BTreeMap<String, AppIcon>,
     desktop_icons: BTreeMap<PathBuf, AppIcon>,
     application_watch_roots: Vec<PathBuf>,
     application_watcher: DirectoryWatcher,
@@ -956,7 +1047,10 @@ struct Shell {
     exact_toplevels: BTreeMap<u32, ExactToplevel>,
     pending_window_normalization: BTreeSet<u32>,
     window_normalization_retry_after: Option<Instant>,
+    window_reflow_after: Option<Instant>,
     process_workspace_affinity: BTreeMap<u32, String>,
+    pending_application_launches: Vec<PendingApplicationLaunch>,
+    workspace_refresh_retry_after: Option<Instant>,
     sway_window_changes: Receiver<()>,
     repaint_request: Option<PathBuf>,
     repaint_generation: Option<String>,
@@ -1180,7 +1274,7 @@ impl Shell {
             let mut buffer = [0_u8; 4096];
             match self.control_socket.recv(&mut buffer) {
                 Ok(length) => {
-                    if let Some(request) = parse_window_menu_request(&buffer[..length]) {
+                    if let Some(request) = parse_shell_control_request(&buffer[..length]) {
                         requests.push(request);
                     }
                 }
@@ -1191,19 +1285,53 @@ impl Shell {
                 }
             }
         }
-        for identifier in requests {
-            self.show_titlebar_window_menu(&identifier);
+        for request in requests {
+            match request {
+                ShellControlRequest::WindowMenu(identifier) => {
+                    self.show_titlebar_window_menu(&identifier);
+                }
+                ShellControlRequest::DesktopChanged => {
+                    self.desktop_model.show_first_page();
+                    if let Err(error) = self.refresh_desktop_items() {
+                        eprintln!(
+                            "buzzardos-shell: refreshing externally changed Desktop failed: {error:#}"
+                        );
+                    }
+                }
+            }
         }
     }
 
-    fn poll(&mut self) {
-        self.poll_control_socket();
+    fn poll(&mut self, readiness: GuestEventReadiness) {
+        if readiness.control_socket {
+            self.poll_control_socket();
+        }
+        if self
+            .workspace_refresh_retry_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            && self.refresh_workspace_states()
+        {
+            self.dirty = true;
+        }
+        self.resolve_single_instance_launches();
         if self
             .window_normalization_retry_after
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             self.window_normalization_retry_after = None;
             self.refresh_window_states();
+        }
+        if self
+            .window_reflow_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.window_reflow_after = None;
+            match sway_ipc::constrain_windows_after_output_resize() {
+                Ok(()) => self.refresh_window_states(),
+                Err(error) => eprintln!(
+                    "buzzardos-shell: constraining windows after output resize failed: {error:#}"
+                ),
+            }
         }
         if self
             .window_menu_pointer_refresh_at
@@ -1267,12 +1395,16 @@ impl Shell {
             self.full_repaint_after = None;
             self.dirty = true;
         }
-        match self.application_watcher.changed() {
-            Ok(true) => self.application_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("buzzardos-shell: application watch failed: {error:#}");
-                self.application_rescan_after = Some(Instant::now());
+        if readiness.application_watch {
+            match self.application_watcher.changed() {
+                Ok(true) => {
+                    self.application_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE)
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: application watch failed: {error:#}");
+                    self.application_rescan_after = Some(Instant::now());
+                }
             }
         }
         if self
@@ -1298,12 +1430,14 @@ impl Shell {
                 }
             }
         }
-        match self.desktop_watcher.changed() {
-            Ok(true) => self.desktop_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("buzzardos-shell: desktop watch failed: {error:#}");
-                self.desktop_rescan_after = Some(Instant::now());
+        if readiness.desktop_watch {
+            match self.desktop_watcher.changed() {
+                Ok(true) => self.desktop_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: desktop watch failed: {error:#}");
+                    self.desktop_rescan_after = Some(Instant::now());
+                }
             }
         }
         if self
@@ -1418,8 +1552,185 @@ impl Shell {
         windows
     }
 
+    fn refresh_workspace_states(&mut self) -> bool {
+        let Ok(workspaces) = sway_ipc::list_workspaces() else {
+            self.workspace_refresh_retry_after = Some(Instant::now() + WORKSPACE_REFRESH_RETRY);
+            return false;
+        };
+        let Ok(host_workspace) = sway_ipc::current_desktop_workspace() else {
+            self.workspace_refresh_retry_after = Some(Instant::now() + WORKSPACE_REFRESH_RETRY);
+            return false;
+        };
+        let visible_workspaces = workspaces
+            .iter()
+            .filter(|workspace| workspace.visible)
+            .map(|workspace| (workspace.output.clone(), workspace.name.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut tabs = workspaces
+            .into_iter()
+            .filter_map(|workspace| {
+                let index = workspace_index(&workspace.name)?;
+                Some(WorkspaceTab {
+                    index,
+                    label: workspace_name(index),
+                    active: workspace.name == host_workspace,
+                })
+            })
+            .collect::<Vec<_>>();
+        if !tabs.iter().any(|workspace| workspace.index == 0) {
+            tabs.push(WorkspaceTab {
+                index: 0,
+                label: "Desktop".to_owned(),
+                active: host_workspace == "Desktop",
+            });
+        }
+        tabs.sort_by_key(|workspace| workspace.index);
+        let changed = tabs != self.workspace_tabs
+            || host_workspace != self.current_workspace
+            || visible_workspaces != self.visible_workspaces;
+        self.workspace_tabs = tabs;
+        self.current_workspace = host_workspace;
+        self.visible_workspaces = visible_workspaces;
+        self.workspace_refresh_retry_after = None;
+        changed
+    }
+
+    fn pending_launch_for_toplevel(&self, id: u32, app_id: &str) -> Option<(usize, String)> {
+        self.pending_application_launches
+            .iter()
+            .enumerate()
+            .find(|(_, launch)| {
+                !launch.baseline_toplevels.contains(&id)
+                    && application_matches_window(&launch.application, app_id)
+            })
+            .or_else(|| {
+                (self.pending_application_launches.len() == 1).then(|| {
+                    self.pending_application_launches
+                        .iter()
+                        .enumerate()
+                        .find(|(_, launch)| !launch.baseline_toplevels.contains(&id))
+                })?
+            })
+            .map(|(index, launch)| (index, launch.destination_workspace.clone()))
+    }
+
+    fn launch_with_workspace_intent(
+        &mut self,
+        application: Application,
+        launch: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        self.refresh_workspace_states();
+        let destination_workspace = self.current_workspace.clone();
+        let baseline_toplevels = self.exact_toplevels.keys().copied().collect();
+        launch()?;
+        let now = Instant::now();
+        self.pending_application_launches
+            .push(PendingApplicationLaunch {
+                application,
+                destination_workspace,
+                baseline_toplevels,
+                single_instance_after: now + SINGLE_INSTANCE_FALLBACK_DELAY,
+                expires_at: now + APPLICATION_LAUNCH_DEADLINE,
+            });
+        Ok(())
+    }
+
+    fn launch_application_here(&mut self, application: Application) -> Result<()> {
+        let source = application.clone();
+        self.launch_with_workspace_intent(application, || launch_application(&source))
+    }
+
+    fn launch_program_here<I, S>(
+        &mut self,
+        application_identity: &str,
+        program: &str,
+        arguments: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| argument.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        let application = self
+            .applications
+            .iter()
+            .find(|application| application_matches_window(application, application_identity))
+            .cloned();
+        if let Some(application) = application {
+            self.launch_with_workspace_intent(application, || spawn(program, arguments))
+        } else {
+            spawn(program, arguments)
+        }
+    }
+
+    fn open_desktop_item_here(&mut self, path: &Path, kind: DesktopItemKind) -> Result<()> {
+        let application = (kind == DesktopItemKind::Launcher)
+            .then(|| path.file_name().and_then(OsStr::to_str))
+            .flatten()
+            .and_then(|id| {
+                self.applications
+                    .iter()
+                    .find(|application| application.id == id)
+                    .cloned()
+            });
+        if let Some(application) = application {
+            let path = path.to_owned();
+            self.launch_with_workspace_intent(application, || {
+                open_desktop_item(&path, DesktopItemKind::Launcher)
+            })
+        } else {
+            open_desktop_item(path, kind)
+        }
+    }
+
+    fn resolve_single_instance_launches(&mut self) {
+        if self.pending_application_launches.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut remaining = Vec::new();
+        for launch in std::mem::take(&mut self.pending_application_launches) {
+            if now < launch.single_instance_after {
+                remaining.push(launch);
+                continue;
+            }
+            let existing = self
+                .exact_toplevels
+                .iter()
+                .filter(|(id, toplevel)| {
+                    launch.baseline_toplevels.contains(id)
+                        && application_matches_window(&launch.application, &toplevel.window.app_id)
+                })
+                .map(|(_, toplevel)| toplevel)
+                .max_by_key(|toplevel| (toplevel.window.focused, toplevel.window.id));
+            if let Some(toplevel) = existing {
+                match sway_ipc::move_window_to_workspace(
+                    &toplevel.identifier,
+                    &launch.destination_workspace,
+                    true,
+                ) {
+                    Ok(()) => continue,
+                    Err(error) => eprintln!(
+                        "buzzardos-shell: could not reveal the existing {} window: {error:#}",
+                        launch.application.name
+                    ),
+                }
+            }
+            if now < launch.expires_at {
+                remaining.push(launch);
+            }
+        }
+        self.pending_application_launches = remaining;
+    }
+
     fn refresh_window_states(&mut self) {
         let Ok(states) = sway_ipc::list_windows() else {
+            if self.refresh_workspace_states() {
+                self.dirty = true;
+            }
             return;
         };
         let states = states
@@ -1459,28 +1770,38 @@ impl Shell {
         }
         self.process_workspace_affinity
             .retain(|pid, _| std::path::Path::new(&format!("/proc/{pid}")).exists());
-        let normalized = self
+        let mut normalized = Vec::new();
+        for id in self
             .pending_window_normalization
             .iter()
-            .filter_map(|id| {
-                let toplevel = self.exact_toplevels.get(id)?;
-                states.get(&toplevel.identifier)?;
-                let preferred_workspace = states
-                    .get(&toplevel.identifier)
-                    .and_then(|state| self.process_workspace_affinity.get(&state.pid))
-                    .map(String::as_str);
-                match sway_ipc::place_new_window(&toplevel.identifier, preferred_workspace) {
-                    Ok(()) => Some(*id),
-                    Err(error) => {
-                        eprintln!(
-                            "buzzardos-shell: deferring initial frame constraint for {}: {error:#}",
-                            toplevel.identifier
-                        );
-                        None
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let Some(toplevel) = self.exact_toplevels.get(&id) else {
+                continue;
+            };
+            let Some(state) = states.get(&toplevel.identifier) else {
+                continue;
+            };
+            let launch_destination = self.pending_launch_for_toplevel(id, &toplevel.window.app_id);
+            let process_destination = self.process_workspace_affinity.get(&state.pid).cloned();
+            let preferred_workspace = launch_destination
+                .as_ref()
+                .map(|(_, workspace)| workspace.as_str())
+                .or(process_destination.as_deref());
+            match sway_ipc::place_new_window(&toplevel.identifier, preferred_workspace) {
+                Ok(()) => {
+                    normalized.push(id);
+                    if let Some((launch_index, _)) = launch_destination {
+                        self.pending_application_launches.remove(launch_index);
                     }
                 }
-            })
-            .collect::<Vec<_>>();
+                Err(error) => eprintln!(
+                    "buzzardos-shell: deferring initial frame constraint for {}: {error:#}",
+                    toplevel.identifier
+                ),
+            }
+        }
         for id in normalized {
             self.pending_window_normalization.remove(&id);
         }
@@ -1502,40 +1823,7 @@ impl Shell {
             toplevel.window.output = state.output.clone();
             changed |= before != toplevel.window;
         }
-        if let Ok(workspaces) = sway_ipc::list_workspaces() {
-            let host_workspace = sway_ipc::current_desktop_workspace()
-                .unwrap_or_else(|_| self.current_workspace.clone());
-            let visible_workspaces = workspaces
-                .iter()
-                .filter(|workspace| workspace.visible)
-                .map(|workspace| (workspace.output.clone(), workspace.name.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let mut tabs = workspaces
-                .into_iter()
-                .filter_map(|workspace| {
-                    let index = workspace_index(&workspace.name)?;
-                    Some(WorkspaceTab {
-                        index,
-                        label: workspace_name(index),
-                        active: workspace.name == host_workspace,
-                    })
-                })
-                .collect::<Vec<_>>();
-            if !tabs.iter().any(|workspace| workspace.index == 0) {
-                tabs.push(WorkspaceTab {
-                    index: 0,
-                    label: "Desktop".to_owned(),
-                    active: host_workspace == "Desktop",
-                });
-            }
-            tabs.sort_by_key(|workspace| workspace.index);
-            changed |= tabs != self.workspace_tabs
-                || host_workspace != self.current_workspace
-                || visible_workspaces != self.visible_workspaces;
-            self.workspace_tabs = tabs;
-            self.current_workspace = host_workspace;
-            self.visible_workspaces = visible_workspaces;
-        }
+        changed |= self.refresh_workspace_states();
         if changed {
             self.task_offset = self.task_offset.min(taskbar_max_offset(
                 self.panel_size.0,
@@ -1635,6 +1923,25 @@ impl Shell {
         }
         self.menu.set_input_region(Some(region.wl_region()));
         self.menu.commit();
+        Ok(())
+    }
+
+    fn set_full_input_region(
+        &self,
+        surface: &LayerSurface,
+        size: (u32, u32),
+        description: &str,
+    ) -> Result<()> {
+        let region = Region::new(&self.compositor)
+            .with_context(|| format!("creating {description} input region"))?;
+        region.add(
+            0,
+            0,
+            i32::try_from(size.0).unwrap_or(i32::MAX),
+            i32::try_from(size.1).unwrap_or(i32::MAX),
+        );
+        surface.set_input_region(Some(region.wl_region()));
+        surface.commit();
         Ok(())
     }
 
@@ -1941,6 +2248,7 @@ impl Shell {
         self.window_menu_pending_pointer = false;
         self.window_menu_pointer_refresh_at = None;
         self.menu_scroll = 0;
+        self.application_search_focused = true;
         self.menu
             .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         // Update hit-testing before the configure round-trip. Reusing the
@@ -1991,6 +2299,7 @@ impl Shell {
         if self.menu_open {
             if self.menu_kind == MenuKind::Applications {
                 self.application_search.clear();
+                self.application_search_focused = false;
                 self.menu_scroll = 0;
             }
             self.menu_open = false;
@@ -2301,7 +2610,7 @@ impl Shell {
     fn open_selection(&mut self) {
         for path in self.selected_paths() {
             if let Some(kind) = self.selected_item_kind(&path)
-                && let Err(error) = open_desktop_item(&path, kind)
+                && let Err(error) = self.open_desktop_item_here(&path, kind)
             {
                 self.show_operation_error("Could not open item", error);
                 return;
@@ -2825,16 +3134,19 @@ impl Shell {
             && !self.context_state.is_visible()
         {
             match event.keysym {
-                Keysym::BackSpace => {
+                Keysym::BackSpace | Keysym::Delete => {
                     self.application_search.pop();
                     self.menu_scroll = 0;
                     self.apply_applications_menu_geometry();
                     self.dirty = true;
                 }
                 Keysym::Return | Keysym::KP_Enter => {
-                    if let Some(application) = self.filtered_applications().first() {
-                        launch_application(application);
+                    if let Some(application) = self.filtered_applications().first().cloned() {
+                        let result = self.launch_application_here(application);
                         self.hide_menu();
+                        if let Err(error) = result {
+                            self.show_operation_error("Could not open application", error);
+                        }
                     }
                 }
                 _ => {
@@ -2876,20 +3188,33 @@ impl Shell {
     fn activate(&mut self, action: ShellAction) {
         match action {
             ShellAction::ToggleApplications => self.toggle_menu(),
+            ShellAction::FocusApplicationSearch => {
+                self.application_search_focused = true;
+                self.menu
+                    .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+                self.menu.commit();
+                self.dirty = true;
+            }
             ShellAction::OpenFiles => {
-                if let Some(home) = std::env::var_os("HOME") {
-                    spawn("thunar", [home]);
+                let result = if let Some(home) = std::env::var_os("HOME") {
+                    self.launch_program_here("thunar", "thunar", [home])
                 } else {
-                    eprintln!("buzzardos-shell: HOME is unavailable; Files was not opened");
-                }
+                    Err(anyhow::anyhow!("HOME is unavailable"))
+                };
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not open Files", error);
+                }
             }
             ShellAction::OpenShared => {
-                spawn("thunar", ["/shared"]);
+                let result = self.launch_program_here("thunar", "thunar", ["/shared"]);
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not open Shared", error);
+                }
             }
             ShellAction::OpenDesktopItem(path, kind) => {
-                if let Err(error) = open_desktop_item(&path, kind) {
+                if let Err(error) = self.open_desktop_item_here(&path, kind) {
                     eprintln!(
                         "buzzardos-shell: opening desktop item {} failed: {error:#}",
                         path.display()
@@ -2902,8 +3227,14 @@ impl Shell {
                     .applications
                     .iter()
                     .find(|application| application.id == id)
+                    .cloned()
                 {
-                    launch_application(application);
+                    let result = self.launch_application_here(application);
+                    self.hide_menu();
+                    if let Err(error) = result {
+                        self.show_operation_error("Could not open application", error);
+                    }
+                    return;
                 }
                 self.hide_menu();
             }
@@ -3043,31 +3374,35 @@ impl Shell {
                     sway_ipc::ensure_workspace(index).map(|_| ())
                 }
                 .and_then(|()| sway_ipc::switch_workspace(&name));
-                if let Err(error) = result {
-                    eprintln!("buzzardos-shell: switching to {name} failed: {error:#}");
-                }
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error(&format!("Could not open {name}"), error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
                 self.refresh_window_states();
             }
             ShellAction::CreateWorkspace => {
                 let index = next_manual_workspace(&self.workspace_tabs);
                 let name = workspace_name(index);
-                if let Err(error) = sway_ipc::ensure_workspace(index)
+                let result = sway_ipc::ensure_workspace(index)
                     .and_then(|_| sway_ipc::switch_workspace(&name))
-                {
-                    eprintln!("buzzardos-shell: creating {name} failed: {error:#}");
-                }
+                    .with_context(|| format!("creating and presenting {name}"));
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not create workspace", error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
                 self.refresh_window_states();
             }
             ShellAction::CloseWorkspace(index) => {
-                if let Err(error) = sway_ipc::close_workspace(index) {
-                    eprintln!(
-                        "buzzardos-shell: closing {} failed: {error:#}",
-                        workspace_name(index)
-                    );
-                }
+                let name = workspace_name(index);
+                let result = sway_ipc::close_workspace(index)
+                    .with_context(|| format!("closing {name} and moving its windows to Desktop"));
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not close workspace", error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
                 self.refresh_window_states();
             }
             ShellAction::TaskbarPrevious => {
@@ -3128,6 +3463,10 @@ impl Shell {
                     }
                     let local_y = y - content_y;
                     std::iter::once(applications_menu_close_target(content_size.0))
+                        .chain(std::iter::once(applications_menu_search_target(
+                            content_size.0,
+                            content_size.1,
+                        )))
                         .chain(menu_targets(
                             content_size.0,
                             content_size.1,
@@ -3305,7 +3644,7 @@ impl Shell {
                 if double_click {
                     self.last_desktop_click = None;
                     if let Some(kind) = self.selected_item_kind(&path)
-                        && let Err(error) = open_desktop_item(&path, kind)
+                        && let Err(error) = self.open_desktop_item_here(&path, kind)
                     {
                         self.show_operation_error("Could not open item", error);
                     }
@@ -3490,6 +3829,11 @@ impl Shell {
                 self.scale_120,
                 theme,
                 match &target.action {
+                    ShellAction::OpenFiles => self.desktop_theme_icons.get("user-home"),
+                    ShellAction::OpenShared => self.desktop_theme_icons.get("folder-publicshare"),
+                    ShellAction::OpenDesktopItem(_, DesktopItemKind::Directory) => {
+                        self.desktop_theme_icons.get("folder")
+                    }
                     ShellAction::OpenDesktopItem(path, DesktopItemKind::Launcher) => {
                         self.desktop_icons.get(path)
                     }
@@ -3630,9 +3974,9 @@ impl Shell {
             )
             .context("allocating workspace bar frame")?;
         // The workspace selector is one continuous bar. Keep the unused
-        // portion on the same panel surface colour as its tabs instead of
+        // portion on the same panel/menu colour as its tabs instead of
         // exposing the darker desktop canvas after the final `+` button.
-        clear(canvas, theme.surface.rgba());
+        clear(canvas, theme.menu.rgba());
         for target in top_bar_targets(logical_width, &self.workspace_tabs) {
             let hovered = self.hovered.as_ref() == Some(&target.action);
             let active = match target.action {
@@ -3652,7 +3996,7 @@ impl Shell {
                 } else if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
             );
             if active {
@@ -3833,17 +4177,7 @@ impl Shell {
                 scale_font(10.0, self.scale_120),
                 theme.text_muted.rgba(),
             );
-            let search_rect = Rect {
-                x: 8,
-                y: i32::try_from(logical_height)
-                    .unwrap_or(i32::MAX)
-                    .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
-                    .saturating_add(6),
-                width: i32::try_from(logical_width)
-                    .unwrap_or(i32::MAX)
-                    .saturating_sub(16),
-                height: MENU_ROW_HEIGHT,
-            };
+            let search_rect = applications_menu_search_target(logical_width, logical_height).rect;
             fill_rect(
                 canvas,
                 width,
@@ -3857,7 +4191,11 @@ impl Shell {
                 height,
                 scale_rect(search_rect, self.scale_120),
                 scale_coord(1, self.scale_120),
-                theme.border.rgba(),
+                if self.application_search_focused {
+                    theme.focus.rgba()
+                } else {
+                    theme.border.rgba()
+                },
             );
             draw_text(
                 canvas,
@@ -3878,6 +4216,38 @@ impl Shell {
                     theme.text.rgba()
                 },
             );
+            if self.application_search_focused {
+                let shown = if self.application_search.is_empty() {
+                    ""
+                } else {
+                    &self.application_search
+                };
+                let caret_x = search_rect
+                    .x
+                    .saturating_add(10)
+                    .saturating_add(text_width(self.font.as_ref(), shown, 13.0).round() as i32)
+                    .min(
+                        search_rect
+                            .x
+                            .saturating_add(search_rect.width)
+                            .saturating_sub(8),
+                    );
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(
+                        Rect {
+                            x: caret_x,
+                            y: search_rect.y + 8,
+                            width: 1,
+                            height: search_rect.height.saturating_sub(16),
+                        },
+                        self.scale_120,
+                    ),
+                    theme.text.rgba(),
+                );
+            }
             for target in menu_targets(
                 logical_width,
                 logical_height,
@@ -5012,9 +5382,15 @@ impl LayerShellHandler for Shell {
             if desktop_size_changed && let Err(error) = self.rebuild_desktop_targets() {
                 eprintln!("buzzardos-shell: desktop reflow failed: {error:#}");
             }
+            if desktop_size_changed {
+                self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
+            }
         } else if layer == &self.top_bar {
             self.top_bar_size = size;
             self.top_bar_configured = true;
+            if let Err(error) = self.set_full_input_region(&self.top_bar, size, "workspace bar") {
+                eprintln!("buzzardos-shell: workspace bar hit region failed: {error:#}");
+            }
             eprintln!(
                 "buzzardos-shell: workspace bar configured {}x{}",
                 size.0, size.1
@@ -5022,6 +5398,9 @@ impl LayerShellHandler for Shell {
         } else if layer == &self.panel {
             self.panel_size = size;
             self.panel_configured = true;
+            if let Err(error) = self.set_full_input_region(&self.panel, size, "taskbar") {
+                eprintln!("buzzardos-shell: taskbar hit region failed: {error:#}");
+            }
             eprintln!("buzzardos-shell: panel configured {}x{}", size.0, size.1);
         } else if layer == &self.menu {
             self.menu_size = size;
@@ -5037,12 +5416,36 @@ impl LayerShellHandler for Shell {
             .iter_mut()
             .find(|auxiliary| layer == &auxiliary.desktop || layer == &auxiliary.panel)
         {
+            let size_changed = if layer == &auxiliary.desktop {
+                auxiliary.desktop_size != size
+            } else {
+                auxiliary.panel_size != size
+            };
             if layer == &auxiliary.desktop {
                 auxiliary.desktop_size = size;
                 auxiliary.desktop_configured = true;
             } else {
                 auxiliary.panel_size = size;
                 auxiliary.panel_configured = true;
+                let region = Region::new(&self.compositor);
+                match region {
+                    Ok(region) => {
+                        region.add(
+                            0,
+                            0,
+                            i32::try_from(size.0).unwrap_or(i32::MAX),
+                            i32::try_from(size.1).unwrap_or(i32::MAX),
+                        );
+                        auxiliary.panel.set_input_region(Some(region.wl_region()));
+                        auxiliary.panel.commit();
+                    }
+                    Err(error) => {
+                        eprintln!("buzzardos-shell: auxiliary taskbar hit region failed: {error:#}")
+                    }
+                }
+            }
+            if size_changed {
+                self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
             }
         }
         self.dirty = true;
@@ -5315,6 +5718,7 @@ impl OutputHandler for Shell {
 
     fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.ensure_auxiliary_output(qh, &output);
+        self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
     }
 
     fn update_output(
@@ -5324,6 +5728,7 @@ impl OutputHandler for Shell {
         output: wl_output::WlOutput,
     ) {
         self.ensure_auxiliary_output(qh, &output);
+        self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
     }
 
     fn output_destroyed(
@@ -5365,36 +5770,54 @@ wayland_client::delegate_noop!(Shell: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(Shell: ignore WpViewporter);
 wayland_client::delegate_noop!(Shell: ignore WpViewport);
 
-fn spawn<I, S>(program: &str, arguments: I)
+fn spawn<I, S>(program: &str, arguments: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    if let Err(error) = Command::new(program)
+    Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        eprintln!("buzzardos-shell: launching {program} failed: {error}");
-    }
+        .with_context(|| format!("launching {program}"))?;
+    Ok(())
 }
 
-fn launch_application(application: &Application) {
-    let result = gio::DesktopAppInfo::from_filename(&application.source)
+fn launch_application(application: &Application) -> Result<()> {
+    gio::DesktopAppInfo::from_filename(&application.source)
         .context("desktop entry disappeared")
         .and_then(|info| {
             info.launch(&[], gio::AppLaunchContext::NONE)
                 .context("GIO launch failed")
-        });
-    if let Err(error) = result {
-        eprintln!(
-            "buzzardos-shell: launching {} from {} failed: {error:#}",
-            application.name,
-            application.source.display()
-        );
+        })
+        .with_context(|| {
+            format!(
+                "launching {} from {}",
+                application.name,
+                application.source.display()
+            )
+        })
+}
+
+fn normalized_application_identity(value: &str) -> String {
+    value
+        .trim()
+        .strip_suffix(".desktop")
+        .unwrap_or(value.trim())
+        .to_lowercase()
+}
+
+fn application_matches_window(application: &Application, app_id: &str) -> bool {
+    let app_id = normalized_application_identity(app_id);
+    if app_id.is_empty() {
+        return false;
     }
+    std::iter::once(application.id.as_str())
+        .chain(application.startup_wm_class.as_deref())
+        .map(normalized_application_identity)
+        .any(|candidate| candidate == app_id)
 }
 
 fn managed_appimage_registration_id(application: &Application) -> Option<RegistrationId> {
@@ -5437,7 +5860,7 @@ fn open_desktop_item(path: &std::path::Path, kind: DesktopItemKind) -> Result<()
                 // implementation while still giving desktop activation the
                 // required native missing-target flow.
                 let id = registration.id.to_string();
-                spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)]);
+                spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)])?;
             } else {
                 let _ = launch_path(path)?;
             }
@@ -5658,24 +6081,9 @@ fn draw_panel_frame(
         )
         .context("allocating panel frame")?;
     // Empty taskbar space is still part of the panel, not desktop canvas.
-    // Painting it with the panel surface colour keeps the bar visually
+    // Painting it with the panel/menu colour keeps the bar visually
     // continuous when capped task buttons do not consume the full width.
-    clear(canvas, theme.surface.rgba());
-    fill_rect(
-        canvas,
-        width,
-        height,
-        scale_rect(
-            Rect {
-                x: 0,
-                y: 0,
-                width: logical_width as i32,
-                height: 1,
-            },
-            scale_120,
-        ),
-        theme.border.rgba(),
-    );
+    clear(canvas, theme.menu.rgba());
     for target in panel_targets(logical_width, windows, task_offset, capped_task_buttons) {
         let hovered = hovered_action == Some(&target.action);
         let (color, label, active) = match target.action {
@@ -5685,7 +6093,7 @@ fn draw_panel_frame(
                 } else if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 "Applications".to_owned(),
                 applications_active,
@@ -5694,7 +6102,7 @@ fn draw_panel_frame(
                 if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 "Files".to_owned(),
                 false,
@@ -5703,7 +6111,7 @@ fn draw_panel_frame(
                 if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 "Share".to_owned(),
                 false,
@@ -5720,7 +6128,7 @@ fn draw_panel_frame(
                     } else if hovered {
                         theme.hover.rgba()
                     } else {
-                        theme.surface.rgba()
+                        theme.menu.rgba()
                     },
                     title,
                     focused,
@@ -5730,7 +6138,7 @@ fn draw_panel_frame(
                 if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 "<".to_owned(),
                 false,
@@ -5739,7 +6147,7 @@ fn draw_panel_frame(
                 if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 ">".to_owned(),
                 false,
@@ -5748,7 +6156,7 @@ fn draw_panel_frame(
                 if hovered {
                     theme.hover.rgba()
                 } else {
-                    theme.surface.rgba()
+                    theme.menu.rgba()
                 },
                 String::new(),
                 false,
@@ -6217,7 +6625,7 @@ fn draw_desktop_shortcut(
     target: &HitTarget,
     scale_120: u32,
     theme: ThemePalette,
-    application_icon: Option<&AppIcon>,
+    icon: Option<&AppIcon>,
 ) {
     let (width, height) = canvas_size;
     let rect = target.rect;
@@ -6229,7 +6637,23 @@ fn draw_desktop_shortcut(
         target.action,
         ShellAction::OpenFiles | ShellAction::OpenShared
     ) || item_kind == Some(DesktopItemKind::Directory);
-    if is_folder {
+    if let Some(icon) = icon {
+        draw_app_icon(
+            canvas,
+            width,
+            height,
+            scale_rect(
+                Rect {
+                    x: rect.x + 18,
+                    y: rect.y + 4,
+                    width: 52,
+                    height: 52,
+                },
+                scale_120,
+            ),
+            icon,
+        );
+    } else if is_folder {
         let folder = Rect {
             x: rect.x + 18,
             y: rect.y + 8,
@@ -6275,22 +6699,6 @@ fn draw_desktop_shortcut(
                 theme.surface.rgba(),
             );
         }
-    } else if let Some(icon) = application_icon {
-        draw_app_icon(
-            canvas,
-            width,
-            height,
-            scale_rect(
-                Rect {
-                    x: rect.x + 18,
-                    y: rect.y + 4,
-                    width: 52,
-                    height: 52,
-                },
-                scale_120,
-            ),
-            icon,
-        );
     } else {
         let document = Rect {
             x: rect.x + 24,
@@ -6330,24 +6738,43 @@ fn draw_desktop_shortcut(
             );
         }
     }
-    draw_text_centered(
-        canvas,
-        width,
-        height,
+    let label_rect = scale_rect(
+        Rect {
+            x: rect.x,
+            y: rect.y + 56,
+            width: rect.width,
+            height: 34,
+        },
+        scale_120,
+    );
+    let label_size = scale_font(13.0, scale_120);
+    let lines = desktop_label_lines(
         font,
         &target.label,
-        scale_rect(
-            Rect {
-                x: rect.x,
-                y: rect.y + 57,
-                width: rect.width,
-                height: 26,
-            },
-            scale_120,
-        ),
-        scale_font(13.0, scale_120),
-        theme.text.rgba(),
+        label_size,
+        label_rect.width.max(0) as f32,
     );
+    let line_height = label_rect.height / i32::try_from(lines.len()).unwrap_or(1).max(1);
+    for (index, line) in lines.iter().enumerate() {
+        draw_text_centered(
+            canvas,
+            width,
+            height,
+            font,
+            line,
+            Rect {
+                x: label_rect.x,
+                y: label_rect.y
+                    + i32::try_from(index)
+                        .unwrap_or(i32::MAX)
+                        .saturating_mul(line_height),
+                width: label_rect.width,
+                height: line_height,
+            },
+            label_size,
+            theme.text.rgba(),
+        );
+    }
 }
 
 fn draw_menu_icon(
@@ -6400,13 +6827,59 @@ fn elide_to_width(font: Option<&Font>, text: &str, size: f32, maximum_width: f32
     output
 }
 
+/// Return at most two bounded desktop-label lines. Prefer a word boundary for
+/// the first line, split a single overlong word only when necessary, and
+/// ellipsize the final line so glyphs never escape their icon cell.
+fn desktop_label_lines(
+    font: Option<&Font>,
+    text: &str,
+    size: f32,
+    maximum_width: f32,
+) -> Vec<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() || maximum_width <= 0.0 {
+        return vec![String::new()];
+    }
+    if text_width(font, &normalized, size) <= maximum_width {
+        return vec![normalized];
+    }
+
+    let mut fitting_end = 0;
+    let mut last_word_break = None;
+    for (index, character) in normalized.char_indices() {
+        let end = index + character.len_utf8();
+        if text_width(font, &normalized[..end], size) > maximum_width {
+            break;
+        }
+        fitting_end = end;
+        if character.is_whitespace() {
+            last_word_break = Some(index);
+        }
+    }
+    if fitting_end == 0 {
+        return vec![elide_to_width(font, &normalized, size, maximum_width)];
+    }
+
+    let split = last_word_break
+        .filter(|index| *index > 0)
+        .unwrap_or(fitting_end);
+    let first = normalized[..split].trim_end().to_owned();
+    let remainder = normalized[split..].trim_start();
+    if remainder.is_empty() {
+        return vec![first];
+    }
+    vec![first, elide_to_width(font, remainder, size, maximum_width)]
+}
+
 #[cfg(test)]
 mod scale_tests {
     use super::{
         ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT,
-        SETTINGS_POLL_INTERVAL, SettingsTracker, WINDOW_MENU_WIDTH, applications_menu_height,
-        applications_menu_width, delete_dialog_detail, gsettings_availability, load_settings,
-        parse_uri_list, parse_window_menu_request, physical_size, rect_between, rects_intersect,
+        SETTINGS_POLL_INTERVAL, SettingsTracker, ShellControlRequest, WINDOW_MENU_WIDTH,
+        application_matches_window, applications_menu_height, applications_menu_width,
+        delete_dialog_detail, desktop_label_lines, gsettings_availability, load_settings,
+        parse_shell_control_request, parse_uri_list, physical_size, rect_between, rects_intersect,
+        text_width,
     };
     use crate::model::Application;
     use crate::model::Rect as ShellRect;
@@ -6499,6 +6972,7 @@ mod scale_tests {
             name: name.to_owned(),
             generic_name: None,
             icon: None,
+            startup_wm_class: None,
             categories: Vec::new(),
             source: PathBuf::from("test.desktop"),
         };
@@ -6515,15 +6989,68 @@ mod scale_tests {
     }
 
     #[test]
+    fn application_window_matching_uses_desktop_id_and_startup_class() {
+        let application = Application {
+            id: "org.xfce.Thunar.desktop".to_owned(),
+            name: "Files".to_owned(),
+            generic_name: None,
+            icon: None,
+            startup_wm_class: Some("Thunar".to_owned()),
+            categories: Vec::new(),
+            source: PathBuf::from("thunar.desktop"),
+        };
+        assert!(application_matches_window(&application, "org.xfce.Thunar"));
+        assert!(application_matches_window(&application, "thunar"));
+        assert!(!application_matches_window(&application, "foot"));
+    }
+
+    #[test]
+    fn desktop_labels_are_bounded_to_two_lines() {
+        let maximum_width = 64.0;
+        let lines = desktop_label_lines(
+            None,
+            "Live Refresh Proof With A Very Long Name",
+            13.0,
+            maximum_width,
+        );
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| text_width(None, line, 13.0) <= maximum_width)
+        );
+        assert!(lines[1].ends_with('…'));
+    }
+
+    #[test]
+    fn desktop_labels_split_a_single_overlong_word_safely() {
+        let maximum_width = 40.0;
+        let lines = desktop_label_lines(None, "ExtraordinarilyLongFolderName", 13.0, maximum_width);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| text_width(None, line, 13.0) <= maximum_width)
+        );
+    }
+
+    #[test]
     fn shell_control_request_carries_only_the_window_identity() {
-        let request = parse_window_menu_request(
+        let request = parse_shell_control_request(
             br#"{"schema":1,"identifier":"window-id","x":712.5,"y":91.0}"#,
         )
         .unwrap();
-        assert_eq!(request, "window-id");
         assert_eq!(
-            parse_window_menu_request(b"legacy-window-id").unwrap(),
-            "legacy-window-id"
+            request,
+            ShellControlRequest::WindowMenu("window-id".to_owned())
+        );
+        assert_eq!(
+            parse_shell_control_request(b"legacy-window-id").unwrap(),
+            ShellControlRequest::WindowMenu("legacy-window-id".to_owned())
+        );
+        assert_eq!(
+            parse_shell_control_request(br#"{"schema":1,"desktop_changed":true}"#),
+            Some(ShellControlRequest::DesktopChanged)
         );
     }
 

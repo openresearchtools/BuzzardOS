@@ -24,10 +24,9 @@ case "$variant" in
 esac
 build_root=${BUZZARDOS_BUILD_ROOT:-"${TMPDIR:-/tmp}/buzzardos-oci-build-$task_uid"}
 output_dir=${BUZZARDOS_OCI_OUTPUT_DIR:-"$build_root/output/$variant"}
-deb_dir=${BUZZARDOS_GUEST_DEB_DIR:-"$build_root/debs"}
 image=${BUZZARDOS_OCI_TAG:-$default_image}
 
-for command_name in buildah dpkg-deb id install mktemp realpath sha256sum; do
+for command_name in buildah id install mktemp realpath sha256sum; do
     command -v "$command_name" >/dev/null 2>&1 || {
         echo "local OCI build dependency missing: $command_name" >&2
         exit 1
@@ -36,7 +35,6 @@ done
 
 build_root=$(realpath -m -- "$build_root")
 output_dir=$(realpath -m -- "$output_dir")
-deb_dir=$(realpath -m -- "$deb_dir")
 for generated_dir in "$build_root" "$output_dir"; do
     case "$generated_dir/" in
         "$project_dir/"*)
@@ -45,28 +43,7 @@ for generated_dir in "$build_root" "$output_dir"; do
             ;;
     esac
 done
-mkdir -p "$build_root" "$output_dir" "$deb_dir"
-
-guest_version=$(tr -d '\n' <"$project_dir/guest/GUEST_VERSION")
-desktop_version=$(tr -d '\n' <"$project_dir/guest/DESKTOP_VERSION")
-cua_version=$(tr -d '\n' <"$project_dir/cua/VERSION")
-guest_deb="$deb_dir/buzzardos-guest_${guest_version}_amd64.deb"
-desktop_deb="$deb_dir/buzzardos-desktop_${desktop_version}_amd64.deb"
-cua_deb="$deb_dir/buzzardoscua_${cua_version}_amd64.deb"
-
-if [[ ! -s "$guest_deb" || ! -s "$desktop_deb" || ! -s "$cua_deb" ]]; then
-    if [[ -n ${BUZZARDOS_GUEST_DEB_DIR:-} ]]; then
-        echo "BUZZARDOS_GUEST_DEB_DIR does not contain all three expected guest packages" >&2
-        exit 1
-    fi
-    BUZZARDOS_DEB_BUILD_ROOT="$build_root/deb-build" \
-    BUZZARDOS_DEB_OUTPUT_DIR="$deb_dir" \
-        "$project_dir/packaging/build-debs.sh" guest desktop cua
-fi
-for package in "$guest_deb" "$desktop_deb" "$cua_deb"; do
-    test -s "$package"
-    dpkg-deb --info "$package" >/dev/null
-done
+mkdir -p "$build_root" "$output_dir"
 
 context=$(mktemp -d "$build_root/.oci-context.XXXXXX")
 work=$(mktemp -d "$build_root/.buildah.XXXXXX")
@@ -102,12 +79,11 @@ trap cleanup_on_exit EXIT HUP INT TERM
 
 install -D -m 0644 "$oci_dir/desktop/$containerfile" "$context/Containerfile"
 install -D -m 0755 "$oci_dir/desktop/provision-image.sh" "$context/provision-image.sh"
-install -d -m 0755 "$context/apt" "$context/debs"
+install -d -m 0755 "$context/apt"
 install -m 0644 "$oci_dir/desktop/apt/debian-sid-snapshot.sources" \
     "$oci_dir/desktop/apt/debian-sid-live.sources" \
     "$oci_dir/desktop/apt/99buzzardos-snapshot" \
     "$context/apt/"
-install -m 0644 "$guest_deb" "$desktop_deb" "$cua_deb" "$context/debs/"
 
 started_at=$(date +%s)
 iidfile="$work/image.id"

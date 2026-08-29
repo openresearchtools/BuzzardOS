@@ -16,9 +16,9 @@ The deployment boundary is four binary packages:
 - `buzzardoscua`: the separately versioned in-guest computer-use service.
 
 The four version files are `VERSION`, `guest/GUEST_VERSION`,
-`guest/DESKTOP_VERSION`, and `cua/VERSION`. Package updates will
-eventually be served from a separately designed signed APT repository. The
-current workflow does not publish packages or an OCI image.
+`guest/DESKTOP_VERSION`, and `cua/VERSION`. A version tag publishes the four
+packages to the Buzzard OS GitHub release; the signed Open Research Tools APT
+repository indexes those assets. No OCI image is published.
 
 ## Machine storage
 
@@ -40,11 +40,11 @@ and Remove controls; the CLI has repeatable `--share PATH` flags.
 
 `oci/desktop/Containerfile` and `Containerfile.cuda` are distributed in the
 host package as guest-building recipes. The manager copies the selected recipe
-and three separately supplied Buzzard guest package artifacts into a temporary
-Buildah context; it does not bundle those guest packages into the host package.
-A future release recipe can instead install those same packages from the
-Buzzard APT repository. It assembles a Debian-snapshot rootfs on the builder's
-machine.
+into a temporary Buildah context; it does not bundle guest packages into the
+host package. The recipe installs the checksum-pinned archive-keyring package,
+then exact Buzzard guest package versions from signed APT. It assembles a
+Debian-snapshot rootfs on the builder's machine and leaves the live Debian and
+Open Research Tools sources installed for normal upgrades.
 Buzzard does not publish that resulting Debian rootfs or an OCI image. Package
 compilation is separate from the recipe. Sway and wlroots come exclusively
 from the Debian package set. No Sway/wlroots source checkout, Meson build,
@@ -84,10 +84,9 @@ Before a package revision is handed off:
    package ownership on the existing Ubuntu 24.04, Debian 13, and Ubuntu 26.04
    amd64 VMs.
 
-## Next publication work
+## Publication boundary
 
-APT publication is intentionally future work. It needs repository layout,
-Release/InRelease signing, offline/key-rotation procedure, channels, rollback,
-retention, CI approval, tag/commit validation, and least-privilege upload
-credentials. None of that authority belongs to the current artifact-only
-workflow.
+Buzzard OS releases carry application `.deb` files and checksums. The separate
+`openresearchtools/apt` repository owns the signed package catalogue, protected
+signing environment, public archive key, and keyring package. It downloads no
+package payload into its Git history and indexes only stable GitHub Releases.

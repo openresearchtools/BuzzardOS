@@ -8,7 +8,8 @@ use crate::model::{
 use crate::sound::{SoundConnection, SoundController, SoundService, UserVolumePercent};
 use crate::{ChangeBus, ChangeSection};
 use buzzardos_desktop_core::{
-    BackgroundChoice, GuestScalePreset, KeyboardSettings, SolidColor, ThemeMode,
+    BackgroundChoice, DARK_WALLPAPER, GuestScalePreset, KeyboardSettings, LIGHT_WALLPAPER,
+    SolidColor, ThemeMode,
 };
 use gtk::gdk;
 use gtk::prelude::*;
@@ -23,8 +24,6 @@ use std::time::Duration;
 const COMPACT_BREAKPOINT: i32 = 720;
 const PAGE_MARGIN: i32 = 24;
 const ROW_SPACING: i32 = 12;
-const DARK_BACKGROUND: SolidColor = SolidColor::new(0x20, 0x22, 0x25);
-const LIGHT_BACKGROUND: SolidColor = SolidColor::new(0xf4, 0xf1, 0xec);
 const ZONE_TAB_PATH: &str = "/usr/share/zoneinfo/zone.tab";
 const ZONEINFO_ROOT: &str = "/usr/share/zoneinfo";
 const MAX_ZONE_TAB_BYTES: u64 = 2 * 1024 * 1024;
@@ -87,8 +86,13 @@ pub(crate) fn build_window(
         .build();
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // GtkBox is transparent by default. Give the window-filling Settings
+    // root its own opaque paint instead of relying on whatever backing the
+    // toolkit theme happens to leave beneath transparent page containers.
+    root.add_css_class("wb-settings-root");
     let page_titles = PageId::ALL.map(PageId::title);
     let compact_navigation = gtk::DropDown::from_strings(&page_titles);
+    compact_navigation.add_css_class("wb-settings-compact-navigation");
     compact_navigation.set_margin_top(8);
     compact_navigation.set_margin_bottom(8);
     compact_navigation.set_margin_start(12);
@@ -102,17 +106,20 @@ pub(crate) fn build_window(
     root.append(&compact_navigation);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    body.add_css_class("wb-settings-body");
     body.set_hexpand(true);
     body.set_vexpand(true);
     let sidebar = gtk::ListBox::new();
     sidebar.set_selection_mode(gtk::SelectionMode::Single);
     sidebar.set_activate_on_single_click(true);
     sidebar.add_css_class("navigation-sidebar");
+    sidebar.add_css_class("wb-settings-sidebar");
     sidebar.set_size_request(190, -1);
     accessible(&sidebar, "Settings navigation", "Choose a Settings page.");
     let mut navigation_rows = Vec::new();
     for page in PageId::ALL {
         let row = gtk::ListBoxRow::new();
+        row.add_css_class("wb-settings-navigation-row");
         let row_content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         row_content.set_margin_top(9);
         row_content.set_margin_bottom(9);
@@ -135,6 +142,26 @@ pub(crate) fn build_window(
         .vexpand(true)
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
+    pages.add_css_class("wb-settings-pages");
+    let page_background = gtk::DrawingArea::builder()
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    {
+        let store = Rc::clone(&store);
+        page_background.set_draw_func(move |_area, context, width, height| {
+            let color = store.borrow().settings.appearance.theme.palette().surface;
+            let rgba = solid_to_rgba(color);
+            context.set_source_rgba(
+                f64::from(rgba.red()),
+                f64::from(rgba.green()),
+                f64::from(rgba.blue()),
+                1.0,
+            );
+            context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+            let _ = context.fill();
+        });
+    }
     pages.add_named(
         &build_display_page(&window, Rc::clone(&store), Rc::clone(&bus)),
         Some(PageId::Display.stack_name()),
@@ -149,7 +176,12 @@ pub(crate) fn build_window(
         Some(PageId::TimeLocation.stack_name()),
     );
     pages.add_named(
-        &build_appearance_page(&window, Rc::clone(&store), Rc::clone(&bus)),
+        &build_appearance_page(
+            &window,
+            Rc::clone(&store),
+            Rc::clone(&bus),
+            &page_background,
+        ),
         Some(PageId::Appearance.stack_name()),
     );
     pages.add_named(
@@ -157,7 +189,12 @@ pub(crate) fn build_window(
         Some(PageId::Updates.stack_name()),
     );
     accessible(&pages, "Settings page", "The selected Settings page.");
-    body.append(&pages);
+    let page_layer = gtk::Overlay::new();
+    page_layer.set_hexpand(true);
+    page_layer.set_vexpand(true);
+    page_layer.set_child(Some(&page_background));
+    page_layer.add_overlay(&pages);
+    body.append(&page_layer);
     root.append(&body);
     window.set_child(Some(&root));
 
@@ -968,6 +1005,7 @@ fn build_appearance_page(
     window: &gtk::ApplicationWindow,
     store: Rc<RefCell<SettingsStore>>,
     bus: Rc<ChangeBus>,
+    page_background: &gtk::DrawingArea,
 ) -> gtk::ScrolledWindow {
     let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
     let theme_section = section("Theme");
@@ -1032,13 +1070,13 @@ fn build_appearance_page(
             &light,
             ThemeMode::Light,
             BackgroundChoice::LightPlain,
-            LIGHT_BACKGROUND,
+            LIGHT_WALLPAPER,
         ),
         (
             &dark,
             ThemeMode::Dark,
             BackgroundChoice::DarkPlain,
-            DARK_BACKGROUND,
+            DARK_WALLPAPER,
         ),
     ] {
         let window = window.clone();
@@ -1046,6 +1084,7 @@ fn build_appearance_page(
         let bus = Rc::clone(&bus);
         let changing = Rc::clone(&changing);
         let colour = colour.clone();
+        let page_background = page_background.clone();
         button.connect_toggled(move |button| {
             if !button.is_active() || changing.get() {
                 return;
@@ -1055,6 +1094,7 @@ fn build_appearance_page(
                 Ok(generation) => {
                     colour.set_rgba(&solid_to_rgba(color));
                     apply_current_process_theme(mode);
+                    page_background.queue_draw();
                     let _ = bus.emit_changed(generation, &[ChangeSection::Appearance]);
                 }
                 Err(error) => show_error(&window, "Appearance was not changed", &error.to_string()),
@@ -1487,18 +1527,22 @@ fn progress_description(progress: &UpdateProgress, speed: Option<f64>) -> String
 
 fn page(title: &str, contents: &gtk::Box) -> gtk::ScrolledWindow {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+    content.add_css_class("wb-settings-page-content");
     set_margins(&content, PAGE_MARGIN);
     content.append(&heading(title));
     content.append(contents);
-    gtk::ScrolledWindow::builder()
+    let page = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .child(&content)
-        .build()
+        .build();
+    page.add_css_class("wb-settings-page");
+    page
 }
 
 fn section(title: &str) -> gtk::Box {
     let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    section.add_css_class("wb-settings-section");
     let heading = gtk::Label::new(Some(title));
     heading.set_xalign(0.0);
     heading.add_css_class("heading");
@@ -1508,6 +1552,7 @@ fn section(title: &str) -> gtk::Box {
 
 fn setting_row<W: IsA<gtk::Widget>>(title: &str, description: &str, control: &W) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, ROW_SPACING);
+    row.add_css_class("wb-settings-row");
     row.set_margin_top(4);
     row.set_margin_bottom(4);
     let labels = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -1642,8 +1687,8 @@ mod tests {
     #[test]
     fn background_rgba_conversion_is_exact_for_byte_channels() {
         for color in [
-            DARK_BACKGROUND,
-            LIGHT_BACKGROUND,
+            DARK_WALLPAPER,
+            LIGHT_WALLPAPER,
             SolidColor::new(255, 113, 57),
         ] {
             assert_eq!(rgba_to_solid(solid_to_rgba(color)), color);

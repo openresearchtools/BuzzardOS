@@ -23,10 +23,13 @@ dialog:backdrop {
   background-color: @wb_backdrop_surface;
 }
 
-/* Thunar's root grid has narrow cells beside its status bar. */
+/* Thunar keeps the same deliberate Light/Dark hierarchy when it loses focus.
+ * Do not allow GTK's generic backdrop fallback to wash its whole chrome into
+ * a third grey or create strips beside the content and status bar. */
+window.thunar > grid,
 window.thunar > grid:backdrop {
   background-image: none;
-  background-color: @wb_backdrop_surface;
+  background-color: @wb_surface;
 }
 
 headerbar,
@@ -62,6 +65,23 @@ toolbar:backdrop,
   color: @wb_backdrop_text;
   background-image: none;
   background-color: @wb_header_backdrop;
+  border-color: @wb_border;
+}
+
+/* Thunar's menu and navigation toolbar belong to the window canvas. The
+ * titlebar and Places rail carry the darker panel tone; the file view remains
+ * a white field. This avoids a stack of unrelated light greys. */
+window.thunar menubar,
+window.thunar menubar:backdrop,
+window.thunar toolbar,
+window.thunar toolbar:backdrop,
+window.thunar .toolbar,
+window.thunar .toolbar:backdrop,
+window.thunar .primary-toolbar,
+window.thunar .primary-toolbar:backdrop {
+  color: @wb_text;
+  background-image: none;
+  background-color: @wb_surface;
   border-color: @wb_border;
 }
 

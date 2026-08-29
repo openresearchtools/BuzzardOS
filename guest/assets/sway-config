@@ -59,7 +59,7 @@ bindsym $mod+Up focus up
 bindsym $mod+Right focus right
 
 workspace Desktop
-exec_always --no-startup-id /opt/buzzardos/runtime/current/libexec/buzzardos-desktop-services
+exec_always --no-startup-id /usr/lib/buzzardos/runtime/current/libexec/buzzardos-desktop-services
 
 include /run/buzzardos-host/initial-output.conf
 include /home/buzzard/.config/sway/config.d/*

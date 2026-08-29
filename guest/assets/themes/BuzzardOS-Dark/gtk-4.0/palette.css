@@ -4,6 +4,7 @@
 @define-color wb_menu #222222;
 @define-color wb_surface #282828;
 @define-color wb_raised #303030;
+@define-color wb_card #303030;
 @define-color wb_hover #3f3f3f;
 @define-color wb_border #545454;
 @define-color wb_control_border #7a7a7a;
@@ -16,6 +17,7 @@
 @define-color wb_error #f07a7a;
 @define-color wb_warning #e6b85c;
 @define-color wb_success #6ccb7a;
+@define-color wb_backdrop_surface #242424;
 @define-color wb_header #30343a;
 @define-color wb_header_backdrop #24272a;
 @define-color wb_backdrop_text #a5a5a5;
@@ -30,7 +32,7 @@
 @define-color headerbar_fg_color @wb_text;
 @define-color headerbar_backdrop_color @wb_header_backdrop;
 @define-color headerbar_border_color @wb_border;
-@define-color card_bg_color @wb_raised;
+@define-color card_bg_color @wb_card;
 @define-color card_fg_color @wb_text;
 @define-color popover_bg_color @wb_canvas;
 @define-color popover_fg_color @wb_text;

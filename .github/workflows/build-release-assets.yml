@@ -1,10 +1,13 @@
-name: Build Debian packages and verify OCI
+name: Build and publish Buzzard OS Debian packages
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: buzzardos-debs-${{ github.ref }}
@@ -22,15 +25,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Enforce artifact-only workflow and validate sources
+      - name: Validate release sources
         shell: bash
         run: |
           set -euo pipefail
           bash -n packaging/build-debs.sh oci/build-local.sh oci/verify-image.sh
           python3 -m unittest oci.tests.test_build_contract
           ./tools/check-licenses.sh --structural
-          ! grep -Eq 'uses: .*(releas[e]|publis[h])' \
-            .github/workflows/build-release-assets.yml
 
       - name: Install Ubuntu 24.04 package-build dependencies
         shell: bash
@@ -84,11 +85,11 @@ jobs:
               "$RUNNER_TEMP/buzzardos-debs/buzzardos_${version}_amd64.deb"
 
       - name: Build and verify the stock-Sway reference OCI locally
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           BUZZARDOS_BUILD_ROOT="$RUNNER_TEMP/buzzardos-oci-build" \
-          BUZZARDOS_GUEST_DEB_DIR="$RUNNER_TEMP/buzzardos-debs" \
           BUZZARDOS_OCI_TAG="buzzardos-desktop:actions-${GITHUB_RUN_ID}" \
             ./oci/build-local.sh
 
@@ -102,3 +103,24 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+      - name: Publish all four packages on a version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(
+            find "$RUNNER_TEMP/buzzardos-debs" -maxdepth 1 -type f \
+              \( -name '*.deb' -o -name '*.deb.sha256' \) -print | sort
+          )
+          test "${#assets[@]}" -eq 8
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag \
+              --title "Buzzard OS $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

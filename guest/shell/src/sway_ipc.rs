@@ -479,15 +479,24 @@ fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceStat
         commands.push(format!("seat \"seat{index}\" fallback false"));
     }
     commands.extend([
+        format!("focus output {}", quote_sway(&created.name)?),
         format!("workspace {}", quote_sway(&name)?),
-        format!("move workspace to output {}", quote_sway(&created.name)?),
+        format!("focus output {}", quote_sway(&primary_name)?),
         format!("workspace {}", quote_sway(&current)?),
     ]);
     run_global_command(&commands.join("; "))?;
-    list_workspaces()?
+    let workspaces = list_workspaces()?;
+    let workspace = workspaces
         .into_iter()
         .find(|workspace| workspace.name == name)
-        .with_context(|| format!("Sway did not create workspace {name}"))
+        .with_context(|| format!("Sway did not create workspace {name}"))?;
+    anyhow::ensure!(
+        workspace.output == created.name,
+        "Sway created workspace {name} on {} instead of {}",
+        workspace.output,
+        created.name
+    );
+    Ok(workspace)
 }
 
 fn runtime_lock_root() -> Result<PathBuf> {
@@ -568,17 +577,36 @@ fn switch_workspace_unlocked(name: &str, host_output: &str, current: &str) -> Re
         .into_iter()
         .find(|workspace| workspace.name == name)
         .with_context(|| format!("unknown workspace {name}"))?;
+    let mut events = EventSubscription::connect(&["workspace", "output"])?;
     if target.output == host_output {
-        return run_global_command(&format!("workspace {}", quote_sway(name)?));
+        run_global_command(&format!("workspace {}", quote_sway(name)?))?;
+        return confirm_visible_workspace(&mut events, name, host_output);
     }
-    run_global_command(&format!(
-        "workspace {}; move workspace to output {}; workspace {}; move workspace to output {}; workspace {}",
-        quote_sway(name)?,
-        quote_sway(host_output)?,
-        quote_sway(current)?,
-        quote_sway(&target.output)?,
-        quote_sway(name)?
-    ))?;
+    // Stock Sway destroys an empty workspace as soon as it is no longer
+    // visible. A direct A/B swap therefore loses an empty target halfway
+    // through and leaves Sway's automatic numeric placeholder on the human
+    // output. Move the current workspace away first, then move (or recreate)
+    // the target onto the human output, and finally recreate either empty
+    // side explicitly on its intended output.
+    let commands = [
+        format!("workspace {}", quote_sway(current)?),
+        format!("move workspace to output {}", quote_sway(&target.output)?),
+        format!("workspace {}", quote_sway(name)?),
+        format!("move workspace to output {}", quote_sway(host_output)?),
+        format!("focus output {}", quote_sway(&target.output)?),
+        format!("workspace {}", quote_sway(current)?),
+        format!("focus output {}", quote_sway(host_output)?),
+        format!("workspace {}", quote_sway(name)?),
+    ];
+    run_global_command(&commands.join("; "))?;
+    confirm_visible_workspace(&mut events, name, host_output)?;
+    anyhow::ensure!(
+        list_workspaces()?.iter().any(|workspace| {
+            workspace.name == current && workspace.output == target.output && workspace.visible
+        }),
+        "Sway did not preserve workspace {current} on {} while presenting {name}",
+        target.output
+    );
 
     // Moving a workspace between the off-screen agent output and the fixed
     // human output changes its usable rectangle: only the human output owns
@@ -595,6 +623,32 @@ fn switch_workspace_unlocked(name: &str, host_output: &str, current: &str) -> Re
             .with_context(|| format!("constraining {identifier} after workspace swap"))?;
     }
     Ok(())
+}
+
+fn confirm_visible_workspace(
+    events: &mut EventSubscription,
+    name: &str,
+    host_output: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if list_workspaces()?.iter().any(|workspace| {
+            workspace.name == name && workspace.output == host_output && workspace.visible
+        }) {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "Sway did not present workspace {name} on the host-facing output"
+        );
+        if let Err(error) = events.next_event(remaining) {
+            if Instant::now() >= deadline {
+                continue;
+            }
+            return Err(error).with_context(|| format!("waiting to present workspace {name}"));
+        }
+    }
 }
 
 pub fn move_window_to_workspace(identifier: &str, workspace: &str, focus: bool) -> Result<()> {
@@ -632,10 +686,6 @@ pub fn close_workspace(index: u32) -> Result<()> {
         .find(|workspace| workspace.name == name)
         .map(|workspace| workspace.output)
         .with_context(|| format!("workspace {name} disappeared before close"))?;
-    anyhow::ensure!(
-        output != host_output,
-        "refusing to unplug host output {output}"
-    );
     let windows = list_windows()?
         .into_iter()
         .filter(|window| window.workspace == name)
@@ -655,7 +705,29 @@ pub fn close_workspace(index: u32) -> Result<()> {
             .all(|window| window.workspace != name),
         "workspace {name} still owns windows; leaving its output intact"
     );
-    run_global_command(&format!("output {} unplug", quote_sway(&output)?))
+    if output != host_output {
+        run_global_command(&format!("output {} unplug", quote_sway(&output)?))?;
+    } else {
+        // A previous output failure may already have folded this workspace
+        // onto the fixed host output. Never unplug that output. Selecting
+        // Desktop after the final window move lets stock Sway discard the now
+        // empty workspace normally.
+        run_global_command("workspace \"Desktop\"")?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let workspace_gone = list_workspaces()?
+            .iter()
+            .all(|workspace| workspace.name != name);
+        if workspace_gone {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "Sway kept empty workspace {name} after its output was removed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 pub fn list_windows() -> Result<Vec<WindowState>> {
@@ -958,6 +1030,27 @@ pub fn constrain_new_window(identifier: &str) -> Result<()> {
         commands,
         |state| state.rect == visible_frame && !state.minimized && !state.fullscreen,
     )?;
+    Ok(())
+}
+
+/// Re-clamp every mapped floating window after Sway changes output geometry.
+///
+/// Output positions and workspace rectangles are global Sway coordinates. A
+/// window that was fully inside an auxiliary output before a native host
+/// resize can otherwise cross into the resized host-facing output even after
+/// the outputs themselves have been repacked. Tiled windows already follow
+/// their workspace; this is deliberately the same non-focusing frame
+/// constraint used for a newly mapped floating window.
+pub fn constrain_windows_after_output_resize() -> Result<()> {
+    let identifiers = list_windows()?
+        .into_iter()
+        .filter(|window| !window.minimized && !window.fullscreen)
+        .map(|window| window.identifier)
+        .collect::<Vec<_>>();
+    for identifier in identifiers {
+        constrain_new_window(&identifier)
+            .with_context(|| format!("constraining {identifier} after output resize"))?;
+    }
     Ok(())
 }
 

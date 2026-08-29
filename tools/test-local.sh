@@ -99,8 +99,8 @@ for relative, record in manifest["assets"].items():
     path = root / relative
     assert path.is_file(), relative
     assert path.stat().st_mode & 0o7777 == record["mode"], relative
-revision = (root / "opt/buzzardos/runtime/current").readlink()
-runtime = root / "opt/buzzardos/runtime" / revision
+revision = (root / "usr/lib/buzzardos/runtime/current").readlink()
+runtime = root / "usr/lib/buzzardos/runtime" / revision
 runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
 assert runtime_manifest["revision"] == str(revision)
 for required in (

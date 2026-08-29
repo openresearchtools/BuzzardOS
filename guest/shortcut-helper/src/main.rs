@@ -10,6 +10,7 @@ use gio::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 use std::ffi::{OsStr, OsString};
+use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -46,9 +47,10 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
         .to_str()
         .context("command name must be valid UTF-8")?;
     // Store construction is also the deterministic recovery boundary for an
-    // interrupted registered-AppImage Desktop rename. The session invokes
-    // `install-thunar-actions` at every login, so construct the store before
-    // even that otherwise-independent startup command.
+    // interrupted registered-AppImage Desktop rename. Reference-image
+    // provisioning invokes `install-thunar-actions` exactly once; normal
+    // helper operations still construct the store first so interrupted
+    // durable mutations recover before another mutation starts.
     let store = RegistrationStore::discover().context("initialize AppImage registrations")?;
     if command == "install-thunar-actions" {
         if !rest.is_empty() {
@@ -81,17 +83,23 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
         "register-applications" => registration_json(
             store.register(exactly_one_path(rest)?, RegistrationFlags::APPLICATIONS)?,
         ),
-        "register-desktop" => {
-            registration_json(store.register(exactly_one_path(rest)?, RegistrationFlags::DESKTOP)?)
-        }
+        "register-desktop" => notify_after_desktop_change(registration_json(
+            store.register(exactly_one_path(rest)?, RegistrationFlags::DESKTOP)?,
+        )),
         "add-applications" => registration_json(store.add_applications(one_id(rest)?)?),
-        "add-desktop" => registration_json(store.add_desktop(one_id(rest)?)?),
+        "add-desktop" => {
+            notify_after_desktop_change(registration_json(store.add_desktop(one_id(rest)?)?))
+        }
         "remove-applications" => {
             optional_registration_json(store.remove_applications(one_id(rest)?)?)
         }
-        "remove-desktop" => optional_registration_json(store.remove_desktop(one_id(rest)?)?),
+        "remove-desktop" => notify_after_desktop_change(optional_registration_json(
+            store.remove_desktop(one_id(rest)?)?,
+        )),
         "remove-applications-for" => remove_for_target(&store, exactly_one_path(rest)?, true),
-        "remove-desktop-for" => remove_for_target(&store, exactly_one_path(rest)?, false),
+        "remove-desktop-for" => {
+            notify_after_desktop_change(remove_for_target(&store, exactly_one_path(rest)?, false))
+        }
         "status-for" => optional_registration_json(store.find_by_target(exactly_one_path(rest)?)?),
         "list" => Ok(json!({ "ok": true, "registrations": store.list()? })),
         "launch" => launch_json(&store, one_id(rest)?),
@@ -106,11 +114,25 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
             Ok(json!({ "ok": true }))
         }
         "desktop-list" => desktop_list(rest),
-        "desktop-new-folder" => desktop_new_folder(rest),
-        "desktop-rename" => desktop_rename(&store, rest),
-        "desktop-delete-after-confirmation" => desktop_delete(rest),
+        "desktop-new-folder" => notify_after_desktop_change(desktop_new_folder(rest)),
+        "desktop-rename" => notify_after_desktop_change(desktop_rename(&store, rest)),
+        "desktop-delete-after-confirmation" => notify_after_desktop_change(desktop_delete(rest)),
         _ => bail!("unknown command: {command}"),
     }
+}
+
+fn notify_after_desktop_change(result: Result<serde_json::Value>) -> Result<serde_json::Value> {
+    let value = result?;
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Ok(value);
+    };
+    if let Ok(socket) = UnixDatagram::unbound() {
+        let _ = socket.send_to(
+            br#"{"schema":1,"desktop_changed":true}"#,
+            PathBuf::from(runtime).join("buzzardos-shell-control.sock"),
+        );
+    }
+    Ok(value)
 }
 
 #[cfg(feature = "chooser")]

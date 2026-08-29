@@ -3469,7 +3469,7 @@ fn add_guest_init_command(command: &mut Command) {
         "--reuid=0",
         "--regid=0",
         "--clear-groups",
-        "/opt/buzzardos/runtime/current/libexec/buzzardos-init",
+        "/usr/lib/buzzardos/runtime/current/libexec/buzzardos-init",
     ]);
 }
 
@@ -4028,7 +4028,7 @@ mod tests {
                 "--reuid=0",
                 "--regid=0",
                 "--clear-groups",
-                "/opt/buzzardos/runtime/current/libexec/buzzardos-init",
+                "/usr/lib/buzzardos/runtime/current/libexec/buzzardos-init",
             ]
         );
     }

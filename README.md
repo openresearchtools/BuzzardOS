@@ -34,9 +34,9 @@ buzzardoscua_<version>_amd64.deb
 The versions come from [`VERSION`](VERSION),
 [`guest/GUEST_VERSION`](guest/GUEST_VERSION),
 [`guest/DESKTOP_VERSION`](guest/DESKTOP_VERSION), and
-[`cua/VERSION`](cua/VERSION). A future
-signed APT repository can publish these same packages; the current workflow
-only builds short-lived engineering artifacts and never publishes anything.
+[`cua/VERSION`](cua/VERSION). Version tags publish all four packages to the
+Buzzard OS GitHub release, and the signed Open Research Tools APT repository
+indexes them for normal installation and upgrades.
 
 ## Per-machine storage
 

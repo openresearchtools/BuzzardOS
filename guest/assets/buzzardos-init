@@ -13,7 +13,7 @@ install -d -m 0755 /run/buzzardos
 # grants CAP_SYS_ADMIN to the AppImage or its children.
 if [ -c /dev/fuse ]; then
     test -x /usr/bin/fusermount3
-    runtime=/opt/buzzardos/runtime/current
+    runtime=/usr/lib/buzzardos/runtime/current
     test -x "$runtime/libexec/buzzardos-fusermount"
     test -x "$runtime/libexec/buzzardos-fusermount-exec"
     install -d -o 0 -g 0 -m 0700 /run/buzzardos-appimage-helper

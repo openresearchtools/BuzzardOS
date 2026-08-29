@@ -19,7 +19,7 @@ communication_fd=${_FUSE_COMMFD:--1}
     --service-type=exec \
     --uid=0 \
     --gid=0 \
-    /opt/buzzardos/runtime/current/libexec/buzzardos-fusermount-exec \
+    /usr/lib/buzzardos/runtime/current/libexec/buzzardos-fusermount-exec \
     "$caller" \
     "$communication_fd" \
     -- \

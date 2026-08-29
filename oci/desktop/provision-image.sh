@@ -14,11 +14,41 @@ install -d -o buzzard -g buzzard -m 0700 \
     /home/buzzard \
     /home/buzzard/.cache \
     /home/buzzard/.config \
+    /home/buzzard/.config/gtk-3.0 \
     /home/buzzard/.config/sway \
     /home/buzzard/.config/sway/config.d \
     /home/buzzard/.local \
     /home/buzzard/.local/share \
     /home/buzzard/.local/state
+
+# The package owns this wrapper under /usr. Reference-image setup places one
+# deliberate link ahead of distro sudo without making a Debian package own
+# anything under /usr/local.
+install -d -m 0755 /usr/local/bin
+ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudo
+
+# Construct the initial desktop home exactly once. These are image defaults,
+# not login work: package upgrades and machine starts never recreate folders,
+# bookmarks, or a user-modified Thunar action file.
+setpriv --reuid=1000 --regid=1000 --clear-groups \
+    env \
+        HOME=/home/buzzard \
+        USER=buzzard \
+        LOGNAME=buzzard \
+        LANG=C.UTF-8 \
+        XDG_CONFIG_HOME=/home/buzzard/.config \
+        XDG_DATA_HOME=/home/buzzard/.local/share \
+        XDG_STATE_HOME=/home/buzzard/.local/state \
+        /bin/sh -ec '
+            /usr/bin/xdg-user-dirs-update
+            printf "%s\n" \
+                "file:///home/buzzard/Documents Documents" \
+                "file:///home/buzzard/Downloads Downloads" \
+                "file:///shared Shared" \
+                >"$XDG_CONFIG_HOME/gtk-3.0/bookmarks"
+            chmod 0600 "$XDG_CONFIG_HOME/gtk-3.0/bookmarks"
+            /usr/libexec/buzzardos-shortcut-helper install-thunar-actions >/dev/null
+        '
 
 # Let distro APT perform normal security/package updates. Buzzard OS does not
 # install a private root D-Bus updater, check service, or update timer.

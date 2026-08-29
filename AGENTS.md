@@ -160,16 +160,17 @@ actually changes, is idempotent, is tested from every supported schema, and
 preserves user changes. Routine code/asset updates need no compatibility layer.
 
 Guest updates use distro APT and `unattended-upgrades`/APT timers. There is no
-custom long-running Buzzard root updater, check service, or updater timer. APT
-repository signing, channels, key rotation, rollback, and publication require
-a later reviewed design; local builds infer no publication authority.
+custom long-running Buzzard root updater, check service, or updater timer. The
+four package artifacts are published by versioned Buzzard OS GitHub releases
+and indexed by the separately signed Open Research Tools APT repository. Local
+builds infer no publication or signing authority.
 
 ## Reference image and one-time provisioning
 
 The reference OCI is a normal Debian-family rootfs. Its Containerfile installs
-`buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` through APT/dpkg,
-allowing APT to resolve their stock dependencies. A future signed repository
-may supply the same package names.
+`buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` through the signed
+Open Research Tools APT repository, allowing APT to resolve their stock
+dependencies and retain ordinary package upgrades in the persistent machine.
 
 Image provisioning is not package-update behavior. After package installation,
 the Containerfile explicitly invokes one auditable setup script exactly once.
@@ -187,13 +188,15 @@ Conceptually:
 
 ```Dockerfile
 FROM debian:stable
-COPY debs/ /tmp/buzzard-debs/
 RUN apt-get update \
- && apt-get install -y /tmp/buzzard-debs/buzzardos-guest_*.deb \
-                       /tmp/buzzard-debs/buzzardos-desktop_*.deb \
-                       /tmp/buzzard-debs/buzzardoscua_*.deb \
+ && apt-get install -y ca-certificates wget \
+ && wget -qO /tmp/openresearchtools-keyring.deb \
+      https://keyring.openresearchtools.com \
+ && apt-get install -y /tmp/openresearchtools-keyring.deb \
+ && apt-get update \
+ && apt-get install -y buzzardos-guest buzzardos-desktop buzzardoscua \
  && /usr/libexec/buzzardos/setup-reference-image \
- && rm -rf /tmp/buzzard-debs /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 ```
 
 The exact script name may change but not its boundary. It is invoked only by
@@ -648,15 +651,16 @@ arbitrary host-to-guest exec API exists.
 
 ## Build and release authority
 
-`oci/build-local.sh` is the local developer entry point
-and never push/authenticate. Manual GitHub workflow is artifact-only, has no
-push/PR trigger, write permission, publisher job, release/tag mutation,
-registry/GitHub Package/APT upload. It builds four packages and reference OCI
-for verification on a disposable runner and discards intermediates.
+`oci/build-local.sh` is the local developer entry point and never
+pushes/authenticates. The GitHub workflow builds and audits exactly four
+packages; a pushed version tag publishes all four `.deb` files and their
+checksums to that tag's GitHub release. Manual workflow runs verify the
+published-APT reference OCI on a disposable runner and discard it.
 
-Future GitHub Release, OCI registry, or APT publication requires a separate
-review with final license gate, tag/commit validation, approval, signing and
-credential design, and least privilege.
+The separate `openresearchtools/apt` repository indexes stable GitHub release
+assets, signs its Release metadata in its protected `apt-signing` environment,
+and publishes only indexes, signatures, public keys, and the archive-keyring
+package. Buzzard OS publishes no OCI registry image.
 
 ## Minimum release acceptance
 

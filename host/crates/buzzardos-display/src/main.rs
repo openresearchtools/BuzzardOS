@@ -6,6 +6,7 @@ mod frame_paintable;
 mod gateway;
 mod guest_display;
 mod host_app;
+mod host_theme;
 mod keyboard;
 mod launch;
 mod machine_manager;

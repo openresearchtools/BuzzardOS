@@ -340,7 +340,7 @@ guest() {
         HOME=/home/buzzard \
         USER=buzzard \
         LOGNAME=buzzard \
-        PATH=/opt/buzzardos/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        PATH=/usr/lib/buzzardos/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         XDG_RUNTIME_DIR=/run/user/1000 \
         XDG_CONFIG_HOME=/home/buzzard/.config \
         XDG_DATA_HOME=/home/buzzard/.local/share \
@@ -1094,7 +1094,7 @@ guest pgrep -x pipewire >/dev/null
 guest pgrep -x pipewire-pulse >/dev/null
 guest pgrep -x wireplumber >/dev/null
 guest pgrep -f \
-    '^/usr/bin/python3 /opt/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
+    '^/usr/bin/python3 /usr/lib/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
     >/dev/null
 guest pgrep -f '^/usr/libexec/at-spi2-registryd ' >/dev/null
 guest python3 - <<'PY'
@@ -1154,7 +1154,7 @@ PY
 
 # The native Rust shell is functional, not merely installed, and advertises
 # semantic AT-SPI actions while a D-Bus notification reaches mako.
-guest test -x /opt/buzzardos/runtime/current/libexec/buzzardos-shell
+guest test -x /usr/lib/buzzardos/runtime/current/libexec/buzzardos-shell
 guest notify-send --app-name=buzzardos-acceptance \
     "Buzzard OS acceptance" "Notification is visible"
 deadline=$((SECONDS + 10))
@@ -1831,7 +1831,7 @@ fractional_override_broker_start_time=$(
 )
 wait_scaled_window_frame 180
 guest pgrep -f \
-    '^/usr/bin/python3 /opt/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
+    '^/usr/bin/python3 /usr/lib/buzzardos/runtime/current/libexec/buzzardos-output-sync$' \
     >/dev/null
 wait_sway_output_matches_runtime 180
 guest grim -t ppm /tmp/buzzardos-fractional-scale.ppm

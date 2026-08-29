@@ -29,7 +29,7 @@ pub enum ThemeMode {
 }
 
 pub const DARK_WALLPAPER: SolidColor = SolidColor::new(0x20, 0x22, 0x25);
-pub const LIGHT_WALLPAPER: SolidColor = SolidColor::new(0xf4, 0xf1, 0xec);
+pub const LIGHT_WALLPAPER: SolidColor = SolidColor::new(0xfa, 0xfa, 0xfa);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SolidColor {
@@ -963,7 +963,7 @@ mod tests {
         );
         assert_eq!(
             BackgroundChoice::LightPlain.solid_color().to_string(),
-            "#F4F1EC"
+            "#FAFAFA"
         );
         for hostile in [
             "red",

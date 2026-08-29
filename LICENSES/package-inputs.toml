@@ -1,7 +1,7 @@
 schema = 1
 audited_at = "2026-08-11"
 containerfile = "oci/desktop/Containerfile"
-notes = "The standard Containerfile installs three already-built Buzzard OS guest packages; their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source. The optional CUDA variant adds exact-version NVIDIA repository packages after the complete standard definition. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
+notes = "The standard Containerfile bootstraps the signed Open Research Tools APT repository with a checksum-pinned archive-keyring package and installs exact versions of the three independently published Buzzard OS guest packages. Their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source during construction, while the installed live Debian and Open Research Tools sources keep the persistent machine APT-updatable. The optional CUDA variant adds exact-version NVIDIA repository packages after the complete standard definition. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
 
 [[base_image]]
 reference = "docker.io/library/debian:sid"
@@ -14,11 +14,20 @@ apt_snapshot = "20260803T000000Z"
 order = 1
 stage = "runtime"
 surface = "oci"
-packages = ["ca-certificates", "curl", "/tmp/buzzardos-debs/buzzardoscua_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb", "/tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb"]
-notes = "The three local packages are compiled before OCI assembly. APT resolves their declared distro dependencies from the immutable snapshot."
+packages = ["ca-certificates", "wget"]
+notes = "Bootstrap tools are resolved from the immutable Debian snapshot. The downloaded keyring package is independently checksum-pinned below."
 
 [[repository_package_block]]
 order = 2
+stage = "runtime"
+surface = "oci"
+containerfile = "oci/desktop/Containerfile"
+resolution = "exact Buzzard package versions from the signed Open Research Tools APT repository authenticated by the checksum-pinned archive-keyring package"
+repository_key_sha256 = "e46f7b021b56748c749f49afa3ef97974e96fceeedeb0f2ac7ecbef8b676c441"
+packages = ["buzzardoscua=${BUZZARDOS_CUA_VERSION}", "buzzardos-guest=${BUZZARDOS_GUEST_VERSION}", "buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"]
+
+[[repository_package_block]]
+order = 3
 stage = "runtime-cuda"
 surface = "oci"
 containerfile = "oci/desktop/Containerfile.cuda"

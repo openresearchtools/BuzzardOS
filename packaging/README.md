@@ -18,8 +18,9 @@ buzzardos-desktop_<DESKTOP_VERSION>_amd64.deb
 buzzardoscua_<cua/VERSION>_amd64.deb
 ```
 
-These are binary development artifacts. Publishing them from a signed APT
-repository requires a separate reviewed release design.
+On a pushed `v*` tag the release workflow publishes all four artifacts and
+their checksums to the matching Buzzard OS GitHub release. The separately
+signed Open Research Tools APT repository indexes those release assets.
 
 ## License boundaries
 
@@ -37,9 +38,9 @@ recipe are not presented as licenses of the host package.
 
 The host package installs the Standard and CUDA recipes under
 `/usr/share/buzzardos/containerfiles/desktop`. It does not install guest `.deb`
-files there. The manager asks for the directory containing the three separate
-guest package artifacts, copies them with the selected recipe into a temporary
-Buildah context, and removes that context after creation finishes.
+files there. The manager creates a temporary recipe-only Buildah context. The
+recipe checksum-verifies and installs the Open Research Tools archive-keyring
+package, then installs exact guest/Desktop/CUA versions from signed APT.
 
 Audit the exact package files intended for handoff by repeating `--deb` in one
 licensing-gate invocation:

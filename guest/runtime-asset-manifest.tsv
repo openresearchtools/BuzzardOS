@@ -14,6 +14,6 @@
 0755	assets/buzzardos-sudo-exec	@runtime/libexec/buzzardos-sudo-exec
 0644	assets/sway-config	etc/buzzardos/sway-config
 0440	assets/90-buzzardos-sudoers	etc/sudoers.d/90-buzzardos
-0755	assets/buzzardos-sudo	usr/local/bin/sudo
+0755	assets/buzzardos-sudo	usr/libexec/buzzardos-guest/sudo
 0644	assets/49-buzzardos-root.rules	etc/polkit-1/rules.d/49-buzzardos-root.rules
 0644	assets/portals.conf	etc/buzzardos/xdg/xdg-desktop-portal/portals.conf

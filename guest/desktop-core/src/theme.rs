@@ -69,20 +69,24 @@ pub const DARK_PALETTE: ThemePalette = ThemePalette {
 };
 
 pub const LIGHT_PALETTE: ThemePalette = ThemePalette {
-    canvas: SolidColor::new(0xe8, 0xe4, 0xde),
-    desktop: SolidColor::new(0xf4, 0xf1, 0xec),
-    field: SolidColor::new(0xff, 0xfd, 0xf9),
-    menu: SolidColor::new(0xee, 0xea, 0xe4),
-    surface: SolidColor::new(0xf4, 0xf1, 0xec),
-    raised: SolidColor::new(0xe3, 0xde, 0xd6),
-    hover: SolidColor::new(0xd5, 0xce, 0xc5),
-    border: SolidColor::new(0xa5, 0x9c, 0x90),
-    control_border: SolidColor::new(0x76, 0x6d, 0x63),
-    text: SolidColor::new(0x28, 0x23, 0x1f),
+    canvas: SolidColor::new(0xfa, 0xfa, 0xfa),
+    desktop: SolidColor::new(0xfa, 0xfa, 0xfa),
+    field: SolidColor::new(0xff, 0xff, 0xff),
+    menu: SolidColor::new(0xeb, 0xeb, 0xeb),
+    surface: SolidColor::new(0xfa, 0xfa, 0xfa),
+    // Active shell segments stay continuous with the Light panel. Their
+    // orange underline communicates focus without introducing another grey.
+    raised: SolidColor::new(0xeb, 0xeb, 0xeb),
+    // Hover is a darker tone of the neutral Light surface. Accent colour is
+    // reserved for selection and focus, not ordinary pointer movement.
+    hover: SolidColor::new(0xda, 0xda, 0xda),
+    border: SolidColor::new(0xd5, 0xd5, 0xd5),
+    control_border: SolidColor::new(0x8a, 0x8a, 0x8a),
+    text: SolidColor::new(0x22, 0x26, 0x2a),
     selected_text: SolidColor::new(0x18, 0x18, 0x18),
-    text_secondary: SolidColor::new(0x5f, 0x57, 0x4f),
-    text_muted: SolidColor::new(0x70, 0x67, 0x5e),
-    disabled: SolidColor::new(0x7c, 0x74, 0x6c),
+    text_secondary: SolidColor::new(0x56, 0x5e, 0x66),
+    text_muted: SolidColor::new(0x6a, 0x73, 0x7c),
+    disabled: SolidColor::new(0x7c, 0x84, 0x8c),
     selection: SolidColor::new(0xff, 0x71, 0x39),
     focus: SolidColor::new(0xb5, 0x3b, 0x12),
     folder: SolidColor::new(0xff, 0x71, 0x39),
@@ -424,6 +428,16 @@ mod tests {
     }
 
     #[test]
+    fn light_shell_uses_neutral_tonal_states_and_reserves_accent_for_focus() {
+        assert_eq!(LIGHT_PALETTE.surface, SolidColor::new(0xfa, 0xfa, 0xfa));
+        assert_eq!(LIGHT_PALETTE.menu, SolidColor::new(0xeb, 0xeb, 0xeb));
+        assert_eq!(LIGHT_PALETTE.raised, LIGHT_PALETTE.menu);
+        assert_eq!(LIGHT_PALETTE.hover, SolidColor::new(0xda, 0xda, 0xda));
+        assert_ne!(LIGHT_PALETTE.hover, LIGHT_PALETTE.selection);
+        assert_ne!(LIGHT_PALETTE.hover, LIGHT_PALETTE.focus);
+    }
+
+    #[test]
     fn mode_projection_is_deterministic_and_palette_only() {
         let dark = ThemeConfigSet::for_mode(ThemeMode::Dark);
         let light = ThemeConfigSet::for_mode(ThemeMode::Light);
@@ -514,6 +528,18 @@ mod tests {
             include_str!("../../assets/themes/BuzzardOS-Shared/gtk-4.0/geometry.css");
         assert!(gtk4_geometry.contains("button.wb-primary-action label,"));
         assert!(gtk4_geometry.contains("color: @wb_selected_text;"));
+        assert!(gtk4_geometry.contains(".wb-settings-root"));
+        assert!(gtk4_geometry.contains(".wb-settings-pages"));
+        assert!(gtk4_geometry.contains(".wb-settings-section"));
+        assert!(gtk4_geometry.contains("background-color: @wb_card;"));
+        assert!(gtk4_geometry.contains("background-color: @wb_backdrop_surface;"));
+        for palette in [
+            include_str!("../../assets/themes/BuzzardOS-Dark/gtk-4.0/palette.css"),
+            include_str!("../../assets/themes/BuzzardOS-Light/gtk-4.0/palette.css"),
+        ] {
+            assert!(palette.contains("@define-color wb_card "));
+            assert!(palette.contains("@define-color wb_backdrop_surface "));
+        }
         let gtk3_geometry =
             include_str!("../../assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css");
         assert!(gtk3_geometry.contains("statusbar > box"));

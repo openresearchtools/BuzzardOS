@@ -13,7 +13,9 @@ guest Settings application.
 ## 1. Settings application
 
 `buzzardos-settings` is a standalone, adaptive Rust/GTK4 application. It is
-an ordinary Sway-managed window and exposes native GTK accessibility objects
+an ordinary Sway-managed window, paints an explicit opaque root and page stack
+over a palette-derived solid drawing layer in focused and backdrop states, and
+exposes native GTK accessibility objects
 to the private guest AT-SPI bus. It uses no libadwaita, Electron, browser UI,
 GNOME Control Center, or permanent GUI process.
 
@@ -68,8 +70,14 @@ The Display page presents one row labelled `Scaling`; it does not repeat a
 second `Scaling` section heading above that row.
 
 The setting is sent through the owner-only typed scale endpoint and persisted
-only after the active Sway output confirms it. A rejected change restores the
-last confirmed selection and shows a short user-facing error.
+only after every active Sway output confirms the physical mode, UI scale, and
+non-overlapping layout. Native window resize uses that same convergence path,
+so the fixed host-facing output and all active guest-only workspace outputs
+remain the same size and are repacked without overlap. A rejected change
+restores the last confirmed selection and shows a short user-facing error.
+After that layout settles, the official desktop re-clamps existing floating
+windows into their own resized workspace without focusing them, so stale
+absolute frames cannot leak across an adjacent output boundary.
 
 ## 3. Sound
 
@@ -121,6 +129,31 @@ must retain the selected theme rather than reverting to white. The Thunar
 status bar has explicit active and `:backdrop` palette states and must never
 become a white strip when the window loses focus.
 
+The Light Thunar hierarchy is explicit in focused and backdrop states:
+titlebar and Places navigation use the panel tone, menu/toolbar/status use the
+window tone, the file view uses the field tone, and borders remain neutral.
+Home, Desktop, and every conventional XDG user directory use Buzzard's orange
+place icons rather than inherited blue artwork. One-time reference-image
+provisioning initializes the standard FreeDesktop user directories and seeds
+Thunar's Places sidebar with Documents and Downloads alongside the
+Buzzard-specific `/shared` bookmark. Machine start and desktop login perform
+no folder or bookmark setup. Existing `user-dirs.dirs` and GTK bookmarks are
+therefore preserved, and a place removed later by the user stays removed.
+
+Light mode must preserve visible depth rather than flattening the desktop into
+white-on-white planes. Its desktop, top and bottom panels, navigation rails,
+window canvas, raised Settings groups, fields, controls, hover states, borders,
+and backdrops use distinct neutral tokens. Settings presents grouped controls
+as bordered raised cards on a quieter page canvas, with the orange accent
+reserved for the selected navigation row and interaction state.
+The reference Light palette uses `#ebebeb` for both shell panels and the
+Settings navigation rail, and `#fafafa` for both the solid desktop background
+and the non-sidebar Settings window canvas. Active shell segments remain
+`#ebebeb` with the existing Cinnamon focus underline; Light hover states use
+the darker neutral tone `#dadada`. Accent orange remains reserved for selected
+and focused state. These exact values do not alter the independent Dark
+palette.
+
 Theme and background colour persist in `~/.config/buzzardos/settings.json`.
 Switching Light/Dark selects its recommended solid background; choosing a
 custom colour then persists that explicit colour.
@@ -129,8 +162,8 @@ custom colour then persists that explicit colour.
 
 Package updates inside the persistent guest use the distribution's standard
 APT and unattended-upgrades mechanisms. This includes `buzzardos-guest`,
-`buzzardos-desktop`, and `buzzardoscua` once a signed Buzzard OS APT repository
-is configured. The host `buzzardos` package is updated by the host's own APT
+`buzzardos-desktop`, and `buzzardoscua` through the signed Open Research Tools
+APT source installed by the reference recipe. The host `buzzardos` package is updated by the host's own APT
 transaction and is never replaced from inside a guest.
 
 Buzzard OS installs no custom updater daemon, timer, D-Bus API, privileged APT
@@ -183,6 +216,14 @@ placed in the first available cell on the first visible desktop page, below
 those built-ins when they occupy the leading cells. It immediately appears in
 the current viewport. The shell uses the launcher's real FreeDesktop icon,
 with a generic fallback only when no safe icon exists.
+
+The shell watches the actual XDG Desktop directory with inotify and rebuilds
+only its in-memory desktop model when that directory changes. Successful
+Buzzard helper mutations also send the shell one typed `desktop_changed`
+notification, so Thunar actions and helper-created folders, renames,
+shortcuts, and deletions appear immediately without login, machine restart,
+or a periodic directory scan. Files uses the themed `user-home` icon, Shared
+uses `folder-publicshare`, and ordinary directories use `folder`.
 
 Owner-owned regular `.desktop` files in the guest Desktop directory are
 automatically owner-executable after validation, so activating a shortcut

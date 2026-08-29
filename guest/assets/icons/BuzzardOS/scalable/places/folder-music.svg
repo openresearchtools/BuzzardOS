@@ -1,0 +1,8 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Open Research Tools contributors -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <path fill="#ff9b73" stroke="#181818" stroke-width="2" stroke-linejoin="round" d="M6 15a5 5 0 0 1 5-5h15l7 7h20a5 5 0 0 1 5 5v5H6z"/>
+  <path fill="#ff7139" stroke="#181818" stroke-width="2" stroke-linejoin="round" d="M6 24h52v26a5 5 0 0 1-5 5H11a5 5 0 0 1-5-5z"/>
+  <path d="M29 46V33l14-3v13" fill="none" stroke="#fff4ef" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="25" cy="47" r="5" fill="#fff4ef"/><circle cx="39" cy="44" r="5" fill="#fff4ef"/>
+</svg>

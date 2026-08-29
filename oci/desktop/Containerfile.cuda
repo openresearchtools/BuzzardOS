@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720
-# This build context contains three already-built Buzzard OS guest packages.
-# No source tree, compiler, language toolchain, or package-build dependency is
-# allowed into the reference image build.
+# This recipe bootstraps the signed Open Research Tools APT archive and installs
+# the three independently versioned Buzzard OS guest packages from it. No
+# source tree, compiler, language toolchain, or local package artifact enters
+# the reference image build.
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,17 +16,32 @@ COPY apt/debian-sid-snapshot.sources \
 COPY apt/99buzzardos-snapshot \
     /etc/apt/apt.conf.d/99buzzardos-snapshot
 
-# APT resolves the complete stock Sway/wlroots desktop from the dependencies
-# declared by these three local packages. The image definition itself contains
-# no source build and no compiler toolchain.
-COPY debs/ /tmp/buzzardos-debs/
+ARG BUZZARDOS_GUEST_VERSION=0.1.0
+ARG BUZZARDOS_DESKTOP_VERSION=0.1.0
+ARG BUZZARDOS_CUA_VERSION=0.17.0+buzzard1
+ARG OPENRESEARCHTOOLS_KEYRING_SHA256=e46f7b021b56748c749f49afa3ef97974e96fceeedeb0f2ac7ecbef8b676c441
+
+# Bootstrap only the public archive key/source package over HTTPS. APT then
+# authenticates the signed catalogue and verifies every Buzzard package hash.
+# Keeping the keyring and source installed makes persistent machines ordinary
+# APT-updatable systems after image construction.
 RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         ca-certificates \
-        curl \
-        /tmp/buzzardos-debs/buzzardoscua_*_amd64.deb \
-        /tmp/buzzardos-debs/buzzardos-guest_*_amd64.deb \
-        /tmp/buzzardos-debs/buzzardos-desktop_*_amd64.deb && \
+        wget && \
+    wget --quiet --output-document=/tmp/openresearchtools-archive-keyring.deb \
+        https://keyring.openresearchtools.com && \
+    printf '%s  %s\n' "$OPENRESEARCHTOOLS_KEYRING_SHA256" \
+        /tmp/openresearchtools-archive-keyring.deb \
+        | sha256sum --check --strict - && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        /tmp/openresearchtools-archive-keyring.deb && \
+    rm -f /tmp/openresearchtools-archive-keyring.deb && \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        "buzzardoscua=${BUZZARDOS_CUA_VERSION}" \
+        "buzzardos-guest=${BUZZARDOS_GUEST_VERSION}" \
+        "buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}" && \
     rm -f \
         /usr/share/applications/org.kde.ksecretd.desktop \
         /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.kwallet.service \
@@ -34,7 +50,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
         /usr/share/dbus-1/services/org.kde.secretservicecompat.service \
         /usr/share/xdg-desktop-portal/portals/kwallet.portal && \
     apt-get clean && \
-    rm -rf /tmp/buzzardos-debs /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/*
 
 COPY apt/debian-sid-live.sources \
     /etc/apt/sources.list.d/debian.sources
@@ -66,8 +82,7 @@ ARG NV_LIBNCCL_PACKAGE_VERSION=2.30.7-1+cuda13.3
 RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
         gnupg2 && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-keyring.deb \
+    wget --tries=4 --output-document=/tmp/cuda-keyring.deb \
         "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_${CUDA_KEYRING_VERSION}_all.deb" && \
     printf '%s  %s\n' "$CUDA_KEYRING_SHA256" /tmp/cuda-keyring.deb \
         | sha256sum --check --strict - && \

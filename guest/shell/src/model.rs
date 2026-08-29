@@ -35,6 +35,7 @@ pub struct Application {
     pub name: String,
     pub generic_name: Option<String>,
     pub icon: Option<String>,
+    pub startup_wm_class: Option<String>,
     pub categories: Vec<String>,
     pub source: PathBuf,
 }
@@ -72,6 +73,7 @@ impl Rect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellAction {
     ToggleApplications,
+    FocusApplicationSearch,
     OpenFiles,
     OpenShared,
     OpenDesktopItem(PathBuf, DesktopItemKind),
@@ -195,7 +197,7 @@ pub fn top_bar_targets(width: u32, workspaces: &[WorkspaceTab]) -> Vec<HitTarget
             width: add_width,
             height: TOP_BAR_HEIGHT,
         },
-        label: "Create CUA workspace".to_owned(),
+        label: "Create workspace".to_owned(),
         action: ShellAction::CreateWorkspace,
     });
     targets
@@ -378,6 +380,23 @@ pub fn applications_menu_close_target(menu_width: u32) -> HitTarget {
         },
         label: "Close Applications menu".to_owned(),
         action: ShellAction::CloseApplicationsMenu,
+    }
+}
+
+pub fn applications_menu_search_target(menu_width: u32, menu_height: u32) -> HitTarget {
+    let menu_width = i32::try_from(menu_width).unwrap_or(i32::MAX);
+    let menu_height = i32::try_from(menu_height).unwrap_or(i32::MAX);
+    HitTarget {
+        rect: Rect {
+            x: 8,
+            y: menu_height
+                .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
+                .saturating_add(6),
+            width: menu_width.saturating_sub(16),
+            height: MENU_ROW_HEIGHT,
+        },
+        label: "Search applications".to_owned(),
+        action: ShellAction::FocusApplicationSearch,
     }
 }
 
@@ -579,13 +598,19 @@ fn adapt_catalog(catalog: buzzardos_desktop_core::ApplicationCatalog) -> Vec<App
     catalog
         .applications
         .into_iter()
-        .map(|application| Application {
-            id: application.id.as_str().to_owned(),
-            name: application.name,
-            generic_name: application.generic_name,
-            icon: application.icon,
-            categories: application.categories,
-            source: application.source,
+        .map(|application| {
+            let startup_wm_class = gio::DesktopAppInfo::from_filename(&application.source)
+                .and_then(|info| info.startup_wm_class())
+                .map(|value| value.to_string());
+            Application {
+                id: application.id.as_str().to_owned(),
+                name: application.name,
+                generic_name: application.generic_name,
+                icon: application.icon,
+                startup_wm_class,
+                categories: application.categories,
+                source: application.source,
+            }
         })
         .collect()
 }
@@ -600,6 +625,7 @@ mod tests {
             name: name.to_owned(),
             generic_name: None,
             icon: None,
+            startup_wm_class: None,
             categories: Vec::new(),
             source: PathBuf::new(),
         }
@@ -664,6 +690,49 @@ mod tests {
         assert!(matches!(targets[1].action, ShellAction::SwitchWorkspace(1)));
         assert_eq!(targets[2].action, ShellAction::CreateWorkspace);
         assert_eq!(targets[1].rect.x + targets[1].rect.width, targets[2].rect.x);
+    }
+
+    #[test]
+    fn every_workspace_button_is_clickable_across_its_entire_area() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 1,
+                label: "CUA".into(),
+                active: false,
+            },
+            WorkspaceTab {
+                index: MANUAL_WORKSPACE_FLAG | 1,
+                label: "Workspace1".into(),
+                active: false,
+            },
+        ];
+        for target in top_bar_targets(640, &workspaces) {
+            let left = f64::from(target.rect.x) + 0.5;
+            let right = f64::from(target.rect.x + target.rect.width) - 0.5;
+            let top = f64::from(target.rect.y) + 0.5;
+            let bottom = f64::from(target.rect.y + target.rect.height) - 0.5;
+            assert!(target.rect.contains(left, top), "{} top-left", target.label);
+            assert!(
+                target.rect.contains(right, top),
+                "{} top-right",
+                target.label
+            );
+            assert!(
+                target.rect.contains(left, bottom),
+                "{} bottom-left",
+                target.label
+            );
+            assert!(
+                target.rect.contains(right, bottom),
+                "{} bottom-right",
+                target.label
+            );
+        }
     }
 
     #[test]
@@ -875,6 +944,17 @@ mod tests {
         let target = applications_menu_close_target(287);
         assert_eq!(target.action, ShellAction::CloseApplicationsMenu);
         assert_eq!(target.rect.x + target.rect.width, 287);
+    }
+
+    #[test]
+    fn applications_search_is_a_real_click_target() {
+        let target = applications_menu_search_target(300, 238);
+        assert_eq!(target.action, ShellAction::FocusApplicationSearch);
+        assert_eq!(target.label, "Search applications");
+        assert_eq!(target.rect.x, 8);
+        assert_eq!(target.rect.y, 194);
+        assert_eq!(target.rect.width, 284);
+        assert_eq!(target.rect.height, MENU_ROW_HEIGHT);
     }
 
     #[test]

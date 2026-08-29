@@ -109,8 +109,14 @@ impl HostApplication {
             .application_id(&self.launch.app_id)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
+        let system_theme = Rc::new(RefCell::new(None::<gio::Settings>));
+        let system_theme_for_activation = Rc::clone(&system_theme);
         let activation = Rc::new(RefCell::new(Some((self.launch, self.connection))));
         application.connect_activate(move |application| {
+            if system_theme_for_activation.borrow().is_none() {
+                system_theme_for_activation
+                    .replace(crate::host_theme::follow_system_color_scheme());
+            }
             let Some((launch, connection)) = activation.borrow_mut().take() else {
                 if let Some(window) = application.active_window() {
                     window.present();
@@ -130,6 +136,7 @@ impl HostApplication {
         if status != glib::ExitCode::SUCCESS {
             anyhow::bail!("native host application exited with {status:?}");
         }
+        drop(system_theme);
         Ok(())
     }
 }
@@ -2998,6 +3005,7 @@ impl NativeWindow {
             .placeholder_text("all, index, or GPU UUIDs")
             .hexpand(true)
             .build();
+        let machine_location = machine_location_control(&dialog, &self.launch.machine_dir);
         let restart = gtk::Label::new(Some(
             "Display, network, and GPU changes take effect on the next machine start.",
         ));
@@ -3005,17 +3013,17 @@ impl NativeWindow {
         restart.set_wrap(true);
         restart.set_xalign(0.0);
 
-        attach_setting(&grid, 0, "Initial monitor width", &width);
-        attach_setting(&grid, 1, "Initial monitor height", &height);
-        attach_setting(&grid, 2, "Desktop scale", &guest_scale);
-        attach_setting(&grid, 3, "Network mode", &network);
-        attach_setting(&grid, 4, "GPU passthrough", &gpus);
-        grid.attach(&restart, 0, 5, 2, 1);
+        attach_setting(&grid, 0, "Machine location", &machine_location);
+        attach_setting(&grid, 1, "Initial monitor width", &width);
+        attach_setting(&grid, 2, "Initial monitor height", &height);
+        attach_setting(&grid, 3, "Desktop scale", &guest_scale);
+        attach_setting(&grid, 4, "Network mode", &network);
+        attach_setting(&grid, 5, "GPU passthrough", &gpus);
+        grid.attach(&restart, 0, 6, 2, 1);
 
         let actions = gtk::ActionBar::new();
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::with_label("Save");
-        save.add_css_class("suggested-action");
         save.set_receives_default(true);
         actions.pack_end(&save);
         actions.pack_end(&cancel);
@@ -3170,7 +3178,6 @@ impl NativeWindow {
         let actions = gtk::ActionBar::new();
         let cancel = gtk::Button::with_label("Cancel");
         let apply = gtk::Button::with_label("Apply Live");
-        apply.add_css_class("suggested-action");
         actions.pack_end(&apply);
         actions.pack_end(&cancel);
         content.append(&actions);
@@ -3304,7 +3311,6 @@ impl NativeWindow {
         let actions = gtk::ActionBar::new();
         let cancel = gtk::Button::with_label("Cancel");
         let apply = gtk::Button::with_label("Apply Live");
-        apply.add_css_class("suggested-action");
         actions.pack_end(&apply);
         actions.pack_end(&cancel);
         content.append(&actions);
@@ -4171,6 +4177,40 @@ fn attach_setting(grid: &gtk::Grid, row: i32, name: &str, value: &impl IsA<gtk::
     grid.attach(value, 1, row, 1, 1);
 }
 
+fn machine_location_control(parent: &gtk::Window, machine_dir: &std::path::Path) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let location = gtk::Entry::builder()
+        .text(machine_dir.to_string_lossy())
+        .editable(false)
+        .hexpand(true)
+        .tooltip_text("The machine location is fixed; move a stopped machine folder and re-register it to change this path")
+        .build();
+    let open = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .label("Open Folder")
+        .tooltip_text("Open this machine folder in the system file manager")
+        .build();
+    row.append(&location);
+    row.append(&open);
+
+    let parent = parent.clone();
+    let machine_dir = machine_dir.to_path_buf();
+    open.connect_clicked(move |_| {
+        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&machine_dir)));
+        let parent = parent.clone();
+        glib::spawn_future_local(async move {
+            if let Err(error) = launcher.launch_future(Some(&parent)).await {
+                show_error_dialog(
+                    &parent,
+                    "Could not open the machine folder",
+                    &anyhow::Error::new(error),
+                );
+            }
+        });
+    });
+    row
+}
+
 fn add_diagnostic(grid: &gtk::Grid, row: i32, name: &str, value: &str) {
     let name = gtk::Label::new(Some(name));
     name.set_xalign(0.0);
@@ -4183,7 +4223,7 @@ fn add_diagnostic(grid: &gtk::Grid, row: i32, name: &str, value: &str) {
     grid.attach(&value, 1, row, 1, 1);
 }
 
-fn show_error_dialog(parent: &gtk::ApplicationWindow, heading: &str, error: &anyhow::Error) {
+fn show_error_dialog(parent: &impl IsA<gtk::Window>, heading: &str, error: &anyhow::Error) {
     let dialog = gtk::AlertDialog::builder()
         .modal(true)
         .message(heading)

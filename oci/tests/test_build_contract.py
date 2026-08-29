@@ -81,7 +81,7 @@ class OciBuildContractTests(unittest.TestCase):
             "--storage-driver vfs",
             "--no-cache",
             "--pull=always",
-            'install -m 0644 "$guest_deb" "$desktop_deb" "$cua_deb"',
+            'install -d -m 0755 "$context/apt"',
             'variant=${BUZZARDOS_OCI_VARIANT:-standard}',
             'containerfile=Containerfile.cuda',
             'BUZZARDOS_EXPECT_CUDA="$expect_cuda"',
@@ -90,6 +90,8 @@ class OciBuildContractTests(unittest.TestCase):
             self.assertIn(required, builder)
         for redundant in ("docker ", "podman ", "skopeo", "crane"):
             self.assertNotIn(redundant, builder)
+        self.assertNotIn("BUZZARDOS_GUEST_DEB_DIR", builder)
+        self.assertNotIn('"$context/debs"', builder)
 
     def test_reference_image_uses_only_distribution_sway_and_wlroots(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
@@ -173,9 +175,12 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("gsettings list-keys org.gnome.desktop.interface", verifier)
         self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
         self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
-        self.assertIn("buzzardos-guest_*_amd64.deb", containerfile)
-        self.assertIn("buzzardos-desktop_*_amd64.deb", containerfile)
-        self.assertIn("buzzardoscua_*_amd64.deb", containerfile)
+        self.assertIn("https://keyring.openresearchtools.com", containerfile)
+        self.assertIn('"buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"', containerfile)
+        self.assertIn('"buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"', containerfile)
+        self.assertIn('"buzzardoscua=${BUZZARDOS_CUA_VERSION}"', containerfile)
+        self.assertIn("OPENRESEARCHTOOLS_KEYRING_SHA256", containerfile)
+        self.assertNotIn("COPY debs/", containerfile)
         self.assertNotIn("AS deb-builder", containerfile)
         self.assertNotIn("cargo build", containerfile)
         self.assertNotIn("packaging/build-debs.sh", containerfile)

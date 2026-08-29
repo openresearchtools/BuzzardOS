@@ -63,6 +63,8 @@ pub(crate) fn run_from_args() -> Result<()> {
         .application_id("org.openresearchtools.buzzardos")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
+    let system_theme = Rc::new(RefCell::new(None::<gio::Settings>));
+    let system_theme_for_activation = Rc::clone(&system_theme);
     let activation = Rc::new(RefCell::new(Some(args.launcher)));
     // GTK owns the application window after it is presented, but the window
     // does not own `ManagerUi`.  Keep the controller alive for the complete
@@ -70,6 +72,9 @@ pub(crate) fn run_from_args() -> Result<()> {
     let active_manager = Rc::new(RefCell::new(None::<Rc<ManagerUi>>));
     let active_manager_for_activation = Rc::clone(&active_manager);
     application.connect_activate(move |application| {
+        if system_theme_for_activation.borrow().is_none() {
+            system_theme_for_activation.replace(crate::host_theme::follow_system_color_scheme());
+        }
         if let Some(manager) = active_manager_for_activation.borrow().as_ref() {
             manager.window.present();
             return;
@@ -93,6 +98,7 @@ pub(crate) fn run_from_args() -> Result<()> {
     });
     let status = application.run_with_args(&["BuzzardOS"]);
     drop(active_manager);
+    drop(system_theme);
     if status != glib::ExitCode::SUCCESS {
         bail!("machine manager exited with {status:?}");
     }
@@ -104,6 +110,23 @@ struct ManagerUi {
     launcher: PathBuf,
     list: gtk::ListBox,
     command_result: Arc<Mutex<Option<String>>>,
+    machine_list_snapshot: RefCell<Vec<MachineListSignature>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MachineListSignature {
+    directory: PathBuf,
+    name: String,
+    width: u32,
+    height: u32,
+    network: String,
+    state: MachineState,
+}
+
+struct MachineListItem {
+    directory: PathBuf,
+    config: MachineConfig,
+    state: MachineState,
 }
 
 #[derive(Clone, Copy)]
@@ -161,7 +184,6 @@ impl ManagerUi {
             .label("Add Machine")
             .tooltip_text("Create, pull, or import a machine")
             .build();
-        create.add_css_class("suggested-action");
         let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
         refresh.set_tooltip_text(Some("Refresh machines"));
         let about = gtk::Button::from_icon_name("help-about-symbolic");
@@ -193,6 +215,7 @@ impl ManagerUi {
             launcher,
             list,
             command_result: Arc::new(Mutex::new(None)),
+            machine_list_snapshot: RefCell::new(Vec::new()),
         });
         manager.refresh()?;
 
@@ -231,6 +254,16 @@ impl ManagerUi {
                 if let Err(error) = manager.refresh() {
                     show_manager_error(&manager.window, "Could not refresh machines", &error);
                 }
+            }
+            glib::ControlFlow::Continue
+        });
+        let weak = Rc::downgrade(&manager);
+        glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+            let Some(manager) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if let Err(error) = manager.refresh_if_changed() {
+                eprintln!("Buzzard OS machine manager: refreshing lifecycle state: {error:#}");
             }
             glib::ControlFlow::Continue
         });
@@ -316,20 +349,24 @@ impl ManagerUi {
     }
 
     fn refresh(self: &Rc<Self>) -> Result<()> {
+        self.render_machines(discover_machine_list()?)
+    }
+
+    fn refresh_if_changed(self: &Rc<Self>) -> Result<()> {
+        let machines = discover_machine_list()?;
+        let snapshot = machine_list_signature(&machines);
+        if *self.machine_list_snapshot.borrow() != snapshot {
+            self.render_machines(machines)?;
+        }
+        Ok(())
+    }
+
+    fn render_machines(self: &Rc<Self>, machines: Vec<MachineListItem>) -> Result<()> {
+        self.machine_list_snapshot
+            .replace(machine_list_signature(&machines));
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
-        let registry = MachineRegistry::discover()?;
-        let mut machines = registry
-            .entries()
-            .iter()
-            .filter_map(|entry| {
-                MachineConfig::load(&entry.machine_dir)
-                    .ok()
-                    .map(|config| (entry.machine_dir.clone(), config))
-            })
-            .collect::<Vec<_>>();
-        machines.sort_by(|left, right| left.1.name.cmp(&right.1.name));
         if machines.is_empty() {
             let empty = gtk::Box::new(gtk::Orientation::Vertical, 10);
             empty.set_margin_top(56);
@@ -351,13 +388,19 @@ impl ManagerUi {
             self.list.append(&empty);
             return Ok(());
         }
-        for (directory, config) in machines {
-            self.list.append(&self.machine_row(&directory, &config));
+        for machine in machines {
+            self.list
+                .append(&self.machine_row(&machine.directory, &machine.config, machine.state));
         }
         Ok(())
     }
 
-    fn machine_row(self: &Rc<Self>, directory: &Path, config: &MachineConfig) -> gtk::ListBoxRow {
+    fn machine_row(
+        self: &Rc<Self>,
+        directory: &Path,
+        config: &MachineConfig,
+        runtime_state: MachineState,
+    ) -> gtk::ListBoxRow {
         let row = gtk::ListBoxRow::new();
         row.set_activatable(true);
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 14);
@@ -373,11 +416,6 @@ impl ManagerUi {
         let name = gtk::Label::new(Some(&config.name));
         name.set_xalign(0.0);
         name.add_css_class("heading");
-        let runtime_state = RuntimeState::load(directory)
-            .ok()
-            .flatten()
-            .map(|state| state.state)
-            .unwrap_or(MachineState::Stopped);
         let state_text = match runtime_state {
             MachineState::Starting => "Starting",
             MachineState::Running => "Running",
@@ -409,9 +447,6 @@ impl ManagerUi {
         } else {
             "Start this machine and open its window"
         }));
-        if !running {
-            lifecycle.add_css_class("suggested-action");
-        }
         let weak = Rc::downgrade(self);
         let machine = config.name.clone();
         let machine_dir = directory.to_path_buf();
@@ -453,12 +488,7 @@ impl ManagerUi {
         actions.set_margin_end(6);
         actions.set_margin_top(6);
         actions.set_margin_bottom(6);
-        for (label, action) in [
-            ("Open machine", "open"),
-            ("Export…", "export"),
-            ("Clone…", "clone"),
-            ("Delete…", "delete"),
-        ] {
+        for (label, action) in MACHINE_OVERFLOW_ACTIONS {
             let button = gtk::Button::with_label(label);
             button.set_halign(gtk::Align::Fill);
             if action == "delete" {
@@ -476,7 +506,6 @@ impl ManagerUi {
                     return;
                 };
                 match action {
-                    "open" => manager.open_machine(&machine, &machine_dir),
                     "export" => manager.show_export_dialog(&machine, &machine_dir),
                     "clone" => manager.show_clone_dialog(&machine),
                     "delete" => manager.show_delete_dialog(&machine, &machine_dir),
@@ -554,6 +583,7 @@ impl ManagerUi {
 
         let general = settings_page("General", "Display, network, and GPU settings");
         let general_content = general.1;
+        let machine_location = machine_location_control(&dialog, machine_dir);
         let title = gtk::Entry::builder()
             .text(&config.title)
             .hexpand(true)
@@ -599,12 +629,13 @@ impl ManagerUi {
             .column_spacing(18)
             .hexpand(true)
             .build();
-        attach_manager_setting(&general_grid, 0, "Window title", &title);
-        attach_manager_setting(&general_grid, 1, "Initial monitor width", &width);
-        attach_manager_setting(&general_grid, 2, "Initial monitor height", &height);
-        attach_manager_setting(&general_grid, 3, "Desktop scale", &guest_scale);
-        attach_manager_setting(&general_grid, 4, "Network mode", &network);
-        attach_manager_setting(&general_grid, 5, "GPU passthrough", &gpus);
+        attach_manager_setting(&general_grid, 0, "Machine location", &machine_location);
+        attach_manager_setting(&general_grid, 1, "Window title", &title);
+        attach_manager_setting(&general_grid, 2, "Initial monitor width", &width);
+        attach_manager_setting(&general_grid, 3, "Initial monitor height", &height);
+        attach_manager_setting(&general_grid, 4, "Desktop scale", &guest_scale);
+        attach_manager_setting(&general_grid, 5, "Network mode", &network);
+        attach_manager_setting(&general_grid, 6, "GPU passthrough", &gpus);
         general_content.append(&general_grid);
         let restart_note = gtk::Label::new(Some(
             "Display, network, and GPU changes take effect on the next machine start.",
@@ -735,7 +766,6 @@ impl ManagerUi {
         let actions = gtk::ActionBar::new();
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::with_label("Save");
-        save.add_css_class("suggested-action");
         actions.pack_end(&save);
         actions.pack_end(&cancel);
         root.append(&actions);
@@ -1211,7 +1241,6 @@ impl ManagerUi {
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         let accept = gtk::Button::with_label(if importing { "Import" } else { "Create" });
-        accept.add_css_class("suggested-action");
         actions.append(&cancel);
         actions.append(&accept);
         root.append(&actions);
@@ -1383,7 +1412,6 @@ impl ManagerUi {
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         let accept = gtk::Button::with_label("Create");
-        accept.add_css_class("suggested-action");
         actions.append(&cancel);
         actions.append(&accept);
         root.append(&actions);
@@ -1433,18 +1461,11 @@ impl ManagerUi {
                 }
                 let (build_context, selected_file, cleanup) = match built_in {
                     Some(_) => {
-                        let prepared = default_guest_package_directory()
-                            .context("Buzzard guest build packages are not installed")
-                            .and_then(|package_dir| {
-                                prepare_builtin_context(
-                                    if cuda_support.is_active() {
-                                        BuiltInMachine::Cuda
-                                    } else {
-                                        BuiltInMachine::Standard
-                                    },
-                                    &package_dir,
-                                )
-                            });
+                        let prepared = prepare_builtin_context(if cuda_support.is_active() {
+                            BuiltInMachine::Cuda
+                        } else {
+                            BuiltInMachine::Standard
+                        });
                         match prepared {
                             Ok(context) => {
                                 let file = context.join("Containerfile");
@@ -1453,7 +1474,7 @@ impl ManagerUi {
                             Err(error) => {
                                 show_manager_error(
                                     &close,
-                                    "Buzzard build packages are unavailable",
+                                    "Could not prepare the Buzzard build",
                                     &error,
                                 );
                                 return;
@@ -1530,7 +1551,6 @@ impl ManagerUi {
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         let accept = gtk::Button::with_label("Export");
-        accept.add_css_class("suggested-action");
         actions.append(&cancel);
         actions.append(&accept);
         root.append(&actions);
@@ -1594,7 +1614,6 @@ impl ManagerUi {
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         let accept = gtk::Button::with_label("Clone");
-        accept.add_css_class("suggested-action");
         actions.append(&cancel);
         actions.append(&accept);
         root.append(&actions);
@@ -1847,6 +1866,49 @@ fn network_label(network: NetworkMode) -> &'static str {
     }
 }
 
+const MACHINE_OVERFLOW_ACTIONS: [(&str, &str); 3] = [
+    ("Export…", "export"),
+    ("Clone…", "clone"),
+    ("Delete…", "delete"),
+];
+
+fn discover_machine_list() -> Result<Vec<MachineListItem>> {
+    let registry = MachineRegistry::discover()?;
+    let mut machines = registry
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            let config = MachineConfig::load(&entry.machine_dir).ok()?;
+            let state = RuntimeState::load(&entry.machine_dir)
+                .ok()
+                .flatten()
+                .map(|state| state.state)
+                .unwrap_or(MachineState::Stopped);
+            Some(MachineListItem {
+                directory: entry.machine_dir.clone(),
+                config,
+                state,
+            })
+        })
+        .collect::<Vec<_>>();
+    machines.sort_by(|left, right| left.config.name.cmp(&right.config.name));
+    Ok(machines)
+}
+
+fn machine_list_signature(machines: &[MachineListItem]) -> Vec<MachineListSignature> {
+    machines
+        .iter()
+        .map(|machine| MachineListSignature {
+            directory: machine.directory.clone(),
+            name: machine.config.name.clone(),
+            width: machine.config.width,
+            height: machine.config.height,
+            network: network_label(machine.config.network).to_owned(),
+            state: machine.state,
+        })
+        .collect()
+}
+
 fn add_machine_choice(
     list: &gtk::ListBox,
     icon_name: &str,
@@ -1925,68 +1987,13 @@ fn export_destination(folder: &Path, machine: &str) -> Result<PathBuf> {
     Ok(destination)
 }
 
-fn default_guest_package_directory() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("BUZZARDOS_GUEST_DEB_DIR") {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Ok(current) = std::env::current_dir() {
-        candidates.push(current.join("debs"));
-        candidates.push(current.join("build/debs"));
-    }
-    candidates
-        .into_iter()
-        .find(|path| guest_package_files(path).is_ok())
-}
-
-fn guest_package_files(directory: &Path) -> Result<[PathBuf; 3]> {
-    if !directory.is_dir() {
-        bail!(
-            "guest package folder is not a directory: {}",
-            directory.display()
-        );
-    }
-    let entries = std::fs::read_dir(directory)
-        .with_context(|| format!("reading guest package folder {}", directory.display()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    let find_one = |prefix: &str| -> Result<PathBuf> {
-        let mut matches = entries
-            .iter()
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with("_amd64.deb"))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        matches.sort();
-        match matches.as_slice() {
-            [path] => Ok(path.clone()),
-            [] => bail!("missing {prefix}*_amd64.deb in {}", directory.display()),
-            _ => bail!(
-                "more than one {prefix}*_amd64.deb is present in {}; keep one release version",
-                directory.display()
-            ),
-        }
-    };
-    Ok([
-        find_one("buzzardos-guest_")?,
-        find_one("buzzardos-desktop_")?,
-        find_one("buzzardoscua_")?,
-    ])
-}
-
-fn prepare_builtin_context(variant: BuiltInMachine, package_dir: &Path) -> Result<PathBuf> {
-    let packages = guest_package_files(package_dir)?;
+fn prepare_builtin_context(variant: BuiltInMachine) -> Result<PathBuf> {
     let context = std::env::temp_dir().join(format!(
         "buzzardos-container-context-{}",
         uuid::Uuid::new_v4()
     ));
     let result = (|| -> Result<()> {
         std::fs::create_dir_all(context.join("apt"))?;
-        std::fs::create_dir_all(context.join("debs"))?;
         let containerfile = match variant {
             BuiltInMachine::Cuda => BUILTIN_CONTAINERFILE_CUDA,
             BuiltInMachine::Standard => BUILTIN_CONTAINERFILE_STANDARD,
@@ -2000,12 +2007,6 @@ fn prepare_builtin_context(variant: BuiltInMachine, package_dir: &Path) -> Resul
         ] {
             write_embedded_build_asset(&context.join("apt").join(name), contents)?;
         }
-        for package in packages {
-            let name = package
-                .file_name()
-                .context("guest package path has no file name")?;
-            copy_build_asset(&package, &context.join("debs").join(name))?;
-        }
         Ok(())
     })();
     if let Err(error) = result {
@@ -2018,25 +2019,6 @@ fn prepare_builtin_context(variant: BuiltInMachine, package_dir: &Path) -> Resul
 fn write_embedded_build_asset(destination: &Path, contents: &[u8]) -> Result<()> {
     std::fs::write(destination, contents)
         .with_context(|| format!("writing built-in build asset {}", destination.display()))
-}
-
-fn copy_build_asset(source: &Path, destination: &Path) -> Result<()> {
-    let metadata = std::fs::symlink_metadata(source)
-        .with_context(|| format!("inspecting build asset {}", source.display()))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        bail!(
-            "build asset must be a regular file, not a symlink: {}",
-            source.display()
-        );
-    }
-    std::fs::copy(source, destination).with_context(|| {
-        format!(
-            "copying build asset {} to {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    Ok(())
 }
 
 fn settings_page(title: &str, detail: &str) -> (gtk::Box, gtk::Box) {
@@ -2066,6 +2048,40 @@ fn attach_manager_setting(grid: &gtk::Grid, row: i32, name: &str, value: &impl I
     label.set_mnemonic_widget(Some(value));
     grid.attach(&label, 0, row, 1, 1);
     grid.attach(value, 1, row, 1, 1);
+}
+
+fn machine_location_control(parent: &gtk::Window, machine_dir: &Path) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let location = gtk::Entry::builder()
+        .text(machine_dir.to_string_lossy())
+        .editable(false)
+        .hexpand(true)
+        .tooltip_text("The machine location is fixed; move a stopped machine folder and re-register it to change this path")
+        .build();
+    let open = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .label("Open Folder")
+        .tooltip_text("Open this machine folder in the system file manager")
+        .build();
+    row.append(&location);
+    row.append(&open);
+
+    let parent = parent.clone();
+    let machine_dir = machine_dir.to_path_buf();
+    open.connect_clicked(move |_| {
+        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&machine_dir)));
+        let parent = parent.clone();
+        glib::spawn_future_local(async move {
+            if let Err(error) = launcher.launch_future(Some(&parent)).await {
+                show_manager_error(
+                    &parent,
+                    "Could not open the machine folder",
+                    &anyhow::Error::new(error),
+                );
+            }
+        });
+    });
+    row
 }
 
 fn optional_target_entry(value: Option<&str>, placeholder: &str) -> gtk::Entry {
@@ -2461,7 +2477,6 @@ fn choose_folder_with_creation(
     spacer.set_hexpand(true);
     let cancel = gtk::Button::with_label("Cancel");
     let select = gtk::Button::with_label("Select");
-    select.add_css_class("suggested-action");
     actions.append(&new_folder);
     actions.append(&spacer);
     actions.append(&cancel);
@@ -2519,7 +2534,6 @@ fn show_new_folder_dialog(parent: &gtk::Window, chooser: &gtk::FileChooserWidget
     actions.set_halign(gtk::Align::End);
     let cancel = gtk::Button::with_label("Cancel");
     let create = gtk::Button::with_label("Create");
-    create.add_css_class("suggested-action");
     actions.append(&cancel);
     actions.append(&create);
     root.append(&actions);
@@ -2679,29 +2693,19 @@ mod license_tests {
     }
 
     #[test]
-    fn built_in_context_uses_separate_guest_package_artifacts() {
-        let packages = tempfile::tempdir().unwrap();
-        for name in [
-            "buzzardos-guest_1_amd64.deb",
-            "buzzardos-desktop_1_amd64.deb",
-            "buzzardoscua_1_amd64.deb",
-        ] {
-            std::fs::write(packages.path().join(name), b"separate package").unwrap();
-        }
+    fn built_in_context_bootstraps_the_signed_apt_repository() {
         for (variant, cuda) in [
             (BuiltInMachine::Cuda, true),
             (BuiltInMachine::Standard, false),
         ] {
-            let context = prepare_builtin_context(variant, packages.path()).unwrap();
+            let context = prepare_builtin_context(variant).unwrap();
             assert!(context.join("Containerfile").is_file());
             assert!(context.join("apt/debian-sid-live.sources").is_file());
-            assert!(context.join("debs/buzzardos-guest_1_amd64.deb").is_file());
-            assert_eq!(
-                std::fs::read_to_string(context.join("Containerfile"))
-                    .unwrap()
-                    .contains("CUDA_VERSION=13.3.1"),
-                cuda
-            );
+            assert!(!context.join("debs").exists());
+            let recipe = std::fs::read_to_string(context.join("Containerfile")).unwrap();
+            assert!(recipe.contains("https://keyring.openresearchtools.com"));
+            assert!(recipe.contains("buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"));
+            assert_eq!(recipe.contains("CUDA_VERSION=13.3.1"), cuda);
             std::fs::remove_dir_all(context).unwrap();
         }
     }
@@ -2756,5 +2760,37 @@ mod license_tests {
             sanitize_progress_line("\u{1b}[2A\u{1b}[JCopying blob 50%\r"),
             "Copying blob 50%"
         );
+    }
+
+    #[test]
+    fn overflow_menu_has_no_redundant_open_machine_action() {
+        assert_eq!(
+            MACHINE_OVERFLOW_ACTIONS,
+            [
+                ("Export…", "export"),
+                ("Clone…", "clone"),
+                ("Delete…", "delete"),
+            ]
+        );
+        assert!(
+            MACHINE_OVERFLOW_ACTIONS
+                .iter()
+                .all(|(_, action)| *action != "open")
+        );
+    }
+
+    #[test]
+    fn lifecycle_state_change_invalidates_the_manager_snapshot() {
+        let stopped = MachineListSignature {
+            directory: PathBuf::from("/tmp/machine"),
+            name: "machine".into(),
+            width: 1280,
+            height: 800,
+            network: "Private network".into(),
+            state: MachineState::Stopped,
+        };
+        let mut running = stopped.clone();
+        running.state = MachineState::Running;
+        assert_ne!(stopped, running);
     }
 }

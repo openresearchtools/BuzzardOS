@@ -37,6 +37,20 @@ run_shell() {
 run_shell '
     test "$(stat -c "%u:%g:%a" /home/buzzard)" = "1000:1000:700"
     test "$(stat -c "%u:%g:%a" /home/buzzard/.config)" = "1000:1000:700"
+    test "$(stat -c "%u:%g:%a" /home/buzzard/.config/gtk-3.0/bookmarks)" = "1000:1000:600"
+    test -d /home/buzzard/Documents
+    test -d /home/buzzard/Downloads
+    test -s /home/buzzard/.config/user-dirs.dirs
+    test -s /home/buzzard/.config/Thunar/uca.xml
+    test -x /usr/libexec/buzzardos-guest/sudo
+    test -L /usr/local/bin/sudo
+    test "$(readlink /usr/local/bin/sudo)" = /usr/libexec/buzzardos-guest/sudo
+    test "$(cat /home/buzzard/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
+        "file:///home/buzzard/Documents Documents" \
+        "file:///home/buzzard/Downloads Downloads" \
+        "file:///shared Shared")"
+    ! grep -Fq xdg-user-dirs-update /usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
+    ! grep -Fq install-thunar-actions /usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
     for command in \
         Xwayland dbus-daemon dbus-run-session ffmpeg firefox-esr \
         foot fusermount3 \
@@ -46,7 +60,7 @@ run_shell '
     do
         command -v "$command" >/dev/null
     done
-    runtime_root=/opt/buzzardos/runtime
+    runtime_root=/usr/lib/buzzardos/runtime
     runtime_revision=$(readlink "$runtime_root/current")
     runtime="$runtime_root/$runtime_revision"
     for required in \
@@ -203,7 +217,7 @@ for relative, record in manifest["assets"].items():
     assert path.stat().st_mode & 0o7777 == record["mode"], relative
 assert (root / "usr/lib/buzzardos/guest-assets.version").read_text().strip()
 
-runtime_root = root / "opt/buzzardos/runtime"
+runtime_root = root / "usr/lib/buzzardos/runtime"
 root_metadata = runtime_root.lstat()
 assert stat.S_ISDIR(root_metadata.st_mode) and not stat.S_ISLNK(root_metadata.st_mode)
 assert root_metadata.st_uid == 0 and not (stat.S_IMODE(root_metadata.st_mode) & 0o022)
@@ -250,7 +264,7 @@ assert seen == set(runtime_files)
 guest_listing = root / "var/lib/dpkg/info/buzzardos-guest.list"
 desktop_listing = root / "var/lib/dpkg/info/buzzardos-desktop.list"
 assert guest_listing.is_file() and desktop_listing.is_file()
-assert b"/opt/buzzardos/runtime/" in guest_listing.read_bytes()
+assert b"/usr/lib/buzzardos/runtime/" in guest_listing.read_bytes()
 assert b"/usr/bin/buzzardos-desktop" in desktop_listing.read_bytes()
 PY
     test -s /usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md

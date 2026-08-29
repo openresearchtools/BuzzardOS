@@ -170,7 +170,7 @@ def _numeric_scale(value):
     return type(value) in (int, float) and value > 0
 
 
-def sway_matches(state):
+def sway_outputs():
     result = subprocess.run(
         ["swaymsg", "-t", "get_outputs", "--raw"],
         stdin=subprocess.DEVNULL,
@@ -179,42 +179,78 @@ def sway_matches(state):
         check=False,
     )
     if result.returncode != 0:
-        return False
+        return None
     try:
         outputs = json.loads(result.stdout)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return False
+        return None
+    return outputs if isinstance(outputs, list) else None
+
+
+def active_sway_outputs(outputs):
     if not isinstance(outputs, list):
+        return None
+    active = []
+    for output in outputs:
+        if not isinstance(output, dict) or output.get("active") is not True:
+            continue
+        identifier = output.get("id")
+        name = output.get("name")
+        if (
+            not _plain_integer(identifier)
+            or identifier < 0
+            or not isinstance(name, str)
+            or not name
+            or any(
+                not (character.isascii() and (character.isalnum() or character in "_.:-"))
+                for character in name
+            )
+        ):
+            return None
+        active.append((identifier, name, output))
+    active.sort(key=lambda item: item[0])
+    if not active or len({item[0] for item in active}) != len(active):
+        return None
+    return active
+
+
+def sway_matches(state, outputs=None):
+    outputs = sway_outputs() if outputs is None else outputs
+    active = active_sway_outputs(outputs)
+    if active is None:
         return False
     expected_scale = state["guest_ui_scale_120"] / 120
-    for output in outputs:
-        if not isinstance(output, dict):
-            continue
+    for index, (_, _, output) in enumerate(active):
         actual_scale = output.get("scale")
-        if not _numeric_scale(actual_scale):
-            continue
-        if (
-            output.get("active") is True
+        rect = output.get("rect", {})
+        mode = output.get("current_mode", {})
+        if not (
+            _numeric_scale(actual_scale)
             and abs(float(actual_scale) - expected_scale) < 0.00001
-            and output.get("rect", {}).get("width") == state["logical_width"]
-            and output.get("rect", {}).get("height") == state["logical_height"]
-            and output.get("current_mode", {}).get("width")
-            == state["physical_width"]
-            and output.get("current_mode", {}).get("height")
-            == state["physical_height"]
+            and rect.get("x") == index * state["logical_width"]
+            and rect.get("y") == 0
+            and rect.get("width") == state["logical_width"]
+            and rect.get("height") == state["logical_height"]
+            and mode.get("width") == state["physical_width"]
+            and mode.get("height") == state["physical_height"]
         ):
-            return True
-    return False
+            return False
+    return True
 
 
 def configure_sway(state):
+    active = active_sway_outputs(sway_outputs())
+    if active is None:
+        return False
     scale = state["guest_ui_scale_120"] / 120
-    command = (
-        f"output * mode {state['physical_width']}x{state['physical_height']} "
-        f"scale {scale:.9f}"
-    )
+    commands = []
+    for index, (_, name, _) in enumerate(active):
+        commands.append(
+            f"output {name} mode {state['physical_width']}x{state['physical_height']} "
+            f"scale {scale:.9f} pos {index * state['logical_width']} 0"
+        )
     result = subprocess.run(
-        ["swaymsg", "--quiet", command],
+        ["swaymsg", "--quiet", "; ".join(commands)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -459,7 +495,7 @@ def _protected_xkb_root(path=None, require_packaged=True):
     approved = (
         resolved == "/usr/share/X11/xkb"
         or resolved == "/usr/share/xkeyboard-config-2"
-        or resolved.startswith("/opt/buzzardos/runtime/")
+        or resolved.startswith("/usr/lib/buzzardos/runtime/")
     )
     if require_packaged and not approved:
         raise RuntimeError("XKB configuration root escaped the approved guest runtime")
@@ -478,7 +514,7 @@ def _protected_xkb_library(path=None, require_packaged=True):
     resolved = os.path.realpath(path)
     approved = resolved.startswith(
         "/usr/lib/x86_64-linux-gnu/libxkbcommon.so."
-    ) or resolved.startswith("/opt/buzzardos/runtime/")
+    ) or resolved.startswith("/usr/lib/buzzardos/runtime/")
     if require_packaged and not approved:
         raise RuntimeError("libxkbcommon escaped the approved guest runtime")
     metadata = os.stat(resolved, follow_symlinks=False)

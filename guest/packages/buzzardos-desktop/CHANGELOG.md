@@ -10,3 +10,43 @@
   bar space use the same surface palette instead of black gaps.
 - Re-clamped every affected window after Desktop/CUA output swaps so titlebars
   remain fully below the selector and above the taskbar.
+- Made workspace creation, selection, and closing follow verified Sway state;
+  closing a numbered workspace moves its windows to Desktop before removal.
+- Routed Applications launches to the workspace visible when the user clicked,
+  and reveal an existing window there when an application is single-instance.
+- Made Applications search a focused, clickable editing control with working
+  Backspace/Delete/Enter behavior.
+- Made the whole area of workspace, CUA, taskbar, and menu controls clickable,
+  and removed the unwanted light separator above the taskbar.
+- Re-clamped existing floating windows into their own workspace after output
+  resizes, preventing another workspace's windows from crossing the new output
+  boundary.
+- Made the GTK4 Settings window root explicitly opaque so other guest windows
+  cannot show through its page stack during focus changes; the stack also
+  has a palette-derived solid drawing layer beneath it in both focused and
+  backdrop states.
+- Reworked Light mode as a complete neutral GTK palette with distinct desktop,
+  panel, navigation, application, field, control, hover, border, and backdrop
+  surfaces instead of near-white layers collapsing into one another.
+- Gave Settings a native system-panel hierarchy with a tinted navigation rail,
+  rounded selected rows, a quiet page canvas, and bordered raised setting cards;
+  the shell workspace bar and taskbar now use the dedicated panel colour.
+- Matched the requested Light palette samples exactly: workspace/task bars and
+  the Settings sidebar use `#ebebeb`, while the desktop and Settings window
+  canvas use the lighter `#fafafa`. Active shell segments remain continuous
+  with their bar and Light hover states use a darker tone of the same neutral
+  surface; orange remains reserved for selection and focus.
+- Made focused and unfocused Thunar use one deliberate Light hierarchy instead
+  of the old blue-grey fallback: panel-tone title/sidebar, window-tone
+  menu/toolbar/status area, white file view, and neutral borders.
+- Added Buzzard-orange icons for Home, Desktop, and every conventional XDG
+  folder; one-time reference-image provisioning initializes the standard user
+  directories and seeds Thunar Places with Documents and Downloads. Machine
+  start performs no folder/bookmark setup and never restores removed entries.
+- Update the real XDG Desktop from guest-local inotify or a one-shot helper
+  notification, with no periodic directory scan, idle refresh, or restart.
+- Wrap desktop labels to at most two bounded lines and ellipsize overflow so
+  names never escape their icon cell.
+- Render Files, Shared, and ordinary desktop folders with the installed
+  Buzzard icon theme instead of placeholder rectangles, and use a launcher's
+  localized `Name=` without appending its generic category.

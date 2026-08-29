@@ -23,8 +23,8 @@ Environment=GTK_MODULES=gail:atk-bridge
 Environment=NO_AT_BRIDGE=0
 Environment=BUZZARDOS_STATUS_DIR=/run/buzzardos-host
 EnvironmentFile=/run/buzzardos-host/driver.env
-ExecStart=/opt/buzzardos/runtime/current/libexec/buzzardos-session
-ExecStopPost=+/opt/buzzardos/runtime/current/libexec/buzzardos-desktop-stopped
+ExecStart=/usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
+ExecStopPost=+/usr/lib/buzzardos/runtime/current/libexec/buzzardos-desktop-stopped
 KillMode=mixed
 TimeoutStopSec=30
 Restart=no

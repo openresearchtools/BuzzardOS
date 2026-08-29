@@ -89,7 +89,7 @@ if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
 fi
 start_optional_service pipewire-pulse pipewire-pulse
 start_optional_service wireplumber wireplumber
-runtime=/opt/buzzardos/runtime/current
+runtime=/usr/lib/buzzardos/runtime/current
 
 start_service appimage-ready "$runtime/libexec/buzzardos-appimage-ready"
 start_service clipboard-agent "$runtime/libexec/buzzardos-clipboard-agent"

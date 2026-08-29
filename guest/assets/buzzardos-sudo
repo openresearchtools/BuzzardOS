@@ -119,7 +119,7 @@ systemd-run \
     --uid="$target_user" \
     --gid="$target_group" \
     --working-directory="${PWD:-/}" \
-    /opt/buzzardos/runtime/current/libexec/buzzardos-sudo-exec \
+    /usr/lib/buzzardos/runtime/current/libexec/buzzardos-sudo-exec \
     "$output_fifo" \
     -- \
     "$@"

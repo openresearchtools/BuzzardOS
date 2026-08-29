@@ -1,17 +1,19 @@
 # Hosted Debian package assembly
 
-`build-release-assets.yml` is manually dispatched and read-only. On a
+`build-release-assets.yml` runs manually or for a pushed `v*` tag. On a
 disposable Ubuntu 24.04 x86-64 runner it:
 
 1. validates source, packaging, OCI, and licensing contracts;
 2. builds `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` `.deb` files;
 3. install-smokes the host package;
-4. builds and verifies the reference OCI with distro Sway/wlroots; and
-5. uploads the three packages and their SHA-256 files as one seven-day Actions
+4. on manual runs, builds and verifies the published-APT reference OCI with
+   distro Sway/wlroots;
+5. uploads the four packages and their SHA-256 files as one seven-day Actions
    artifact named `BuzzardOS-debian-packages-amd64`.
+6. on version tags, publishes all four packages and checksums to the matching
+   stable GitHub Release.
 
-The OCI image exists only in the runner's local Docker daemon and is removed
-after verification. The workflow has no automatic trigger, write permission,
-publisher job, registry login, OCI push, APT upload, or GitHub Release action.
-It cannot create or modify a tag, environment, Package, GHCR image, or APT
-repository.
+The OCI image exists only in the runner's local Buildah store and is removed
+after verification. The workflow never publishes an OCI image or writes APT
+metadata. The separate `openresearchtools/apt` workflow indexes stable package
+release assets and signs the central catalogue in its protected environment.

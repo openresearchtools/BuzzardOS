@@ -2878,7 +2878,7 @@ fn validate_extracted_rootfs(rootfs: &Path) -> Result<()> {
         "usr/bin/sway",
         "usr/bin/swaymsg",
         "usr/bin/buzzardoscua",
-        "opt/buzzardos/runtime/current/libexec/buzzardos-clipboard-agent",
+        "usr/lib/buzzardos/runtime/current/libexec/buzzardos-clipboard-agent",
         "usr/bin/buzzardos-settings",
         "usr/bin/buzzardos-desktop",
         "usr/libexec/buzzardos-shortcut-helper",

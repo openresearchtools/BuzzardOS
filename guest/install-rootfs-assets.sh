@@ -25,11 +25,12 @@ if [ "${#revision}" -gt 128 ]; then
 fi
 
 tab=$(printf '\t')
-runtime_root="$target_root/opt/buzzardos/runtime"
+runtime_root="$target_root/usr/lib/buzzardos/runtime"
 revision_dir="$runtime_root/$revision"
 for protected_dir in \
-    "$target_root/opt" \
-    "$target_root/opt/buzzardos" \
+    "$target_root/usr" \
+    "$target_root/usr/lib" \
+    "$target_root/usr/lib/buzzardos" \
     "$runtime_root"; do
     if [ -L "$protected_dir" ] || { [ -e "$protected_dir" ] && [ ! -d "$protected_dir" ]; }; then
         echo "protected runtime parent is not a real directory: $protected_dir" >&2
@@ -41,7 +42,7 @@ for protected_dir in \
     chmod 0755 "$protected_dir"
 done
 if [ "$(id -u)" -eq 0 ]; then
-    chown 0:0 "$target_root/opt" "$target_root/opt/buzzardos" "$runtime_root"
+    chown 0:0 "$target_root/usr/lib/buzzardos" "$runtime_root"
 fi
 stage=$(mktemp -d "$runtime_root/.$revision.staging.XXXXXX")
 cleanup_stage() {

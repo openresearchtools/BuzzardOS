@@ -270,7 +270,10 @@ impl DesktopModel {
 /// launcher still never leaks the implementation suffix into the visual label.
 fn launcher_display_name(item: &DesktopItem) -> String {
     gio::DesktopAppInfo::from_filename(&item.path)
-        .map(|info| info.display_name().to_string())
+        // AppInfo::display_name may combine Name and GenericName (for
+        // example, "Firefox ESR Web Browser"). Desktop shortcuts use the
+        // application's actual localized Name, matching Applications.
+        .map(|info| info.name().to_string())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| {
             item.display_name
@@ -414,7 +417,7 @@ mod tests {
         let shortcut = paths.desktop_dir.join("firefox-esr.desktop");
         fs::write(
             &shortcut,
-            b"[Desktop Entry]\nType=Application\nName=Firefox ESR\nExec=/bin/true\n",
+            b"[Desktop Entry]\nType=Application\nName=Firefox ESR\nGenericName=Web Browser\nExec=/bin/true\n",
         )
         .unwrap();
 

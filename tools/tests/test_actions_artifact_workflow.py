@@ -24,11 +24,10 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_workflow_is_manual_read_only_and_uploads_one_artifact(self) -> None:
-        self.assertRegex(
-            self.workflow,
-            r"(?m)^on:\n  workflow_dispatch:\n\npermissions:\n  contents: read$",
-        )
+    def test_workflow_is_manual_and_tag_driven_with_release_permission(self) -> None:
+        self.assertIn("workflow_dispatch:", self.workflow)
+        self.assertIn("push:\n    tags:\n      - 'v*'", self.workflow)
+        self.assertIn("permissions:\n  contents: write", self.workflow)
         self.assertEqual(len(re.findall(r"(?m)^\s*permissions:\s*$", self.workflow)), 1)
         jobs = self.workflow.split("\njobs:\n", maxsplit=1)[1]
         self.assertEqual(re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", jobs), ["build"])
@@ -39,7 +38,7 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("retention-days: 7", self.workflow)
         self.assertIn("compression-level: 0", self.workflow)
 
-    def test_workflow_has_no_publisher_or_registry_output(self) -> None:
+    def test_workflow_publishes_release_assets_but_no_registry_output(self) -> None:
         action_uses = re.findall(r"(?m)^\s*uses:\s*([^\s#]+)", self.workflow)
         self.assertEqual(
             action_uses,
@@ -48,17 +47,19 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
                 "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
             ],
         )
+        self.assertIn('gh release create "$GITHUB_REF_NAME"', self.workflow)
+        self.assertIn('gh release upload "$GITHUB_REF_NAME"', self.workflow)
+        self.assertIn("test \"${#assets[@]}\" -eq 8", self.workflow)
         for forbidden in (
-            r"(?im)^\s*(push|pull_request|schedule|workflow_run|workflow_call|release|registry_package|deployment|page_build)\s*:",
+            r"(?im)^\s*(pull_request|schedule|workflow_run|workflow_call|registry_package|deployment|page_build)\s*:",
             r"(?im)^\s*(environment|packages|pages|deployments|id-token)\s*:",
-            r"(?i)\bgh\s+(release|api)\b",
             r"(?i)\bgit\s+push\b",
             r"(?i)\b(docker|podman)\s+(login|push)\b",
             r"(?i)\boras\s+push\b",
             r"(?i)--push\b",
             r"(?i)(api|uploads)\.github\.com",
-            r"\$\{\{\s*(secrets\.|github\.token)",
-            r"(?i)\b(write-all|[a-z-]+:\s*write)\b",
+            r"\$\{\{\s*secrets\.",
+            r"(?i)\b(write-all)\b",
         ):
             self.assertNotRegex(self.workflow, forbidden)
         self.assertIn("./oci/build-local.sh", self.workflow)
@@ -85,10 +86,12 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
 
     def test_reference_oci_consumes_packages_and_stock_sway(self) -> None:
         self.assertNotIn("packaging/build-debs.sh", self.containerfile)
-        self.assertIn("buzzardos-guest_", self.containerfile)
-        self.assertIn("buzzardos-desktop_", self.containerfile)
-        self.assertIn("buzzardoscua_", self.containerfile)
-        self.assertIn("BUZZARDOS_GUEST_DEB_DIR", self.workflow)
+        self.assertIn('"buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"', self.containerfile)
+        self.assertIn('"buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"', self.containerfile)
+        self.assertIn('"buzzardoscua=${BUZZARDOS_CUA_VERSION}"', self.containerfile)
+        self.assertIn("https://keyring.openresearchtools.com", self.containerfile)
+        self.assertNotIn("BUZZARDOS_GUEST_DEB_DIR", self.workflow)
+        self.assertNotIn("COPY debs/", self.containerfile)
         for forbidden in ("git clone", "meson setup", "wlroots.git", "sway.git"):
             self.assertNotIn(forbidden, self.containerfile)
 

@@ -3,22 +3,16 @@
 //! Bounded inotify watches for shell-owned XDG models.
 
 use anyhow::{Context, Result};
-use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::hash::{Hash, Hasher};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 const MAX_WATCH_DIRECTORIES: usize = 4096;
 const MAX_WATCH_DEPTH: usize = 16;
 const EVENT_BUFFER_BYTES: usize = 64 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
-const MAX_POLL_ENTRIES: usize = 65_536;
 
 #[derive(Debug)]
 pub struct DirectoryWatcher {
@@ -28,14 +22,11 @@ pub struct DirectoryWatcher {
 #[derive(Debug)]
 enum WatchBackend {
     Inotify(File),
-    Polling(RefCell<PollingWatcher>),
-}
-
-#[derive(Debug)]
-struct PollingWatcher {
-    roots: Vec<PathBuf>,
-    fingerprint: u64,
-    next_check: Instant,
+    /// Explicit shell-control notifications remain available when the host's
+    /// inotify quota is exhausted. Never replace an event source with a
+    /// recurring filesystem scan: that would add idle work and visible
+    /// refreshes to every running desktop.
+    Unavailable,
 }
 
 impl DirectoryWatcher {
@@ -45,7 +36,9 @@ impl DirectoryWatcher {
         if descriptor < 0 {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::ENOSPC) {
-                return Self::polling(roots);
+                return Ok(Self {
+                    backend: WatchBackend::Unavailable,
+                });
             }
             return Err(error).context("creating inotify watcher");
         }
@@ -83,7 +76,9 @@ impl DirectoryWatcher {
             {
                 let error = std::io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::ENOSPC) {
-                    return Self::polling(roots);
+                    return Ok(Self {
+                        backend: WatchBackend::Unavailable,
+                    });
                 }
                 if error.kind() != std::io::ErrorKind::NotFound {
                     return Err(error).with_context(|| format!("watching {}", path.display()));
@@ -98,20 +93,18 @@ impl DirectoryWatcher {
     pub fn changed(&self) -> Result<bool> {
         match &self.backend {
             WatchBackend::Inotify(descriptor) => Self::inotify_changed(descriptor),
-            WatchBackend::Polling(state) => state.borrow_mut().changed(),
+            WatchBackend::Unavailable => Ok(false),
         }
     }
 
-    fn polling(roots: &[PathBuf]) -> Result<Self> {
-        let roots = roots.to_vec();
-        let fingerprint = poll_fingerprint(&roots)?;
-        Ok(Self {
-            backend: WatchBackend::Polling(RefCell::new(PollingWatcher {
-                roots,
-                fingerprint,
-                next_check: Instant::now() + POLL_INTERVAL,
-            })),
-        })
+    /// Return the guest-local event descriptor when kernel notifications are
+    /// available. Callers use this only as an independent readiness source;
+    /// no filesystem state enters the Wayland protocol or host gateway.
+    pub fn raw_fd(&self) -> Option<RawFd> {
+        match &self.backend {
+            WatchBackend::Inotify(descriptor) => Some(descriptor.as_raw_fd()),
+            WatchBackend::Unavailable => None,
+        }
     }
 
     fn inotify_changed(descriptor: &File) -> Result<bool> {
@@ -141,82 +134,6 @@ impl DirectoryWatcher {
             return Err(error).context("reading inotify events");
         }
     }
-}
-
-impl PollingWatcher {
-    fn changed(&mut self) -> Result<bool> {
-        let now = Instant::now();
-        if now < self.next_check {
-            return Ok(false);
-        }
-        self.next_check = now + POLL_INTERVAL;
-        let fingerprint = poll_fingerprint(&self.roots)?;
-        let changed = fingerprint != self.fingerprint;
-        self.fingerprint = fingerprint;
-        Ok(changed)
-    }
-}
-
-fn poll_fingerprint(roots: &[PathBuf]) -> Result<u64> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut entries = 0usize;
-    for root in roots {
-        root.as_os_str().as_bytes().hash(&mut hasher);
-        match nearest_real_directory(root)? {
-            Some((existing, true)) => {
-                fingerprint_tree(&existing, 0, &mut entries, &mut hasher)?;
-            }
-            Some((existing, false)) => {
-                fingerprint_metadata(&existing, &fs::symlink_metadata(&existing)?, &mut hasher);
-            }
-            None => 0xff_u8.hash(&mut hasher),
-        }
-    }
-    Ok(hasher.finish())
-}
-
-fn fingerprint_tree(
-    path: &Path,
-    depth: usize,
-    entries: &mut usize,
-    hasher: &mut impl Hasher,
-) -> Result<()> {
-    if depth > MAX_WATCH_DEPTH || *entries >= MAX_POLL_ENTRIES {
-        return Ok(());
-    }
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
-    };
-    *entries += 1;
-    fingerprint_metadata(path, &metadata, hasher);
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Ok(());
-    }
-    let mut children = fs::read_dir(path)
-        .with_context(|| format!("listing {}", path.display()))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
-    children.sort();
-    for child in children {
-        fingerprint_tree(&child, depth + 1, entries, hasher)?;
-        if *entries >= MAX_POLL_ENTRIES {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn fingerprint_metadata(path: &Path, metadata: &fs::Metadata, hasher: &mut impl Hasher) {
-    path.as_os_str().as_bytes().hash(hasher);
-    metadata.dev().hash(hasher);
-    metadata.ino().hash(hasher);
-    metadata.mode().hash(hasher);
-    metadata.len().hash(hasher);
-    metadata.mtime().hash(hasher);
-    metadata.mtime_nsec().hash(hasher);
 }
 
 fn nearest_real_directory(path: &Path) -> Result<Option<(PathBuf, bool)>> {
@@ -326,21 +243,12 @@ mod tests {
     }
 
     #[test]
-    fn polling_fallback_observes_existing_and_new_roots() {
+    fn unavailable_backend_never_scans_or_reports_periodic_changes() {
         let temp = tempfile::tempdir().unwrap();
-        let existing = temp.path().join("existing");
-        let missing = temp.path().join("new/leaf");
-        fs::create_dir(&existing).unwrap();
-        let watcher = DirectoryWatcher::polling(&[existing.clone(), missing.clone()]).unwrap();
-
-        fs::write(existing.join("entry.desktop"), b"fixture").unwrap();
-        fs::create_dir_all(&missing).unwrap();
-        let WatchBackend::Polling(state) = &watcher.backend else {
-            panic!("explicit polling constructor did not create the polling backend");
+        let watcher = DirectoryWatcher {
+            backend: WatchBackend::Unavailable,
         };
-        state.borrow_mut().next_check = Instant::now();
-
-        assert!(watcher.changed().unwrap());
+        fs::write(temp.path().join("entry.desktop"), b"fixture").unwrap();
         assert!(!watcher.changed().unwrap());
     }
 }
