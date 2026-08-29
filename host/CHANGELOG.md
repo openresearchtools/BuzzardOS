@@ -1,5 +1,12 @@
 # Buzzard OS host changelog
 
+## 0.1.3
+
+- Updated the built-in Standard and CUDA image recipes to install the first
+  independently versioned Buzzard CUA release, `buzzardoscua` 0.1.0.
+- Removed the withdrawn TryCua-derived version string from every product and
+  package-selection surface; the source baseline remains attribution only.
+
 ## 0.1.2
 
 - Updated the built-in Standard and CUDA image recipes to install

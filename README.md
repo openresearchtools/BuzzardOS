@@ -38,6 +38,10 @@ The versions come from [`VERSION`](VERSION),
 Buzzard OS GitHub release, and the signed Open Research Tools APT repository
 indexes them for normal installation and upgrades.
 
+`cua/VERSION` is Buzzard CUA's own product version. The TryCua tag and commit
+from which its reviewed Linux subset originated are retained only in the CUA
+license and provenance records; they do not participate in package updates.
+
 ## Per-machine storage
 
 There is no global Buzzard OS storage root. Every create, import, or clone

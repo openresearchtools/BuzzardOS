@@ -1,7 +1,7 @@
 ---
 name: buzzard-cua
 description: Use the daemonless Buzzard CUA CLI to inspect and control one numbered stock-Sway guest output through screenshots, Sway window metadata, AT-SPI, and synthetic input.
-version: 0.17.0+buzzard1
+version: 0.1.0
 metadata:
   requires:
     bins:

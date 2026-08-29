@@ -13,12 +13,17 @@ The deployment boundary is four binary packages:
   stock Sway/wlroots mechanics;
 - `buzzardos-desktop`: optional shell, Settings, themes, icons, applications,
   and Thunar integration; and
-- `buzzardoscua`: the separately versioned in-guest computer-use service.
+- `buzzardoscua`: the separately versioned daemonless in-guest computer-use
+  command.
 
 The four version files are `VERSION`, `guest/GUEST_VERSION`,
 `guest/DESKTOP_VERSION`, and `cua/VERSION`. A version tag publishes the four
 packages to the Buzzard OS GitHub release; the signed Open Research Tools APT
 repository indexes those assets. No OCI image is published.
+
+The Buzzard CUA version is independent. Its pinned TryCua source tag is
+license/provenance evidence and never becomes the Debian or CLI product
+version.
 
 ## Machine storage
 

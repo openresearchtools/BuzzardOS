@@ -1,6 +1,6 @@
 # Changelog
 
-## Buzzard 0.17.0+buzzard1 (2026-08-19)
+## Buzzard CUA 0.1.0 (2026-08-29)
 
 - Reduced the reviewed fork to one daemonless Linux/Sway CLI crate with 43
   local tools and no MCP, browser/CDP, recording, updater, or telemetry path.
@@ -12,6 +12,9 @@
 - Fixed heavyweight GUI launch routing, cross-output window coordinates,
   moved-window clamping, native right/middle click, and observable stock-Sway
   line/page scrolling.
+
+The remaining entries below are retained upstream history for the pinned
+TryCua source baseline. They are not Buzzard CUA product versions.
 
 ## [0.17.0](https://github.com/trycua/cua/compare/cua-driver-rs-v0.16.0...cua-driver-rs-v0.17.0) (2026-08-02)
 

@@ -2,6 +2,7 @@
 """Static gates for the daemonless, single-crate Buzzard CUA boundary."""
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -10,6 +11,22 @@ CUA = ROOT / "cua"
 
 
 class CuaReductionContractTests(unittest.TestCase):
+    def test_product_version_is_independent_from_trycua_provenance(self) -> None:
+        version = (CUA / "VERSION").read_text(encoding="utf-8").strip()
+        manifest = (CUA / "Cargo.toml").read_text(encoding="utf-8")
+        skill = (CUA / "Skills/buzzard-cua/SKILL.md").read_text(encoding="utf-8")
+        upstream = (CUA / "UPSTREAM.toml").read_text(encoding="utf-8")
+        notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertNotIn("buzzard", version)
+        self.assertIn(f'version = "{version}"', manifest)
+        self.assertIn(f"version: {version}", skill)
+        upstream_version = re.search(r'^upstream_version = "([^"]+)"$', upstream, re.M)
+        self.assertIsNotNone(upstream_version)
+        self.assertNotEqual(version, upstream_version.group(1))
+        self.assertNotIn(f"Buzzard CUA {upstream_version.group(1)}", notices)
+
     def test_cua_is_exactly_one_rust_crate(self) -> None:
         manifests = sorted(
             path.relative_to(CUA).as_posix() for path in CUA.rglob("Cargo.toml")

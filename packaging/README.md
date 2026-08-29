@@ -18,6 +18,11 @@ buzzardos-desktop_<DESKTOP_VERSION>_amd64.deb
 buzzardoscua_<cua/VERSION>_amd64.deb
 ```
 
+All four filenames use their component's own product version. In particular,
+the Buzzard CUA package version is not derived from its historical TryCua
+source baseline; that baseline is recorded only under `cua/` and in the
+package's attribution files.
+
 On a pushed `v*` tag the release workflow publishes all four artifacts and
 their checksums to the matching Buzzard OS GitHub release. The separately
 signed Open Research Tools APT repository indexes those release assets.

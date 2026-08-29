@@ -59,8 +59,8 @@ status = "unmodified-checksum-pinned-private-helper-runtime-with-upstream-notice
 [[component]]
 id = "buzzard-cua"
 surface = ["source", "deb"]
-name = "Buzzard CUA fork"
-version = "0.17.0+buzzard1"
+name = "TryCua source baseline retained by Buzzard CUA"
+version = "0.17.0"
 source = "https://github.com/trycua/cua"
 source_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
 source_tag = "cua-driver-rs-v0.17.0"

@@ -8,7 +8,7 @@ Buzzard OS. Machine-readable component and asset records are under
 
 ## Source-vendored components
 
-- **Buzzard CUA 0.17.0+buzzard1** is an auditable Linux fork of `trycua/cua`,
+- **Buzzard CUA** contains an auditable Linux fork of `trycua/cua`,
   tag `cua-driver-rs-v0.17.0`, commit
   `10279552e2bbe479e367a082f78b1b98ee85a697`, under the MIT License. Its
   preserved notice, source record, reviewed reduction notes, and downstream

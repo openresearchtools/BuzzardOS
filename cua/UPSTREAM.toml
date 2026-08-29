@@ -5,7 +5,7 @@ upstream_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
 upstream_tag = "cua-driver-rs-v0.17.0"
 upstream_version = "0.17.0"
 license = "MIT"
-vendored_scope = "reviewed Linux Sway/Wayland/Xwayland/AT-SPI CLI subset collapsed into one Rust crate plus required cursor assets"
+vendored_scope = "reviewed Linux Sway/Wayland/Xwayland/AT-SPI CLI subset collapsed into one Rust crate"
 vendored_scope_status = "reviewed-single-crate-linux-only-source-subset"
 
 [buzzard_os]
