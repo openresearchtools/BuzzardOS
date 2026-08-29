@@ -68,7 +68,7 @@ if want guest; then
     [[ "$(workspace_version "$project_dir/guest/Cargo.toml")" == "$guest_version" ]]
 fi
 if want desktop; then
-    [[ "$(workspace_version "$project_dir/guest/Cargo.toml")" == "$desktop_version" ]]
+    [[ "$(workspace_version "$project_dir/guest/shell/Cargo.toml")" == "$desktop_version" ]]
 fi
 if want cua; then
     [[ "$(workspace_version "$project_dir/cua/Cargo.toml")" == "$cua_version" ]]

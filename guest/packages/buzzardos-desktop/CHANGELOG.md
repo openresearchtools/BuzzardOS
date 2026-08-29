@@ -1,5 +1,11 @@
 # buzzardos-desktop changelog
 
+## 0.1.1
+
+- Fixed event-driven Desktop refreshes by opening a fresh secured directory
+  description for each inotify-triggered scan. Repeated scans no longer share
+  an end-of-directory offset, and no timer or idle directory scan is added.
+
 ## 0.1.0
 
 - Initial independently versioned Buzzard OS classic desktop package.

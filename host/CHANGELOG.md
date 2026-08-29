@@ -1,5 +1,10 @@
 # Buzzard OS host changelog
 
+## 0.1.1
+
+- Updated the built-in Standard and CUDA image recipes to install
+  `buzzardos-desktop` 0.1.1 from the signed Open Research Tools APT archive.
+
 ## 0.1.0
 
 - Initial Debian-package architecture for the manager, broker, and display.

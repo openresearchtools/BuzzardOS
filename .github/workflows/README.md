@@ -10,8 +10,10 @@ disposable Ubuntu 24.04 x86-64 runner it:
    distro Sway/wlroots;
 5. uploads the four packages and their SHA-256 files as one seven-day Actions
    artifact named `BuzzardOS-debian-packages-amd64`.
-6. on version tags, publishes all four packages and checksums to the matching
-   stable GitHub Release.
+6. on version tags, publishes each newly versioned package and checksum to the
+   matching stable GitHub Release. All four are rebuilt and audited, but an
+   unchanged component already present on an earlier stable release is not
+   duplicated, preserving independent package versions for the APT indexer.
 
 The OCI image exists only in the runner's local Buildah store and is removed
 after verification. The workflow never publishes an OCI image or writes APT

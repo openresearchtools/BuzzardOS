@@ -329,7 +329,7 @@ version = "0.1.0"
 
 [[package]]
 name = "buzzardos-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-desktop-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gio",
  "glib",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-settings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "buzzardos-desktop-core",
  "gio",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-shortcut-helper"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "buzzardos-desktop-core",

@@ -104,18 +104,47 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      - name: Publish all four packages on a version tag
+      - name: Publish newly versioned packages on a version tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t assets < <(
+          mapfile -t built_assets < <(
             find "$RUNNER_TEMP/buzzardos-debs" -maxdepth 1 -type f \
               \( -name '*.deb' -o -name '*.deb.sha256' \) -print | sort
           )
-          test "${#assets[@]}" -eq 8
+          test "${#built_assets[@]}" -eq 8
+
+          # Components have independent versions. A tag still builds and
+          # audits all four packages, but a stable release must not republish
+          # an unchanged Package/Version/Architecture tuple that the central
+          # APT catalogue already indexes from an earlier release.
+          declare -A published=()
+          while IFS=$'\t' read -r tag asset_name; do
+            if [[ -n "$asset_name" && "$tag" != "$GITHUB_REF_NAME" ]]; then
+              published["$asset_name"]=1
+            fi
+          done < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] as $release | $release.assets[]? | [$release.tag_name, .name] | @tsv'
+          )
+
+          assets=()
+          for candidate in "${built_assets[@]}"; do
+            asset_name=$(basename "$candidate")
+            if [[ -z "${published[$asset_name]+present}" ]]; then
+              assets+=("$candidate")
+            fi
+          done
+          test "${#assets[@]}" -gt 0
+          test "$(( ${#assets[@]} % 2 ))" -eq 0
+          for candidate in "${assets[@]}"; do
+            if [[ "$candidate" == *.deb ]]; then
+              test -s "$candidate.sha256"
+            fi
+          done
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else

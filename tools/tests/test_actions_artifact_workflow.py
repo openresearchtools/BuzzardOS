@@ -49,7 +49,10 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         )
         self.assertIn('gh release create "$GITHUB_REF_NAME"', self.workflow)
         self.assertIn('gh release upload "$GITHUB_REF_NAME"', self.workflow)
-        self.assertIn("test \"${#assets[@]}\" -eq 8", self.workflow)
+        self.assertIn("test \"${#built_assets[@]}\" -eq 8", self.workflow)
+        self.assertIn("declare -A published=()", self.workflow)
+        self.assertIn('"$tag" != "$GITHUB_REF_NAME"', self.workflow)
+        self.assertIn("test \"${#assets[@]}\" -gt 0", self.workflow)
         for forbidden in (
             r"(?im)^\s*(pull_request|schedule|workflow_run|workflow_call|registry_package|deployment|page_build)\s*:",
             r"(?im)^\s*(environment|packages|pages|deployments|id-token)\s*:",

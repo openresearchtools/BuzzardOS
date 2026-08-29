@@ -1205,16 +1205,31 @@ fn ensure_supported(mode: libc::mode_t, display: &Path) -> Result<(), DesktopFil
 }
 
 fn directory_names(directory: &File, display: &Path) -> Result<Vec<OsString>, DesktopFileError> {
-    // SAFETY: dup creates an independent descriptor which fdopendir owns.
-    let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
-    if duplicate < 0 {
+    // `dup(2)` would create another descriptor for the *same open file
+    // description*, including its directory offset. After the first readdir,
+    // every later model refresh would therefore start at end-of-directory and
+    // incorrectly report an empty Desktop. Open `.` relative to the already
+    // verified directory instead: this keeps path traversal out of the
+    // operation while obtaining a fresh file description and offset for each
+    // event-driven scan.
+    let dot = c".";
+    // SAFETY: directory is a live O_DIRECTORY descriptor, dot is terminated,
+    // and a successful openat returns a fresh descriptor owned below.
+    let listing = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            dot.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if listing < 0 {
         return Err(io_error(display, std::io::Error::last_os_error()));
     }
-    // SAFETY: duplicate is an owned directory descriptor.
-    let stream = unsafe { libc::fdopendir(duplicate) };
+    // SAFETY: listing is an owned directory descriptor.
+    let stream = unsafe { libc::fdopendir(listing) };
     if stream.is_null() {
         // SAFETY: fdopendir failed and did not take ownership.
-        unsafe { libc::close(duplicate) };
+        unsafe { libc::close(listing) };
         return Err(io_error(display, std::io::Error::last_os_error()));
     }
     let mut names = Vec::new();
@@ -1228,7 +1243,7 @@ fn directory_names(directory: &File, display: &Path) -> Result<Vec<OsString>, De
         if entry.is_null() {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() != Some(0) {
-                // SAFETY: closes stream and duplicate descriptor.
+                // SAFETY: closes stream and listing descriptor.
                 unsafe { libc::closedir(stream) };
                 return Err(io_error(display, error));
             }
@@ -1240,13 +1255,13 @@ fn directory_names(directory: &File, display: &Path) -> Result<Vec<OsString>, De
             continue;
         }
         if names.len() >= MAX_DIRECTORY_ENTRIES {
-            // SAFETY: closes stream and duplicate descriptor.
+            // SAFETY: closes stream and listing descriptor.
             unsafe { libc::closedir(stream) };
             return Err(DesktopFileError::TraversalLimit);
         }
         names.push(OsString::from_vec(bytes.to_vec()));
     }
-    // SAFETY: closes stream and duplicate descriptor.
+    // SAFETY: closes stream and listing descriptor.
     if unsafe { libc::closedir(stream) } != 0 {
         return Err(io_error(display, std::io::Error::last_os_error()));
     }
@@ -1558,6 +1573,33 @@ mod tests {
         assert_eq!(
             by_name[OsStr::new("folder-link")],
             DesktopItemKind::SymbolicLink
+        );
+    }
+
+    #[test]
+    fn repeated_listing_starts_from_the_beginning_after_a_live_mutation() {
+        let (_temp, source, _destination) = directories();
+        fs::write(source.path().join("first.txt"), b"first").unwrap();
+
+        assert_eq!(
+            source
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            vec![OsString::from("first.txt")]
+        );
+
+        fs::write(source.path().join("second.txt"), b"second").unwrap();
+        assert_eq!(
+            source
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            vec![OsString::from("first.txt"), OsString::from("second.txt")]
         );
     }
 
