@@ -82,6 +82,7 @@ class ActionsArtifactWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(required, self.workflow)
         self.assertIn("test-host-package-matrix.sh", self.workflow)
+        self.assertIn("libdrm-dev", self.workflow)
         self.assertIn("buzzardos --version", self.host_matrix)
         self.assertIn("$project_dir/VERSION", self.packager)
         self.assertIn("Package: $package", self.packager)
