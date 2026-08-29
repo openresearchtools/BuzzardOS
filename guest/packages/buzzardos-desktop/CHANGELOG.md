@@ -1,5 +1,11 @@
 # buzzardos-desktop changelog
 
+## 0.1.2
+
+- Replaced the remaining per-frame repaint-marker read and 250 ms Settings
+  read with exact-file inotify sources multiplexed into the shell's existing
+  event wait. Idle desktops perform no recurring filesystem reads or scans.
+
 ## 0.1.1
 
 - Fixed event-driven Desktop refreshes by opening a fresh secured directory

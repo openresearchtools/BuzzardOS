@@ -87,7 +87,7 @@ use wayland_protocols::wp::{
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
 
 use crate::desktop::DesktopModel;
-use crate::watch::DirectoryWatcher;
+use crate::watch::{DirectoryWatcher, FileWatcher};
 
 const SHELL_NAME: &str = "Buzzard OS Desktop";
 const REPAINT_REQUEST: &str = "buzzardos-shell-repaint";
@@ -101,7 +101,6 @@ const WINDOW_MENU_POINTER_REFRESH_DELAY: Duration = Duration::from_millis(16);
 const WORKSPACE_REFRESH_RETRY: Duration = Duration::from_millis(100);
 const SINGLE_INSTANCE_FALLBACK_DELAY: Duration = Duration::from_secs(2);
 const APPLICATION_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
-const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
 const WORKSPACE_MENU_WIDTH: u32 = 260;
@@ -369,6 +368,24 @@ fn dispatch_with_timeout(
         });
         index
     });
+    let settings_index = shell.settings_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let repaint_index = shell.repaint_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
     let mut readiness = GuestEventReadiness::default();
     loop {
         // SAFETY: every element is an initialized pollfd. The Wayland read
@@ -387,6 +404,10 @@ fn dispatch_with_timeout(
                 application_index.is_some_and(|index| signalled(&descriptors[index]));
             readiness.desktop_watch =
                 desktop_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.settings_watch =
+                settings_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.repaint_watch =
+                repaint_index.is_some_and(|index| signalled(&descriptors[index]));
             if signalled(&descriptors[0]) {
                 guard
                     .read()
@@ -425,13 +446,14 @@ struct GuestEventReadiness {
     control_socket: bool,
     application_watch: bool,
     desktop_watch: bool,
+    settings_watch: bool,
+    repaint_watch: bool,
 }
 
 #[derive(Debug)]
 struct SettingsTracker {
     path: PathBuf,
     applied: Settings,
-    last_check: Instant,
     last_error: Option<String>,
 }
 
@@ -440,16 +462,11 @@ impl SettingsTracker {
         Self {
             path,
             applied,
-            last_check: Instant::now(),
             last_error: None,
         }
     }
 
     fn candidate(&mut self) -> Option<Settings> {
-        if self.last_check.elapsed() < SETTINGS_POLL_INTERVAL {
-            return None;
-        }
-        self.last_check = Instant::now();
         let candidate = match load_settings(&self.path) {
             Ok(settings) => settings,
             Err(error) => {
@@ -772,6 +789,7 @@ fn run() -> Result<()> {
     let desktop_model = DesktopModel::discover().context("initializing desktop items")?;
     let desktop_watcher = DirectoryWatcher::new(&[desktop_model.directory_path().to_path_buf()])
         .context("watching XDG Desktop")?;
+    let settings_watcher = FileWatcher::new(&settings_path).context("watching desktop settings")?;
     let applications = scan_applications().unwrap_or_default();
     let application_icons = load_application_icons(&applications);
     let desktop_theme_icons = ["folder", "user-home", "folder-publicshare"]
@@ -779,9 +797,12 @@ fn run() -> Result<()> {
         .filter_map(|name| load_icon(name).map(|icon| (name.to_owned(), icon)))
         .collect();
     let pool = SlotPool::new(3840 * 2160 * 4, &shm).context("creating shell render pool")?;
-    let repaint_request = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|runtime| runtime.join(REPAINT_REQUEST));
+    let repaint_request = PathBuf::from(
+        std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is unavailable")?,
+    )
+    .join(REPAINT_REQUEST);
+    let repaint_watcher =
+        FileWatcher::new(&repaint_request).context("watching shell repaint requests")?;
     let mut shell = Shell {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -887,6 +908,7 @@ fn run() -> Result<()> {
         sway_window_changes: sway_ipc::subscribe_window_changes()
             .context("subscribing to authoritative Sway window events")?,
         repaint_request,
+        repaint_watcher,
         // An output-sync request may predate the shell process by a few
         // milliseconds. Treat the first observed generation as pending.
         repaint_generation: None,
@@ -894,6 +916,7 @@ fn run() -> Result<()> {
         palette: *initial_settings.appearance.theme.palette(),
         desktop_background: initial_settings.appearance.background.solid_color().rgba(),
         settings_tracker: SettingsTracker::new(settings_path, initial_settings),
+        settings_watcher,
         config_home,
         accessibility: None,
         control_socket,
@@ -901,6 +924,11 @@ fn run() -> Result<()> {
     };
     shell.rebuild_desktop_targets()?;
     shell.set_desktop_input_region()?;
+    // The output synchronizer can publish one resize generation immediately
+    // before the shell starts. The watch is armed before this single initial
+    // read, so no later replacement can be lost and no recurring read is
+    // needed.
+    shell.consume_repaint_request();
     shell.accessibility = Some(Accessibility::new(shell.accessibility_tree()));
     let shell_ready = std::env::var_os("BUZZARDOS_STATUS_DIR")
         .map(PathBuf::from)
@@ -1052,12 +1080,14 @@ struct Shell {
     pending_application_launches: Vec<PendingApplicationLaunch>,
     workspace_refresh_retry_after: Option<Instant>,
     sway_window_changes: Receiver<()>,
-    repaint_request: Option<PathBuf>,
+    repaint_request: PathBuf,
+    repaint_watcher: FileWatcher,
     repaint_generation: Option<String>,
     full_repaint_after: Option<Instant>,
     palette: ThemePalette,
     desktop_background: [u8; 4],
     settings_tracker: SettingsTracker,
+    settings_watcher: FileWatcher,
     config_home: PathBuf,
     accessibility: Option<Accessibility>,
     control_socket: UnixDatagram,
@@ -1268,6 +1298,21 @@ impl Shell {
         self.dirty = true;
     }
 
+    fn consume_repaint_request(&mut self) {
+        let Ok(generation) = fs::read_to_string(&self.repaint_request) else {
+            return;
+        };
+        if self.repaint_generation.as_ref() == Some(&generation) {
+            return;
+        }
+        let acknowledgement = self.repaint_request.with_file_name(REPAINT_ACKNOWLEDGEMENT);
+        let _ = fs::write(acknowledgement, generation.as_bytes());
+        self.repaint_generation = Some(generation);
+        // Redraw the complete shell once after resize events settle; later
+        // generations coalesce into this same bounded debounce.
+        self.full_repaint_after = Some(Instant::now() + OUTPUT_SETTLE_DEBOUNCE);
+    }
+
     fn poll_control_socket(&mut self) {
         let mut requests = Vec::new();
         loop {
@@ -1343,7 +1388,18 @@ impl Shell {
                 self.hide_menu();
             }
         }
-        if let Some(settings) = self.settings_tracker.candidate() {
+        let settings_changed = if readiness.settings_watch {
+            match self.settings_watcher.changed() {
+                Ok(changed) => changed,
+                Err(error) => {
+                    eprintln!("buzzardos-shell: settings watch failed: {error:#}");
+                    true
+                }
+            }
+        } else {
+            false
+        };
+        if settings_changed && let Some(settings) = self.settings_tracker.candidate() {
             match apply_runtime_theme(&self.config_home, settings.appearance.theme) {
                 Ok(()) => {
                     self.palette = *settings.appearance.theme.palette();
@@ -1373,20 +1429,15 @@ impl Shell {
                 )),
             }
         }
-        if let Some(generation) = self
-            .repaint_request
-            .as_ref()
-            .and_then(|path| fs::read_to_string(path).ok())
-            && self.repaint_generation.as_ref() != Some(&generation)
-        {
-            if let Some(request) = self.repaint_request.as_ref() {
-                let acknowledgement = request.with_file_name(REPAINT_ACKNOWLEDGEMENT);
-                let _ = fs::write(acknowledgement, generation.as_bytes());
+        if readiness.repaint_watch {
+            match self.repaint_watcher.changed() {
+                Ok(true) => self.consume_repaint_request(),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: repaint watch failed: {error:#}");
+                    self.consume_repaint_request();
+                }
             }
-            self.repaint_generation = Some(generation);
-            // Redraw the complete shell once after resize events settle;
-            // later generations coalesce into this same bounded debounce.
-            self.full_repaint_after = Some(Instant::now() + OUTPUT_SETTLE_DEBOUNCE);
         }
         if self
             .full_repaint_after
@@ -6874,12 +6925,11 @@ fn desktop_label_lines(
 #[cfg(test)]
 mod scale_tests {
     use super::{
-        ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT,
-        SETTINGS_POLL_INTERVAL, SettingsTracker, ShellControlRequest, WINDOW_MENU_WIDTH,
-        application_matches_window, applications_menu_height, applications_menu_width,
-        delete_dialog_detail, desktop_label_lines, gsettings_availability, load_settings,
-        parse_shell_control_request, parse_uri_list, physical_size, rect_between, rects_intersect,
-        text_width,
+        ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT, SettingsTracker,
+        ShellControlRequest, WINDOW_MENU_WIDTH, application_matches_window,
+        applications_menu_height, applications_menu_width, delete_dialog_detail,
+        desktop_label_lines, gsettings_availability, load_settings, parse_shell_control_request,
+        parse_uri_list, physical_size, rect_between, rects_intersect, text_width,
     };
     use crate::model::Application;
     use crate::model::Rect as ShellRect;
@@ -6889,7 +6939,6 @@ mod scale_tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::Instant;
 
     const TEST_WINDOW_MENU_HEIGHT: u32 = 44 + 5 * 36;
 
@@ -7107,14 +7156,12 @@ mod scale_tests {
         };
         light.appearance.theme = ThemeMode::Light;
         light.save(&path).unwrap();
-        tracker.last_check = Instant::now() - SETTINGS_POLL_INTERVAL;
         assert_eq!(tracker.candidate(), Some(light.clone()));
         tracker.commit(light.clone());
 
         let mut invalid_same_generation = light.clone();
         invalid_same_generation.appearance.theme = ThemeMode::Dark;
         invalid_same_generation.save(&path).unwrap();
-        tracker.last_check = Instant::now() - SETTINGS_POLL_INTERVAL;
         assert_eq!(tracker.candidate(), None);
         assert_eq!(tracker.applied, light);
         assert!(

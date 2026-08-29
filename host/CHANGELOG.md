@@ -1,5 +1,10 @@
 # Buzzard OS host changelog
 
+## 0.1.2
+
+- Updated the built-in Standard and CUDA image recipes to install
+  `buzzardos-desktop` 0.1.2 from the signed Open Research Tools APT archive.
+
 ## 0.1.1
 
 - Updated the built-in Standard and CUDA image recipes to install
