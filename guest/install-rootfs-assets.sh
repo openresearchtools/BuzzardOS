@@ -88,6 +88,8 @@ install -D -m 0755 "$sudo_bridge_binary" \
     "$stage/libexec/buzzardos-sudo-exec"
 install -D -m 0755 "$sudo_bridge_binary" \
     "$target_root/usr/libexec/buzzardos-guest/sudo"
+install -D -m 0755 "$sudo_bridge_binary" \
+    "$target_root/usr/libexec/buzzardos-guest/sudo-policy"
 for required in \
     libexec/buzzardos-clipboard-agent \
     libexec/buzzardos-sudo-exec \

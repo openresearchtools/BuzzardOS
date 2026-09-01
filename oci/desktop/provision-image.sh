@@ -5,25 +5,25 @@
 set -eu
 
 if getent passwd 1000 >/dev/null; then
-    test "$(getent passwd 1000 | cut -d: -f1)" = buzzard
+    test "$(getent passwd 1000 | cut -d: -f1)" = user
 else
-    useradd --create-home --uid 1000 --user-group --shell /bin/bash buzzard
+    useradd --create-home --uid 1000 --user-group --shell /bin/bash user
 fi
-# Install media never carries a usable credential. The host manager replaces
-# this locked field with the user's salted password hash while committing each
-# machine, before its first boot.
-usermod --lock buzzard
+# The official reference image has the same documented first-login credential
+# as an ordinary prebuilt VM. It is created here once; the host never edits a
+# machine's account database during create, import, export, or clone.
+printf '%s\n' 'user:buzzard' | chpasswd
 
-install -d -o buzzard -g buzzard -m 0700 \
-    /home/buzzard \
-    /home/buzzard/.cache \
-    /home/buzzard/.config \
-    /home/buzzard/.config/gtk-3.0 \
-    /home/buzzard/.config/sway \
-    /home/buzzard/.config/sway/config.d \
-    /home/buzzard/.local \
-    /home/buzzard/.local/share \
-    /home/buzzard/.local/state
+install -d -o user -g user -m 0700 \
+    /home/user \
+    /home/user/.cache \
+    /home/user/.config \
+    /home/user/.config/gtk-3.0 \
+    /home/user/.config/sway \
+    /home/user/.config/sway/config.d \
+    /home/user/.local \
+    /home/user/.local/share \
+    /home/user/.local/state
 
 # The package owns this wrapper under /usr. Reference-image setup places one
 # deliberate link ahead of distro sudo without making a Debian package own
@@ -37,18 +37,18 @@ ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudoedit
 # bookmarks, or a user-modified Thunar action file.
 setpriv --reuid=1000 --regid=1000 --clear-groups \
     env \
-        HOME=/home/buzzard \
-        USER=buzzard \
-        LOGNAME=buzzard \
+        HOME=/home/user \
+        USER=user \
+        LOGNAME=user \
         LANG=C.UTF-8 \
-        XDG_CONFIG_HOME=/home/buzzard/.config \
-        XDG_DATA_HOME=/home/buzzard/.local/share \
-        XDG_STATE_HOME=/home/buzzard/.local/state \
+        XDG_CONFIG_HOME=/home/user/.config \
+        XDG_DATA_HOME=/home/user/.local/share \
+        XDG_STATE_HOME=/home/user/.local/state \
         /bin/sh -ec '
             /usr/bin/xdg-user-dirs-update
             printf "%s\n" \
-                "file:///home/buzzard/Documents Documents" \
-                "file:///home/buzzard/Downloads Downloads" \
+                "file:///home/user/Documents Documents" \
+                "file:///home/user/Downloads Downloads" \
                 "file:///shared Shared" \
                 >"$XDG_CONFIG_HOME/gtk-3.0/bookmarks"
             chmod 0600 "$XDG_CONFIG_HOME/gtk-3.0/bookmarks"

@@ -35,27 +35,30 @@ run_shell() {
 }
 
 run_shell '
-    test "$(stat -c "%u:%g:%a" /home/buzzard)" = "1000:1000:700"
-    test "$(stat -c "%u:%g:%a" /home/buzzard/.config)" = "1000:1000:700"
-    test "$(stat -c "%u:%g:%a" /home/buzzard/.config/gtk-3.0/bookmarks)" = "1000:1000:600"
-    test -d /home/buzzard/Documents
-    test -d /home/buzzard/Downloads
-    test -s /home/buzzard/.config/user-dirs.dirs
-    test -s /home/buzzard/.config/Thunar/uca.xml
+    test "$(stat -c "%u:%g:%a" /home/user)" = "1000:1000:700"
+    test "$(stat -c "%u:%g:%a" /home/user/.config)" = "1000:1000:700"
+    test "$(stat -c "%u:%g:%a" /home/user/.config/gtk-3.0/bookmarks)" = "1000:1000:600"
+    test -d /home/user/Documents
+    test -d /home/user/Downloads
+    test -s /home/user/.config/user-dirs.dirs
+    test -s /home/user/.config/Thunar/uca.xml
     test -x /usr/libexec/buzzardos-guest/sudo
+    test -x /usr/libexec/buzzardos-guest/sudo-policy
     test -L /usr/local/bin/sudo
     test "$(readlink /usr/local/bin/sudo)" = /usr/libexec/buzzardos-guest/sudo
     test -L /usr/local/bin/sudoedit
     test "$(readlink /usr/local/bin/sudoedit)" = /usr/libexec/buzzardos-guest/sudo
-    test "$(passwd -S buzzard | awk "{print \$2}")" = L
+    test "$(getent passwd 1000 | cut -d: -f1,3,4,6,7)" = "user:1000:1000:/home/user:/bin/bash"
+    test "$(passwd -S user | awk "{print \$2}")" = P
     test -s /etc/sudoers.d/90-buzzardos
-    grep -Eq "^buzzard[[:space:]]+ALL=\\(ALL:ALL\\)[[:space:]]+ALL$" \
+    grep -Eq "^user[[:space:]]+ALL=\\(ALL:ALL\\)[[:space:]]+ALL$" \
         /etc/sudoers.d/90-buzzardos
     ! grep -Fq NOPASSWD /etc/sudoers.d/90-buzzardos
+    test ! -e /etc/sudoers.d/91-buzzardos-passwordless
     test ! -e /etc/polkit-1/rules.d/49-buzzardos-root.rules
-    test "$(cat /home/buzzard/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
-        "file:///home/buzzard/Documents Documents" \
-        "file:///home/buzzard/Downloads Downloads" \
+    test "$(cat /home/user/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
+        "file:///home/user/Documents Documents" \
+        "file:///home/user/Downloads Downloads" \
         "file:///shared Shared")"
     ! grep -Fq xdg-user-dirs-update /usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
     ! grep -Fq install-thunar-actions /usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
@@ -146,7 +149,7 @@ run_shell '
 	    "$settings_root/config" "$settings_root/runtime"
 	setpriv --reuid=1000 --regid=1000 --clear-groups \
 	    env \
-	        HOME=/home/buzzard \
+	        HOME=/home/user \
 	        XDG_CONFIG_HOME="$settings_root/config" \
 	        XDG_RUNTIME_DIR="$settings_root/runtime" \
 	        dbus-run-session -- sh -ec "

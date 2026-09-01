@@ -34,14 +34,14 @@ nsenter -t "$container_pid" -U -n -p -m -u -i -- \
     setpriv --reuid=0 --regid=0 --clear-groups \
     setpriv --reuid=1000 --regid=1000 --clear-groups \
     env -i \
-    HOME=/home/buzzard \
-    USER=buzzard \
-    LOGNAME=buzzard \
+    HOME=/home/user \
+    USER=user \
+    LOGNAME=user \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     XDG_RUNTIME_DIR=/run/user/1000 \
-    XDG_CONFIG_HOME=/home/buzzard/.config \
-    XDG_DATA_HOME=/home/buzzard/.local/share \
-    XDG_CACHE_HOME=/home/buzzard/.cache \
+    XDG_CONFIG_HOME=/home/user/.config \
+    XDG_DATA_HOME=/home/user/.local/share \
+    XDG_CACHE_HOME=/home/user/.cache \
     XDG_CONFIG_DIRS=/etc/buzzardos/xdg:/etc/xdg \
     XDG_DATA_DIRS=/usr/local/share:/usr/share \
     XDG_SESSION_TYPE=wayland \

@@ -3,8 +3,8 @@ Description=Buzzard OS AppImage mount handoff socket
 
 [Socket]
 ListenStream=/run/buzzardos/fusermount.sock
-SocketUser=buzzard
-SocketGroup=buzzard
+SocketUser=user
+SocketGroup=user
 SocketMode=0600
 Accept=yes
 RemoveOnStop=yes

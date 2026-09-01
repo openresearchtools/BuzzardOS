@@ -162,7 +162,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             '"text":"z"',
             "assert_cua_ok press_key",
             '"key":"enter"',
-            'cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z"',
+            'cat /home/user/.buzzardos-cua-input) == "${marker%?}z"',
         )
         cursor = 0
         for fragment in ordered_fragments:

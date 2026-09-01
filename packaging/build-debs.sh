@@ -382,7 +382,7 @@ set -e
 rm -f /etc/polkit-1/rules.d/49-buzzardos-root.rules
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
-    if [ -d /run/systemd/system ] && getent passwd buzzard >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ] && getent passwd user >/dev/null 2>&1; then
         systemctl start buzzardos-sudo.socket buzzardos-fusermount.socket
     fi
 fi

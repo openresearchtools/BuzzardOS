@@ -24,7 +24,6 @@ wayland-server.workspace = true
 xkbcommon.workspace = true
 wb-core = { path = "../wb-core" }
 buzzardos-clipboard-protocol.workspace = true
-zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

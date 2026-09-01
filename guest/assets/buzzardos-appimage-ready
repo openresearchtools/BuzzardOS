@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 APPIMAGE_MAGICS = (b"AI\x01", b"AI\x02")
-DEFAULT_ROOTS = (Path("/home/buzzard"), Path("/shared"))
+DEFAULT_ROOTS = (Path("/home/user"), Path("/shared"))
 
 IN_ATTRIB = 0x00000004
 IN_CLOSE_WRITE = 0x00000008

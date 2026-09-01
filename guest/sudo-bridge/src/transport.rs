@@ -13,7 +13,7 @@ const SOCKET_PATH: &str = "/run/buzzardos/sudo.sock";
 const MAGIC: &[u8; 8] = b"BZSDO001";
 const INTERACTIVE_UID: u32 = 1000;
 const INTERACTIVE_GID: u32 = 1000;
-const INTERACTIVE_USER: &[u8] = b"buzzard\0";
+const INTERACTIVE_USER: &[u8] = b"user\0";
 const REAL_SUDO: &[u8] = b"/usr/bin/sudo\0";
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ITEMS: usize = 16_384;
@@ -759,16 +759,15 @@ fn relay_server(
                 }
             }
         }
-        if final_status.is_some() && !master_open {
-            let status = final_status.expect("checked above");
+        if let (Some(status), false) = (final_status, master_open) {
             let (code, signal) = if libc::WIFEXITED(status) {
                 (libc::WEXITSTATUS(status), 0)
             } else {
                 (128 + libc::WTERMSIG(status), libc::WTERMSIG(status))
             };
             let mut payload = Vec::with_capacity(8);
-            payload.extend_from_slice(&(code as i32).to_be_bytes());
-            payload.extend_from_slice(&(signal as i32).to_be_bytes());
+            payload.extend_from_slice(&code.to_be_bytes());
+            payload.extend_from_slice(&signal.to_be_bytes());
             send_frame(connection, FRAME_STATUS, &payload)?;
             return Ok(());
         }

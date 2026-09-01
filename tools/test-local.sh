@@ -57,10 +57,11 @@ python3 -m unittest discover -s "$project_dir/oci/tests" -v
 python3 -m unittest discover -s "$project_dir/tools/tests" -v
 for script in \
     "$project_dir/guest/install-rootfs-assets.sh" \
-    "$project_dir/guest/assets/buzzardos-init" \
-    "$project_dir/guest/assets/buzzardos-fusermount"; do
+    "$project_dir/guest/assets/buzzardos-init"; do
     sh -n "$script"
 done
+PYTHONPYCACHEPREFIX="$test_root/python-cache" \
+    python3 -m py_compile "$project_dir/guest/assets/buzzardos-fusermount"
 for script in \
     "$project_dir/host/packaging/generate-icons.sh" \
     "$project_dir/packaging/build-debs.sh" \

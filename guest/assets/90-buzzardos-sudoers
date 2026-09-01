@@ -1,3 +1,3 @@
 # Real distro sudo policy for the canonical interactive guest account.
-# Authentication uses the machine-local password selected at creation time.
-buzzard ALL=(ALL:ALL) ALL
+# The official image initially uses the documented password "buzzard".
+user ALL=(ALL:ALL) ALL

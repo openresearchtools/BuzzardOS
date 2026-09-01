@@ -19,7 +19,7 @@ exposes native GTK accessibility objects
 to the private guest AT-SPI bus. It uses no libadwaita, Electron, browser UI,
 GNOME Control Center, or permanent GUI process.
 
-The navigation contains exactly these six pages in this order:
+The navigation contains exactly these seven pages in this order:
 
 ```text
 Settings
@@ -48,6 +48,10 @@ Settings
 │   │   └── Dark
 │   └── Background colour
 │   └── Capped task buttons [on by default]
+│
+├── Security
+│   ├── Change machine password
+│   └── Passwordless sudo [off by default]
 │
 └── Updates
     └── Standard APT/unattended-upgrades status and manual-control guidance
@@ -113,6 +117,23 @@ Selecting a validated location applies that exact zone through systemd
 `timedatectl`. Settings asks for the machine-local password and invokes the
 real distro `sudo`; it does not use Polkit or a privileged Settings service.
 The guest timezone can change without changing the host clock.
+
+## 4.2. Security
+
+The official reference image creates the canonical interactive account
+`user` at UID/GID 1000 with the documented initial password `buzzard`. This is
+a one-time image-construction preset. The host never receives a guest password
+and never edits `/etc/passwd`, `/etc/shadow`, PAM, or sudoers during create,
+pull, import, clone, export, start, or stop. Imported and cloned root filesystems
+therefore keep their existing credential and keyring state unchanged.
+
+Security changes are guest-local. **Change password** presents current, new,
+and confirmation password fields and runs the distro `chpasswd` through the
+authenticated real-sudo bridge. **Passwordless sudo** is off by default.
+Enabling it requires the current machine password and creates only the exact
+root-owned `/etc/sudoers.d/91-buzzardos-passwordless` policy for `user` after
+`visudo` validation. Disabling it removes only that exact verified policy. No
+Polkit rule, host helper, host socket, or host filesystem path participates.
 
 ## 5. Appearance
 
@@ -320,7 +341,9 @@ Acceptance must rebuild all four Debian packages, install `buzzardos` on the
 host, install `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` in a reference image,
 launch an actual persistent machine, and then verify at minimum:
 
-- all six Settings pages at normal and small window sizes;
+- all seven Settings pages at normal and small window sizes;
+- the documented `user` / `buzzard` initial credential, authenticated sudo,
+  password change, and passwordless-sudo enable/disable round trip;
 - scaling persistence and pixel-aligned input;
 - output and microphone volume/mute;
 - at least US and one non-US physical layout while CUA remains usable;

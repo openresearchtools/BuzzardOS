@@ -45,9 +45,9 @@ guest() {
         setpriv --reuid=0 --regid=0 --clear-groups \
         setpriv --reuid=1000 --regid=1000 --clear-groups \
         env -i \
-        HOME=/home/buzzard \
-        USER=buzzard \
-        LOGNAME=buzzard \
+        HOME=/home/user \
+        USER=user \
+        LOGNAME=user \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \

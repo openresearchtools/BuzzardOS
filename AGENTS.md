@@ -183,9 +183,8 @@ Image provisioning is not package-update behavior. After package installation,
 the Containerfile explicitly invokes one auditable setup script exactly once.
 It owns only construction-time presets:
 
-- create the canonical interactive UID/GID 1000 user and home;
-- leave the canonical guest account locked in install media so the manager can
-  set the user-selected password while committing each new machine;
+- create the canonical interactive account `user` at UID/GID 1000 with home
+  `/home/user` and the documented initial password `buzzard`;
 - install a guest-only socket handoff that executes the real distro `sudo`
   with ordinary password authentication despite the persistent rootfs being
   `nosuid` and the desktop session retaining `no_new_privs`;
@@ -278,22 +277,21 @@ Canonical CLI behavior:
 
 ```text
 buzzardos create --name NAME --machine-dir DIR --image SOURCE
-                 --password-stdin [--share PATH[:ro|rw] ...]
+                 [--share PATH[:ro|rw] ...]
                  [--keep-oci-archive]
 
 buzzardos pull OCI_REFERENCE --name NAME --machine-dir DIR
-               --password-stdin [--share PATH[:ro|rw] ...]
+               [--share PATH[:ro|rw] ...]
                [--keep-oci-archive]
 
 buzzardos import SOURCE --name NAME --machine-dir DIR
                  [--mode restore|clone] [--manifest DIGEST]
-                 --password-stdin [--share PATH[:ro|rw] ...]
+                 [--share PATH[:ro|rw] ...]
                  [--keep-oci-archive]
 
 buzzardos export MACHINE --output FILE
 buzzardos clone SOURCE --name NAME --machine-dir DIR
-                --password-stdin [--share PATH[:ro|rw] ...]
-buzzardos password MACHINE --machine-dir DIR --password-stdin
+                [--share PATH[:ro|rw] ...]
 ```
 
 `create` accepts any explicit supported OCI source. `pull` is the convenient
@@ -302,6 +300,14 @@ remote form and creates a machine after pulling; it is not hidden global cache.
 restore/clone semantics. The GUI exposes **Create from OCI**, **Pull OCI**, and
 **Import**, asks for exact destination, supports repeated shares, and offers a
 **Keep verified OCI archive** toggle.
+
+The host never reads, sets, resets, or migrates guest passwords and never
+rewrites a guest account database. The official built-in reference image owns
+its documented initial `user` / `buzzard` credential and the Manager reports it
+after a successful built-in build. Custom images, pulls, imports, restores, and
+clones preserve the credentials already present in their rootfs and receive no
+credential claim from the host UI. Password changes and the optional
+passwordless-sudo policy are guest-local Settings operations.
 
 All paths use one transaction:
 

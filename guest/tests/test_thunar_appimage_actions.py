@@ -79,8 +79,8 @@ class ThunarAppImageActionContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("/usr/bin/xdg-user-dirs-update", provision)
-        self.assertIn("file:///home/buzzard/Documents Documents", provision)
-        self.assertIn("file:///home/buzzard/Downloads Downloads", provision)
+        self.assertIn("file:///home/user/Documents Documents", provision)
+        self.assertIn("file:///home/user/Downloads Downloads", provision)
         for unwanted in ("Music Music", "Pictures Pictures", "Videos Videos"):
             self.assertNotIn(unwanted, provision)
 

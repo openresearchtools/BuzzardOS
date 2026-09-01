@@ -2,6 +2,8 @@
 
 ## 0.1.3
 
+- Add a Security page for changing the `user` password and explicitly toggling
+  the exact guest-local passwordless-sudo policy, which remains off by default.
 - Ask for the machine password when Settings changes the guest time zone and
   apply it through the real distro sudo path without a privileged Settings
   service or broad Polkit rule.

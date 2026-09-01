@@ -29,7 +29,7 @@ class PrivilegeBridgeContractTests(unittest.TestCase):
 
     def test_sudo_policy_requires_the_machine_password(self) -> None:
         sudoers = (ASSETS / "90-buzzardos-sudoers").read_text(encoding="utf-8")
-        self.assertIn("buzzard ALL=(ALL:ALL) ALL", sudoers)
+        self.assertIn("user ALL=(ALL:ALL) ALL", sudoers)
         self.assertNotIn("NOPASSWD", sudoers)
 
     def test_services_are_fixed_private_socket_activations(self) -> None:
@@ -42,8 +42,8 @@ class PrivilegeBridgeContractTests(unittest.TestCase):
         ):
             socket = (ASSETS / f"{name}.socket").read_text(encoding="utf-8")
             service = (ASSETS / f"{name}@.service").read_text(encoding="utf-8")
-            self.assertIn("SocketUser=buzzard", socket)
-            self.assertIn("SocketGroup=buzzard", socket)
+            self.assertIn("SocketUser=user", socket)
+            self.assertIn("SocketGroup=user", socket)
             self.assertIn("SocketMode=0600", socket)
             self.assertIn("Accept=yes", socket)
             self.assertIn("User=root", service)
@@ -51,13 +51,24 @@ class PrivilegeBridgeContractTests(unittest.TestCase):
             self.assertIn(f"assets/{name}.socket", manifest)
             self.assertIn(f"assets/{name}@.service", manifest)
 
-    def test_install_media_account_is_locked_until_machine_commit(self) -> None:
+    def test_reference_image_owns_the_documented_initial_credential(self) -> None:
         provision = (ROOT / "oci/desktop/provision-image.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("usermod --lock buzzard", provision)
+        self.assertIn("'user:buzzard' | chpasswd", provision)
+        self.assertNotIn("usermod --lock", provision)
         self.assertIn("/usr/local/bin/sudo", provision)
         self.assertIn("/usr/local/bin/sudoedit", provision)
+
+    def test_passwordless_policy_is_not_present_in_the_image_by_default(self) -> None:
+        manifest = (ROOT / "guest/runtime-asset-manifest.tsv").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("91-buzzardos-passwordless", manifest)
+        installer = (ROOT / "guest/install-rootfs-assets.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("/usr/libexec/buzzardos-guest/sudo-policy", installer)
 
 
 if __name__ == "__main__":

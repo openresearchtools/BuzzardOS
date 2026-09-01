@@ -17,6 +17,7 @@ use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::Write as _;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
@@ -29,6 +30,13 @@ const ROW_SPACING: i32 = 12;
 const ZONE_TAB_PATH: &str = "/usr/share/zoneinfo/zone.tab";
 const ZONEINFO_ROOT: &str = "/usr/share/zoneinfo";
 const MAX_ZONE_TAB_BYTES: u64 = 2 * 1024 * 1024;
+const INTERACTIVE_USER: &str = "user";
+const GUEST_SUDO: &str = "/usr/local/bin/sudo";
+const CHPASSWD: &str = "/usr/sbin/chpasswd";
+const SUDO_POLICY_HELPER: &str = "/usr/libexec/buzzardos-guest/sudo-policy";
+const PASSWORDLESS_POLICY: &str = "/etc/sudoers.d/91-buzzardos-passwordless";
+const PASSWORDLESS_POLICY_CONTENT: &[u8] = b"user ALL=(ALL:ALL) NOPASSWD: ALL\n";
+const MAX_PASSWORD_BYTES: usize = 4096;
 
 #[cfg(test)]
 const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
@@ -49,6 +57,8 @@ const ACCESSIBLE_CONTROL_NAMES: &[&str] = &[
     "Dark theme",
     "Desktop background colour",
     "Capped task buttons",
+    "Change password",
+    "Passwordless sudo",
     "Automatic software updates",
 ];
 
@@ -185,6 +195,10 @@ pub(crate) fn build_window(
             &page_background,
         ),
         Some(PageId::Appearance.stack_name()),
+    );
+    pages.add_named(
+        &build_security_page(&window),
+        Some(PageId::Security.stack_name()),
     );
     pages.add_named(
         &build_updates_page(&window),
@@ -903,17 +917,9 @@ fn build_time_location_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWin
             let changing = Rc::clone(&changing);
             let confirmed = Rc::clone(&confirmed);
             let window_for_result = window.clone();
-            request_machine_password(&window, move |password| {
+            if sudo_runs_without_password() {
                 dropdown.set_sensitive(true);
-                let Some(mut password) = password else {
-                    changing.set(true);
-                    dropdown.set_selected(confirmed.get());
-                    changing.set(false);
-                    return;
-                };
-                let result = set_time_zone(&zone, &password);
-                password.zeroize();
-                match result {
+                match set_time_zone(&zone, None) {
                     Ok(()) => confirmed.set(selected),
                     Err(error) => {
                         changing.set(true);
@@ -922,7 +928,32 @@ fn build_time_location_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWin
                         show_error(&window_for_result, "Time zone was not changed", &error);
                     }
                 }
-            });
+                return;
+            }
+            request_machine_password(
+                &window,
+                "Enter this machine's password to change the time zone.",
+                move |password| {
+                    dropdown.set_sensitive(true);
+                    let Some(mut password) = password else {
+                        changing.set(true);
+                        dropdown.set_selected(confirmed.get());
+                        changing.set(false);
+                        return;
+                    };
+                    let result = set_time_zone(&zone, Some(&password));
+                    password.zeroize();
+                    match result {
+                        Ok(()) => confirmed.set(selected),
+                        Err(error) => {
+                            changing.set(true);
+                            dropdown.set_selected(confirmed.get());
+                            changing.set(false);
+                            show_error(&window_for_result, "Time zone was not changed", &error);
+                        }
+                    }
+                },
+            );
         });
     }
 
@@ -995,7 +1026,7 @@ fn current_time_zone() -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn set_time_zone(zone: &str, password: &[u8]) -> Result<(), String> {
+fn set_time_zone(zone: &str, password: Option<&[u8]>) -> Result<(), String> {
     if !valid_time_zone_name(zone) {
         return Err("the selected time-zone name is invalid".to_owned());
     }
@@ -1003,8 +1034,12 @@ fn set_time_zone(zone: &str, password: &[u8]) -> Result<(), String> {
     if !zone_path.exists() {
         return Err("the selected time zone is not installed".to_owned());
     }
-    let mut child = Command::new("/usr/local/bin/sudo")
-        .args([
+    let mut input = Vec::new();
+    let arguments = if let Some(password) = password {
+        input.extend_from_slice(password);
+        input.push(b'\n');
+        vec![
+            "-k",
             "-S",
             "-p",
             "",
@@ -1012,35 +1047,22 @@ fn set_time_zone(zone: &str, password: &[u8]) -> Result<(), String> {
             "/usr/bin/timedatectl",
             "set-timezone",
             zone,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    let mut input = password.to_vec();
-    input.push(b'\n');
-    let write_result = child
-        .stdin
-        .take()
-        .ok_or_else(|| "sudo did not open its password input".to_owned())?
-        .write_all(&input)
-        .map_err(|error| error.to_string());
-    input.zeroize();
-    if let Err(error) = write_result {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if detail.is_empty() {
+        ]
+    } else {
+        vec![
+            "-k",
+            "-n",
+            "--",
+            "/usr/bin/timedatectl",
+            "set-timezone",
+            zone,
+        ]
+    };
+    if let Err(error) = run_guest_sudo(&arguments, &mut input) {
+        return Err(if error.is_empty() {
             "timedatectl rejected the selected time zone".to_owned()
         } else {
-            detail
+            error
         });
     }
     Ok(())
@@ -1048,6 +1070,7 @@ fn set_time_zone(zone: &str, password: &[u8]) -> Result<(), String> {
 
 fn request_machine_password(
     parent: &gtk::ApplicationWindow,
+    explanation_text: &str,
     callback: impl FnOnce(Option<Vec<u8>>) + 'static,
 ) {
     let dialog = gtk::Window::builder()
@@ -1062,7 +1085,7 @@ fn request_machine_password(
     content.set_margin_end(18);
     content.set_margin_top(18);
     content.set_margin_bottom(18);
-    let explanation = wrapped_label("Enter this machine's password to change the time zone.");
+    let explanation = wrapped_label(explanation_text);
     let password = gtk::PasswordEntry::builder()
         .show_peek_icon(true)
         .placeholder_text("Password")
@@ -1102,7 +1125,7 @@ fn request_machine_password(
     let password_for_accept = password.clone();
     authenticate.connect_clicked(move |_| {
         let mut value = password_for_accept.text().to_string();
-        if value.is_empty() || value.len() > 4096 {
+        if value.is_empty() || value.len() > MAX_PASSWORD_BYTES {
             value.zeroize();
             return;
         }
@@ -1116,6 +1139,400 @@ fn request_machine_password(
     });
     dialog.present();
     password.grab_focus();
+}
+
+struct PasswordChangeRequest {
+    current: Option<Vec<u8>>,
+    new: Vec<u8>,
+}
+
+impl Drop for PasswordChangeRequest {
+    fn drop(&mut self) {
+        if let Some(current) = self.current.as_mut() {
+            current.zeroize();
+        }
+        self.new.zeroize();
+    }
+}
+
+fn build_security_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWindow {
+    let contents = gtk::Box::new(gtk::Orientation::Vertical, 22);
+
+    let password_section = section("Password");
+    let change_password = gtk::Button::with_label("Change…");
+    accessible(
+        &change_password,
+        "Change password",
+        "Change the password for the user account in this machine.",
+    );
+    password_section.append(&setting_row(
+        "Machine password",
+        "Changes the password for the user account inside this machine.",
+        &change_password,
+    ));
+    contents.append(&password_section);
+
+    let sudo_section = section("Administrator access");
+    let passwordless = gtk::Switch::new();
+    let initial_passwordless = passwordless_sudo_enabled();
+    passwordless.set_active(initial_passwordless.as_ref().copied().unwrap_or(false));
+    passwordless.set_sensitive(initial_passwordless.is_ok());
+    accessible(
+        &passwordless,
+        "Passwordless sudo",
+        "Allow commands inside this machine to use sudo without entering the machine password.",
+    );
+    sudo_section.append(&setting_row(
+        "Passwordless sudo",
+        "Convenient for automated development, but any program running as this user can then become root inside the machine.",
+        &passwordless,
+    ));
+    if let Err(error) = initial_passwordless {
+        let warning = wrapped_label(&format!(
+            "This control is unavailable because the installed sudo policy could not be verified: {error}"
+        ));
+        warning.add_css_class("error");
+        sudo_section.append(&warning);
+    }
+    contents.append(&sudo_section);
+
+    {
+        let window = window.clone();
+        change_password.connect_clicked(move |_| {
+            let passwordless = sudo_runs_without_password();
+            let window_for_result = window.clone();
+            request_password_change(&window, passwordless, move |request| {
+                let Some(request) = request else {
+                    return;
+                };
+                match change_machine_password(&request, passwordless) {
+                    Ok(()) => show_info(
+                        &window_for_result,
+                        "Password changed",
+                        "The password for user was changed inside this machine.",
+                    ),
+                    Err(error) => {
+                        show_error(&window_for_result, "Password could not be changed", &error)
+                    }
+                }
+            });
+        });
+    }
+
+    let changing = Rc::new(Cell::new(false));
+    let confirmed = Rc::new(Cell::new(passwordless.is_active()));
+    {
+        let window = window.clone();
+        let changing = Rc::clone(&changing);
+        let confirmed = Rc::clone(&confirmed);
+        passwordless.connect_active_notify(move |control| {
+            if changing.get() {
+                return;
+            }
+            let requested = control.is_active();
+            control.set_sensitive(false);
+            if requested {
+                let control = control.clone();
+                let window_for_result = window.clone();
+                let changing = Rc::clone(&changing);
+                let confirmed = Rc::clone(&confirmed);
+                request_machine_password(
+                    &window,
+                    "Enter this machine's password to enable passwordless sudo.",
+                    move |password| {
+                        control.set_sensitive(true);
+                        let Some(mut password) = password else {
+                            changing.set(true);
+                            control.set_active(confirmed.get());
+                            changing.set(false);
+                            return;
+                        };
+                        let result = set_passwordless_sudo(true, Some(&password));
+                        password.zeroize();
+                        match result {
+                            Ok(()) => confirmed.set(true),
+                            Err(error) => {
+                                changing.set(true);
+                                control.set_active(confirmed.get());
+                                changing.set(false);
+                                show_error(
+                                    &window_for_result,
+                                    "Passwordless sudo was not enabled",
+                                    &error,
+                                );
+                            }
+                        }
+                    },
+                );
+            } else {
+                let result = set_passwordless_sudo(false, None);
+                control.set_sensitive(true);
+                match result {
+                    Ok(()) => confirmed.set(false),
+                    Err(error) => {
+                        changing.set(true);
+                        control.set_active(confirmed.get());
+                        changing.set(false);
+                        show_error(&window, "Passwordless sudo was not disabled", &error);
+                    }
+                }
+            }
+        });
+    }
+
+    page("Security", &contents)
+}
+
+fn request_password_change(
+    parent: &gtk::ApplicationWindow,
+    passwordless: bool,
+    callback: impl FnOnce(Option<PasswordChangeRequest>) + 'static,
+) {
+    let dialog = gtk::Window::builder()
+        .title("Change Password")
+        .transient_for(parent)
+        .modal(true)
+        .resizable(false)
+        .default_width(440)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    set_margins(&content, 18);
+    content.append(&wrapped_label(if passwordless {
+        "Set a new password for user. Passwordless sudo is enabled, so the current password is not required."
+    } else {
+        "Enter the current machine password, then choose a new password for user."
+    }));
+    let current = (!passwordless).then(|| {
+        gtk::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .placeholder_text("Current password")
+            .build()
+    });
+    if let Some(current) = current.as_ref() {
+        content.append(current);
+    }
+    let new = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .placeholder_text("New password")
+        .build();
+    let confirm = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .placeholder_text("Confirm new password")
+        .activates_default(true)
+        .build();
+    content.append(&new);
+    content.append(&confirm);
+    let validation = wrapped_label("");
+    validation.add_css_class("error");
+    validation.set_visible(false);
+    content.append(&validation);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let cancel = gtk::Button::with_label("Cancel");
+    let apply = gtk::Button::with_label("Change Password");
+    apply.add_css_class("suggested-action");
+    actions.append(&cancel);
+    actions.append(&apply);
+    content.append(&actions);
+    dialog.set_default_widget(Some(&apply));
+    dialog.set_child(Some(&content));
+
+    let callback = Rc::new(RefCell::new(Some(callback)));
+    let callback_for_cancel = Rc::clone(&callback);
+    let dialog_for_cancel = dialog.clone();
+    cancel.connect_clicked(move |_| {
+        if let Some(callback) = callback_for_cancel.borrow_mut().take() {
+            callback(None);
+        }
+        dialog_for_cancel.close();
+    });
+    let callback_for_close = Rc::clone(&callback);
+    dialog.connect_close_request(move |_| {
+        if let Some(callback) = callback_for_close.borrow_mut().take() {
+            callback(None);
+        }
+        glib::Propagation::Proceed
+    });
+    let callback_for_apply = Rc::clone(&callback);
+    let dialog_for_apply = dialog.clone();
+    let current_for_apply = current.clone();
+    let new_for_apply = new.clone();
+    let confirm_for_apply = confirm.clone();
+    let validation_for_apply = validation.clone();
+    apply.connect_clicked(move |_| {
+        let mut current_text = current_for_apply
+            .as_ref()
+            .map(|entry| entry.text().to_string());
+        let mut new_text = new_for_apply.text().to_string();
+        let mut confirm_text = confirm_for_apply.text().to_string();
+        let invalid_current = current_text
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > MAX_PASSWORD_BYTES);
+        let invalid_new = new_text.is_empty()
+            || new_text.len() > MAX_PASSWORD_BYTES
+            || new_text.as_bytes().contains(&b'\n');
+        if invalid_current || invalid_new || new_text != confirm_text {
+            validation_for_apply.set_label(if new_text != confirm_text {
+                "The new passwords do not match."
+            } else if invalid_current {
+                "Enter the current machine password."
+            } else {
+                "Enter a new password between 1 and 4096 bytes without a line break."
+            });
+            validation_for_apply.set_visible(true);
+            current_text.as_mut().map(Zeroize::zeroize);
+            new_text.zeroize();
+            confirm_text.zeroize();
+            return;
+        }
+        let request = PasswordChangeRequest {
+            current: current_text.as_ref().map(|value| value.as_bytes().to_vec()),
+            new: new_text.as_bytes().to_vec(),
+        };
+        current_text.as_mut().map(Zeroize::zeroize);
+        new_text.zeroize();
+        confirm_text.zeroize();
+        if let Some(current) = current_for_apply.as_ref() {
+            current.set_text("");
+        }
+        new_for_apply.set_text("");
+        confirm_for_apply.set_text("");
+        if let Some(callback) = callback_for_apply.borrow_mut().take() {
+            callback(Some(request));
+        }
+        dialog_for_apply.close();
+    });
+    dialog.present();
+    if let Some(current) = current.as_ref() {
+        current.grab_focus();
+    } else {
+        new.grab_focus();
+    }
+}
+
+fn passwordless_sudo_enabled() -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(PASSWORDLESS_POLICY) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != 0
+        || metadata.gid() != 0
+        || metadata.mode() & 0o777 != 0o440
+        || metadata.len() != PASSWORDLESS_POLICY_CONTENT.len() as u64
+    {
+        return Err("the passwordless-sudo policy is not a trusted root-owned file".to_owned());
+    }
+    let output = Command::new(GUEST_SUDO)
+        .args(["-k", "-n", "--", SUDO_POLICY_HELPER, "status-passwordless"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if detail.is_empty() {
+            format!("sudo exited with {}", output.status)
+        } else {
+            detail
+        });
+    }
+    match output.stdout.as_slice() {
+        b"enabled\n" => Ok(true),
+        _ => Err("the sudo policy helper returned an invalid status".to_owned()),
+    }
+}
+
+fn sudo_runs_without_password() -> bool {
+    Command::new(GUEST_SUDO)
+        .args(["-k", "-n", "--", "/usr/bin/true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn change_machine_password(
+    request: &PasswordChangeRequest,
+    passwordless: bool,
+) -> Result<(), String> {
+    let mut input = Vec::new();
+    let arguments = if passwordless {
+        vec!["-k", "-n", "--", CHPASSWD]
+    } else {
+        let current = request
+            .current
+            .as_ref()
+            .ok_or_else(|| "the current machine password is required".to_owned())?;
+        input.extend_from_slice(current);
+        input.push(b'\n');
+        vec!["-k", "-S", "-p", "", "--", CHPASSWD]
+    };
+    input.extend_from_slice(INTERACTIVE_USER.as_bytes());
+    input.push(b':');
+    input.extend_from_slice(&request.new);
+    input.push(b'\n');
+    run_guest_sudo(&arguments, &mut input)
+}
+
+fn set_passwordless_sudo(enable: bool, password: Option<&[u8]>) -> Result<(), String> {
+    let mut input = Vec::new();
+    let action = if enable {
+        let password = password.ok_or_else(|| "the machine password is required".to_owned())?;
+        input.extend_from_slice(password);
+        input.push(b'\n');
+        "enable-passwordless"
+    } else {
+        "disable-passwordless"
+    };
+    let arguments = if enable {
+        vec!["-k", "-S", "-p", "", "--", SUDO_POLICY_HELPER, action]
+    } else {
+        vec!["-k", "-n", "--", SUDO_POLICY_HELPER, action]
+    };
+    run_guest_sudo(&arguments, &mut input)
+}
+
+fn run_guest_sudo(arguments: &[&str], input: &mut Vec<u8>) -> Result<(), String> {
+    let spawned = Command::new(GUEST_SUDO)
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            input.zeroize();
+            return Err(error.to_string());
+        }
+    };
+    let write_result = match child.stdin.take() {
+        Some(mut standard_input) => standard_input
+            .write_all(input)
+            .map_err(|error| error.to_string()),
+        None => Err("sudo did not open its standard input".to_owned()),
+    };
+    input.zeroize();
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if detail.is_empty() {
+        format!("sudo exited with {}", output.status)
+    } else {
+        detail
+    })
 }
 
 fn build_appearance_page(
@@ -1724,6 +2141,15 @@ fn show_error(parent: &gtk::ApplicationWindow, title: &str, detail: &str) {
         .show(Some(parent));
 }
 
+fn show_info(parent: &gtk::ApplicationWindow, title: &str, detail: &str) {
+    gtk::AlertDialog::builder()
+        .message(title)
+        .detail(detail)
+        .modal(true)
+        .build()
+        .show(Some(parent));
+}
+
 fn apply_current_process_theme(mode: ThemeMode) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_theme_name(Some(mode.gtk_theme_name()));
@@ -1784,6 +2210,7 @@ mod tests {
                 "Keyboard",
                 "Time & Location",
                 "Appearance",
+                "Security",
                 "Updates"
             ]
         );
@@ -1798,6 +2225,7 @@ mod tests {
         assert_eq!(names.len(), ACCESSIBLE_CONTROL_NAMES.len());
         assert!(names.contains("Desktop background colour"));
         assert!(names.contains("Microphone mute"));
+        assert!(names.contains("Passwordless sudo"));
         assert!(names.contains("Automatic software updates"));
     }
 

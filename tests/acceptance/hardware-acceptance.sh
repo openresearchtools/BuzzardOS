@@ -16,7 +16,7 @@ install_package=${BUZZARDOS_ACCEPT_INSTALL_PACKAGE:-0}
 full_matrix=${BUZZARDOS_ACCEPT_FULL_MATRIX:-0}
 integration_acceptance=${BUZZARDOS_ACCEPT_INTEGRATIONS:-1}
 accept_image=${BUZZARDOS_ACCEPT_IMAGE:-}
-accept_password=${BUZZARDOS_ACCEPT_PASSWORD:-}
+accept_password=buzzard
 relocation_active=0
 relocation_original=
 relocation_target=
@@ -343,14 +343,14 @@ guest() {
         setpriv --reuid=0 --regid=0 --clear-groups \
         setpriv --reuid=1000 --regid=1000 --clear-groups \
         env -i \
-        HOME=/home/buzzard \
-        USER=buzzard \
-        LOGNAME=buzzard \
+        HOME=/home/user \
+        USER=user \
+        LOGNAME=user \
         PATH=/usr/lib/buzzardos/runtime/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         XDG_RUNTIME_DIR=/run/user/1000 \
-        XDG_CONFIG_HOME=/home/buzzard/.config \
-        XDG_DATA_HOME=/home/buzzard/.local/share \
-        XDG_CACHE_HOME=/home/buzzard/.cache \
+        XDG_CONFIG_HOME=/home/user/.config \
+        XDG_DATA_HOME=/home/user/.local/share \
+        XDG_CACHE_HOME=/home/user/.cache \
         XDG_CONFIG_DIRS=/etc/buzzardos/xdg:/etc/xdg \
         XDG_DATA_DIRS=/usr/local/share:/usr/share \
         XDG_SESSION_TYPE=wayland \
@@ -492,7 +492,7 @@ appimage_fuse_mount_for_pid() {
     read -r mountpoint filesystem options <<<"$mount_record"
     case "$mountpoint" in
         /tmp/.mount_* | /run/user/1000/.mount_* | \
-            /home/buzzard/.mount_* | /shared/.mount_*) ;;
+            /home/user/.mount_* | /shared/.mount_*) ;;
         *)
             echo "AppImage executable is outside an approved runtime mount: $mount_record" >&2
             return 1
@@ -765,18 +765,13 @@ drag_guest_frame_edge() {
 }
 
 wb doctor
-[[ -n "$accept_password" ]] || {
-    echo "BUZZARDOS_ACCEPT_PASSWORD is required for password-authenticated guest sudo" >&2
-    exit 1
-}
 if [[ ! -f "$machine_dir/machine.json" ]]; then
     [[ -n "$accept_image" ]] || {
         echo "BUZZARDOS_ACCEPT_IMAGE is required to create the acceptance machine" >&2
         exit 1
     }
     mkdir -p -- "$shared_dir"
-    create_arguments=(create "$machine" --gpu all --image "$accept_image" --share "$shared_dir" --password-stdin)
-    printf '%s' "$accept_password" | wb "${create_arguments[@]}"
+    wb create "$machine" --gpu all --image "$accept_image" --share "$shared_dir"
 fi
 [[ -d "$shared_dir" ]]
 jq -e --arg shared "$shared_dir" \
@@ -896,9 +891,23 @@ rm -f -- "$loopback_probe"
 ! guest test -S /var/run/docker.sock
 [[ $(guest_sudo id -u) == 0 ]]
 ! printf '%s\n' "buzzardos-acceptance-deliberately-wrong-password" |
-    guest sudo -S -p '' -- true
+    guest sudo -kS -p '' -- true
 ! printf '%s\n' "$accept_password" |
     guest setpriv --no-new-privs /usr/bin/sudo -S -p '' -- true
+printf '%s\n' "$accept_password" |
+    guest sudo -kS -p '' -- \
+        /usr/libexec/buzzardos-guest/sudo-policy enable-passwordless
+[[ $(guest sudo -kn -- id -u) == 0 ]]
+guest sudo -kn -- \
+    /usr/libexec/buzzardos-guest/sudo-policy disable-passwordless
+! guest sudo -kn -- true
+temporary_password="buzzardos-acceptance-$RANDOM-$$"
+printf '%s\n%s\n' "$accept_password" "user:$temporary_password" |
+    guest sudo -kS -p '' -- /usr/sbin/chpasswd
+! printf '%s\n' "$accept_password" | guest sudo -kS -p '' -- true
+printf '%s\n%s\n' "$temporary_password" "user:$accept_password" |
+    guest sudo -kS -p '' -- /usr/sbin/chpasswd
+[[ $(guest_sudo id -u) == 0 ]]
 rootfs_host_uid=$(stat -c %u "$machine_dir/rootfs")
 [[ "$rootfs_host_uid" != 0 ]]
 [[ "$rootfs_host_uid" != "$(id -u)" ]]
@@ -973,11 +982,11 @@ guest mkdir -p /shared/.buzzardos-guest-directory
 printf '%s-host-created\n' "$marker" \
     >"$shared_dir/.buzzardos-guest-directory/host-file"
 [[ $(guest cat /shared/.buzzardos-guest-directory/host-file) == "$marker-host-created" ]]
-guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.buzzardos-persistence"
-guest sh -c "printf '%s\\n' '$marker' > /home/buzzard/.config/buzzardos-acceptance.setting"
-guest install -d -m 0700 /home/buzzard/.config/sway
+guest sh -c "printf '%s\\n' '$marker' > /home/user/.buzzardos-persistence"
+guest sh -c "printf '%s\\n' '$marker' > /home/user/.config/buzzardos-acceptance.setting"
+guest install -d -m 0700 /home/user/.config/sway
 guest sh -c 'printf "%s\n" "$1" \
-    > /home/buzzard/.config/sway/buzzardos-acceptance.marker' \
+    > /home/user/.config/sway/buzzardos-acceptance.marker' \
     sh "$marker"
 # Integration assets are installed when the machine is created, but normal
 # starts must not silently restore them over guest-root changes. This harmless
@@ -1030,18 +1039,18 @@ wait_native_window_frame_after "$reload_frame_counters"
 [[ $(guest awk '{print $22}' "/proc/$compositor_pid/stat") == \
     "$compositor_start_time" ]]
 wait_cua_capture_matches_runtime
-guest install -d -m 0700 /home/buzzard/.local/bin
-guest sh -c 'cat > /home/buzzard/.local/bin/buzzardos-acceptance-agent' <<'AGENT'
+guest install -d -m 0700 /home/user/.local/bin
+guest sh -c 'cat > /home/user/.local/bin/buzzardos-acceptance-agent' <<'AGENT'
 #!/bin/sh
 set -eu
 capture=${XDG_RUNTIME_DIR:-/run/user/1000}/buzzardos-arbitrary-agent.png
 grim "$capture"
 test -s "$capture"
 python3 -c 'import pyatspi; assert pyatspi.Registry.getDesktopCount() > 0; assert pyatspi.Registry.getDesktop(0).childCount > 0'
-cat /home/buzzard/.buzzardos-persistence
+cat /home/user/.buzzardos-persistence
 AGENT
-guest chmod 0700 /home/buzzard/.local/bin/buzzardos-acceptance-agent
-[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
+guest chmod 0700 /home/user/.local/bin/buzzardos-acceptance-agent
+[[ $(guest /home/user/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 
 # The reference image uses the distribution's stock Sway and matching wlroots
 # dependency. Keep application compatibility in the runtime, but do not
@@ -1250,9 +1259,9 @@ assert_cua_ok drag \
 # is deliberately a manual observation: automated acceptance must never seize,
 # focus, type on, or otherwise interfere with the operator's host keyboard.
 guest sh -c 'printf "%s\n" "#!/bin/bash" "IFS= read -e -r cua_value" \
-    "printf \"%s\" \"\$cua_value\" > /home/buzzard/.buzzardos-cua-input" \
+    "printf \"%s\" \"\$cua_value\" > /home/user/.buzzardos-cua-input" \
     "sleep 10" > /tmp/buzzardos-input-test; chmod 700 /tmp/buzzardos-input-test'
-guest rm -f /home/buzzard/.buzzardos-cua-input
+guest rm -f /home/user/.buzzardos-cua-input
 guest_spawn foot --app-id buzzardos-acceptance /tmp/buzzardos-input-test
 wait_for_window buzzardos-acceptance >/dev/null
 assert_cua_ok hotkey \
@@ -1267,10 +1276,10 @@ assert_cua_ok press_key \
     '{"scope":"desktop","key":"enter","delivery_mode":"foreground"}'
 deadline=$((SECONDS + 5))
 while ((SECONDS < deadline)) &&
-    ! guest test -e /home/buzzard/.buzzardos-cua-input; do
+    ! guest test -e /home/user/.buzzardos-cua-input; do
     sleep 0.1
 done
-[[ $(guest cat /home/buzzard/.buzzardos-cua-input) == "${marker%?}z" ]]
+[[ $(guest cat /home/user/.buzzardos-cua-input) == "${marker%?}z" ]]
 guest pkill -x foot >/dev/null 2>&1 || true
 
 # Classic state changes remain compositor-owned even though stock Sway has no
@@ -1461,7 +1470,7 @@ if [[ "$full_matrix" == 1 ]]; then
     # Start from a known non-Home location so the semantic action below must
     # produce an observable navigation, rather than passing because Dolphin
     # restored an already-Home session.
-    guest_spawn dolphin /home/buzzard/Downloads
+    guest_spawn dolphin /home/user/Downloads
     dolphin=$(wait_for_window dolphin)
     dolphin_pid=$(jq -er '.pid' <<<"$dolphin")
     dolphin_window=$(jq -er '.window_id' <<<"$dolphin")
@@ -1736,14 +1745,14 @@ wait_running
 refresh_pid
 [[ $(guest hostname) == "$machine" ]]
 [[ -z "$(guest systemctl --failed --no-legend --plain --no-pager)" ]]
-[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /home/user/.buzzardos-persistence) == "$marker" ]]
 [[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
-[[ $(guest cat /home/buzzard/.config/buzzardos-acceptance.setting) == "$marker" ]]
+[[ $(guest cat /home/user/.config/buzzardos-acceptance.setting) == "$marker" ]]
 guest grep -Fxq "$marker" \
-    /home/buzzard/.config/sway/buzzardos-acceptance.marker
+    /home/user/.config/sway/buzzardos-acceptance.marker
 guest grep -Fxq "# persistent guest OS edit: $marker" \
     /etc/buzzardos/sway-config
-[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
+[[ $(guest /home/user/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 guest sh -c 'command -v wtype' >/dev/null
 if [[ "$install_package" == 1 ]]; then
     guest dpkg-query -W hello >/dev/null
@@ -1774,9 +1783,9 @@ wb status "$machine" | grep -Fx "rootfs: $machine_dir/rootfs" >/dev/null
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /home/user/.buzzardos-persistence) == "$marker" ]]
 [[ $(guest cat /shared/.buzzardos-acceptance) == "$marker" ]]
-[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
+[[ $(guest /home/user/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 relocated_machine_config_hash=$(
     sha256sum "$machine_dir/machine.json" | cut -d' ' -f1
 )
@@ -1799,8 +1808,8 @@ runtime="$machine_dir/runtime.json"
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
-[[ $(guest /home/buzzard/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
+[[ $(guest cat /home/user/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest /home/user/.local/bin/buzzardos-acceptance-agent) == "$marker" ]]
 
 # `stop` must not return while its detached broker is still cleaning up; an
 # immediate start is the regression test for that lifecycle boundary.
@@ -1808,7 +1817,7 @@ wb stop "$machine"
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /home/user/.buzzardos-persistence) == "$marker" ]]
 
 # A guest-local poweroff stops Sway before namespace PID 1; the broker must
 # recognize that orderly sequence rather than report the display disconnect as
@@ -1818,7 +1827,7 @@ wait_stopped
 wb start "$machine" --detach
 wait_running
 refresh_pid
-[[ $(guest cat /home/buzzard/.buzzardos-persistence) == "$marker" ]]
+[[ $(guest cat /home/user/.buzzardos-persistence) == "$marker" ]]
 
 # Exercise the native fractional-scale bridge around unmodified Sway/wlroots
 # without mutating the host monitor configuration. The test override replaces

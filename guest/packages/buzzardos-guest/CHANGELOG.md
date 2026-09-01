@@ -2,6 +2,10 @@
 
 ## 0.1.1
 
+- Provision the official reference-image account as `user` at UID/GID 1000,
+  while keeping package upgrades and machine lifecycle out of account setup.
+- Add an exact guest-local, `visudo`-validated passwordless-sudo policy helper;
+  it has no Polkit rule, host route, or generic privileged interface.
 - Replace the broad guest Polkit authorization with private, socket-activated
   sudo and AppImage mount handoffs whose root services expose no generic RPC.
 - Execute the distro's real sudo with ordinary machine-password

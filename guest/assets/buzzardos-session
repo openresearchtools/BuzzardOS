@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
-export HOME=/home/buzzard
-export USER=buzzard
-export LOGNAME=buzzard
+export HOME=/home/user
+export USER=user
+export LOGNAME=user
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"

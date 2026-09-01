@@ -63,7 +63,7 @@ class FusermountBridgeContractTests(unittest.TestCase):
             ),
             (["-u", "-q", "-z", "--", "/shared/.mount_CCCCCC"], -1, "unmount"),
             (
-                ["--auto-unmount", "--", "/home/buzzard/.mount_DDDDDD"],
+                ["--auto-unmount", "--", "/home/user/.mount_DDDDDD"],
                 9,
                 "auto-unmount",
             ),

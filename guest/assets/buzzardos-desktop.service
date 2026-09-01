@@ -5,12 +5,12 @@ Wants=dbus.service
 
 [Service]
 Type=simple
-User=buzzard
-Group=buzzard
-WorkingDirectory=/home/buzzard
-Environment=HOME=/home/buzzard
-Environment=USER=buzzard
-Environment=LOGNAME=buzzard
+User=user
+Group=user
+WorkingDirectory=/home/user
+Environment=HOME=/home/user
+Environment=USER=user
+Environment=LOGNAME=user
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XDG_CONFIG_DIRS=/etc/buzzardos/xdg:/etc/xdg
 Environment=XDG_SESSION_TYPE=wayland

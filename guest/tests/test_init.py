@@ -35,11 +35,11 @@ class GuestInitTests(unittest.TestCase):
             (etc / "machine-id").write_bytes(machine_id)
             (etc / "passwd").write_text(
                 "root:x:0:0:root:/root:/bin/sh\n"
-                "buzzardos:x:1000:1000:Buzzard OS:/home/buzzard:/bin/sh\n",
+                "user:x:1000:1000:Buzzard OS:/home/user:/bin/sh\n",
                 encoding="utf-8",
             )
             (etc / "group").write_text(
-                "root:x:0:\n" "buzzardos:x:1000:\n",
+                "root:x:0:\n" "user:x:1000:\n",
                 encoding="utf-8",
             )
 

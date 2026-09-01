@@ -2,13 +2,11 @@
 
 ## 0.1.5
 
-- Require a user-selected guest password for create, pull, build, import, and
-  clone, hashing it before any long-running image operation and writing only
-  the salted hash into the staged rootfs.
-- Add a stopped-machine password command and matching Manager Settings page so
-  existing persistent machines can move to password-authenticated sudo.
-- Keep password input out of argv, environment, progress output, and machine
-  metadata while preserving transactional machine creation.
+- Keep the host completely out of guest credential management: create, pull,
+  import, clone, export, start, and stop never read or rewrite guest passwords.
+- Report the official built-in image's documented `user` / `buzzard`
+  credential only after a successful build; custom images and imports retain
+  their own credentials without a host-side claim.
 
 ## 0.1.4
 

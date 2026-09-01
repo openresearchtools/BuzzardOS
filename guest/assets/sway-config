@@ -53,4 +53,4 @@ workspace Desktop
 exec_always --no-startup-id /usr/lib/buzzardos/runtime/current/libexec/buzzardos-desktop-services
 
 include /run/buzzardos-host/initial-output.conf
-include /home/buzzard/.config/sway/config.d/*
+include /home/user/.config/sway/config.d/*
