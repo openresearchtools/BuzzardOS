@@ -3,7 +3,6 @@
 set -eu
 
 status_dir=${BUZZARDOS_STATUS_DIR:-/run/buzzardos-host}
-log_file="$status_dir/compositor.log"
 
 dbus-update-activation-environment \
     DBUS_SESSION_BUS_ADDRESS \
@@ -47,7 +46,7 @@ export WLR_LIBINPUT_NO_DEVICES=1
 
 /usr/bin/sway \
     --unsupported-gpu --config /etc/buzzardos/sway-config \
-    >>"$log_file" 2>&1 &
+    >/dev/null 2>&1 &
 sway_pid=$!
 
 ready=0
@@ -79,7 +78,6 @@ while [ "$attempt" -lt 300 ]; do
 done
 
 if [ "$ready" -ne 1 ]; then
-    echo "Sway did not expose an active nested output" >>"$log_file"
     kill "$sway_pid" 2>/dev/null || true
     wait "$sway_pid" || true
     exit 1

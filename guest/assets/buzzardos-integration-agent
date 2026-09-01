@@ -43,8 +43,7 @@ def atomic_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
-def gst_process(arguments: list[str], label: str) -> subprocess.Popen:
-    log = open(STATUS.parent / f"integration-{label}.log", "ab", buffering=0)
+def gst_process(arguments: list[str]) -> subprocess.Popen:
     command = ["gst-launch-1.0", "-q", *arguments]
     parent_pid = os.getpid()
 
@@ -60,8 +59,8 @@ def gst_process(arguments: list[str], label: str) -> subprocess.Popen:
     return subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
         preexec_fn=bind_lifetime_to_agent,
         close_fds=True,
@@ -456,7 +455,7 @@ class IntegrationAgent:
                 "client-name=Buzzard OS Host Camera",
                 "stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=buzzardos_host_camera,node.description=Host_Camera,node.virtual=true",
             ]
-        self.media_processes[name] = gst_process(arguments, name)
+        self.media_processes[name] = gst_process(arguments)
 
     def write_status(self, error: str | None) -> None:
         processes = {

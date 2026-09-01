@@ -2,6 +2,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
+# PipeWire otherwise detects the systemd journal and writes directly to it,
+# bypassing stdout/stderr redirection.  Buzzard services keep no production
+# log stream; immediate failures are represented by readiness/state instead.
+export PIPEWIRE_DEBUG=0
+export SPA_DEBUG=0
+export PIPEWIRE_LOG_SYSTEMD=false
+
 if [ "${BUZZARDOS_SERVICES_LOCKED:-0}" != 1 ]; then
     export BUZZARDOS_SERVICES_LOCKED=1
     exec flock -n /run/user/1000/buzzardos-desktop-services.lock "$0"
@@ -44,21 +51,16 @@ service_pids=
 last_service_pid=
 
 start_service() {
-    log_name=$1
-    shift
-    "$@" >>"$status_dir/$log_name.log" 2>&1 &
+    "$@" >/dev/null 2>&1 &
     last_service_pid=$!
     service_pids="$service_pids $last_service_pid"
 }
 
 start_optional_service() {
     executable=$1
-    log_name=$2
-    shift 2
+    shift
     if command -v "$executable" >/dev/null 2>&1; then
-        start_service "$log_name" "$executable" "$@"
-    else
-        echo "$executable is not installed" >"$status_dir/$log_name.log"
+        start_service "$executable" "$@"
     fi
 }
 
@@ -77,7 +79,7 @@ trap cleanup EXIT INT TERM
 
 # These are guest-private services. No host PipeWire or portal socket is
 # mounted, and none of them participates in the visible host presentation.
-start_optional_service pipewire pipewire
+start_optional_service pipewire
 attempt=0
 while [ "$attempt" -lt 200 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do
     attempt=$((attempt + 1))
@@ -87,24 +89,21 @@ if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
     echo "private PipeWire socket did not become ready" >&2
     exit 1
 fi
-start_optional_service pipewire-pulse pipewire-pulse
-start_optional_service wireplumber wireplumber
+start_optional_service pipewire-pulse
+start_optional_service wireplumber
 runtime=/usr/lib/buzzardos/runtime/current
 
-start_service appimage-ready "$runtime/libexec/buzzardos-appimage-ready"
-start_service clipboard-agent "$runtime/libexec/buzzardos-clipboard-agent"
-start_service integration "$runtime/libexec/buzzardos-integration-agent"
-start_optional_service /usr/libexec/xdg-desktop-portal-wlr xdg-desktop-portal-wlr
-start_optional_service /usr/libexec/xdg-desktop-portal xdg-desktop-portal
+start_service "$runtime/libexec/buzzardos-appimage-ready"
+start_service "$runtime/libexec/buzzardos-clipboard-agent"
+start_service "$runtime/libexec/buzzardos-integration-agent"
+start_optional_service /usr/libexec/xdg-desktop-portal-wlr
+start_optional_service /usr/libexec/xdg-desktop-portal
 
-start_optional_service mako mako
+start_optional_service mako
 if [ -x /usr/bin/buzzardos-desktop ]; then
-    start_service desktop /usr/bin/buzzardos-desktop
-else
-    echo "buzzardos-desktop is not installed; running the stock Sway session without the optional Buzzard OS desktop" \
-        >"$status_dir/desktop.log"
+    start_service /usr/bin/buzzardos-desktop
 fi
-start_service output-sync "$runtime/libexec/buzzardos-output-sync"
+start_service "$runtime/libexec/buzzardos-output-sync"
 
 # Production startup performs no acceptance probes, screenshots, health RPCs,
 # or retry loops.  The authenticated marker means the real services were

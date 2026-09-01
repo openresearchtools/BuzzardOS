@@ -54,7 +54,12 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
 
 COPY apt/debian-sid-live.sources \
     /etc/apt/sources.list.d/debian.sources
-RUN rm -f /etc/apt/apt.conf.d/99buzzardos-snapshot
+# The finished machine is a persistent desktop, not a disposable container.
+# Replace the immutable build snapshot with the live signed archive and retain
+# its package catalogue so package installation works immediately on first
+# boot. Distro APT timers keep this catalogue current afterwards.
+RUN rm -f /etc/apt/apt.conf.d/99buzzardos-snapshot && \
+    apt-get -o Acquire::ForceIPv4=true update
 
 COPY provision-image.sh /tmp/buzzardos-provision-image
 RUN chmod 0755 /tmp/buzzardos-provision-image && \
@@ -115,8 +120,7 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-mark hold libcublas-13-3 libnccl2 && \
     printf '%s\n' /usr/local/cuda/lib64 >>/etc/ld.so.conf.d/nvidia.conf && \
     ldconfig && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean
 
 ENV PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     NVARCH=x86_64 \

@@ -9,11 +9,11 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::{Pid, Uid, setsid};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
@@ -262,12 +262,12 @@ fn run_machine(machine_dir: &Path, detach: bool) -> Result<()> {
                 &mut display,
                 &mut state,
             );
-            // The display application intentionally survives a machine
-            // lifecycle, but the clipboard endpoint does not. Revoke the old
-            // socket and readiness evidence immediately after PID 1 and all
-            // of its descendants are gone, including failed-start paths. A
-            // later start must publish a fresh socket; it can never inherit a
-            // pathname from the previous desktop session.
+            // The display application survives an in-place restart, but a
+            // complete stop closes it. The clipboard endpoint never survives
+            // either transition. Revoke the old socket and readiness evidence
+            // immediately after PID 1 and all descendants are gone, including
+            // failed-start paths. A later start must publish a fresh socket;
+            // it can never inherit a pathname from the previous session.
             let clipboard_cleanup = clear_clipboard_session_runtime(&runtime);
             let result = combine_session_and_clipboard_cleanup(result, clipboard_cleanup);
 
@@ -279,15 +279,22 @@ fn run_machine(machine_dir: &Path, detach: bool) -> Result<()> {
                             .as_ref()
                             .is_some_and(|state| state.state == MachineState::Stopping) =>
                 {
+                    let restart = session.restart;
                     let shutdown_detail = latest
                         .filter(|state| state.state == MachineState::Stopping)
                         .and_then(|state| state.detail)
                         .unwrap_or_else(|| "clean shutdown".into());
                     let mut stopped = RuntimeState::new(MachineState::Stopped);
+                    if !restart {
+                        stopped.launcher_pid = None;
+                    }
                     stopped.container_pid = None;
                     stopped.detail = Some(shutdown_detail);
                     stopped.save(&machine_dir)?;
-                    start_requested = session.restart;
+                    if !restart {
+                        return Ok(());
+                    }
+                    start_requested = true;
                 }
                 Ok(session) => {
                     let mut failed = RuntimeState::new(MachineState::Failed);
@@ -376,6 +383,12 @@ fn add_guest_pseudo_filesystems(command: &mut Command) {
     ]);
 }
 
+fn guest_hosts_contents(hostname: &str) -> String {
+    format!(
+        "127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n::1\tlocalhost ip6-localhost ip6-loopback\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn launch_container(
     bwrap: &Path,
@@ -419,6 +432,15 @@ fn launch_container(
         .with_context(|| format!("writing {}", hostname.display()))?;
     fs::set_permissions(&hostname, fs::Permissions::from_mode(0o644))
         .with_context(|| format!("setting permissions on {}", hostname.display()))?;
+    // Keep libc, sudo, and package maintainer scripts able to resolve the
+    // ephemeral UTS hostname without modifying the persistent rootfs. A
+    // matching /etc/hosts entry is part of the same per-launch hostname
+    // state as /etc/hostname.
+    let hosts = guest_runtime.join("hosts");
+    fs::write(&hosts, guest_hosts_contents(&config.name))
+        .with_context(|| format!("writing {}", hosts.display()))?;
+    fs::set_permissions(&hosts, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("setting permissions on {}", hosts.display()))?;
     let initial_output = guest_runtime.join("initial-output.conf");
     fs::write(
         &initial_output,
@@ -565,6 +587,9 @@ fn launch_container(
         .arg("--ro-bind")
         .arg(&hostname)
         .arg("/etc/hostname")
+        .arg("--ro-bind")
+        .arg(&hosts)
+        .arg("/etc/hosts")
         .arg("--block-fd")
         .arg(block_read.to_string());
     for share in shares {
@@ -666,13 +691,11 @@ fn launch_container(
             return Ok(SessionResult { status, restart });
         }
         Err(error) => {
-            let log = fs::read_to_string(guest_runtime.join("compositor.log"))
-                .unwrap_or_else(|_| "the nested compositor produced no diagnostic log".into());
             if let Some(mut child) = network.take() {
                 terminate(&mut child.process.child);
             }
             cgroup.kill_all();
-            return Err(error.context(format!("nested compositor log:\n{}", log.trim())));
+            return Err(error.context("nested compositor did not become ready"));
         }
     }
 
@@ -689,7 +712,7 @@ fn launch_container(
     state.save(machine_dir)?;
     eprintln!("Buzzard OS desktop '{}' is ready", config.name);
 
-    let mut integrations = IntegrationRuntime::new(guest_runtime, display_state, host_status)?;
+    let mut integrations = IntegrationRuntime::new(guest_runtime, display_state)?;
     let mut integration_snapshot = config.integrations.clone();
     match integrations.reconcile(&config.integrations, network.as_ref(), resources) {
         Ok(diagnostics) => {
@@ -1504,16 +1527,8 @@ impl LifecycleRuntime {
             .prefix("buzzardos-runtime-")
             .tempdir()
             .context("creating lifecycle runtime directory")?;
-        let (root, guard) = if std::env::var_os("BUZZARDOS_KEEP_RUNTIME").is_some() {
-            let path = temporary.keep();
-            eprintln!(
-                "Buzzard OS development runtime evidence will remain at {}",
-                path.display()
-            );
-            (path, None)
-        } else {
-            (temporary.path().to_path_buf(), Some(temporary))
-        };
+        let root = temporary.path().to_path_buf();
+        let guard = Some(temporary);
         let guest = root.join("guest");
         let host_status = root.join("host-status");
         let display_state = root.join("display-state");
@@ -1585,9 +1600,9 @@ fn clear_session_runtime(runtime: &LifecycleRuntime) -> Result<()> {
     for relative in [
         "desktop-ready",
         "guest-poweroff-requested",
-        "compositor.log",
         "resolv.conf",
         "hostname",
+        "hosts",
         "initial-output.conf",
         "buzzardos-desktop-poweroff-marker.conf",
         "driver.env",
@@ -1753,19 +1768,8 @@ fn start_display_gateway(
     let private_socket = paths.guest_runtime.join("wayland-0");
     let guest_scale_control = paths.guest_runtime.join("display-scale-host.sock");
     let guest_clipboard_control = paths.guest_runtime.join("clipboard-agent.sock");
-    let log_path = paths.host_status.join("display-gateway.log");
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("opening {}", log_path.display()))?;
-    let log_error = log.try_clone().context("cloning display gateway log")?;
     let mut command = Command::new(&helper);
     command
-        .env(
-            "GDK_DEBUG",
-            gdk_debug_with_offload(std::env::var_os("GDK_DEBUG").as_deref()),
-        )
         .arg("--host")
         .arg(paths.host_wayland)
         .arg("--listen")
@@ -1805,8 +1809,8 @@ fn start_display_gateway(
     }
     let mut child = command
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_error))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("starting display gateway {}", helper.display()))?;
 
@@ -1843,9 +1847,7 @@ fn start_display_gateway(
             .try_wait()
             .context("checking display gateway startup")?
         {
-            let detail = fs::read_to_string(&log_path)
-                .unwrap_or_else(|_| "display gateway produced no log".to_owned());
-            bail!("display gateway exited with {status}: {}", detail.trim());
+            bail!("display gateway exited with {status}");
         }
         if Instant::now() >= deadline {
             terminate(&mut child);
@@ -1857,43 +1859,6 @@ fn start_display_gateway(
 
 fn machine_window_app_id(_machine_name: &str) -> String {
     BUZZARDOS_HOST_APP_ID.to_owned()
-}
-
-/// Preserve caller-selected GDK diagnostics while ensuring GTK emits the
-/// authoritative Wayland subsurface attach/rejection records. The display
-/// process tails those records to distinguish a render-node candidate from an
-/// attachment that GTK and the Wayland backend actually accepted.
-fn gdk_debug_with_offload(inherited: Option<&OsStr>) -> OsString {
-    const OFFLOAD: &[u8] = b"offload";
-
-    let Some(inherited) = inherited else {
-        return OsString::from("offload");
-    };
-    let bytes = inherited.as_bytes();
-    if bytes
-        .split(|byte| *byte == b',')
-        .map(trim_ascii)
-        .any(|flag| flag.eq_ignore_ascii_case(OFFLOAD))
-    {
-        return inherited.to_os_string();
-    }
-
-    let mut merged = bytes.to_vec();
-    if !merged.is_empty() && !merged.ends_with(b",") {
-        merged.push(b',');
-    }
-    merged.extend_from_slice(OFFLOAD);
-    OsString::from_vec(merged)
-}
-
-fn trim_ascii(mut value: &[u8]) -> &[u8] {
-    while value.first().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[1..];
-    }
-    while value.last().is_some_and(u8::is_ascii_whitespace) {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 fn add_gpu_devices(
@@ -2387,7 +2352,6 @@ fn generate_nvidia_cdi(
     ])
     .context("constructing the bounded NVIDIA toolkit helper path")?;
     let spec_path = runtime.join("nvidia-cdi.json");
-    let log_path = runtime.join("nvidia-ctk.log");
     let mut command = Command::new(&toolkit);
     command
         .env_clear()
@@ -2399,16 +2363,14 @@ fn generate_nvidia_cdi(
     let output = command
         .output()
         .with_context(|| format!("running bundled NVIDIA toolkit {}", toolkit.display()))?;
-    let mut log = Vec::new();
-    log.extend_from_slice(&output.stdout);
-    log.extend_from_slice(&output.stderr);
-    fs::write(&log_path, &log)
-        .with_context(|| format!("writing NVIDIA toolkit log {}", log_path.display()))?;
     if !output.status.success() {
+        let mut detail = Vec::new();
+        detail.extend_from_slice(&output.stdout);
+        detail.extend_from_slice(&output.stderr);
         bail!(
             "bundled NVIDIA toolkit failed to generate CDI ({})\n{}",
             output.status,
-            String::from_utf8_lossy(&log)
+            String::from_utf8_lossy(&detail)
         );
     }
 
@@ -4217,23 +4179,6 @@ mod tests {
     }
 
     #[test]
-    fn display_gdk_debug_preserves_inherited_flags_and_adds_offload() {
-        assert_eq!(gdk_debug_with_offload(None), OsString::from("offload"));
-        assert_eq!(
-            gdk_debug_with_offload(Some(OsStr::new("dmabuf"))),
-            OsString::from("dmabuf,offload")
-        );
-        assert_eq!(
-            gdk_debug_with_offload(Some(OsStr::new("dmabuf, offload"))),
-            OsString::from("dmabuf, offload")
-        );
-        assert_eq!(
-            gdk_debug_with_offload(Some(OsStr::new("OFFLOAD,dmabuf"))),
-            OsString::from("OFFLOAD,dmabuf")
-        );
-    }
-
-    #[test]
     fn primary_and_render_nodes_for_one_gpu_share_the_dmabuf_device() {
         let sysfs = tempfile::tempdir().unwrap();
         let gpu0 = sysfs.path().join("devices/gpu0");
@@ -4283,6 +4228,18 @@ mod tests {
         assert_eq!(
             machine_window_app_id("default"),
             "org.openresearchtools.buzzardos"
+        );
+    }
+
+    #[test]
+    fn ephemeral_hosts_resolves_the_machine_hostname() {
+        assert_eq!(
+            guest_hosts_contents("development-machine"),
+            "127.0.0.1\tlocalhost\n\
+             127.0.1.1\tdevelopment-machine\n\
+             ::1\tlocalhost ip6-localhost ip6-loopback\n\
+             ff02::1\tip6-allnodes\n\
+             ff02::2\tip6-allrouters\n"
         );
     }
 

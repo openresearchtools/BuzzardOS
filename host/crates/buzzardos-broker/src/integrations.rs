@@ -683,16 +683,11 @@ pub(crate) struct IntegrationRuntime {
     socket_dir: PathBuf,
     control_path: PathBuf,
     guest_status_path: PathBuf,
-    host_status_dir: PathBuf,
     media: BTreeMap<MediaKind, ActiveMedia>,
 }
 
 impl IntegrationRuntime {
-    pub(crate) fn new(
-        socket_dir: &Path,
-        display_state: &Path,
-        host_status_dir: &Path,
-    ) -> Result<Self> {
+    pub(crate) fn new(socket_dir: &Path, display_state: &Path) -> Result<Self> {
         let reverse_dir = socket_dir.join("reverse");
         fs::create_dir(&reverse_dir)
             .with_context(|| format!("creating {}", reverse_dir.display()))?;
@@ -706,7 +701,6 @@ impl IntegrationRuntime {
             socket_dir: reverse_dir,
             control_path: display_state.join("integration.json"),
             guest_status_path: socket_dir.join("integration-status.json"),
-            host_status_dir: host_status_dir.to_path_buf(),
             media: BTreeMap::new(),
         })
     }
@@ -1080,13 +1074,6 @@ impl IntegrationRuntime {
         };
         let slirp_id = slirp.add_host_forward(&mapping)?;
         let pending_mapping = PendingSlirpForward::new(slirp, slirp_id);
-        let log_path = self.host_status_dir.join(format!("{}.log", kind.name()));
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("opening {}", log_path.display()))?;
-        let error_log = log.try_clone().context("cloning media log")?;
         let mut command = Command::new(&gst);
         command.arg("-q");
         match kind {
@@ -1171,19 +1158,14 @@ impl IntegrationRuntime {
         }
         let mut child = command
             .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(error_log))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("starting bundled {} bridge", kind.name()))?;
         thread::sleep(Duration::from_millis(150));
         match child.try_wait() {
             Ok(Some(status)) => {
-                let detail = fs::read_to_string(&log_path).unwrap_or_default();
-                bail!(
-                    "{} bridge exited with {status}: {}",
-                    kind.name(),
-                    detail.trim()
-                );
+                bail!("{} bridge exited with {status}", kind.name());
             }
             Ok(None) => {}
             Err(error) => {
@@ -2125,10 +2107,8 @@ mod tests {
     fn failed_mapping_removal_stops_capture_and_private_network() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let display_state = tempfile::tempdir().unwrap();
-        let host_status = tempfile::tempdir().unwrap();
         let mut runtime =
-            IntegrationRuntime::new(runtime_dir.path(), display_state.path(), host_status.path())
-                .unwrap();
+            IntegrationRuntime::new(runtime_dir.path(), display_state.path()).unwrap();
         let media_child = Command::new("sleep").arg("30").spawn().unwrap();
         runtime.media.insert(
             MediaKind::HostMicrophone,
@@ -2307,8 +2287,7 @@ mod tests {
     fn guest_control_contains_no_host_pipewire_socket() {
         let temporary = tempfile::tempdir().unwrap();
         let display = tempfile::tempdir().unwrap();
-        let runtime =
-            IntegrationRuntime::new(temporary.path(), display.path(), display.path()).unwrap();
+        let runtime = IntegrationRuntime::new(temporary.path(), display.path()).unwrap();
         runtime
             .write_guest_control(&IntegrationSettings::default())
             .unwrap();
@@ -2321,10 +2300,8 @@ mod tests {
     fn disabled_media_repairs_stale_guest_control_and_waits_for_guest_revocation() {
         let runtime_dir = tempfile::tempdir().unwrap();
         let display_state = tempfile::tempdir().unwrap();
-        let host_status = tempfile::tempdir().unwrap();
         let mut runtime =
-            IntegrationRuntime::new(runtime_dir.path(), display_state.path(), host_status.path())
-                .unwrap();
+            IntegrationRuntime::new(runtime_dir.path(), display_state.path()).unwrap();
         runtime.generation = 12;
 
         let requested = IntegrationSettings::default();

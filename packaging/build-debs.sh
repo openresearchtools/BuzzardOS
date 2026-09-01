@@ -341,13 +341,15 @@ EOF
 build_guest() {
     CARGO_TARGET_DIR="$guest_target" cargo build \
         --locked --release --manifest-path "$project_dir/guest/Cargo.toml" \
-        --package buzzardos-clipboard-agent
+        --package buzzardos-clipboard-agent \
+        --package buzzardos-sudo-bridge
     local root="$build_root/root-buzzardos-guest"
     rm -rf -- "$root"
     install -d -m 0755 "$root"
     "$project_dir/guest/install-rootfs-assets.sh" \
         "$root" \
-        "$guest_target/release/buzzardos-clipboard-agent"
+        "$guest_target/release/buzzardos-clipboard-agent" \
+        "$guest_target/release/buzzardos-sudo"
     install -D -m 0644 "$project_dir/packaging/copyright/buzzardos-guest" \
         "$root/usr/share/doc/buzzardos-guest/copyright"
     install -D -m 0644 "$project_dir/LICENSE" \

@@ -150,10 +150,6 @@ fn visual_observation_payload_masked(
                 "evidence": [{"kind": "screenshot_comparison"}],
             });
             if let Some(summary) = guest_output_difference_summary(before, after, cursor_masks) {
-                eprintln!(
-                    "[buzzardos-cua] screenshot comparison path={path} masks={cursor_masks:?} \
-                     difference={summary}"
-                );
                 result["difference"] = summary;
             }
             result
@@ -249,7 +245,6 @@ async fn observe_guest_output_change_masked(
     path: &str,
     cursor_masks: &[(i32, i32)],
 ) -> Value {
-    let mut after = None;
     let mut observation = Value::Null;
     // Application launches, browser navigations, and toolkit menu actions can
     // acknowledge their AT-SPI activation before the first changed compositor
@@ -257,7 +252,7 @@ async fn observe_guest_output_change_masked(
     // of turning a correct action into a false suspected_noop after 120 ms.
     for _ in 0..15 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        after = capture_guest_output().await;
+        let after = capture_guest_output().await;
         observation = visual_observation_payload_masked(
             path,
             before.as_deref(),
@@ -267,30 +262,6 @@ async fn observe_guest_output_change_masked(
         if observation.get("effect").and_then(Value::as_str) == Some("confirmed") {
             break;
         }
-    }
-    if let (Ok(directory), Some(before), Some(after)) = (
-        std::env::var("BUZZARDOS_CUA_EVIDENCE_DIR"),
-        before.as_ref(),
-        after.as_ref(),
-    ) {
-        let sequence = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let directory = std::path::Path::new(&directory);
-        let _ = std::fs::create_dir_all(directory);
-        let _ = std::fs::write(
-            directory.join(format!("{sequence}-{path}-before.png")),
-            before,
-        );
-        let _ = std::fs::write(
-            directory.join(format!("{sequence}-{path}-after.png")),
-            after,
-        );
-        let _ = std::fs::write(
-            directory.join(format!("{sequence}-{path}-masks.json")),
-            serde_json::to_vec_pretty(cursor_masks).unwrap_or_default(),
-        );
     }
     observation
 }
@@ -620,9 +591,7 @@ where
         .and_then(|bytes| {
             crate::core::seat_context::write_state(kind, &bytes, PID_STATE_MAX_BYTES)
         });
-    if let Err(error) = result {
-        eprintln!("cua: cannot persist bounded {kind} state: {error:#}");
-    }
+    let _ = result;
 }
 
 fn bound_pid_map_before_insert<T>(state: &mut std::collections::HashMap<u32, T>, pid: u32) {
@@ -1481,11 +1450,8 @@ enum DirectLaunchObservation {
 }
 
 fn reap_in_background(mut child: std::process::Child) {
-    let pid = child.id();
     std::thread::spawn(move || {
-        if let Err(error) = child.wait() {
-            tracing::warn!(pid, %error, "failed to reap launched application child");
-        }
+        let _ = child.wait();
     });
 }
 
@@ -2375,7 +2341,7 @@ fn x11_pixel_click_no_focus_steal(
                 },
             ) {
                 Ok(()) => return Ok(()),
-                Err(e) => tracing::warn!("MPX click fell back to XSendEvent: {e}"),
+                Err(_) => {}
             }
         }
     }
@@ -4858,7 +4824,7 @@ impl Tool for ScrollTool {
                             },
                         ) {
                             Ok(()) => return Ok(()),
-                            Err(e) => tracing::warn!("MPX scroll fell back to XSendEvent: {e}"),
+                            Err(_) => {}
                         }
                     }
                 }

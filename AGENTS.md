@@ -73,6 +73,13 @@ Buzzard-authored work. License inventory and provenance gates are mandatory.
 Generated Cargo targets, packages, OCI layouts/archives, downloaded test
 applications, logs, and screenshots live outside tracked source by default.
 
+Production Buzzard components create no log files, retain no input/activity
+telemetry, and create no automatic diagnostic screenshots. Background host and
+guest services discard their standard output and error streams. Operational
+JSON files are bounded, atomic current-state/IPC records required to run the
+machine; they are not append-only history. Explicit CLI output and screenshots
+requested by a CUA caller remain direct results of that invocation.
+
 ## Exactly four Debian packages
 
 The build emits exactly four independently versioned packages:
@@ -196,13 +203,21 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y buzzardos-guest buzzardos-desktop buzzardoscua \
  && /usr/libexec/buzzardos/setup-reference-image \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get clean
 ```
 
 The exact script name may change but not its boundary. It is invoked only by
 image construction or an explicit image-builder workflow, never at guest boot
 or package install/upgrade. A machine boots an already configured persistent
 filesystem; launch supplies only dynamic runtime state.
+
+After construction switches from immutable build inputs to the live signed
+distribution repositories, it refreshes and retains their authenticated APT
+package indexes. A newly created machine can therefore resolve a local `.deb`'s
+repository dependencies immediately. Normal distro APT timers refresh those
+indexes thereafter; Buzzard startup performs no package-manager work or
+polling. Package archive caches may be cleaned, but the final package indexes
+must not be deleted.
 
 Buzzard OS does not install or use SSH. The image contains no SSH server,
 control path, generated host keys, or exposed SSH port. Testing/control uses
@@ -348,9 +363,10 @@ installation may add only an exact-path profile for the namespace entry point.
 ### Display
 
 `buzzardos-display` is a native host Wayland app and filtered gateway. It owns
-the one `xdg_toplevel` before start, during boot/run, after stop, and after
-failure. Exactly one fixed guest output is host-facing for the lifetime of the
-machine window. The guest compositor is a buffer/input producer embedded as
+the one `xdg_toplevel` before start, during boot/run, during an in-place
+restart, and after failure until the user closes it. A complete stop or clean
+guest poweroff closes the native window and exits its broker. Exactly one fixed
+guest output is host-facing for the lifetime of the machine window. The guest compositor is a buffer/input producer embedded as
 that one monitor surface; it never owns host window policy. Guest-internal
 off-screen outputs never create another host toplevel or host-control channel.
 
@@ -374,8 +390,10 @@ claiming vblank, creating a second host display/stream, or using a CPU-copy
 fallback. Guest workspace selection and numbered virtual-output management are
 performed only through guest Sway IPC and never send a host-control command.
 
-Closing requests orderly guest shutdown and never discards rootfs. Compositor
-disconnect changes the existing window to Stopped/Failed rather than closing it.
+Closing requests orderly guest shutdown and never discards rootfs. An
+unexpected compositor disconnect changes the existing window to Failed rather
+than silently closing it. An orderly complete stop closes the window; an
+in-place restart keeps it.
 
 ## Guest runtime, desktop, and CUA
 
@@ -389,9 +407,10 @@ outputs for numbered CUA and manual workspaces.
 
 The gateway keeps a versioned capability table and modular handlers.
 Guest-internal protocols stay inside Sway, safe parent monitor/input features
-are translated, and escape-capable operations are isolated. Diagnostics record
-advertised/facing versions and every downgrade/denial. Tests fail when a distro
-Sway/wlroots update needs an unclassified parent protocol.
+are translated, and escape-capable operations are isolated. On-demand
+diagnostics report current advertised/facing versions and downgrade/denial
+state without retaining an event log. Tests fail when a distro Sway/wlroots
+update needs an unclassified parent protocol.
 
 ### Session and integration
 

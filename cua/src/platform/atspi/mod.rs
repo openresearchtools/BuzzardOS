@@ -95,9 +95,7 @@ pub fn register_snapshot_element_keys(pid: u32, snapshot_id: &str, nodes: &[Atsp
         while state.snapshots.len() > ELEMENT_KEY_SNAPSHOT_CAP {
             state.snapshots.pop_front();
         }
-        if let Err(error) = save_element_key_state(&state) {
-            eprintln!("cua: cannot persist bounded AT-SPI element identities: {error:#}");
-        }
+        let _ = save_element_key_state(&state);
     }
     #[cfg(test)]
     {

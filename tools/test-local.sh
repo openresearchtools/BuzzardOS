@@ -79,6 +79,7 @@ trap cleanup EXIT
 mkdir "$asset_root/rootfs"
 "$project_dir/guest/install-rootfs-assets.sh" \
     "$asset_root/rootfs" \
+    /bin/true \
     /bin/true
 "$project_dir/guest/install-desktop-assets.sh" \
     "$asset_root/rootfs" \
@@ -105,6 +106,7 @@ runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
 assert runtime_manifest["revision"] == str(revision)
 for required in (
     "libexec/buzzardos-clipboard-agent",
+    "libexec/buzzardos-sudo-exec",
 ):
     assert (runtime / required).is_file(), required
 for required in (

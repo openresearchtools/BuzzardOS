@@ -1184,9 +1184,7 @@ fn foreign_toplevel_sender() -> &'static mpsc::Sender<ForeignToplevelCommand> {
         std::thread::Builder::new()
             .name("cua-foreign-toplevel".into())
             .spawn(move || {
-                if let Err(error) = foreign_toplevel_worker(receiver) {
-                    tracing::error!("foreign-toplevel worker stopped: {error:#}");
-                }
+                let _ = foreign_toplevel_worker(receiver);
             })
             .expect("spawning foreign-toplevel worker");
         sender
@@ -1268,8 +1266,7 @@ fn activate_stable_foreign_toplevel(window_id: u64) -> anyhow::Result<()> {
 pub fn screenshot_bytes() -> anyhow::Result<Vec<u8>> {
     match capture_via_screencopy() {
         Ok(bytes) => Ok(bytes),
-        Err(e) => {
-            tracing::warn!("native screencopy failed, falling back to grim: {e}");
+        Err(_) => {
             request_buzzardos_repaint();
             capture_via_grim()
         }
@@ -1300,12 +1297,8 @@ fn request_buzzardos_repaint() {
         .to_string();
     let result = std::fs::write(&temporary, generation.as_bytes())
         .and_then(|()| std::fs::rename(&temporary, &target));
-    if let Err(error) = result {
+    if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
-        tracing::debug!(
-            "could not request Buzzard OS idle-output repaint at {}: {error}",
-            target.display()
-        );
     }
 }
 
@@ -2377,9 +2370,7 @@ fn record_synth_cursor(x: i32, y: i32) {
     let result = serde_json::to_vec(&state)
         .map_err(anyhow::Error::from)
         .and_then(|bytes| crate::core::seat_context::write_state("cursor-position", &bytes, 256));
-    if let Err(error) = result {
-        tracing::warn!(%error, "could not record daemonless CUA cursor position");
-    }
+    let _ = result;
 }
 
 /// Returns the last `(x, y)` this numbered CUA seat warped to via the Wayland
@@ -2733,8 +2724,7 @@ fn list_windows_dispatch_logical(filter_pid: Option<u32>) -> Vec<WindowInfo> {
                     return ws;
                 }
             }
-            Err(e) => {
-                tracing::warn!("native Wayland list_windows failed: {e}; trying AT-SPI registry");
+            Err(_) => {
                 let ws = wayland_atspi_windows(filter_pid);
                 if !ws.is_empty() {
                     return ws;
@@ -2773,10 +2763,7 @@ fn list_windows_dispatch_logical(filter_pid: Option<u32>) -> Vec<WindowInfo> {
 pub fn list_windows_dispatch(filter_pid: Option<u32>) -> Vec<WindowInfo> {
     match list_windows_dispatch_checked(filter_pid) {
         Ok((windows, _)) => windows,
-        Err(error) => {
-            tracing::warn!("window enumeration rejected: {error}");
-            Vec::new()
-        }
+        Err(_) => Vec::new(),
     }
 }
 

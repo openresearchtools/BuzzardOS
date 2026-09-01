@@ -26,6 +26,7 @@ install -d -o buzzard -g buzzard -m 0700 \
 # anything under /usr/local.
 install -d -m 0755 /usr/local/bin
 ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudo
+ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudoedit
 
 # Construct the initial desktop home exactly once. These are image defaults,
 # not login work: package upgrades and machine starts never recreate folders,

@@ -57,17 +57,12 @@ fn bounded<T>(
     })
 }
 
-/// Emit a one-line diagnostic to stderr when `CUA_ATSPI_DEBUG` is set. The
-/// driver's stderr is surfaced in the test logs, so this is how we see what the
-/// native walk actually found in CI.
-fn dbg_enabled() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("CUA_ATSPI_DEBUG").is_some())
-}
 macro_rules! dlog {
-    ($($arg:tt)*) => {
-        if dbg_enabled() { eprintln!("[cua-atspi] {}", format!($($arg)*)); }
-    };
+    ($($arg:tt)*) => {{
+        if false {
+            let _ = format_args!($($arg)*);
+        }
+    }};
 }
 
 fn canonical_role_name(localized: &str, role: Option<Role>) -> String {

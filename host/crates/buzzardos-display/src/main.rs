@@ -10,7 +10,6 @@ mod host_theme;
 mod keyboard;
 mod launch;
 mod machine_manager;
-mod offload_verifier;
 
 use std::os::unix::process::CommandExt;
 

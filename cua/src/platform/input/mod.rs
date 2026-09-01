@@ -1148,9 +1148,6 @@ fn restore_focus_state(display: *mut x11::xlib::Display, saved: &SavedFocus) {
             }
             sleep(Duration::from_millis(200));
         }
-        if stable == 0 {
-            tracing::warn!("focus restore: WM did not re-activate 0x{prev:x}");
-        }
         return;
     }
 

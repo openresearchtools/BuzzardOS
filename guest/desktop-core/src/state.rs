@@ -11,7 +11,7 @@ use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
 
-pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 2;
+pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 3;
 const MAX_DISPLAY_EXTENT: u32 = 65_535;
 const MIN_SCALE_120: u32 = 30;
 const MAX_SCALE_120: u32 = 960;
@@ -466,7 +466,6 @@ pub struct UpdateState {
     pub failure: Option<String>,
     pub repair_available: bool,
     pub restart_reasons: Vec<String>,
-    pub last_log_id: Option<String>,
     pub runtime_revision: Option<String>,
     pub runtime_ready: bool,
 }
@@ -486,7 +485,6 @@ impl Default for UpdateState {
             failure: None,
             repair_available: false,
             restart_reasons: Vec::new(),
-            last_log_id: None,
             runtime_revision: None,
             runtime_ready: false,
         }
@@ -608,14 +606,6 @@ impl UpdateState {
         }
         if let Some(failure) = &self.failure {
             validate_text("failure", failure, true)?;
-        }
-        if let Some(log) = &self.last_log_id {
-            validate_text("last_log_id", log, true)?;
-            if !is_log_id(log) {
-                return Err(StateValidationError::UpdateInvariant(
-                    "last_log_id is not a safe updater log identifier",
-                ));
-            }
         }
         if let Some(revision) = &self.runtime_revision {
             validate_text("runtime_revision", revision, true)?;
@@ -812,7 +802,6 @@ impl UpdateState {
                 "failure",
                 "repair_available",
                 "restart_reasons",
-                "last_log_id",
                 "runtime_revision",
                 "runtime_ready",
             ],
@@ -927,21 +916,6 @@ fn is_runtime_revision(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'~' | b'-')
         })
-}
-
-fn is_log_id(value: &str) -> bool {
-    let Some(rest) = value.strip_prefix("attempt-") else {
-        return false;
-    };
-    let Some((generation, suffix)) = rest.split_once('-') else {
-        return false;
-    };
-    !generation.is_empty()
-        && !generation.starts_with('0')
-        && generation.bytes().all(|byte| byte.is_ascii_digit())
-        && suffix
-            .strip_suffix(".log")
-            .is_some_and(|digest| is_lower_hex(digest, 16))
 }
 
 #[cfg(test)]
@@ -1219,8 +1193,10 @@ mod tests {
         let state = available_update_state();
         let mut json = serde_json::to_string(&state).unwrap();
         json = json.replacen(
-            "{\"schema_version\":2,",
-            "{\"schema_version\":2,\"schema_version\":2,",
+            &format!("{{\"schema_version\":{UPDATE_STATE_SCHEMA_VERSION},"),
+            &format!(
+                "{{\"schema_version\":{UPDATE_STATE_SCHEMA_VERSION},\"schema_version\":{UPDATE_STATE_SCHEMA_VERSION},"
+            ),
             1,
         );
         assert!(matches!(

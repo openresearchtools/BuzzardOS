@@ -2374,13 +2374,9 @@ impl Shell {
         // so a window resized away from our classic maximized frame offers
         // Maximize, never a stale Restore action.
         self.refresh_window_states();
-        let Some((title, identifier)) = self
-            .exact_toplevels
-            .get(&id)
-            .map(|window| (window.window.title.clone(), window.identifier.clone()))
-        else {
+        if !self.exact_toplevels.contains_key(&id) {
             return;
-        };
+        }
         self.menu_open = true;
         self.menu_kind = MenuKind::Window(id);
         self.window_menu_pending_pointer = await_pointer;
@@ -2393,10 +2389,6 @@ impl Shell {
             .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
         self.apply_menu_overlay_geometry();
         self.dirty = true;
-        eprintln!(
-            "buzzardos-shell: opened controls for {} ({})",
-            title, identifier
-        );
     }
 
     fn position_pending_window_menu(&mut self, pointer_x: f64) {

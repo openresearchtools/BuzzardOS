@@ -135,9 +135,7 @@ impl TokenRegistry {
                     max_element_index: element_count.saturating_sub(1),
                 },
             );
-            if let Err(error) = save_disk_state(&state) {
-                eprintln!("cua: cannot persist bounded element-token state: {error:#}");
-            }
+            let _ = save_disk_state(&state);
             return id;
         }
 

@@ -4,9 +4,7 @@
 # CUA workspaces. The native Rust shell owns the desktop, thin workspace bar,
 # Applications menu, and bottom taskbar through layer-shell; Sway owns guest
 # application placement, focus, outputs, seats, resize, and decorations.
-set $mod Mod4
 font pango:DejaVu Sans 10
-floating_modifier $mod normal
 focus_follows_mouse no
 focus_wrapping no
 workspace_auto_back_and_forth no
@@ -47,16 +45,9 @@ for_window [all] floating enable, border normal 8
 # content keeps button 3.
 bindsym --release button3 focus, exec --no-startup-id /usr/bin/buzzardos-desktop --request-focused-window-menu
 
-# Conventional guest shortcuts. There is deliberately no compositor root menu,
-# workspace bar, launcher, or host lifecycle action in this configuration.
-bindsym $mod+Return exec foot
-bindsym $mod+Shift+q kill
-bindsym $mod+f fullscreen toggle
-bindsym $mod+space floating toggle
-bindsym $mod+Left focus left
-bindsym $mod+Down focus down
-bindsym $mod+Up focus up
-bindsym $mod+Right focus right
+# Buzzard reserves no compositor-global keyboard modifier. Application key
+# chords pass through unchanged; window controls, launch, and workspace
+# actions are exposed by the desktop shell and confirmed Sway IPC operations.
 
 workspace Desktop
 exec_always --no-startup-id /usr/lib/buzzardos/runtime/current/libexec/buzzardos-desktop-services

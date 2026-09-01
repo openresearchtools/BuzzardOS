@@ -27,8 +27,7 @@
 //!      `[parameter ...]` etc.) appears earlier in the text, the
 //!      closing is treated as legitimate document content.
 //!
-//! Emits a `tracing::warn` when sanitization fires so daemon operators
-//! can see how often agents stumble into this footgun.
+//! The transformation is deterministic and emits no telemetry.
 
 use std::borrow::Cow;
 
@@ -69,7 +68,6 @@ pub fn strip_trailing_agent_protocol_tags(text: &str) -> Cow<'_, str> {
     // isn't whitespace AND isn't one of those tags terminates the walk.
     let mut cursor = trimmed.len();
     let mut stripped_any = false;
-    let mut stripped_names: Vec<&str> = Vec::new();
     loop {
         // Skip whitespace between tags.
         let head = &trimmed[..cursor];
@@ -109,8 +107,6 @@ pub fn strip_trailing_agent_protocol_tags(text: &str) -> Cow<'_, str> {
         // Strip the closing tag. Continue walking; the agent may have
         // emitted multiple in a row (`[/text][/invoke]`).
         stripped_any = true;
-        stripped_names.push("</tag>"); // logged generically; specific name in trace below
-        let _ = stripped_names; // suppress unused warning if log macro short-circuits
         cursor = open;
         // Don't actually shift `trimmed_head` here — next iteration
         // re-slices `trimmed[..cursor]`.
@@ -122,15 +118,6 @@ pub fn strip_trailing_agent_protocol_tags(text: &str) -> Cow<'_, str> {
 
     let kept = &trimmed[..cursor];
     let kept_trimmed = kept.trim_end();
-    tracing::warn!(
-        target: "buzzard-cua::sanitize",
-        "type_text: stripped {} byte(s) of trailing agent-protocol closing tags from text payload. \
-         Likely an LLM hallucinating its own tool-invocation tags into the parameter content. \
-         Original length: {}, kept: {}.",
-        text.len() - kept_trimmed.len(),
-        text.len(),
-        kept_trimmed.len(),
-    );
     Cow::Owned(kept_trimmed.to_owned())
 }
 

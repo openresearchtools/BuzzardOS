@@ -1,5 +1,12 @@
 [workspace]
-members = ["clipboard-agent", "desktop-core", "settings", "shell", "shortcut-helper"]
+members = [
+    "clipboard-agent",
+    "desktop-core",
+    "settings",
+    "shell",
+    "shortcut-helper",
+    "sudo-bridge",
+]
 resolver = "2"
 
 [workspace.package]

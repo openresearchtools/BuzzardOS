@@ -45,6 +45,8 @@ run_shell '
     test -x /usr/libexec/buzzardos-guest/sudo
     test -L /usr/local/bin/sudo
     test "$(readlink /usr/local/bin/sudo)" = /usr/libexec/buzzardos-guest/sudo
+    test -L /usr/local/bin/sudoedit
+    test "$(readlink /usr/local/bin/sudoedit)" = /usr/libexec/buzzardos-guest/sudo
     test "$(cat /home/buzzard/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
         "file:///home/buzzard/Documents Documents" \
         "file:///home/buzzard/Downloads Downloads" \
@@ -71,6 +73,7 @@ run_shell '
         "$runtime/libexec/buzzardos-appimage-ready" \
         "$runtime/libexec/buzzardos-fusermount" \
         "$runtime/libexec/buzzardos-fusermount-exec" \
+        "$runtime/libexec/buzzardos-sudo-exec" \
         "$runtime/libexec/buzzardos-integration-agent" \
         /usr/bin/cua \
         /usr/bin/cua1 \

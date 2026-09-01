@@ -74,6 +74,34 @@ class OciBuildContractTests(unittest.TestCase):
         )
         self.assertIn("http://deb.debian.org/debian", live)
 
+    def test_finished_images_retain_a_live_apt_catalogue(self) -> None:
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            live_source = containerfile.rfind(
+                "COPY apt/debian-sid-live.sources"
+            )
+            self.assertGreaterEqual(live_source, 0, path)
+            finished_image = containerfile[live_source:]
+            self.assertRegex(
+                finished_image,
+                r"apt-get(?:\s+-o\s+Acquire::ForceIPv4=true)?\s+update",
+                path,
+            )
+            self.assertNotIn(
+                "rm -rf /var/lib/apt/lists/*",
+                finished_image,
+                path,
+            )
+
+        provision = (ROOT / "oci/desktop/provision-image.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('APT::Periodic::Update-Package-Lists "1";', provision)
+        self.assertIn(
+            "systemctl enable apt-daily.timer apt-daily-upgrade.timer",
+            provision,
+        )
+
     def test_buildah_uses_a_minimal_context_and_discards_its_private_store(self) -> None:
         builder = (ROOT / "oci/build-local.sh").read_text(encoding="utf-8")
         for required in (
@@ -281,6 +309,88 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertFalse(
             invokes_swaybg and not (packages_swaybg and verifies_swaybg),
             "managed Sway config invokes swaybg without packaging and verifying it",
+        )
+
+    def test_managed_sway_config_does_not_grab_a_global_keyboard_modifier(self) -> None:
+        sway_config = (ROOT / "guest/assets/sway-config").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotRegex(sway_config, r"(?m)^\s*set\s+\$mod\b")
+        self.assertNotRegex(sway_config, r"(?m)^\s*floating_modifier\b")
+        self.assertNotRegex(
+            sway_config,
+            r"(?m)^\s*bind(?:code|sym)\b(?![^\n]*\bbutton[1-9]\b)",
+        )
+
+    def test_runtime_creates_no_buzzard_logs_or_activity_telemetry(self) -> None:
+        host_display = (
+            ROOT / "host/crates/buzzardos-display/src/host_app.rs"
+        ).read_text(encoding="utf-8")
+        host_broker = (
+            ROOT / "host/crates/buzzardos-broker/src/main.rs"
+        ).read_text(encoding="utf-8")
+        host_integrations = (
+            ROOT / "host/crates/buzzardos-broker/src/integrations.rs"
+        ).read_text(encoding="utf-8")
+        cua_tools = (ROOT / "cua/src/platform/tools/impl_.rs").read_text(
+            encoding="utf-8"
+        )
+        cua_manifest = (ROOT / "cua/Cargo.toml").read_text(encoding="utf-8")
+        update_state = (ROOT / "guest/desktop-core/src/state.rs").read_text(
+            encoding="utf-8"
+        )
+        desktop_shell = (ROOT / "guest/shell/src/main.rs").read_text(
+            encoding="utf-8"
+        )
+        desktop_services = (
+            ROOT / "guest/assets/buzzardos-desktop-services"
+        ).read_text(encoding="utf-8")
+        sway_session = (ROOT / "guest/assets/buzzardos-sway-session").read_text(
+            encoding="utf-8"
+        )
+        integration_agent = (
+            ROOT / "guest/assets/buzzardos-integration-agent"
+        ).read_text(encoding="utf-8")
+        desktop_unit = (
+            ROOT / "guest/assets/buzzardos-desktop.service"
+        ).read_text(encoding="utf-8")
+
+        for forbidden in (
+            "InputStats",
+            "input.json",
+            "clipboard.json",
+            "offload-verification.json",
+            "monitor-continuity.json",
+            "last_key",
+            "last_button",
+            "received_events",
+            "forwarded_events",
+        ):
+            self.assertNotIn(forbidden, host_display)
+        for forbidden in (
+            "display-gateway.log",
+            "nvidia-ctk.log",
+            "BUZZARDOS_KEEP_RUNTIME",
+        ):
+            self.assertNotIn(forbidden, host_broker)
+        self.assertNotIn(".log", host_integrations)
+        self.assertNotIn("BUZZARDOS_CUA_EVIDENCE_DIR", cua_tools)
+        self.assertNotIn("tracing =", cua_manifest)
+        self.assertNotIn("last_log_id", update_state)
+        self.assertNotIn("opened controls for", desktop_shell)
+        self.assertNotIn(".log", desktop_services)
+        self.assertNotIn(".log", sway_session)
+        self.assertNotIn(".log", integration_agent)
+        self.assertIn('"$@" >/dev/null 2>&1 &', desktop_services)
+        self.assertIn("export PIPEWIRE_DEBUG=0", desktop_services)
+        self.assertIn("export SPA_DEBUG=0", desktop_services)
+        self.assertIn("export PIPEWIRE_LOG_SYSTEMD=false", desktop_services)
+        self.assertIn(">/dev/null 2>&1 &", sway_session)
+        self.assertIn("StandardOutput=null", desktop_unit)
+        self.assertIn("StandardError=null", desktop_unit)
+        self.assertFalse(
+            (ROOT / "host/crates/buzzardos-display/src/offload_verifier.rs").exists()
         )
 
     def test_cuda_variant_is_the_complete_standard_file_plus_one_tail(self) -> None:

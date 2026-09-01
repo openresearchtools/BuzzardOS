@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use buzzardos_clipboard_protocol::{MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Mime};
@@ -38,13 +38,11 @@ use crate::gateway::{
     GuestScaleRequest, HostCommand, OutputMode,
 };
 use crate::launch::Launch;
-use crate::offload_verifier::{OffloadExpectation, OffloadResetKind, OffloadVerifier, SurfaceRect};
 
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const INITIAL_MONITOR_SIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_GUEST_MONITOR_WIDTH: u32 = 320;
 const MIN_GUEST_MONITOR_HEIGHT: u32 = 240;
-const CONTINUITY_SAVE_INTERVAL: Duration = Duration::from_secs(1);
 const BACKGROUND_CLOCK_GRACE: Duration = Duration::from_millis(50);
 const DEFAULT_REFRESH_MHZ: u32 = 60_000;
 const WAYLAND_SCALE_DENOMINATOR: u32 = 120;
@@ -188,18 +186,7 @@ struct NativeWindow {
     presentation: RefCell<PresentationDiagnostics>,
     presentation_dirty: Cell<bool>,
     offload_geometry: RefCell<OffloadGeometryDiagnostics>,
-    offload_texture_size: Cell<Option<(u32, u32)>>,
-    offload_verifier: RefCell<OffloadVerifier>,
-    offload_verification_dirty: Cell<bool>,
-    input: RefCell<InputStats>,
-    /// Input diagnostics are deliberately written by the 200 ms status poll,
-    /// never from the pointer-motion hot path.  Atomic JSON replacement for
-    /// every motion event caused needless filesystem and allocator pressure
-    /// while the guest compositor was trying to present interactive frames.
-    input_dirty: Cell<bool>,
     continuity: RefCell<MonitorContinuityDiagnostics>,
-    continuity_dirty: Cell<bool>,
-    last_continuity_save: Cell<Instant>,
     pressed_pointer_buttons: RefCell<BTreeSet<u32>>,
     /// Sway may recommit an unchanged cursor surface while the pointer moves.
     /// Reinstalling an identical GDK cursor invalidates host-side state and can
@@ -582,40 +569,6 @@ impl MonitorContinuityDiagnostics {
     }
 }
 
-#[derive(Default, serde::Serialize)]
-struct InputStats {
-    schema: u32,
-    received_events: u64,
-    forwarded_events: u64,
-    ignored_events: u64,
-    send_failures: u64,
-    shortcut_inhibit_requests: u64,
-    shortcut_inhibit_grants: u64,
-    shortcut_inhibit_revocations: u64,
-    host_shortcuts_inhibited: bool,
-    last_event: String,
-    last_event_monotonic_us: u64,
-    last_guest_logical_x: Option<f64>,
-    last_guest_logical_y: Option<f64>,
-    last_guest_surface_x: Option<f64>,
-    last_guest_surface_y: Option<f64>,
-    last_horizontal_scroll: Option<f64>,
-    last_vertical_scroll: Option<f64>,
-    last_button: Option<u32>,
-    last_button_pressed: Option<bool>,
-    last_key: Option<u32>,
-    last_key_pressed: Option<bool>,
-    last_modifiers: Option<u32>,
-    monitor_focused: bool,
-    host_surface_scale_120: u32,
-    guest_ui_scale_120: u32,
-    geometry_generation: u64,
-    logical_width: u64,
-    logical_height: u64,
-    physical_width: u64,
-    physical_height: u64,
-}
-
 struct GatewayConnectionNotifier(std::os::unix::net::UnixStream);
 
 impl GatewayConnectionNotifier {
@@ -661,8 +614,6 @@ impl NativeWindow {
         let initial_guest_ui_scale_120 = initial_guest_scale_preset.resolve(120);
         let initial_monitor_sizing =
             InitialMonitorSizing::new(launch.initial_width, launch.initial_height);
-        let offload_verifier = OffloadVerifier::new(launch.status_dir.join("display-gateway.log"))
-            .context("opening GTK offload verification log tail")?;
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title(&launch.title)
@@ -805,28 +756,7 @@ impl NativeWindow {
             }),
             presentation_dirty: Cell::new(false),
             offload_geometry: RefCell::new(OffloadGeometryDiagnostics::default()),
-            offload_texture_size: Cell::new(None),
-            offload_verifier: RefCell::new(offload_verifier),
-            offload_verification_dirty: Cell::new(false),
-            input: RefCell::new(InputStats {
-                schema: 4,
-                host_surface_scale_120: 120,
-                guest_ui_scale_120: initial_guest_ui_scale_120,
-                geometry_generation: 1,
-                logical_width: 1,
-                logical_height: 1,
-                physical_width: 1,
-                physical_height: 1,
-                ..InputStats::default()
-            }),
-            input_dirty: Cell::new(false),
             continuity: RefCell::new(MonitorContinuityDiagnostics::default()),
-            continuity_dirty: Cell::new(false),
-            last_continuity_save: Cell::new(
-                Instant::now()
-                    .checked_sub(CONTINUITY_SAVE_INTERVAL)
-                    .unwrap_or_else(Instant::now),
-            ),
             pressed_pointer_buttons: RefCell::new(BTreeSet::new()),
             last_cursor: RefCell::new(None),
             cursor_state: Cell::new(0),
@@ -838,10 +768,6 @@ impl NativeWindow {
         native.save_window()?;
         native.save_output_state()?;
         native.save_presentation()?;
-        native.save_offload_verification()?;
-        native.save_input()?;
-        native.save_continuity()?;
-        native.continuity_dirty.set(false);
         Ok(native)
     }
 
@@ -868,20 +794,33 @@ impl NativeWindow {
             }
         });
 
-        // GTK may cancel an in-progress click sequence when the native
-        // toplevel loses activation.  Release guest buttons immediately so a
-        // Sway move/resize seat operation can never remain latched.
+        // GTK may retain focus on the Picture while the native toplevel loses
+        // activation (for example while the host compositor handles a system
+        // shortcut). In that case EventControllerFocus emits no leave and a
+        // physical modifier release can be consumed by the host, leaving the
+        // parent wl_keyboard state latched in Sway. End the physical seat0
+        // focus epoch on deactivation so GuestState releases every held key
+        // through the active guest XKB map. Numbered CUA keyboards use their
+        // own Wayland connections/seats and never enter this path.
+        //
+        // The same boundary releases pointer buttons so a Sway move/resize
+        // operation cannot remain latched either.
         let this = Rc::clone(self);
         self.window.connect_is_active_notify(move |window| {
             if !window.is_active() {
+                if let Some(toplevel) = this.gdk_toplevel() {
+                    toplevel.restore_system_shortcuts();
+                }
                 this.release_pressed_pointer_buttons();
+                this.send_guest_input(GatewayCommand::KeyboardLeave);
+            } else if this.picture.has_focus() {
+                this.send_guest_input(GatewayCommand::KeyboardEnter);
             }
         });
 
         let this = Rc::clone(self);
         self.picture.connect_paintable_notify(move |_| {
             this.continuity.borrow_mut().paintable_identity_changed();
-            this.continuity_dirty.set(true);
             this.observe_monitor_continuity("paintable-identity");
         });
 
@@ -1081,7 +1020,7 @@ impl NativeWindow {
     fn reconcile_monitor_allocation(&self) {
         match self.align_monitor_offload() {
             Ok(true) => {
-                self.refresh_offload_geometry_generation();
+                self.reset_offload_claim();
                 // Margin changes queue a new allocation. Do not publish the
                 // pre-alignment child size as a guest output mode.
                 self.expire_initial_monitor_size(
@@ -1091,7 +1030,7 @@ impl NativeWindow {
                 );
             }
             Ok(false) => {
-                self.refresh_offload_geometry_generation();
+                self.reset_offload_claim();
                 self.update_allocated_viewport();
             }
             Err(error) => {
@@ -1156,12 +1095,8 @@ impl NativeWindow {
             if pressed {
                 if let Some(toplevel) = this.gdk_toplevel() {
                     toplevel.inhibit_system_shortcuts(Some(event.as_ref()));
-                    let mut stats = this.input.borrow_mut();
-                    stats.shortcut_inhibit_requests =
-                        stats.shortcut_inhibit_requests.saturating_add(1);
                 }
                 this.picture.grab_focus();
-                this.refresh_shortcut_inhibition();
                 if this.pressed_pointer_buttons.borrow_mut().insert(button) {
                     this.send_guest_input(GatewayCommand::PointerButton {
                         button,
@@ -1254,92 +1189,6 @@ impl NativeWindow {
     }
 
     fn send_guest_input(&self, command: GatewayCommand) {
-        self.refresh_shortcut_inhibition();
-        {
-            let mode = self.output_mode();
-            let mut stats = self.input.borrow_mut();
-            stats.received_events = stats.received_events.saturating_add(1);
-            stats.last_event_monotonic_us = monotonic_us();
-            stats.host_surface_scale_120 = mode.host_surface_scale_120;
-            stats.guest_ui_scale_120 = mode.guest_ui_scale_120;
-            stats.geometry_generation = mode.geometry_generation;
-            stats.logical_width = u64::from(mode.logical_width);
-            stats.logical_height = u64::from(mode.logical_height);
-            stats.physical_width = u64::from(mode.physical_width);
-            stats.physical_height = u64::from(mode.physical_height);
-            match &command {
-                GatewayCommand::PointerEnter { x, y, .. } => {
-                    stats.last_event = "pointer-enter".into();
-                    stats.last_guest_surface_x = Some(*x);
-                    stats.last_guest_surface_y = Some(*y);
-                    stats.last_guest_logical_x = Some(unscale_monitor_coordinate(
-                        *x,
-                        stats.physical_width,
-                        stats.logical_width,
-                    ));
-                    stats.last_guest_logical_y = Some(unscale_monitor_coordinate(
-                        *y,
-                        stats.physical_height,
-                        stats.logical_height,
-                    ));
-                }
-                GatewayCommand::PointerLeave => {
-                    stats.last_event = "pointer-leave".into();
-                }
-                GatewayCommand::PointerMotion { x, y, .. } => {
-                    stats.last_event = "pointer-motion".into();
-                    stats.last_guest_surface_x = Some(*x);
-                    stats.last_guest_surface_y = Some(*y);
-                    stats.last_guest_logical_x = Some(unscale_monitor_coordinate(
-                        *x,
-                        stats.physical_width,
-                        stats.logical_width,
-                    ));
-                    stats.last_guest_logical_y = Some(unscale_monitor_coordinate(
-                        *y,
-                        stats.physical_height,
-                        stats.logical_height,
-                    ));
-                }
-                GatewayCommand::PointerButton {
-                    button, pressed, ..
-                } => {
-                    stats.last_event = "pointer-button".into();
-                    stats.last_button = Some(*button);
-                    stats.last_button_pressed = Some(*pressed);
-                }
-                GatewayCommand::PointerAxis {
-                    horizontal,
-                    vertical,
-                    ..
-                } => {
-                    stats.last_event = "pointer-axis".into();
-                    stats.last_horizontal_scroll = Some(*horizontal);
-                    stats.last_vertical_scroll = Some(*vertical);
-                }
-                GatewayCommand::KeyboardEnter => {
-                    stats.last_event = "keyboard-enter".into();
-                    stats.monitor_focused = true;
-                }
-                GatewayCommand::KeyboardLeave => {
-                    stats.last_event = "keyboard-leave".into();
-                    stats.monitor_focused = false;
-                }
-                GatewayCommand::KeyboardKey {
-                    key,
-                    pressed,
-                    modifiers,
-                } => {
-                    stats.last_event = "keyboard-key".into();
-                    stats.last_key = Some(*key);
-                    stats.last_key_pressed = Some(*pressed);
-                    stats.last_modifiers = Some(*modifiers);
-                }
-                _ => {
-                    stats.last_event = "unexpected-non-input-command".into();
-                }
-            }
-        }
         let stale_geometry = match &command {
             GatewayCommand::PointerEnter {
                 geometry_generation,
@@ -1360,29 +1209,14 @@ impl NativeWindow {
             _ => false,
         };
         if stale_geometry {
-            let mut stats = self.input.borrow_mut();
-            stats.ignored_events = stats.ignored_events.saturating_add(1);
-            stats.last_event = "stale-geometry-input".into();
-            drop(stats);
-            self.input_dirty.set(true);
             return;
         }
         if self.state.get() != MonitorState::Running {
-            let mut stats = self.input.borrow_mut();
-            stats.ignored_events = stats.ignored_events.saturating_add(1);
-            drop(stats);
-            self.input_dirty.set(true);
             return;
         }
         if let Err(error) = self.commands.send(command) {
-            let mut stats = self.input.borrow_mut();
-            stats.send_failures = stats.send_failures.saturating_add(1);
             eprintln!("buzzardos-display: forwarding guest input: {error:#}");
-        } else {
-            let mut stats = self.input.borrow_mut();
-            stats.forwarded_events = stats.forwarded_events.saturating_add(1);
         }
-        self.input_dirty.set(true);
     }
 
     fn install_actions(self: &Rc<Self>) {
@@ -1447,7 +1281,6 @@ impl NativeWindow {
     }
 
     fn poll(&self) {
-        self.refresh_shortcut_inhibition();
         while let Ok(event) = self.events.borrow_mut().try_recv() {
             match event {
                 GatewayEvent::HostCommand(command) => self.apply_host_command(command),
@@ -1504,35 +1337,11 @@ impl NativeWindow {
         if self.last_runtime_check.get().elapsed() >= RUNTIME_POLL_INTERVAL {
             self.last_runtime_check.set(Instant::now());
             self.refresh_runtime_state();
-            if self.input_dirty.replace(false)
-                && let Err(error) = self.save_input()
-            {
-                self.input_dirty.set(true);
-                eprintln!("buzzardos-display: saving input diagnostics: {error:#}");
-            }
             if self.presentation_dirty.replace(false)
                 && let Err(error) = self.save_presentation()
             {
                 self.presentation_dirty.set(true);
                 eprintln!("buzzardos-display: saving presentation diagnostics: {error:#}");
-            }
-            if self.offload_verification_dirty.replace(false)
-                && let Err(error) = self.save_offload_verification()
-            {
-                self.offload_verification_dirty.set(true);
-                eprintln!(
-                    "buzzardos-display: saving GTK offload verification diagnostics: {error:#}"
-                );
-            }
-            if self.continuity_dirty.get()
-                && self.last_continuity_save.get().elapsed() >= CONTINUITY_SAVE_INTERVAL
-            {
-                self.last_continuity_save.set(Instant::now());
-                self.continuity_dirty.set(false);
-                if let Err(error) = self.save_continuity() {
-                    self.continuity_dirty.set(true);
-                    eprintln!("buzzardos-display: saving monitor continuity: {error:#}");
-                }
             }
         }
         // The guest agent becomes ready after the machine reaches Running, so
@@ -1660,14 +1469,9 @@ impl NativeWindow {
             }
         };
 
-        self.offload_texture_size.set(Some((width, height)));
-        self.reset_offload_verification(
-            OffloadResetKind::Frame,
-            self.offload_expectation(width, height),
-        );
+        self.reset_offload_claim();
         self.frame_paintable.set_texture(&texture);
         self.continuity.borrow_mut().record_frame_installed(id);
-        self.continuity_dirty.set(true);
         self.update_state_ui();
         let superseded = self
             .pending_frame
@@ -1815,25 +1619,11 @@ impl NativeWindow {
     fn after_paint(&self, clock: &gdk::FrameClock) {
         self.last_host_frame_tick.set(Instant::now());
         if let Some(frame) = self.pending_frame.borrow_mut().take() {
-            // A GskSubsurfaceNode is only an offload candidate. GDK can still
-            // reject attachment after snapshot (for example for non-integral
-            // device geometry), so only the pinned GTK Wayland backend's
-            // matching post-generation Attaching record is actual proof.
-            let candidate = self.has_subsurface_offload_candidate();
-            let offloaded = {
-                let mut verifier = self.offload_verifier.borrow_mut();
-                verifier.set_candidate(candidate);
-                match verifier.poll() {
-                    Ok(verified) => verified,
-                    Err(error) => {
-                        eprintln!(
-                            "buzzardos-display: reading GTK offload verification log: {error}"
-                        );
-                        false
-                    }
-                }
-            };
-            self.offload_verification_dirty.set(true);
+            // GTK's GraphicsOffload remains enabled, but Buzzard deliberately
+            // does not enable or parse GDK debug logging. Without an explicit
+            // protocol acknowledgement, do not claim that this frame was
+            // offloaded or zero-copy.
+            let offloaded = false;
             if let Err(error) = self.commands.send(GatewayCommand::FramePainted {
                 id: frame.id,
                 frame_time_us: clock.frame_time(),
@@ -2090,17 +1880,6 @@ impl NativeWindow {
             .max(submission_to_presentation_us);
     }
 
-    fn has_subsurface_offload_candidate(&self) -> bool {
-        let width = self.offload.width().max(1);
-        let height = self.offload.height().max(1);
-        let paintable = gtk::WidgetPaintable::new(Some(&self.offload));
-        let snapshot = gtk::Snapshot::new();
-        paintable.snapshot(&snapshot, width as f64, height as f64);
-        snapshot
-            .to_node()
-            .is_some_and(|node| contains_subsurface_node(&node))
-    }
-
     fn set_state(&self, state: MonitorState) {
         let previous = self.state.replace(state);
         if previous != state {
@@ -2192,50 +1971,16 @@ impl NativeWindow {
             }));
     }
 
-    fn offload_expectation(
-        &self,
-        texture_width: u32,
-        texture_height: u32,
-    ) -> Option<OffloadExpectation> {
-        offload_expectation_from_geometry(
-            &self.offload_geometry.borrow(),
-            self.picture.width(),
-            self.picture.height(),
-            texture_width,
-            texture_height,
-        )
-    }
-
-    fn reset_offload_verification(
-        &self,
-        kind: OffloadResetKind,
-        expected: Option<OffloadExpectation>,
-    ) {
-        if kind == OffloadResetKind::Geometry {
-            for pending in self.pending_presentations.borrow_mut().iter_mut() {
-                pending.offloaded = false;
-            }
+    fn reset_offload_claim(&self) {
+        for pending in self.pending_presentations.borrow_mut().iter_mut() {
+            pending.offloaded = false;
         }
         {
             let mut stats = self.presentation.borrow_mut();
             stats.gtk_subsurface_offload = false;
             stats.zero_copy = false;
         }
-        if let Err(error) = self.offload_verifier.borrow_mut().reset(kind, expected) {
-            eprintln!("buzzardos-display: resetting GTK offload verification generation: {error}");
-        }
-        self.offload_verification_dirty.set(true);
         self.presentation_dirty.set(true);
-    }
-
-    fn refresh_offload_geometry_generation(&self) {
-        let expected = self
-            .offload_texture_size
-            .get()
-            .and_then(|(width, height)| self.offload_expectation(width, height));
-        if self.offload_verifier.borrow().expectation() != expected {
-            self.reset_offload_verification(OffloadResetKind::Geometry, expected);
-        }
     }
 
     fn detach_monitor(&self, source: &'static str) {
@@ -2243,9 +1988,7 @@ impl NativeWindow {
             return;
         }
         self.continuity.borrow_mut().detach(source);
-        self.continuity_dirty.set(true);
-        self.offload_texture_size.set(None);
-        self.reset_offload_verification(OffloadResetKind::Geometry, None);
+        self.reset_offload_claim();
         self.frame_paintable.clear();
         self.update_state_ui();
     }
@@ -2257,7 +2000,6 @@ impl NativeWindow {
             self.continuity
                 .borrow_mut()
                 .observe(source, placeholder_visible, frame_available);
-        self.continuity_dirty.set(true);
         if violation {
             eprintln!(
                 "buzzardos-display: monitor continuity violation: source={source}, \
@@ -2427,7 +2169,7 @@ impl NativeWindow {
         if geometry_changed {
             self.advance_geometry_generation();
         }
-        self.update_geometry_diagnostics(host_mapping);
+        self.update_presentation_geometry(host_mapping);
         if let Err(error) = self.publish_output_mode() {
             *self.failure.borrow_mut() = Some(format!(
                 "publishing native guest monitor mode {width}x{height}: {error:#}"
@@ -2437,9 +2179,6 @@ impl NativeWindow {
         }
         if let Err(error) = self.save_output_state() {
             eprintln!("buzzardos-display: saving resized guest output: {error:#}");
-        }
-        if let Err(error) = self.save_input() {
-            eprintln!("buzzardos-display: saving resized input coordinates: {error:#}");
         }
         if let Err(error) = self.save_window() {
             eprintln!("buzzardos-display: saving resized host window: {error:#}");
@@ -2453,40 +2192,21 @@ impl NativeWindow {
             .set(current.checked_add(1).unwrap_or(1));
     }
 
-    fn update_geometry_diagnostics(&self, host_mapping: PixelMapping) {
-        let guest_ui_scale_120 = self.guest_ui_scale_120.get();
-        {
-            let mut stats = self.input.borrow_mut();
-            stats.host_surface_scale_120 = self.host_surface_scale_120.get();
-            stats.guest_ui_scale_120 = guest_ui_scale_120;
-            stats.geometry_generation = self.geometry_generation.get();
-            stats.logical_width = u64::from(guest_logical_dimension(
-                host_mapping.physical_width,
-                guest_ui_scale_120,
-            ));
-            stats.logical_height = u64::from(guest_logical_dimension(
-                host_mapping.physical_height,
-                guest_ui_scale_120,
-            ));
-            stats.physical_width = u64::from(host_mapping.physical_width);
-            stats.physical_height = u64::from(host_mapping.physical_height);
-        }
-        {
-            let mut stats = self.presentation.borrow_mut();
-            stats.scale_120 = self.host_surface_scale_120.get();
-            stats.viewport_width = self.viewport_width.get();
-            stats.viewport_height = self.viewport_height.get();
-            stats.native_resolution = stats.width > 0
-                && frame_has_exact_native_mapping(
-                    stats.width,
-                    stats.height,
-                    self.viewport_width.get(),
-                    self.viewport_height.get(),
-                    self.host_surface_scale_120.get(),
-                );
-            if !stats.native_resolution {
-                stats.zero_copy = false;
-            }
+    fn update_presentation_geometry(&self, _host_mapping: PixelMapping) {
+        let mut stats = self.presentation.borrow_mut();
+        stats.scale_120 = self.host_surface_scale_120.get();
+        stats.viewport_width = self.viewport_width.get();
+        stats.viewport_height = self.viewport_height.get();
+        stats.native_resolution = stats.width > 0
+            && frame_has_exact_native_mapping(
+                stats.width,
+                stats.height,
+                self.viewport_width.get(),
+                self.viewport_height.get(),
+                self.host_surface_scale_120.get(),
+            );
+        if !stats.native_resolution {
+            stats.zero_copy = false;
         }
     }
 
@@ -2519,11 +2239,10 @@ impl NativeWindow {
         self.guest_scale_preset.set(request.preset);
         self.guest_ui_scale_120.set(guest_ui_scale_120);
         self.advance_geometry_generation();
-        self.update_geometry_diagnostics(self.host_pixel_mapping());
+        self.update_presentation_geometry(self.host_pixel_mapping());
         if let Err(error) = self
             .publish_output_mode()
             .and_then(|()| self.save_output_state())
-            .and_then(|()| self.save_input())
         {
             return GuestScaleReply::Rejected {
                 code: "runtime_failure",
@@ -2638,9 +2357,7 @@ impl NativeWindow {
             return;
         }
         self.set_state(MonitorState::Stopping);
-        if !restart {
-            self.close_requested.set(self.close_requested.get());
-        }
+        self.close_requested.set(!restart);
     }
 
     fn save_host_request(&self, action: &str) -> Result<()> {
@@ -2885,12 +2602,7 @@ impl NativeWindow {
         self.clipboard_busy.set(false);
         self.update_clipboard_action_state();
         match result {
-            Ok((mime, bytes)) => {
-                if let Err(error) =
-                    self.save_clipboard_diagnostic(direction, Some(mime), bytes, "success", None)
-                {
-                    eprintln!("buzzardos-display: saving clipboard diagnostics: {error:#}");
-                }
+            Ok((_mime, _bytes)) => {
                 let destination = if direction == "host-to-guest" {
                     "The selected host clipboard snapshot is now available inside the guest."
                 } else {
@@ -2899,44 +2611,9 @@ impl NativeWindow {
                 show_info_dialog(&self.window, "Clipboard transferred", destination);
             }
             Err(error) => {
-                if let Err(save_error) = self.save_clipboard_diagnostic(
-                    direction,
-                    None,
-                    0,
-                    "failed",
-                    Some("transfer_failed"),
-                ) {
-                    eprintln!(
-                        "buzzardos-display: saving clipboard failure diagnostics: {save_error:#}"
-                    );
-                }
                 self.show_error("Clipboard transfer failed", &error);
             }
         }
-    }
-
-    fn save_clipboard_diagnostic(
-        &self,
-        direction: &str,
-        mime: Option<Mime>,
-        bytes: usize,
-        result: &str,
-        error: Option<&str>,
-    ) -> Result<()> {
-        let timestamp_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let value = serde_json::json!({
-            "schema": 1,
-            "timestamp_ms": timestamp_ms,
-            "direction": direction,
-            "mime": mime.and_then(Mime::canonical),
-            "bytes": bytes,
-            "result": result,
-            "error": error,
-        });
-        atomic_json(&self.launch.status_dir.join("clipboard.json"), &value)
     }
 
     fn open_settings(&self) {
@@ -3638,25 +3315,6 @@ impl NativeWindow {
             .and_then(|surface| surface.dynamic_cast::<gdk::Toplevel>().ok())
     }
 
-    fn refresh_shortcut_inhibition(&self) {
-        let Some(toplevel) = self.gdk_toplevel() else {
-            return;
-        };
-        let inhibited = toplevel.is_shortcuts_inhibited();
-        let mut stats = self.input.borrow_mut();
-        if stats.host_shortcuts_inhibited == inhibited {
-            return;
-        }
-        if inhibited {
-            stats.shortcut_inhibit_grants = stats.shortcut_inhibit_grants.saturating_add(1);
-        } else {
-            stats.shortcut_inhibit_revocations =
-                stats.shortcut_inhibit_revocations.saturating_add(1);
-        }
-        stats.host_shortcuts_inhibited = inhibited;
-        self.input_dirty.set(true);
-    }
-
     fn save_output_state(&self) -> Result<()> {
         let host_surface_scale_120 = self.host_surface_scale_120.get();
         let guest_ui_scale_120 = self.guest_ui_scale_120.get();
@@ -3690,27 +3348,6 @@ impl NativeWindow {
         atomic_json(
             &self.launch.status_dir.join("presentation.json"),
             &*self.presentation.borrow(),
-        )
-    }
-
-    fn save_offload_verification(&self) -> Result<()> {
-        atomic_json(
-            &self.launch.status_dir.join("offload-verification.json"),
-            &self.offload_verifier.borrow().diagnostics(),
-        )
-    }
-
-    fn save_input(&self) -> Result<()> {
-        atomic_json(
-            &self.launch.status_dir.join("input.json"),
-            &*self.input.borrow(),
-        )
-    }
-
-    fn save_continuity(&self) -> Result<()> {
-        atomic_json(
-            &self.launch.status_dir.join("monitor-continuity.json"),
-            &*self.continuity.borrow(),
         )
     }
 }
@@ -4413,16 +4050,6 @@ fn map_monitor_coordinate(value: f64, from_extent: u32, to_extent: u32) -> f64 {
     fixed_to_coordinate(to_fixed.min(max_fixed_coordinate(to_extent)))
 }
 
-fn unscale_monitor_coordinate(value: f64, surface_extent: u64, logical_extent: u64) -> f64 {
-    let Ok(surface_extent) = u32::try_from(surface_extent) else {
-        return 0.0;
-    };
-    let Ok(logical_extent) = u32::try_from(logical_extent) else {
-        return 0.0;
-    };
-    map_monitor_coordinate(value, surface_extent, logical_extent)
-}
-
 fn coordinate_to_fixed(value: f64, extent: u32) -> i32 {
     if !value.is_finite() {
         return 0;
@@ -4510,41 +4137,6 @@ fn monotonic_us() -> u64 {
     (time.tv_sec as u64 * 1_000_000) + (time.tv_nsec as u64 / 1_000)
 }
 
-fn offload_expectation_from_geometry(
-    geometry: &OffloadGeometryDiagnostics,
-    picture_width: i32,
-    picture_height: i32,
-    texture_width: u32,
-    texture_height: u32,
-) -> Option<OffloadExpectation> {
-    if !geometry.allocation_settled
-        || !geometry.logical_origin_integral
-        || !geometry.device_origin_integral
-        || !geometry.device_extent_integral
-        || geometry.child_width != picture_width
-        || geometry.child_height != picture_height
-    {
-        return None;
-    }
-    let x = exact_i32(geometry.child_origin_x)?;
-    let y = exact_i32(geometry.child_origin_y)?;
-    let surface_rect = SurfaceRect::new(x, y, geometry.child_width, geometry.child_height)?;
-    OffloadExpectation::new(
-        texture_width,
-        texture_height,
-        geometry.scale_120,
-        surface_rect,
-    )
-}
-
-fn exact_i32(value: f64) -> Option<i32> {
-    if !is_integral_coordinate(value) || value < f64::from(i32::MIN) || value > f64::from(i32::MAX)
-    {
-        return None;
-    }
-    Some(value.round() as i32)
-}
-
 fn header_status_text(state: MonitorState, microphone_active: bool, camera_active: bool) -> String {
     let mut text = state.label().to_owned();
     if microphone_active {
@@ -4554,22 +4146,6 @@ fn header_status_text(state: MonitorState, microphone_active: bool, camera_activ
         text.push_str(" · Camera recording");
     }
     text
-}
-
-fn contains_subsurface_node(node: &gtk::gsk::RenderNode) -> bool {
-    use gtk::gsk::{ContainerNode, RenderNodeType};
-
-    match node.node_type() {
-        RenderNodeType::SubsurfaceNode => true,
-        RenderNodeType::ContainerNode => {
-            node.downcast_ref::<ContainerNode>()
-                .is_some_and(|container| {
-                    (0..container.n_children())
-                        .any(|index| contains_subsurface_node(&container.child(index)))
-                })
-        }
-        _ => false,
-    }
 }
 
 fn atomic_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
@@ -4880,13 +4456,10 @@ mod tests {
         assert_eq!(coordinate_to_fixed(1920.0, 1920), 1920 * 256 - 1);
         assert_eq!(map_monitor_coordinate(0.0, 1280, 1707), 0.0);
         assert_eq!(map_monitor_coordinate(640.0, 1280, 1707), 853.5);
-        assert_eq!(unscale_monitor_coordinate(853.5, 1707, 1280), 640.0);
         // Host and guest UI scales are independent: host logical input is
-        // mapped once to the physical nested surface, then diagnostics may
-        // express that physical point in the guest's logical coordinate space.
+        // mapped exactly once to the physical nested surface.
         let guest_surface = map_monitor_coordinate(640.0, 1280, 1600);
         assert_eq!(guest_surface, 800.0);
-        assert_eq!(unscale_monitor_coordinate(guest_surface, 1600, 1600), 800.0);
     }
 
     #[test]
@@ -4920,40 +4493,6 @@ mod tests {
         assert_eq!(align_extent_up(1280, 3), Some(1281));
         assert_eq!(align_extent_up(800, 3), Some(801));
         assert_eq!(align_extent_up(1280, 4), Some(1280));
-    }
-
-    #[test]
-    fn offload_expectation_requires_the_exact_settled_surface_rectangle() {
-        let mut geometry = OffloadGeometryDiagnostics {
-            schema: 1,
-            scale_120: 150,
-            scale_denominator: 4,
-            child_origin_x: 16.0,
-            child_origin_y: 108.0,
-            child_width: 1280,
-            child_height: 800,
-            logical_origin_integral: true,
-            device_origin_integral: true,
-            device_extent_integral: true,
-            allocation_settled: true,
-            ..OffloadGeometryDiagnostics::default()
-        };
-        assert_eq!(
-            offload_expectation_from_geometry(&geometry, 1280, 800, 1600, 1000),
-            OffloadExpectation::new(
-                1600,
-                1000,
-                150,
-                SurfaceRect::new(16, 108, 1280, 800).unwrap(),
-            )
-        );
-
-        geometry.allocation_settled = false;
-        assert!(offload_expectation_from_geometry(&geometry, 1280, 800, 1600, 1000).is_none());
-        geometry.allocation_settled = true;
-        assert!(offload_expectation_from_geometry(&geometry, 1279, 800, 1600, 1000).is_none());
-        geometry.child_origin_x = 16.5;
-        assert!(offload_expectation_from_geometry(&geometry, 1280, 800, 1600, 1000).is_none());
     }
 
     #[test]

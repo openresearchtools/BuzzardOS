@@ -4433,7 +4433,8 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
     if matches!(state.state, MachineState::Stopped | MachineState::Failed)
         && supervisor_is_live(&state, &machine_dir)
     {
-        println!("'{name}' is already stopped; its host window remains open");
+        send_host_control(&machine_dir, "close")?;
+        println!("Closed the stopped host window for '{name}'");
         return Ok(());
     }
     if state.state == MachineState::Starting {
@@ -4453,12 +4454,12 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
                     .with_context(|| format!("cancelling machine startup process {pid}"));
             }
             wait_for_machine_stopped(&machine_dir, Duration::from_secs(30))?;
-            println!("Cancelled startup of '{name}'; its host window remains open");
+            println!("Cancelled startup of '{name}' and closed its host window");
             return Ok(());
         }
         send_host_control(&machine_dir, "stop")?;
         wait_for_machine_stopped(&machine_dir, Duration::from_secs(95))?;
-        println!("Cancelled startup of '{name}'; its host window remains open");
+        println!("Cancelled startup of '{name}' and closed its host window");
         return Ok(());
     }
     if !runtime_is_live(&state, &machine_dir) {
@@ -4478,7 +4479,7 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
     }
     if wait_for_process_exit(pid, Duration::from_secs(20)) {
         wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
-        println!("Stopped '{name}' cleanly; its host window remains open");
+        println!("Stopped '{name}' cleanly and closed its host window");
         return Ok(());
     }
 
@@ -4486,7 +4487,7 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
     signal_process(pid, libc::SIGTERM)?;
     if wait_for_process_exit(pid, Duration::from_secs(5)) {
         wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
-        println!("Stopped '{name}' after SIGTERM; its host window remains open");
+        println!("Stopped '{name}' after SIGTERM and closed its host window");
         return Ok(());
     }
 
@@ -4496,7 +4497,7 @@ fn stop(paths: &WbPaths, name: &str) -> Result<()> {
         bail!("machine process {pid} did not exit after SIGKILL");
     }
     wait_for_machine_stopped(&machine_dir, Duration::from_secs(10))?;
-    println!("Stopped '{name}' after forced termination; its host window remains open");
+    println!("Stopped '{name}' after forced termination and closed its host window");
     Ok(())
 }
 
@@ -5223,7 +5224,14 @@ mod layer_tests {
         let settings = binaries.join("buzzardos-settings");
         let shortcut_helper = binaries.join("buzzardos-shortcut-helper");
         let clipboard_agent = binaries.join("buzzardos-clipboard-agent");
-        for executable in [&shell, &settings, &shortcut_helper, &clipboard_agent] {
+        let sudo_bridge = binaries.join("buzzardos-sudo");
+        for executable in [
+            &shell,
+            &settings,
+            &shortcut_helper,
+            &clipboard_agent,
+            &sudo_bridge,
+        ] {
             fs::write(executable, b"#!/bin/sh\nexit 0\n").unwrap();
             fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -5236,6 +5244,7 @@ mod layer_tests {
             .arg(repository.join("guest/install-rootfs-assets.sh"))
             .arg(&rootfs)
             .arg(&clipboard_agent)
+            .arg(&sudo_bridge)
             .status()
             .unwrap();
         assert!(status.success());

@@ -872,7 +872,7 @@ class OutputScaleContractTests(unittest.TestCase):
     def test_desktop_services_runs_output_sync_without_retry_probe_loop(self):
         services = (REPOSITORY / "guest/assets/buzzardos-desktop-services").read_text()
         self.assertIn(
-            'start_service output-sync "$runtime/libexec/buzzardos-output-sync"',
+            'start_service "$runtime/libexec/buzzardos-output-sync"',
             services,
         )
         self.assertNotIn("start_output_sync_supervisor", services)

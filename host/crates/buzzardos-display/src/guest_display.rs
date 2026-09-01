@@ -627,6 +627,29 @@ impl GuestState {
             self.suppressed_keys.append(&mut pending.queued_pressed);
             pending.input_queue.clear();
         }
+        // GTK performs host-side auto-repeat, while this parent keyboard also
+        // advertises repeat_info to nested Sway. Only physical state
+        // transitions may reach a compositor input backend: duplicate downs
+        // are filtered in forward_keyboard_key and every accepted down is
+        // explicitly balanced before this focus epoch ends. This also avoids
+        // the wlroots pressed-key multiset failure mode where one real release
+        // cannot clear duplicate press notifications.
+        let released = std::mem::take(&mut self.pressed_keys);
+        let time = monotonic_ms();
+        for key in &released {
+            self.keymap.state.update_key(
+                xkb::Keycode::new(key.saturating_add(8)),
+                xkb::KeyDirection::Up,
+            );
+            if self.keyboard_entered {
+                let serial = self.next_serial();
+                self.keyboards.retain(Resource::is_alive);
+                for keyboard in &self.keyboards {
+                    keyboard.key(serial, time, *key, wl_keyboard::KeyState::Released);
+                }
+            }
+        }
+        self.suppressed_keys.extend(released);
         if !self.keyboard_entered {
             return;
         }
@@ -635,16 +658,19 @@ impl GuestState {
         self.keyboards.retain(Resource::is_alive);
         if let Some(surface) = surface {
             for keyboard in &self.keyboards {
+                keyboard.modifiers(
+                    serial,
+                    self.keymap.state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+                    self.keymap.state.serialize_mods(xkb::STATE_MODS_LATCHED),
+                    self.keymap.state.serialize_mods(xkb::STATE_MODS_LOCKED),
+                    self.keymap
+                        .state
+                        .serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE),
+                );
                 keyboard.leave(serial, &surface);
             }
         }
         self.keyboard_entered = false;
-        for key in std::mem::take(&mut self.pressed_keys) {
-            self.keymap.state.update_key(
-                xkb::Keycode::new(key.saturating_add(8)),
-                xkb::KeyDirection::Up,
-            );
-        }
     }
 
     fn keyboard_key(&mut self, key: u32, pressed: bool, _host_modifiers: u32) {
@@ -701,10 +727,18 @@ impl GuestState {
         if !self.keyboard_entered {
             return;
         }
-        if pressed {
-            self.pressed_keys.insert(key);
+        let changed = if pressed {
+            self.pressed_keys.insert(key)
         } else {
-            self.pressed_keys.remove(&key);
+            self.pressed_keys.remove(&key)
+        };
+        if !changed {
+            // GDK may emit repeated key-pressed signals while a physical key
+            // remains held. Sway receives repeat_info from this keyboard and
+            // owns client repeat, so relaying duplicate downs would corrupt
+            // the compositor's pressed-key accounting. Duplicate releases are
+            // likewise not physical state transitions.
+            return;
         }
         self.keymap.state.update_key(
             xkb::Keycode::new(key.saturating_add(8)),
@@ -2928,6 +2962,65 @@ mod tests {
         assert!(state.pressed_keys.is_empty());
         state.keyboard_key(30, false, 0);
         assert!(!state.suppressed_keys.contains(&30));
+    }
+
+    #[test]
+    fn keyboard_repeat_downs_are_not_forwarded_as_physical_transitions() {
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        let initial_serial = state.serial;
+
+        state.keyboard_key(33, true, 0);
+        let pressed_serial = state.serial;
+        assert_ne!(pressed_serial, initial_serial);
+        assert_eq!(state.pressed_keys, BTreeSet::from([33]));
+
+        // GTK host-side auto-repeat can emit another press without an
+        // intervening release. Nested Sway owns repeat through repeat_info,
+        // so this is not a second physical transition.
+        state.keyboard_key(33, true, 0);
+        assert_eq!(state.serial, pressed_serial);
+        assert_eq!(state.pressed_keys, BTreeSet::from([33]));
+
+        state.keyboard_key(33, false, 0);
+        let released_serial = state.serial;
+        assert_ne!(released_serial, pressed_serial);
+        assert!(state.pressed_keys.is_empty());
+
+        state.keyboard_key(33, false, 0);
+        assert_eq!(state.serial, released_serial);
+    }
+
+    #[test]
+    fn keyboard_focus_leave_balances_and_suppresses_held_physical_keys() {
+        let mut state = test_state();
+        state.keyboard_focused = true;
+        state.keyboard_entered = true;
+        state.keyboard_key(42, true, 0);
+        assert!(state.pressed_keys.contains(&42));
+        assert!(
+            state
+                .keymap
+                .state
+                .mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE)
+        );
+
+        state.keyboard_leave();
+
+        assert!(!state.keyboard_focused);
+        assert!(!state.keyboard_entered);
+        assert!(state.pressed_keys.is_empty());
+        assert!(state.suppressed_keys.contains(&42));
+        assert_eq!(
+            state.keymap.state.serialize_mods(xkb::STATE_MODS_DEPRESSED),
+            0
+        );
+
+        // The eventual physical release belongs to the old focus epoch. It
+        // only clears suppression and cannot leak into a later focus target.
+        state.keyboard_key(42, false, 0);
+        assert!(!state.suppressed_keys.contains(&42));
     }
 
     #[test]
