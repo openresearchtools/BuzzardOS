@@ -1,5 +1,15 @@
 # Buzzard OS host changelog
 
+## 0.1.5
+
+- Require a user-selected guest password for create, pull, build, import, and
+  clone, hashing it before any long-running image operation and writing only
+  the salted hash into the staged rootfs.
+- Add a stopped-machine password command and matching Manager Settings page so
+  existing persistent machines can move to password-authenticated sudo.
+- Keep password input out of argv, environment, progress output, and machine
+  metadata while preserving transactional machine creation.
+
 ## 0.1.4
 
 - Split reproducible Standard and CUDA machine-package inventories so each

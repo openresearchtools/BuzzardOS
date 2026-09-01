@@ -1,5 +1,11 @@
 # buzzardos-desktop changelog
 
+## 0.1.3
+
+- Ask for the machine password when Settings changes the guest time zone and
+  apply it through the real distro sudo path without a privileged Settings
+  service or broad Polkit rule.
+
 ## 0.1.2
 
 - Replaced the remaining per-frame repaint-marker read and 250 ms Settings

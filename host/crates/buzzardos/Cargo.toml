@@ -17,8 +17,10 @@ nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sha-crypt.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
 wb-core = { path = "../wb-core" }
+zeroize.workspace = true
 zstd.workspace = true

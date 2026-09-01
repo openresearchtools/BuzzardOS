@@ -311,7 +311,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "buzzardos-clipboard-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "buzzardos-clipboard-protocol",
  "crc32fast",
@@ -329,7 +329,7 @@ version = "0.1.0"
 
 [[package]]
 name = "buzzardos-desktop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-desktop-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "gio",
  "glib",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-settings"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "buzzardos-desktop-core",
  "gio",
@@ -379,11 +379,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
 name = "buzzardos-shortcut-helper"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "buzzardos-desktop-core",
@@ -403,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "buzzardos-sudo-bridge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]

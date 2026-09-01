@@ -6,7 +6,8 @@ and is not distributed by Buzzard OS.
 
 The target image contains:
 
-- systemd and a normal interactive user with passwordless guest sudo;
+- systemd and a normal interactive user whose password is set transactionally
+  by the manager when the persistent machine is created;
 - the stock Sway and matching wlroots packages supplied by the pinned Debian
   snapshot, with no private compositor build;
 - Buzzard OS's native Rust desktop shell, with an always-visible bottom

@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write as _};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -21,6 +21,7 @@ use wb_core::{
     MachineConfig, MachineRegistry, MachineState, NetworkMode, PortDirection, PortForward,
     PortProtocol, RuntimeState, SharedPath,
 };
+use zeroize::Zeroize;
 
 const HOST_PROJECT_LICENSE: &str = include_str!("../../../../LICENSE");
 const HOST_CARGO_INVENTORY: &str = include_str!("../../../../LICENSES/generated/cargo-host.tsv");
@@ -145,6 +146,14 @@ struct CommandPresentation {
     running: &'static str,
     success: &'static str,
     failure: &'static str,
+}
+
+struct SecretStdin(Vec<u8>);
+
+impl Drop for SecretStdin {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 #[derive(Clone)]
@@ -763,6 +772,58 @@ impl ManagerUi {
         connect_manager_share_picker(&add_folder, &dialog, &share_list, &share_rows, true);
         stack.add_titled(&sharing.0, Some("sharing"), "Sharing");
 
+        let security = settings_page(
+            "Machine password",
+            "Password used by sudo and other authenticated guest operations",
+        );
+        let password_grid = gtk::Grid::builder()
+            .row_spacing(12)
+            .column_spacing(18)
+            .hexpand(true)
+            .build();
+        let (password, password_confirmation) = attach_password_fields(&password_grid, 0);
+        security.1.append(&password_grid);
+        let password_note = gtk::Label::new(Some(
+            "The machine must be completely stopped. The password is sent only to the local Buzzard OS process and is stored as a salted hash inside this machine.",
+        ));
+        password_note.set_xalign(0.0);
+        password_note.set_wrap(true);
+        password_note.add_css_class("dim-label");
+        security.1.append(&password_note);
+        let change_password = gtk::Button::with_label("Change Password");
+        change_password.set_halign(gtk::Align::Start);
+        security.1.append(&change_password);
+        stack.add_titled(&security.0, Some("password"), "Password");
+
+        let password_dialog = dialog.clone();
+        let password_machine_dir = machine_dir.to_path_buf();
+        let password_machine_name = config.name.clone();
+        let password_manager = Rc::downgrade(self);
+        change_password.connect_clicked(move |_| {
+            let secret = match validated_machine_password(&password, &password_confirmation) {
+                Ok(secret) => secret,
+                Err(error) => {
+                    show_manager_error(&password_dialog, "Check the machine password", &error);
+                    return;
+                }
+            };
+            password.set_text("");
+            password_confirmation.set_text("");
+            if let Some(manager) = password_manager.upgrade() {
+                manager.run_command_with_cleanup(
+                    Some(password_machine_dir.clone()),
+                    vec![
+                        "password".into(),
+                        password_machine_name.clone(),
+                        "--password-stdin".into(),
+                    ],
+                    None,
+                    Some(secret),
+                );
+                password_dialog.close();
+            }
+        });
+
         let actions = gtk::ActionBar::new();
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::with_label("Save");
@@ -848,6 +909,7 @@ impl ManagerUi {
         machine_dir: Option<PathBuf>,
         arguments: Vec<String>,
         cleanup: Option<PathBuf>,
+        secret_stdin: Option<SecretStdin>,
     ) {
         let presentation = command_presentation(&arguments);
         let dialog = independent_manager_window(&self.window, &presentation.title, 640, 260, true);
@@ -952,13 +1014,37 @@ impl ManagerUi {
             }
             command
                 .args(&arguments)
-                .stdin(Stdio::null())
+                .stdin(if secret_stdin.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             command.process_group(0);
             let spawned = command.spawn();
             let (success, was_cancelled) = match spawned {
                 Ok(mut child) => {
+                    let input_result = match secret_stdin {
+                        Some(secret) => child
+                            .stdin
+                            .take()
+                            .context("Buzzard OS command has no password input")
+                            .and_then(|mut input| {
+                                input
+                                    .write_all(&secret.0)
+                                    .context("sending the machine password")
+                            }),
+                        None => Ok(()),
+                    };
+                    if let Err(error) = input_result {
+                        let _ = events_tx.send(CommandProgressEvent::Output(format!(
+                            "Could not provide the machine password: {error}"
+                        )));
+                        signal_command_group(&mut child, libc::SIGKILL);
+                        let _ = child.wait();
+                        return finish_command_worker(events_tx, result, cleanup, false, false);
+                    }
                     let stdout_thread = child
                         .stdout
                         .take()
@@ -1010,24 +1096,7 @@ impl ManagerUi {
                     (false, false)
                 }
             };
-            if let Some(cleanup) = cleanup
-                && let Err(error) = std::fs::remove_dir_all(&cleanup)
-            {
-                eprintln!(
-                    "Buzzard OS machine manager: removing temporary build context {}: {error}",
-                    cleanup.display()
-                );
-            }
-            let _ = events_tx.send(CommandProgressEvent::Finished {
-                success,
-                cancelled: was_cancelled,
-            });
-            if let Ok(mut slot) = result.lock() {
-                // The progress window owns operation feedback.  This empty
-                // completion event only asks the manager to refresh its list;
-                // it must never leak build output into the main window.
-                *slot = Some(String::new());
-            }
+            finish_command_worker(events_tx, result, cleanup, success, was_cancelled);
         });
 
         let mut last_detail = String::new();
@@ -1219,6 +1288,7 @@ impl ManagerUi {
         name.set_placeholder_text(Some("letters, digits, - and _"));
         grid.attach(&name_label, 0, 1, 1, 1);
         grid.attach(&name, 1, 1, 1, 1);
+        let (password, password_confirmation) = attach_password_fields(&grid, 2);
         let destination_label = gtk::Label::new(Some("Machine location"));
         destination_label.set_xalign(0.0);
         let destination_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -1229,8 +1299,8 @@ impl ManagerUi {
         let browse_destination = gtk::Button::with_label("Choose…");
         destination_row.append(&destination);
         destination_row.append(&browse_destination);
-        grid.attach(&destination_label, 0, 2, 1, 1);
-        grid.attach(&destination_row, 1, 2, 1, 1);
+        grid.attach(&destination_label, 0, 4, 1, 1);
+        grid.attach(&destination_row, 1, 4, 1, 1);
         root.append(&grid);
         let import_as_copy = gtk::CheckButton::with_label("Import as a new copy");
         if importing {
@@ -1304,7 +1374,16 @@ impl ManagerUi {
                     );
                     return;
                 }
-                let arguments = if importing {
+                let secret = match validated_machine_password(&password, &password_confirmation) {
+                    Ok(secret) => secret,
+                    Err(error) => {
+                        show_manager_error(&close, "Check the machine password", &error);
+                        return;
+                    }
+                };
+                password.set_text("");
+                password_confirmation.set_text("");
+                let mut arguments = if importing {
                     vec![
                         "import".into(),
                         source_value,
@@ -1320,7 +1399,8 @@ impl ManagerUi {
                 } else {
                     vec!["pull".into(), machine_name, source_value]
                 };
-                manager.run_command_with_cleanup(Some(machine_dir), arguments, None);
+                arguments.push("--password-stdin".into());
+                manager.run_command_with_cleanup(Some(machine_dir), arguments, None, Some(secret));
                 close.close();
             }
         });
@@ -1356,6 +1436,14 @@ impl ManagerUi {
         let context = gtk::Entry::new();
         let containerfile = gtk::Entry::new();
         let destination = gtk::Entry::new();
+        let password = gtk::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .hexpand(true)
+            .build();
+        let password_confirmation = gtk::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .hexpand(true)
+            .build();
         let cuda_support =
             gtk::CheckButton::with_label("Include NVIDIA CUDA support (recommended)");
         cuda_support.set_active(!matches!(built_in, Some(BuiltInMachine::Standard)));
@@ -1386,6 +1474,11 @@ impl ManagerUi {
             (
                 "Machine location",
                 destination_row.clone().upcast::<gtk::Widget>(),
+            ),
+            ("Password", password.clone().upcast::<gtk::Widget>()),
+            (
+                "Confirm password",
+                password_confirmation.clone().upcast::<gtk::Widget>(),
             ),
             ("Build context", context_row.clone().upcast::<gtk::Widget>()),
             (
@@ -1459,6 +1552,15 @@ impl ManagerUi {
                     show_manager_error(&close, "Check the machine details", &error);
                     return;
                 }
+                let secret = match validated_machine_password(&password, &password_confirmation) {
+                    Ok(secret) => secret,
+                    Err(error) => {
+                        show_manager_error(&close, "Check the machine password", &error);
+                        return;
+                    }
+                };
+                password.set_text("");
+                password_confirmation.set_text("");
                 let (build_context, selected_file, cleanup) = match built_in {
                     Some(_) => {
                         let prepared = prepare_builtin_context(if cuda_support.is_active() {
@@ -1508,7 +1610,13 @@ impl ManagerUi {
                     arguments.push("--file".into());
                     arguments.push(selected_file.to_string_lossy().into_owned());
                 }
-                manager.run_command_with_cleanup(Some(machine_dir), arguments, cleanup);
+                arguments.push("--password-stdin".into());
+                manager.run_command_with_cleanup(
+                    Some(machine_dir),
+                    arguments,
+                    cleanup,
+                    Some(secret),
+                );
             }
             close.close();
         });
@@ -1577,6 +1685,7 @@ impl ManagerUi {
                                 output.to_string_lossy().into_owned(),
                             ],
                             None,
+                            None,
                         );
                         close.close();
                     }
@@ -1610,6 +1719,16 @@ impl ManagerUi {
         destination_row.append(&destination);
         destination_row.append(&browse);
         root.append(&destination_row);
+        let password = gtk::PasswordEntry::builder()
+            .placeholder_text("Password")
+            .show_peek_icon(true)
+            .build();
+        let password_confirmation = gtk::PasswordEntry::builder()
+            .placeholder_text("Confirm password")
+            .show_peek_icon(true)
+            .build();
+        root.append(&password);
+        root.append(&password_confirmation);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
@@ -1633,10 +1752,25 @@ impl ManagerUi {
                     show_manager_error(&close, "Check the machine details", &error);
                     return;
                 }
+                let secret = match validated_machine_password(&password, &password_confirmation) {
+                    Ok(secret) => secret,
+                    Err(error) => {
+                        show_manager_error(&close, "Check the machine password", &error);
+                        return;
+                    }
+                };
+                password.set_text("");
+                password_confirmation.set_text("");
                 manager.run_command_with_cleanup(
                     Some(machine_dir),
-                    vec!["clone".into(), source.clone(), new_name],
+                    vec![
+                        "clone".into(),
+                        source.clone(),
+                        new_name,
+                        "--password-stdin".into(),
+                    ],
                     None,
+                    Some(secret),
                 );
                 close.close();
             }
@@ -1704,6 +1838,12 @@ fn command_presentation(arguments: &[String]) -> CommandPresentation {
             running: "Cloning machine…",
             success: "Machine cloned",
             failure: "Machine clone failed",
+        },
+        Some("password") => CommandPresentation {
+            title: "Changing Machine Password".into(),
+            running: "Updating the machine password…",
+            success: "Machine password changed",
+            failure: "Machine password could not be changed",
         },
         Some("start") => CommandPresentation {
             title: "Starting Machine".into(),
@@ -1779,6 +1919,29 @@ fn forward_command_output(
             }
         }
     })
+}
+
+fn finish_command_worker(
+    events: Sender<CommandProgressEvent>,
+    result: Arc<Mutex<Option<String>>>,
+    cleanup: Option<PathBuf>,
+    success: bool,
+    cancelled: bool,
+) {
+    if let Some(cleanup) = cleanup
+        && let Err(error) = std::fs::remove_dir_all(&cleanup)
+    {
+        eprintln!(
+            "Buzzard OS machine manager: removing temporary build context {}: {error}",
+            cleanup.display()
+        );
+    }
+    let _ = events.send(CommandProgressEvent::Finished { success, cancelled });
+    if let Ok(mut slot) = result.lock() {
+        // The progress window owns operation feedback. This empty completion
+        // event asks the manager to refresh without leaking command output.
+        *slot = Some(String::new());
+    }
 }
 
 fn signal_command_group(child: &mut Child, signal: i32) {
@@ -1951,6 +2114,52 @@ fn add_machine_choice(
     button.set_child(Some(&content));
     list.append(&button);
     button
+}
+
+fn attach_password_fields(
+    grid: &gtk::Grid,
+    first_row: i32,
+) -> (gtk::PasswordEntry, gtk::PasswordEntry) {
+    let password = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .hexpand(true)
+        .build();
+    let confirmation = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .hexpand(true)
+        .build();
+    for (offset, (text, entry)) in [
+        ("Password", password.clone()),
+        ("Confirm password", confirmation.clone()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let label = gtk::Label::new(Some(text));
+        label.set_xalign(0.0);
+        grid.attach(&label, 0, first_row + offset as i32, 1, 1);
+        grid.attach(&entry, 1, first_row + offset as i32, 1, 1);
+    }
+    (password, confirmation)
+}
+
+fn validated_machine_password(
+    password: &gtk::PasswordEntry,
+    confirmation: &gtk::PasswordEntry,
+) -> Result<SecretStdin> {
+    let mut password_text = password.text().to_string();
+    let mut confirmation_text = confirmation.text().to_string();
+    let valid = !password_text.is_empty()
+        && password_text == confirmation_text
+        && password_text.len() <= 4096
+        && !password_text
+            .as_bytes()
+            .iter()
+            .any(|byte| matches!(byte, 0 | b'\n' | b'\r'));
+    let secret = valid.then(|| SecretStdin(password_text.as_bytes().to_vec()));
+    password_text.zeroize();
+    confirmation_text.zeroize();
+    secret.context("enter the same non-empty password in both fields")
 }
 
 fn validate_machine_destination(name: &str, destination: &Path) -> Result<()> {

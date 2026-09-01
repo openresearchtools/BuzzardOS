@@ -16,6 +16,7 @@ install_package=${BUZZARDOS_ACCEPT_INSTALL_PACKAGE:-0}
 full_matrix=${BUZZARDOS_ACCEPT_FULL_MATRIX:-0}
 integration_acceptance=${BUZZARDOS_ACCEPT_INTEGRATIONS:-1}
 accept_image=${BUZZARDOS_ACCEPT_IMAGE:-}
+accept_password=${BUZZARDOS_ACCEPT_PASSWORD:-}
 relocation_active=0
 relocation_original=
 relocation_target=
@@ -65,6 +66,11 @@ marker="buzzardos-acceptance-$(date +%s)-$$"
 
 wb() {
     "$launcher" --machine-dir "$machine_dir" "$@"
+}
+
+guest_sudo() {
+    printf '%s\n' "$accept_password" |
+        guest sudo -S -p '' -- "$@"
 }
 
 wait_running() {
@@ -759,14 +765,18 @@ drag_guest_frame_edge() {
 }
 
 wb doctor
+[[ -n "$accept_password" ]] || {
+    echo "BUZZARDOS_ACCEPT_PASSWORD is required for password-authenticated guest sudo" >&2
+    exit 1
+}
 if [[ ! -f "$machine_dir/machine.json" ]]; then
     [[ -n "$accept_image" ]] || {
         echo "BUZZARDOS_ACCEPT_IMAGE is required to create the acceptance machine" >&2
         exit 1
     }
     mkdir -p -- "$shared_dir"
-    create_arguments=(create "$machine" --gpu all --image "$accept_image" --share "$shared_dir")
-    wb "${create_arguments[@]}"
+    create_arguments=(create "$machine" --gpu all --image "$accept_image" --share "$shared_dir" --password-stdin)
+    printf '%s' "$accept_password" | wb "${create_arguments[@]}"
 fi
 [[ -d "$shared_dir" ]]
 jq -e --arg shared "$shared_dir" \
@@ -884,7 +894,11 @@ rm -f -- "$loopback_probe"
 ! guest test -e /run/user/1000/wayland-0
 ! guest test -S /run/docker.sock
 ! guest test -S /var/run/docker.sock
-[[ $(guest sudo -n id -u) == 0 ]]
+[[ $(guest_sudo id -u) == 0 ]]
+! printf '%s\n' "buzzardos-acceptance-deliberately-wrong-password" |
+    guest sudo -S -p '' -- true
+! printf '%s\n' "$accept_password" |
+    guest setpriv --no-new-privs /usr/bin/sudo -S -p '' -- true
 rootfs_host_uid=$(stat -c %u "$machine_dir/rootfs")
 [[ "$rootfs_host_uid" != 0 ]]
 [[ "$rootfs_host_uid" != "$(id -u)" ]]
@@ -969,7 +983,7 @@ guest sh -c 'printf "%s\n" "$1" \
 # starts must not silently restore them over guest-root changes. This harmless
 # comment makes that durable-rootfs invariant observable across the restart
 # below.
-guest sudo -n sh -c \
+guest_sudo sh -c \
     'printf "%s\n" "# persistent guest OS edit: $1" >> /etc/buzzardos/sway-config' \
     sh "$marker"
 compositor_start_time=$(guest awk '{print $22}' "/proc/$compositor_pid/stat")
@@ -1432,8 +1446,8 @@ if [[ "$full_matrix" == 1 ]]; then
     # a passing full-matrix run cannot silently claim that they ship in the
     # OCI.  The acceptance machine is persistent by design and disposable;
     # use a newly created machine for each clean-reference certification.
-    guest sudo -n apt-get update
-    guest sudo -n env DEBIAN_FRONTEND=noninteractive \
+    guest_sudo apt-get update
+    guest_sudo env DEBIAN_FRONTEND=noninteractive \
         apt-get install --yes --no-install-recommends \
         dolphin mesa-utils vulkan-tools x11-apps x11-utils
 
@@ -1691,8 +1705,8 @@ PY'
 fi
 
 if [[ "$install_package" == 1 ]]; then
-    guest sudo -n apt-get update
-    guest sudo -n apt-get install --yes hello
+    guest_sudo apt-get update
+    guest_sudo apt-get install --yes hello
 fi
 
 # Host-only launcher controls prove maximize/restore resize negotiation,
@@ -1799,7 +1813,7 @@ refresh_pid
 # A guest-local poweroff stops Sway before namespace PID 1; the broker must
 # recognize that orderly sequence rather than report the display disconnect as
 # a crash.
-guest sudo -n systemctl --no-block start poweroff.target
+guest_sudo systemctl --no-block start poweroff.target
 wait_stopped
 wb start "$machine" --detach
 wait_running

@@ -1,7 +1,17 @@
 # Debian packages
 
 `build-debs.sh` is the single local entry point for the four Buzzard OS
-binary packages. Run it in the Ubuntu 24.04 build environment:
+binary packages. The checked-in `packaging/Containerfile` is the clean Debian
+13 Podman build environment and declares the complete native build dependency
+set, including the XTest headers required by Buzzard CUA:
+
+```sh
+podman build --tag localhost/buzzardos-package-build \
+  --file packaging/Containerfile .
+```
+
+Run the package builder with source mounted read-only and all generated state
+on a separate writable build volume:
 
 ```sh
 BUZZARDOS_DEB_OUTPUT_DIR=/path/on/data-disk/debs packaging/build-debs.sh all

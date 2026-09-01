@@ -184,7 +184,11 @@ the Containerfile explicitly invokes one auditable setup script exactly once.
 It owns only construction-time presets:
 
 - create the canonical interactive UID/GID 1000 user and home;
-- install guest-only passwordless sudo;
+- leave the canonical guest account locked in install media so the manager can
+  set the user-selected password while committing each new machine;
+- install a guest-only socket handoff that executes the real distro `sudo`
+  with ordinary password authentication despite the persistent rootfs being
+  `nosuid` and the desktop session retaining `no_new_privs`;
 - seed initial user configuration from package templates once;
 - enable/mask systemd units appropriate to a namespace guest;
 - configure initial graphical/session and standard APT update presets;
@@ -274,18 +278,22 @@ Canonical CLI behavior:
 
 ```text
 buzzardos create --name NAME --machine-dir DIR --image SOURCE
-                 [--share PATH[:ro|rw] ...] [--keep-oci-archive]
+                 --password-stdin [--share PATH[:ro|rw] ...]
+                 [--keep-oci-archive]
 
 buzzardos pull OCI_REFERENCE --name NAME --machine-dir DIR
-               [--share PATH[:ro|rw] ...] [--keep-oci-archive]
+               --password-stdin [--share PATH[:ro|rw] ...]
+               [--keep-oci-archive]
 
 buzzardos import SOURCE --name NAME --machine-dir DIR
                  [--mode restore|clone] [--manifest DIGEST]
-                 [--share PATH[:ro|rw] ...] [--keep-oci-archive]
+                 --password-stdin [--share PATH[:ro|rw] ...]
+                 [--keep-oci-archive]
 
 buzzardos export MACHINE --output FILE
 buzzardos clone SOURCE --name NAME --machine-dir DIR
-                [--share PATH[:ro|rw] ...]
+                --password-stdin [--share PATH[:ro|rw] ...]
+buzzardos password MACHINE --machine-dir DIR --password-stdin
 ```
 
 `create` accepts any explicit supported OCI source. `pull` is the convenient

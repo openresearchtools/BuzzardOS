@@ -110,7 +110,9 @@ second NTP client or expose a clock-setting action.
 Time zone is guest-local persistent configuration. Its searchable dropdown is
 generated from the installed IANA `zone.tab`; it has no free-form path field.
 Selecting a validated location applies that exact zone through systemd
-`timedatectl`. The guest timezone can change without changing the host clock.
+`timedatectl`. Settings asks for the machine-local password and invokes the
+real distro `sudo`; it does not use Polkit or a privileged Settings service.
+The guest timezone can change without changing the host clock.
 
 ## 5. Appearance
 
@@ -283,6 +285,13 @@ transaction. Its durable journal, descriptor-bound identity checks,
 same-directory no-replace rename, registration update, fsync ordering, and
 startup recovery preserve the stable registration, launchers, icon, bytes,
 ownership, and mode.
+
+Type-2 FUSE mounting uses one private guest systemd socket whose root half
+accepts only the pinned runtime's exact mount/unmount argument shapes, UID/GID
+1000 peers, allowed `.mount_*` paths, and the caller's validated libfuse
+communication descriptor. It exposes neither a generic root command nor a
+Polkit authorization. The mounted filesystem is always read-only, `nosuid`,
+and `nodev`; extraction remains the non-FUSE fallback.
 
 ## 9. Explicit clipboard snapshots
 

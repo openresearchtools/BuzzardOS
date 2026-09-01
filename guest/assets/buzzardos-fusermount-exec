@@ -15,6 +15,10 @@ import sys
 
 
 REAL_FUSERMOUNT = "/run/buzzardos-appimage-helper/fusermount3.real"
+SERVICE_MAGIC = b"BZFM0001"
+MAX_ARGUMENTS = 64
+MAX_ARGUMENT_BYTES = 4096
+MAX_RESPONSE_BYTES = 65536
 SYS_PIDFD_GETFD = 438
 MNT_DETACH = 2
 INTERACTIVE_UID = 1000
@@ -452,7 +456,103 @@ def execute_request(process_id: int, requested_fd: int, arguments: list[str]) ->
                     pass
 
 
+def receive_exact(connection: socket.socket, size: int) -> bytes:
+    result = bytearray()
+    while len(result) < size:
+        chunk = connection.recv(size - len(result))
+        if not chunk:
+            raise ValidationError("truncated AppImage mount request")
+        result.extend(chunk)
+    return bytes(result)
+
+
+def receive_service_request(connection: socket.socket) -> tuple[int, int, list[str]]:
+    credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    process_id, user_id, group_id = struct.unpack("3i", credentials)
+    if process_id < 2 or user_id != INTERACTIVE_UID or group_id != INTERACTIVE_GID:
+        raise ValidationError("socket peer is not the interactive guest user")
+    if receive_exact(connection, len(SERVICE_MAGIC)) != SERVICE_MAGIC:
+        raise ValidationError("invalid AppImage mount protocol")
+    requested_fd, argument_count = struct.unpack("!iI", receive_exact(connection, 8))
+    if requested_fd < -1 or argument_count > MAX_ARGUMENTS:
+        raise ValidationError("invalid AppImage mount request envelope")
+    arguments = []
+    for _index in range(argument_count):
+        (length,) = struct.unpack("!I", receive_exact(connection, 4))
+        if length > MAX_ARGUMENT_BYTES:
+            raise ValidationError("AppImage mount argument is too long")
+        arguments.append(os.fsdecode(receive_exact(connection, length)))
+    if connection.recv(1):
+        raise ValidationError("AppImage mount request has trailing data")
+    return process_id, requested_fd, arguments
+
+
+def wait_status(process_id: int) -> int:
+    _child, status = os.waitpid(process_id, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return min(255, 128 + os.WTERMSIG(status))
+    return 1
+
+
+def send_service_response(connection: socket.socket, status: int, message: bytes) -> None:
+    message = message[:MAX_RESPONSE_BYTES]
+    connection.sendall(struct.pack("!iI", status, len(message)) + message)
+
+
+def serve_connection(descriptor: int = 0) -> int:
+    connection = socket.socket(fileno=os.dup(descriptor))
+    output_fd = -1
+    try:
+        process_id, requested_fd, arguments = receive_service_request(connection)
+        output_fd = os.memfd_create("buzzardos-fusermount-output", os.MFD_CLOEXEC)
+        child = os.fork()
+        if child == 0:
+            try:
+                connection.close()
+                null_fd = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+                os.dup2(null_fd, 0)
+                os.dup2(output_fd, 1)
+                os.dup2(output_fd, 2)
+                if null_fd > 2:
+                    os.close(null_fd)
+                status = execute_request(process_id, requested_fd, arguments)
+            except BaseException as error:
+                os.write(2, f"buzzardos-fusermount: {error}\n".encode(errors="replace"))
+                status = 1
+            os._exit(status if 0 <= status <= 255 else 1)
+        status = wait_status(child)
+        os.lseek(output_fd, 0, os.SEEK_SET)
+        output = os.read(output_fd, MAX_RESPONSE_BYTES + 1)
+        os.close(output_fd)
+        output_fd = -1
+        if len(output) > MAX_RESPONSE_BYTES:
+            output = b"buzzardos-fusermount: helper output exceeded the protocol limit\n"
+            status = 1
+        send_service_response(connection, status, output)
+        return 0
+    except (OSError, ValidationError, ValueError) as error:
+        try:
+            send_service_response(
+                connection,
+                1,
+                f"buzzardos-fusermount: {error}\n".encode(errors="replace"),
+            )
+        except OSError:
+            pass
+        return 1
+    finally:
+        if output_fd >= 0:
+            os.close(output_fd)
+        connection.close()
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--serve"]:
+        if os.geteuid() != 0:
+            fail("service must run as guest root")
+        return serve_connection()
     if os.geteuid() != 0:
         fail("helper must run as guest root")
     if len(sys.argv) < 4 or sys.argv[3] != "--":

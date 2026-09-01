@@ -16,10 +16,12 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use std::cell::{Cell, RefCell};
 use std::fs;
+use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
+use zeroize::Zeroize;
 
 const COMPACT_BREAKPOINT: i32 = 720;
 const PAGE_MARGIN: i32 = 24;
@@ -895,15 +897,32 @@ fn build_time_location_page(window: &gtk::ApplicationWindow) -> gtk::ScrolledWin
             let Some(zone) = zones.get(selected as usize) else {
                 return;
             };
-            match set_time_zone(zone) {
-                Ok(()) => confirmed.set(selected),
-                Err(error) => {
+            dropdown.set_sensitive(false);
+            let zone = zone.clone();
+            let dropdown = dropdown.clone();
+            let changing = Rc::clone(&changing);
+            let confirmed = Rc::clone(&confirmed);
+            let window_for_result = window.clone();
+            request_machine_password(&window, move |password| {
+                dropdown.set_sensitive(true);
+                let Some(mut password) = password else {
                     changing.set(true);
                     dropdown.set_selected(confirmed.get());
                     changing.set(false);
-                    show_error(&window, "Time zone was not changed", &error);
+                    return;
+                };
+                let result = set_time_zone(&zone, &password);
+                password.zeroize();
+                match result {
+                    Ok(()) => confirmed.set(selected),
+                    Err(error) => {
+                        changing.set(true);
+                        dropdown.set_selected(confirmed.get());
+                        changing.set(false);
+                        show_error(&window_for_result, "Time zone was not changed", &error);
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -976,7 +995,7 @@ fn current_time_zone() -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn set_time_zone(zone: &str) -> Result<(), String> {
+fn set_time_zone(zone: &str, password: &[u8]) -> Result<(), String> {
     if !valid_time_zone_name(zone) {
         return Err("the selected time-zone name is invalid".to_owned());
     }
@@ -984,11 +1003,37 @@ fn set_time_zone(zone: &str) -> Result<(), String> {
     if !zone_path.exists() {
         return Err("the selected time zone is not installed".to_owned());
     }
-    let output = Command::new("/usr/bin/sudo")
-        .args(["-n", "/usr/bin/timedatectl", "set-timezone", zone])
-        .stdin(Stdio::null())
+    let mut child = Command::new("/usr/local/bin/sudo")
+        .args([
+            "-S",
+            "-p",
+            "",
+            "--",
+            "/usr/bin/timedatectl",
+            "set-timezone",
+            zone,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let mut input = password.to_vec();
+    input.push(b'\n');
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "sudo did not open its password input".to_owned())?
+        .write_all(&input)
+        .map_err(|error| error.to_string());
+    input.zeroize();
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let output = child
+        .wait_with_output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -999,6 +1044,78 @@ fn set_time_zone(zone: &str) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+fn request_machine_password(
+    parent: &gtk::ApplicationWindow,
+    callback: impl FnOnce(Option<Vec<u8>>) + 'static,
+) {
+    let dialog = gtk::Window::builder()
+        .title("Authenticate")
+        .transient_for(parent)
+        .modal(true)
+        .resizable(false)
+        .default_width(420)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    let explanation = wrapped_label("Enter this machine's password to change the time zone.");
+    let password = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .placeholder_text("Password")
+        .activates_default(true)
+        .build();
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_halign(gtk::Align::End);
+    let cancel = gtk::Button::with_label("Cancel");
+    let authenticate = gtk::Button::with_label("Authenticate");
+    authenticate.add_css_class("suggested-action");
+    actions.append(&cancel);
+    actions.append(&authenticate);
+    content.append(&explanation);
+    content.append(&password);
+    content.append(&actions);
+    dialog.set_default_widget(Some(&authenticate));
+    dialog.set_child(Some(&content));
+
+    let callback = Rc::new(RefCell::new(Some(callback)));
+    let callback_for_cancel = Rc::clone(&callback);
+    let dialog_for_cancel = dialog.clone();
+    cancel.connect_clicked(move |_| {
+        if let Some(callback) = callback_for_cancel.borrow_mut().take() {
+            callback(None);
+        }
+        dialog_for_cancel.close();
+    });
+    let callback_for_close = Rc::clone(&callback);
+    dialog.connect_close_request(move |_| {
+        if let Some(callback) = callback_for_close.borrow_mut().take() {
+            callback(None);
+        }
+        glib::Propagation::Proceed
+    });
+    let callback_for_accept = Rc::clone(&callback);
+    let dialog_for_accept = dialog.clone();
+    let password_for_accept = password.clone();
+    authenticate.connect_clicked(move |_| {
+        let mut value = password_for_accept.text().to_string();
+        if value.is_empty() || value.len() > 4096 {
+            value.zeroize();
+            return;
+        }
+        let bytes = value.as_bytes().to_vec();
+        value.zeroize();
+        password_for_accept.set_text("");
+        if let Some(callback) = callback_for_accept.borrow_mut().take() {
+            callback(Some(bytes));
+        }
+        dialog_for_accept.close();
+    });
+    dialog.present();
+    password.grab_focus();
 }
 
 fn build_appearance_page(

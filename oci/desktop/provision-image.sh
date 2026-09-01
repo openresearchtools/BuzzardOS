@@ -9,6 +9,10 @@ if getent passwd 1000 >/dev/null; then
 else
     useradd --create-home --uid 1000 --user-group --shell /bin/bash buzzard
 fi
+# Install media never carries a usable credential. The host manager replaces
+# this locked field with the user's salted password hash while committing each
+# machine, before its first boot.
+usermod --lock buzzard
 
 install -d -o buzzard -g buzzard -m 0700 \
     /home/buzzard \

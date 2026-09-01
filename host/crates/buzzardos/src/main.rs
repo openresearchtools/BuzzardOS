@@ -7,6 +7,7 @@ use flate2::read::GzDecoder;
 use fs2::FileExt;
 use nix::unistd::{Gid, Uid, chown};
 use serde::{Deserialize, Serialize};
+use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr};
@@ -23,12 +24,30 @@ use wb_core::{
     NetworkMode, OciImageMetadata, ResourceLocator, RetainedOciArchive, RuntimeState, SharedPath,
     WaylandCapabilities, WbPaths, host_control_socket,
 };
+use zeroize::Zeroize;
 
 const MAX_GUEST_ID: u64 = 65_535;
 const MAX_OCI_PAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OCI_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OCI_SPARSE_EXTENTS: u64 = 1_000_000;
 const MAX_OCI_LAYOUT_BYTES: u64 = 1024 * 1024;
+const MAX_MACHINE_PASSWORD_BYTES: usize = 4096;
+
+struct MachinePassword(Vec<u8>);
+
+impl Drop for MachinePassword {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+struct MachinePasswordHash(Vec<u8>);
+
+impl Drop for MachinePasswordHash {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 #[derive(Debug)]
 struct DesktopReadinessDeadline {
     seconds: u64,
@@ -103,6 +122,9 @@ enum Commands {
         /// Retain verified OCI install media as cache/source.oci.tar.
         #[arg(long)]
         keep_oci_archive: bool,
+        /// Read the new guest user's password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Pull an OCI image with rootless Buildah and create a persistent machine.
     Pull {
@@ -117,6 +139,9 @@ enum Commands {
         gpus: Vec<String>,
         #[arg(long)]
         keep_oci_archive: bool,
+        /// Read the new guest user's password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Build a Containerfile with rootless Buildah and create a persistent machine.
     Build {
@@ -135,6 +160,9 @@ enum Commands {
         gpus: Vec<String>,
         #[arg(long)]
         keep_oci_archive: bool,
+        /// Read the new guest user's password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Boot systemd and the nested desktop compositor.
     Start {
@@ -145,6 +173,13 @@ enum Commands {
     },
     /// Ask the running machine to shut down.
     Stop { name: String },
+    /// Change the canonical guest user's password on a fully stopped machine.
+    Password {
+        name: String,
+        /// Read the new guest user's password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
+    },
     /// Import a local OCI layout/archive, a Buzzard OS export, or a remote OCI reference.
     Import {
         source: String,
@@ -162,6 +197,9 @@ enum Commands {
         /// Retain verified OCI install media as cache/source.oci.tar.
         #[arg(long)]
         keep_oci_archive: bool,
+        /// Read the destination guest user's password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Export one stopped machine as a portable standards-compliant OCI archive.
     Export {
@@ -185,6 +223,9 @@ enum Commands {
         /// Host file or directory to expose below /shared; repeat as needed.
         #[arg(long = "share")]
         shares: Vec<PathBuf>,
+        /// Read the cloned guest user's new password from standard input.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Permanently delete one stopped machine and its persistent rootfs.
     Delete {
@@ -237,6 +278,11 @@ enum Commands {
     },
     #[command(name = "__reset-clone-identity", hide = true)]
     ResetCloneIdentity {
+        #[arg(long)]
+        rootfs: PathBuf,
+    },
+    #[command(name = "__set-machine-password-hash", hide = true)]
+    SetMachinePasswordHash {
         #[arg(long)]
         rootfs: PathBuf,
     },
@@ -350,6 +396,10 @@ fn run() -> Result<()> {
         reset_cloned_rootfs_identity(rootfs)?;
         return Ok(());
     }
+    if let Some(Commands::SetMachinePasswordHash { rootfs }) = &cli.command {
+        set_machine_password_hash(rootfs)?;
+        return Ok(());
+    }
     if let Some(Commands::DeleteMachine { machine, machines }) = &cli.command {
         remove_persistent_machine_tree(machine, machines)?;
         return Ok(());
@@ -371,7 +421,9 @@ fn run() -> Result<()> {
             network,
             gpus,
             keep_oci_archive,
+            password_stdin,
         }) => {
+            let password = read_machine_password(password_stdin, "creating a machine")?;
             let paths = creation_paths(cli.machine_dir.as_deref(), "create")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
             import_machine(
@@ -386,6 +438,7 @@ fn run() -> Result<()> {
                     keep_oci_archive,
                     network_override: Some(network.into()),
                     gpus_override: Some(gpus),
+                    password,
                 },
             )?;
             registry.register(&paths.machine(&name))
@@ -397,7 +450,9 @@ fn run() -> Result<()> {
             network,
             gpus,
             keep_oci_archive,
+            password_stdin,
         }) => {
+            let password = read_machine_password(password_stdin, "pulling a machine")?;
             let paths = creation_paths(cli.machine_dir.as_deref(), "pull")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
             create(
@@ -408,6 +463,7 @@ fn run() -> Result<()> {
                 gpus,
                 shared_paths(shares)?,
                 keep_oci_archive,
+                password,
             )?;
             registry.register(&paths.machine(&name))
         }
@@ -419,7 +475,9 @@ fn run() -> Result<()> {
             network,
             gpus,
             keep_oci_archive,
+            password_stdin,
         }) => {
+            let password = read_machine_password(password_stdin, "building a machine")?;
             let paths = creation_paths(cli.machine_dir.as_deref(), "build")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
             build_machine(
@@ -432,6 +490,7 @@ fn run() -> Result<()> {
                     gpus,
                     shares: shared_paths(shares)?,
                     keep_oci_archive,
+                    password,
                 },
             )?;
             registry.register(&paths.machine(&name))
@@ -444,6 +503,14 @@ fn run() -> Result<()> {
             let paths = registered_paths(&registry, &name, cli.machine_dir.as_deref())?;
             stop(&paths, &name)
         }
+        Some(Commands::Password {
+            name,
+            password_stdin,
+        }) => {
+            let password = read_machine_password(password_stdin, "changing a machine password")?;
+            let paths = registered_paths(&registry, &name, cli.machine_dir.as_deref())?;
+            change_machine_password(&paths, &name, password)
+        }
         Some(Commands::Import {
             source,
             name,
@@ -451,7 +518,9 @@ fn run() -> Result<()> {
             manifest,
             shares,
             keep_oci_archive,
+            password_stdin,
         }) => {
+            let password = read_machine_password(password_stdin, "importing a machine")?;
             let paths = creation_paths(cli.machine_dir.as_deref(), "import")?;
             ensure_registry_target_available(&registry, &name, &paths.machine(&name))?;
             import_machine(
@@ -466,6 +535,7 @@ fn run() -> Result<()> {
                     keep_oci_archive,
                     network_override: None,
                     gpus_override: None,
+                    password,
                 },
             )?;
             registry.register(&paths.machine(&name))
@@ -486,7 +556,9 @@ fn run() -> Result<()> {
             source,
             name,
             shares,
+            password_stdin,
         }) => {
+            let password = read_machine_password(password_stdin, "cloning a machine")?;
             let source_paths = registered_paths(&registry, &source, None)?;
             let destination_paths = creation_paths(cli.machine_dir.as_deref(), "clone")?;
             ensure_registry_target_available(&registry, &name, &destination_paths.machine(&name))?;
@@ -496,6 +568,7 @@ fn run() -> Result<()> {
                 &source,
                 &name,
                 shared_paths(shares)?,
+                password,
             )?;
             registry.register(&destination_paths.machine(&name))
         }
@@ -528,6 +601,9 @@ fn run() -> Result<()> {
         Some(Commands::ExportOci { .. }) => {
             unreachable!("handled before portable path discovery")
         }
+        Some(Commands::SetMachinePasswordHash { .. }) => {
+            unreachable!("handled before portable path discovery")
+        }
         Some(Commands::ResetCloneIdentity { .. }) => {
             unreachable!("handled before portable path discovery")
         }
@@ -542,6 +618,49 @@ fn run() -> Result<()> {
         }
         None => open_machine_manager(),
     }
+}
+
+fn read_machine_password(password_stdin: bool, operation: &str) -> Result<MachinePasswordHash> {
+    if !password_stdin {
+        bail!("{operation} requires --password-stdin");
+    }
+    let mut password = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take((MAX_MACHINE_PASSWORD_BYTES + 3) as u64)
+        .read_to_end(&mut password)
+        .context("reading the machine password from standard input")?;
+    if password.ends_with(b"\n") {
+        password.pop();
+        if password.ends_with(b"\r") {
+            password.pop();
+        }
+    }
+    if password.is_empty() {
+        password.zeroize();
+        bail!("the machine password cannot be empty");
+    }
+    if password.len() > MAX_MACHINE_PASSWORD_BYTES
+        || password
+            .iter()
+            .any(|byte| matches!(byte, 0 | b'\n' | b'\r'))
+    {
+        password.zeroize();
+        bail!("the machine password is too long or contains a line break or NUL");
+    }
+    hash_machine_password(MachinePassword(password))
+}
+
+fn hash_machine_password(password: MachinePassword) -> Result<MachinePasswordHash> {
+    let hash = ShaCrypt::default()
+        .hash_password(&password.0)
+        .map_err(|error| anyhow::anyhow!("hashing the machine password failed: {error}"))?
+        .to_string()
+        .into_bytes();
+    if !hash.starts_with(b"$6$") || hash.len() > 512 {
+        bail!("password hashing returned an invalid SHA-512-crypt record");
+    }
+    Ok(MachinePasswordHash(hash))
 }
 
 fn open_machine_manager() -> Result<()> {
@@ -730,6 +849,7 @@ fn create(
     gpus: Vec<String>,
     shares: Vec<SharedPath>,
     keep_oci_archive: bool,
+    password: MachinePasswordHash,
 ) -> Result<()> {
     MachineConfig::validate_name(name)?;
     MachineConfig::validate_gpus(&gpus)?;
@@ -776,6 +896,7 @@ fn create(
                 &rootfs,
                 machine_dir,
             )?;
+            configure_machine_password_in_stage(&resources, &rootfs, password)?;
             let retained = keep_oci_archive
                 .then(|| retain_oci_layout(&image_layout, machine_dir))
                 .transpose()?;
@@ -930,6 +1051,7 @@ struct BuildMachineRequest<'a> {
     gpus: Vec<String>,
     shares: Vec<SharedPath>,
     keep_oci_archive: bool,
+    password: MachinePasswordHash,
 }
 
 fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) -> Result<()> {
@@ -940,6 +1062,7 @@ fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) 
         gpus,
         shares,
         keep_oci_archive,
+        password,
     } = request;
     MachineConfig::validate_name(name)?;
     MachineConfig::validate_gpus(&gpus)?;
@@ -1049,6 +1172,7 @@ fn build_machine(paths: &WbPaths, name: &str, request: BuildMachineRequest<'_>) 
             keep_oci_archive,
             network_override: Some(network),
             gpus_override: Some(gpus),
+            password,
         },
     );
     cleanup_buildah_store(&buildah, &storage, &runroot);
@@ -1069,6 +1193,7 @@ struct ImportMachineRequest<'a> {
     keep_oci_archive: bool,
     network_override: Option<NetworkMode>,
     gpus_override: Option<Vec<String>>,
+    password: MachinePasswordHash,
 }
 
 fn import_machine(paths: &WbPaths, name: &str, request: ImportMachineRequest<'_>) -> Result<()> {
@@ -1081,6 +1206,7 @@ fn import_machine(paths: &WbPaths, name: &str, request: ImportMachineRequest<'_>
         keep_oci_archive,
         network_override,
         gpus_override,
+        password,
     } = request;
     MachineConfig::validate_name(name)?;
     if source.trim().is_empty() {
@@ -1158,6 +1284,7 @@ fn import_machine(paths: &WbPaths, name: &str, request: ImportMachineRequest<'_>
             config.id = uuid::Uuid::new_v4();
             reset_cloned_machine_identity_in_stage(&resources, &rootfs)?;
         }
+        configure_machine_password_in_stage(&resources, &rootfs, password)?;
         config.name = name.to_owned();
         config.title = name.to_owned();
         config.image = source_reference.clone();
@@ -1497,7 +1624,7 @@ fn export_machine(
     generic_seed_source_date_epoch: Option<i64>,
 ) -> Result<()> {
     let machine_dir = require_machine(paths, name)?;
-    let _lock = lock_stopped_machine_for_export(&machine_dir)?;
+    let _lock = lock_stopped_machine(&machine_dir, "export")?;
     fs::create_dir_all(paths.cache()).context("creating machine export cache")?;
     let output = std::path::absolute(output)
         .with_context(|| format!("resolving export destination {}", output.display()))?;
@@ -1632,12 +1759,12 @@ fn export_machine(
     Ok(())
 }
 
-fn lock_stopped_machine_for_export(machine_dir: &Path) -> Result<File> {
+fn lock_stopped_machine(machine_dir: &Path, operation: &str) -> Result<File> {
     let state = RuntimeState::load(machine_dir)?.context("machine has no runtime state")?;
     if !matches!(state.state, MachineState::Stopped | MachineState::Failed)
         || runtime_is_live(&state, machine_dir)
     {
-        bail!("machine must be fully stopped before export");
+        bail!("machine must be fully stopped before {operation}");
     }
     let verified_supervisor = state
         .launcher_pid
@@ -2223,6 +2350,7 @@ fn clone_machine(
     source: &str,
     name: &str,
     shares: Vec<SharedPath>,
+    password: MachinePasswordHash,
 ) -> Result<()> {
     MachineConfig::validate_name(name)?;
     fs::create_dir_all(source_paths.cache()).context("creating source machine cache")?;
@@ -2253,6 +2381,7 @@ fn clone_machine(
             keep_oci_archive: false,
             network_override: None,
             gpus_override: None,
+            password,
         },
     );
     let _ = fs::remove_file(&archive_path);
@@ -2289,6 +2418,180 @@ fn reset_cloned_machine_identity_in_stage(
         bail!("clone identity reset failed with {status}");
     }
     Ok(())
+}
+
+fn change_machine_password(
+    paths: &WbPaths,
+    name: &str,
+    password: MachinePasswordHash,
+) -> Result<()> {
+    let machine_dir = require_machine(paths, name)?;
+    let _lock = lock_stopped_machine(&machine_dir, "changing its password")?;
+    let resources = ResourceLocator::discover()?;
+    configure_machine_password_in_stage(&resources, &machine_dir.join("rootfs"), password)?;
+    println!("Changed the password for machine '{name}'");
+    Ok(())
+}
+
+fn configure_machine_password_in_stage(
+    resources: &ResourceLocator,
+    rootfs: &Path,
+    hash: MachinePasswordHash,
+) -> Result<()> {
+    let unshare = resources.helper_or_path("unshare")?;
+    let id_map = IdMap::discover()?;
+    let namespace_program = id_map.namespace_program(&unshare)?;
+    let namespace = PortableNamespaceContext::discover("machine password configuration")?;
+    let rootfs = rootfs
+        .canonicalize()
+        .with_context(|| format!("resolving machine rootfs {}", rootfs.display()))?;
+    let parent = rootfs.parent().context("machine rootfs has no parent")?;
+    let name = rootfs
+        .file_name()
+        .context("machine rootfs has no directory name")?;
+    let mut command = Command::new(namespace_program);
+    id_map.configure_command(&mut command);
+    let mut child = command
+        .current_dir(parent)
+        .args(id_map.namespace_args())
+        .arg(&namespace.launcher)
+        .arg("__set-machine-password-hash")
+        .arg("--rootfs")
+        .arg(name)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .context("starting isolated machine-password configuration")?;
+    let write_result = child
+        .stdin
+        .take()
+        .context("machine-password helper has no standard input")?
+        .write_all(&hash.0)
+        .context("sending password hash to the isolated helper");
+    let status = child
+        .wait()
+        .context("waiting for isolated machine-password configuration")?;
+    write_result?;
+    if !status.success() {
+        bail!("machine-password configuration failed with {status}");
+    }
+    Ok(())
+}
+
+fn set_machine_password_hash(rootfs: &Path) -> Result<()> {
+    validate_guest_rootfs(rootfs)?;
+    let mut hash = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(513)
+        .read_to_end(&mut hash)
+        .context("reading password hash")?;
+    if hash.len() > 512
+        || !hash.starts_with(b"$6$")
+        || hash
+            .iter()
+            .any(|byte| matches!(byte, 0 | b':' | b'\n' | b'\r'))
+    {
+        hash.zeroize();
+        bail!("invalid machine password hash");
+    }
+
+    let shadow_path = rootfs.join("etc/shadow");
+    let mut shadow = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&shadow_path)
+        .with_context(|| format!("opening {}", shadow_path.display()))?;
+    let metadata = shadow
+        .metadata()
+        .with_context(|| format!("inspecting {}", shadow_path.display()))?;
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+        hash.zeroize();
+        bail!("guest /etc/shadow is not a trusted root-owned regular file");
+    }
+    let mut contents = Vec::new();
+    (&mut shadow)
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut contents)
+        .with_context(|| format!("reading {}", shadow_path.display()))?;
+    if contents.len() > 16 * 1024 * 1024 {
+        hash.zeroize();
+        contents.zeroize();
+        bail!("guest /etc/shadow exceeds the safety limit");
+    }
+
+    let rewrite_result = rewrite_shadow_password(&contents, &hash);
+    hash.zeroize();
+    contents.zeroize();
+    let mut rewritten = rewrite_result?;
+    drop(shadow);
+    let rewrite_result = (|| -> Result<()> {
+        let parent = shadow_path.parent().context("guest shadow has no parent")?;
+        let mut replacement = tempfile::Builder::new()
+            .prefix(".shadow.buzzardos-")
+            .tempfile_in(parent)
+            .with_context(|| format!("creating replacement beside {}", shadow_path.display()))?;
+        replacement
+            .as_file_mut()
+            .write_all(&rewritten)
+            .with_context(|| format!("writing replacement for {}", shadow_path.display()))?;
+        replacement
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o7777))
+            .with_context(|| format!("preserving permissions for {}", shadow_path.display()))?;
+        if unsafe {
+            libc::fchown(
+                replacement.as_file().as_raw_fd(),
+                metadata.uid(),
+                metadata.gid(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("preserving ownership for {}", shadow_path.display()));
+        }
+        replacement
+            .as_file()
+            .sync_all()
+            .with_context(|| format!("syncing replacement for {}", shadow_path.display()))?;
+        replacement
+            .persist(&shadow_path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("atomically replacing {}", shadow_path.display()))?;
+        sync_parent_directory(&shadow_path)
+    })();
+    rewritten.zeroize();
+    rewrite_result
+}
+
+fn rewrite_shadow_password(contents: &[u8], hash: &[u8]) -> Result<Vec<u8>> {
+    let mut rewritten = Vec::with_capacity(contents.len() + hash.len());
+    let mut matches = 0;
+    for line in contents.split_inclusive(|byte| *byte == b'\n') {
+        let payload = line.strip_suffix(b"\n").unwrap_or(line);
+        let newline = line.ends_with(b"\n");
+        if payload.starts_with(b"buzzard:") {
+            let fields = payload.splitn(3, |byte| *byte == b':').collect::<Vec<_>>();
+            if fields.len() != 3 || fields[0] != b"buzzard" {
+                bail!("guest /etc/shadow has a malformed buzzard entry");
+            }
+            rewritten.extend_from_slice(b"buzzard:");
+            rewritten.extend_from_slice(&hash);
+            rewritten.push(b':');
+            rewritten.extend_from_slice(fields[2]);
+            matches += 1;
+        } else {
+            rewritten.extend_from_slice(payload);
+        }
+        if newline {
+            rewritten.push(b'\n');
+        }
+    }
+    if matches != 1 {
+        bail!("guest /etc/shadow must contain exactly one buzzard account");
+    }
+    Ok(rewritten)
 }
 
 fn reset_cloned_rootfs_identity(rootfs: &Path) -> Result<()> {
@@ -2474,7 +2777,7 @@ fn delete_machine(paths: &WbPaths, name: &str, confirmed: bool) -> Result<()> {
         );
     }
     let machine_dir = require_machine(paths, name)?;
-    let lock = lock_stopped_machine_for_export(&machine_dir)?;
+    let lock = lock_stopped_machine(&machine_dir, "deletion")?;
     let resources = ResourceLocator::discover()?;
     let unshare = resources.helper_or_path("unshare")?;
     let id_map = IdMap::discover()?;
@@ -5170,6 +5473,33 @@ mod layer_tests {
     use std::io::Cursor;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use tar::{Builder, EntryType, Header};
+
+    #[test]
+    fn machine_password_hash_is_salted_and_shadow_rewrite_is_exact() {
+        let first =
+            hash_machine_password(MachinePassword(b"correct horse battery staple".to_vec()))
+                .unwrap();
+        let second =
+            hash_machine_password(MachinePassword(b"correct horse battery staple".to_vec()))
+                .unwrap();
+        assert!(first.0.starts_with(b"$6$"));
+        assert!(second.0.starts_with(b"$6$"));
+        assert_ne!(first.0, second.0);
+
+        let original = b"root:*:20000:0:99999:7:::\nbuzzard:!:20000:0:99999:7:::\nnobody:*:20000:0:99999:7:::\n";
+        let rewritten = rewrite_shadow_password(original, &first.0).unwrap();
+        let expected = [
+            b"root:*:20000:0:99999:7:::\nbuzzard:".as_slice(),
+            first.0.as_slice(),
+            b":20000:0:99999:7:::\nnobody:*:20000:0:99999:7:::\n".as_slice(),
+        ]
+        .concat();
+        assert_eq!(rewritten, expected);
+        assert!(rewrite_shadow_password(b"root:*:1::::::\n", &first.0).is_err());
+        assert!(
+            rewrite_shadow_password(b"buzzard:!:1::::::\nbuzzard:!:2::::::\n", &first.0).is_err()
+        );
+    }
 
     #[test]
     fn only_the_broker_readiness_deadline_code_enables_guarded_recovery() {

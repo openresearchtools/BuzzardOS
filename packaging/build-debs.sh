@@ -374,12 +374,18 @@ build_guest() {
     install -d -m 0755 "$root/usr/share/buzzardos-guest"
     printf '%s\n' "$guest_version" >"$root/usr/share/buzzardos-guest/version"
     write_control "$root" buzzardos-guest "$guest_version" \
-        'at-spi2-core, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libfuse2t64 | libfuse2, libgbm1, libgcc-s1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, pkexec, polkitd, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
+        'at-spi2-core, dbus, dbus-user-session, dbus-x11, ffmpeg, fuse3, grim, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libfuse2t64 | libfuse2, libgbm1, libgcc-s1, libgl1, libgl1-mesa-dri, libglib2.0-bin, libgtk-3-0t64 | libgtk-3-0, libnotify-bin, libnss3, libpulse0, libwayland-client0, libxkbcommon0, mesa-vulkan-drivers, pipewire, pipewire-alsa, pipewire-pulse, python3, qt6-gtk-platformtheme, qt6-svg-plugins, qt6-wayland, slurp, squashfs-tools, sudo, sway (>= 1.9), systemd, systemd-sysv, unattended-upgrades, wireplumber, wlr-randr, wtype, xdg-desktop-portal, xdg-desktop-portal-gtk, xdg-desktop-portal-wlr, xkb-data, xwayland' \
         'Buzzard OS guest session, integration, and persistent-machine mechanics'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
-command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1 || true
+rm -f /etc/polkit-1/rules.d/49-buzzardos-root.rules
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ] && getent passwd buzzard >/dev/null 2>&1; then
+        systemctl start buzzardos-sudo.socket buzzardos-fusermount.socket
+    fi
+fi
 exit 0
 EOF
     chmod 0755 "$root/DEBIAN/postinst"

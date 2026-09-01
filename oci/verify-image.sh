@@ -47,6 +47,12 @@ run_shell '
     test "$(readlink /usr/local/bin/sudo)" = /usr/libexec/buzzardos-guest/sudo
     test -L /usr/local/bin/sudoedit
     test "$(readlink /usr/local/bin/sudoedit)" = /usr/libexec/buzzardos-guest/sudo
+    test "$(passwd -S buzzard | awk "{print \$2}")" = L
+    test -s /etc/sudoers.d/90-buzzardos
+    grep -Eq "^buzzard[[:space:]]+ALL=\\(ALL:ALL\\)[[:space:]]+ALL$" \
+        /etc/sudoers.d/90-buzzardos
+    ! grep -Fq NOPASSWD /etc/sudoers.d/90-buzzardos
+    test ! -e /etc/polkit-1/rules.d/49-buzzardos-root.rules
     test "$(cat /home/buzzard/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
         "file:///home/buzzard/Documents Documents" \
         "file:///home/buzzard/Downloads Downloads" \
@@ -89,11 +95,20 @@ run_shell '
         /usr/share/X11/xkb/symbols/us \
         /usr/libexec/buzzardos-shortcut-helper \
         /etc/buzzardos/sway-config \
+        /usr/lib/systemd/system/buzzardos-sudo.socket \
+        /usr/lib/systemd/system/buzzardos-sudo@.service \
+        /usr/lib/systemd/system/buzzardos-fusermount.socket \
+        /usr/lib/systemd/system/buzzardos-fusermount@.service \
         /usr/lib/buzzardos/guest-assets.manifest.json \
         /usr/lib/buzzardos/guest-assets.version
     do
         test -s "$required"
     done
+	systemd-analyze verify \
+	    /usr/lib/systemd/system/buzzardos-sudo.socket \
+	    /usr/lib/systemd/system/buzzardos-sudo@.service \
+	    /usr/lib/systemd/system/buzzardos-fusermount.socket \
+	    /usr/lib/systemd/system/buzzardos-fusermount@.service
 	dpkg-query -W \
 	    buzzardoscua buzzardos-guest buzzardos-desktop sway \
 	    at-spi2-core dconf-gsettings-backend ffmpeg firefox-esr foot fuse3 \

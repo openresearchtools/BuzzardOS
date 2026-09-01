@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/openresearchtools/BuzzardOS"
@@ -26,6 +26,7 @@ nix = { version = "0.30", features = ["fs", "mount", "process", "signal", "socke
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+sha-crypt = { version = "0.6", features = ["getrandom"] }
 tar = "0.4"
 tempfile = "3.20"
 tiff = "=0.10.3"
@@ -35,6 +36,7 @@ uuid = { version = "1.17", features = ["v4", "serde"] }
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging", "unstable"] }
 wayland-server = "0.31"
 xkbcommon = "0.8"
+zeroize = "1.8"
 zstd = { version = "0.13", features = ["zstdmt"] }
 buzzardos-clipboard-protocol = { path = "../clipboard-protocol" }
 

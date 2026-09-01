@@ -1,5 +1,16 @@
 # buzzardos-guest changelog
 
+## 0.1.1
+
+- Replace the broad guest Polkit authorization with private, socket-activated
+  sudo and AppImage mount handoffs whose root services expose no generic RPC.
+- Execute the distro's real sudo with ordinary machine-password
+  authentication while preserving arguments, environment, working directory,
+  TTY/non-TTY streams, signals, terminal size, and exact exit status.
+- Restrict Type-2 AppImage FUSE requests to UID/GID 1000 peers, the pinned
+  runtime argument shapes, validated communication descriptors, and
+  read-only `nosuid,nodev` mounts below approved guest paths.
+
 ## 0.1.0
 
 - Initial independently versioned guest-mechanics package using distro Sway
