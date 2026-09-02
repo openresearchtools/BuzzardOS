@@ -1,14 +1,16 @@
 # Buzzard OS
 
-Buzzard OS is a rootless manager for persistent Linux desktop machines. Each
-machine boots systemd and a complete stock-Sway desktop inside Linux
-namespaces, while the entire guest monitor remains inside one native host
-Wayland window.
+Buzzard OS is a rootless manager for persistent Linux desktop machines built
+around stock Podman. Each machine boots systemd and a complete stock-Sway
+desktop in one persistent Podman container, while the entire guest monitor
+remains inside one native host Wayland window.
 
 This is not an ephemeral application container. A machine has one directly
-writable rootfs; guest packages, files, settings, and application state survive
-restarts. The host owns lifecycle, window chrome, ports, devices, and explicit
-one-shot clipboard transfers.
+writable external rootfs; guest packages, files, settings, and application
+state survive restarts. Podman owns the container lifecycle, namespaces,
+cgroups, seccomp, capabilities, networking, ports, devices, CDI, and supported
+runtime options. Buzzard owns its manager, native machine window, and the
+explicit display, input, media, and one-shot clipboard bridges.
 
 ## Debian packages
 
@@ -21,8 +23,8 @@ buzzardos-desktop_<version>_amd64.deb
 buzzardoscua_<version>_amd64.deb
 ```
 
-- `buzzardos` installs the host manager, broker, native display application,
-  desktop-menu entry, AppStream metadata, icons, and helpers.
+- `buzzardos` installs the host manager, native Podman adapter, native display
+  application, desktop-menu entry, AppStream metadata, icons, and helpers.
 - `buzzardos-guest` installs guest mechanics: systemd/session integration,
   clipboard and media integration, AppImage support, and the distribution's
   normal `sway`/wlroots stack.
@@ -78,6 +80,27 @@ asks for the exact destination folder and provides optional share pickers.
 Built-in recipes consume the three separately distributed Buzzard guest `.deb`
 artifacts; they are not embedded in the host package.
 
+Every creation flow and Machine Settings includes one unrestricted **Native
+Podman create arguments** field. Buzzard parses normal shell-style quoting into
+an argument vector and passes every argument directly to `podman create`; it
+does not filter, categorize, translate, or replace the arguments. Leaving the
+field blank uses the user's configured rootless Podman defaults. Examples
+include:
+
+```text
+--userns=keep-id                         # retain the caller's host UID/GID identity
+--userns=auto                            # Podman-managed subordinate IDs
+--userns=nomap                           # exclude the caller's host identity
+--userns=host                            # Podman's host user-namespace mode
+--uidmap=0:100000:65536 --gidmap=0:100000:65536
+```
+
+These are native Podman modes, not Buzzard implementations. Devices, CDI,
+mounts, security options, and any other arguments supported by the installed
+Podman version may be supplied in the same field. Definition-changing settings
+take effect at the next explicit start or restart; unchanged Start, Stop, and
+Restart target the same persistent Podman container.
+
 The same operations are fully scriptable. `--machine-dir` is the exact machine
 directory, not a global parent:
 
@@ -87,14 +110,15 @@ buzzardos --machine-dir /data/projects/research-vm create research \
   --share /data/datasets \
   --share /home/me/notes.txt
 
-buzzardos --machine-dir /fast-disk/imported import ./machine.oci.tar.zst \
+buzzardos --machine-dir /fast-disk/imported import ./machine.oci.tar \
   --name imported --mode clone
 
 buzzardos --machine-dir /fast-disk/pulled pull pulled \
   docker.io/openresearchtools/example:latest --keep-oci-archive
 
 buzzardos --machine-dir /fast-disk/local-build build local-build \
-  --context ./my-image --file Containerfile
+  --context ./my-image --file Containerfile \
+  --podman-arguments '--userns=keep-id'
 
 buzzardos start research
 buzzardos stop research
@@ -114,14 +138,14 @@ machine is never modified. Clone also assigns a fresh host metadata identity
 before committing the destination. Pulled and built install media is discarded by default;
 `--keep-oci-archive` retains a verified OCI archive in the machine's cache.
 
-Buildah is the only end-user OCI tool dependency. Pull and build use isolated
-temporary Buildah storage beside the selected destination, never the user's
-normal Buildah cache; builds use `--no-cache`, and temporary images/layers are
-deleted after rootfs import. Export requires a stopped, exclusively locked
-machine. It emits an identity-free canonical
-OCI archive with numeric guest IDs, hardlinks, symlinks, modes, timestamps,
-xattrs, ACLs, capabilities, and sparse files. Runtime mounts and configured
-host shares are excluded. Docker and Podman are not end-user dependencies.
+Podman owns persistent container definitions, pull, import, export, save/load,
+and runtime inspection. Podman or Buildah owns Containerfile builds. Buzzard
+orchestrates those native operations, materializes the selected image once into
+the chosen external flat rootfs, and atomically commits the machine directory.
+Temporary Podman objects are removed after completion. Export requires a
+stopped, exclusively locked machine and excludes runtime mounts and configured
+host shares. Buzzard contains no second OCI parser, layer extractor, namespace
+runtime, network controller, or container-security policy.
 
 ## Guest desktop
 
@@ -174,10 +198,11 @@ other build artifacts remain outside the tracked source tree.
 
 The host package is built on Ubuntu 24.04 and install-tested on Ubuntu 24.04,
 Debian 13, and Ubuntu 26.04. Runtime prerequisites include a Wayland session,
-unprivileged namespaces, configured subordinate UID/GID ranges, the distro
-`newuidmap`/`newgidmap` gates, and working permissions for any selected GPU or
-media devices. Buzzard OS installs no privileged daemon, custom setuid helper,
-kernel module, or LXC dependency.
+stock rootless Podman and Buildah, and working permissions for any selected GPU
+or media devices. Podman owns namespaces, UID/GID mappings, container security,
+networking, ports, devices, CDI, and lifecycle. Buzzard OS does not replace or
+weaken those native policies and installs no privileged daemon, custom setuid
+helper, kernel module, or LXC dependency.
 
 ## Licensing
 

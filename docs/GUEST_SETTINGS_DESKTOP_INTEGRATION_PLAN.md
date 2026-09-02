@@ -128,8 +128,8 @@ pull, import, clone, export, start, or stop. Imported and cloned root filesystem
 therefore keep their existing credential and keyring state unchanged.
 
 Security changes are guest-local. **Change password** presents current, new,
-and confirmation password fields and runs the distro `chpasswd` through the
-authenticated real-sudo bridge. **Passwordless sudo** is off by default.
+and confirmation password fields and runs the distro `chpasswd` through
+authenticated native distro sudo. **Passwordless sudo** is off by default.
 Enabling it requires the current machine password and creates only the exact
 root-owned `/etc/sudoers.d/91-buzzardos-passwordless` policy for `user` after
 `visudo` validation. Disabling it removes only that exact verified policy. No

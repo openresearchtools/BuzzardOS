@@ -403,7 +403,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "buzzardos-sudo-bridge"
+name = "buzzardos-sudo-policy"
 version = "0.1.1"
 dependencies = [
  "libc",

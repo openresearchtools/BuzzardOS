@@ -7,8 +7,8 @@ folder, AppImage, old registry, or rootfs migration contract to preserve.
 
 The deployment boundary is four binary packages:
 
-- `buzzardos`: host manager, broker, native display, helpers, icons, desktop
-  entry, and AppStream metadata;
+- `buzzardos`: host manager, Podman adapter, native display, media and clipboard
+  bridges, helpers, icons, desktop entry, and AppStream metadata;
 - `buzzardos-guest`: guest session, integration agents, systemd assets, and
   stock Sway/wlroots mechanics;
 - `buzzardos-desktop`: optional shell, Settings, themes, icons, applications,
@@ -37,15 +37,16 @@ the source of machine state. A moved self-describing directory can be
 registered again with `buzzardos --machine-dir PATH register`.
 
 Shares are opt-in per machine. Metadata contains zero or more validated host
-regular-file or real-directory paths. The broker creates a private `/shared`
-and mounts only those entries. The manager has repeatable Add File, Add Folder,
-and Remove controls; the CLI has repeatable `--share PATH` flags.
+regular-file or real-directory paths. The persistent container definition
+passes those entries to stock Podman as ordinary bind mounts below `/shared`.
+The manager has repeatable Add File, Add Folder, and Remove controls; the CLI
+has repeatable `--share PATH` flags.
 
 ## Reference guest
 
 `oci/desktop/Containerfile` and `Containerfile.cuda` are distributed in the
 host package as guest-building recipes. The manager copies the selected recipe
-into a temporary Buildah context; it does not bundle guest packages into the
+into a temporary Podman build context; it does not bundle guest packages into the
 host package. The recipe installs the checksum-pinned archive-keyring package,
 then exact Buzzard guest package versions from signed APT. It assembles a
 Debian-snapshot rootfs on the builder's machine and leaves the live Debian and
@@ -56,7 +57,7 @@ from the Debian package set. No Sway/wlroots source checkout, Meson build,
 private fork, or compositor toolchain is present.
 
 The host launcher does not inject source assets into an existing OCI input or
-running machine. Built-in recipe creation is an explicit Buildah build step;
+running machine. Built-in recipe creation is an explicit Podman build step;
 pulled and imported OCI input must already contain the installed guest packages
 and systemd desktop contract. This keeps guest updates under dpkg/APT ownership.
 

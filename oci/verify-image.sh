@@ -42,18 +42,17 @@ run_shell '
     test -d /home/user/Downloads
     test -s /home/user/.config/user-dirs.dirs
     test -s /home/user/.config/Thunar/uca.xml
-    test -x /usr/libexec/buzzardos-guest/sudo
     test -x /usr/libexec/buzzardos-guest/sudo-policy
-    test -L /usr/local/bin/sudo
-    test "$(readlink /usr/local/bin/sudo)" = /usr/libexec/buzzardos-guest/sudo
-    test -L /usr/local/bin/sudoedit
-    test "$(readlink /usr/local/bin/sudoedit)" = /usr/libexec/buzzardos-guest/sudo
+    test -u /usr/bin/sudo
+    test -x /usr/bin/sudoedit
+    test ! -e /usr/local/bin/sudo
+    test ! -e /usr/local/bin/sudoedit
     test "$(getent passwd 1000 | cut -d: -f1,3,4,6,7)" = "user:1000:1000:/home/user:/bin/bash"
     test "$(passwd -S user | awk "{print \$2}")" = P
-    test -s /etc/sudoers.d/90-buzzardos
+    test -s /etc/sudoers.d/90-buzzardos-user
     grep -Eq "^user[[:space:]]+ALL=\\(ALL:ALL\\)[[:space:]]+ALL$" \
-        /etc/sudoers.d/90-buzzardos
-    ! grep -Fq NOPASSWD /etc/sudoers.d/90-buzzardos
+        /etc/sudoers.d/90-buzzardos-user
+    ! grep -Fq NOPASSWD /etc/sudoers.d/90-buzzardos-user
     test ! -e /etc/sudoers.d/91-buzzardos-passwordless
     test ! -e /etc/polkit-1/rules.d/49-buzzardos-root.rules
     test "$(cat /home/user/.config/gtk-3.0/bookmarks)" = "$(printf "%s\n" \
@@ -82,8 +81,8 @@ run_shell '
         "$runtime/libexec/buzzardos-appimage-ready" \
         "$runtime/libexec/buzzardos-fusermount" \
         "$runtime/libexec/buzzardos-fusermount-exec" \
-        "$runtime/libexec/buzzardos-sudo-exec" \
         "$runtime/libexec/buzzardos-integration-agent" \
+        /usr/libexec/buzzardos-guest/sudo-policy \
         /usr/bin/cua \
         /usr/bin/cua1 \
         /usr/bin/cua2 \
@@ -98,8 +97,6 @@ run_shell '
         /usr/share/X11/xkb/symbols/us \
         /usr/libexec/buzzardos-shortcut-helper \
         /etc/buzzardos/sway-config \
-        /usr/lib/systemd/system/buzzardos-sudo.socket \
-        /usr/lib/systemd/system/buzzardos-sudo@.service \
         /usr/lib/systemd/system/buzzardos-fusermount.socket \
         /usr/lib/systemd/system/buzzardos-fusermount@.service \
         /usr/lib/buzzardos/guest-assets.manifest.json \
@@ -108,8 +105,6 @@ run_shell '
         test -s "$required"
     done
 	systemd-analyze verify \
-	    /usr/lib/systemd/system/buzzardos-sudo.socket \
-	    /usr/lib/systemd/system/buzzardos-sudo@.service \
 	    /usr/lib/systemd/system/buzzardos-fusermount.socket \
 	    /usr/lib/systemd/system/buzzardos-fusermount@.service
 	dpkg-query -W \

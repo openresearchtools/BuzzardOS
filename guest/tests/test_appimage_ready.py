@@ -87,7 +87,7 @@ class AppImageReadyTests(unittest.TestCase):
         try:
             watcher = namespace["Inotify"]()
         except OSError as error:
-            if error.errno == 28:  # ENOSPC: host-wide inotify instance limit.
+            if error.errno in (errno.EMFILE, errno.ENFILE, errno.ENOSPC):
                 self.skipTest("host has no free inotify instances")
             raise
         try:
@@ -105,7 +105,7 @@ class AppImageReadyTests(unittest.TestCase):
             try:
                 watcher = namespace["Inotify"]()
             except OSError as error:
-                if error.errno == errno.ENOSPC:
+                if error.errno in (errno.EMFILE, errno.ENFILE, errno.ENOSPC):
                     self.skipTest("host has no free inotify instances")
                 raise
             try:

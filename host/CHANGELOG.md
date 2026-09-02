@@ -36,9 +36,10 @@
 
 ## 0.1.0
 
-- Initial Debian-package architecture for the manager, broker, and display.
-- Added per-machine directories, rootless Buildah pull/build flows, and OCI
-  import/export without a portable application bundle.
+- Initial Debian-package architecture for the manager, native display, and
+  persistent rootless Podman machines.
+- Added per-machine external rootfs directories, native Podman pull/lifecycle
+  and OCI import/export, and Podman/Buildah Containerfile builds.
 - Declared the embedded guest monitor rectangle opaque on the native Wayland
   surface so an unfocused or partially damaged frame cannot expose host
   windows underneath it.

@@ -115,9 +115,7 @@ impl MachineRegistry {
                     matches!(
                         state.state,
                         MachineState::Starting | MachineState::Running | MachineState::Stopping
-                    ) && state
-                        .launcher_pid
-                        .is_some_and(|pid| Path::new("/proc").join(pid.to_string()).exists())
+                    )
                 }) {
                     bail!(
                         "machine '{}' is still running and cannot be re-registered at its moved directory",
@@ -371,9 +369,9 @@ mod tests {
             vec!["all".into()],
         );
         config.save(&original).unwrap();
-        let mut state = RuntimeState::new(MachineState::Running);
-        state.launcher_pid = Some(std::process::id());
-        state.save(&original).unwrap();
+        RuntimeState::new(MachineState::Running)
+            .save(&original)
+            .unwrap();
 
         let registry_path = temp.path().join("config/buzzardos/machines.json");
         let mut registry = MachineRegistry::open(registry_path).unwrap();

@@ -42,7 +42,7 @@ pub(crate) enum GatewayEvent {
     GuestConnected,
     GuestDisconnected,
     GuestFailed(String),
-    GuestFrame(DmabufFrame),
+    GuestFrame(GuestFrame),
     GuestCursor(CursorImage),
     GuestCursorFallback,
     GuestCursorHidden,
@@ -53,6 +53,10 @@ pub(crate) enum GatewayEvent {
     GuestScaleRequest {
         request: GuestScaleRequest,
         reply: SyncSender<GuestScaleReply>,
+    },
+    ContainerWaitFinished {
+        epoch: u64,
+        result: Result<i32, String>,
     },
 }
 
@@ -237,6 +241,25 @@ pub(crate) struct DmabufFrame {
 }
 
 #[derive(Debug)]
+pub(crate) struct ShmFrame {
+    pub(crate) id: u64,
+    pub(crate) geometry_generation: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stride: usize,
+    /// Premultiplied BGRA8 pixels, matching wl_shm ARGB8888 on
+    /// little-endian Linux and GDK_MEMORY_B8G8R8A8_PREMULTIPLIED.
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) submitted_monotonic_us: u64,
+}
+
+#[derive(Debug)]
+pub(crate) enum GuestFrame {
+    Dmabuf(DmabufFrame),
+    Shm(ShmFrame),
+}
+
+#[derive(Debug)]
 pub(crate) enum GatewayCommand {
     Configure {
         formats: Vec<DmabufFormat>,
@@ -322,16 +345,17 @@ pub(crate) struct GatewayConnection {
     pub(crate) events: Receiver<GatewayEvent>,
     pub(crate) event_notify: UnixStream,
     pub(crate) commands: GatewayCommandSender,
+    pub(crate) lifecycle_events: EventSender,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct EventSender {
-    pub(super) sender: Sender<GatewayEvent>,
-    pub(super) wake: Arc<UnixStream>,
+pub(crate) struct EventSender {
+    pub(crate) sender: Sender<GatewayEvent>,
+    pub(crate) wake: Arc<UnixStream>,
 }
 
 impl EventSender {
-    pub(super) fn send(&self, event: GatewayEvent) -> Result<()> {
+    pub(crate) fn send(&self, event: GatewayEvent) -> Result<()> {
         self.sender
             .send(event)
             .context("native host application stopped")?;
@@ -356,23 +380,26 @@ impl GatewaySockets {
         remove_stale_socket(&launch.control)?;
         remove_stale_socket(&launch.guest_scale_control)?;
 
-        let guest = bind_private(&launch.listen, "guest display")?;
-        let control = match bind_private(&launch.control, "host control") {
+        let guest = bind_socket(&launch.listen, "guest display", 0o666)?;
+        let control = match bind_socket(&launch.control, "host control", 0o600) {
             Ok(listener) => listener,
             Err(error) => {
                 let _ = fs::remove_file(&launch.listen);
                 return Err(error);
             }
         };
-        let guest_scale_control =
-            match bind_private(&launch.guest_scale_control, "guest display-scale control") {
-                Ok(listener) => listener,
-                Err(error) => {
-                    let _ = fs::remove_file(&launch.listen);
-                    let _ = fs::remove_file(&launch.control);
-                    return Err(error);
-                }
-            };
+        let guest_scale_control = match bind_socket(
+            &launch.guest_scale_control,
+            "guest display-scale control",
+            0o666,
+        ) {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = fs::remove_file(&launch.listen);
+                let _ = fs::remove_file(&launch.control);
+                return Err(error);
+            }
+        };
         let (event_read, event_write) =
             UnixStream::pair().context("creating native event notifier")?;
         event_read
@@ -425,6 +452,7 @@ impl GatewaySockets {
             .spawn(move || accept_controls(control, control_events))
             .context("starting host control thread")?;
         let guest_commands = command_sender.clone();
+        let lifecycle_events = events.clone();
         let guest_scale_control_thread = thread::Builder::new()
             .name("buzzardos-guest-scale-control".into())
             .spawn(move || accept_guest_scale_controls(guest_scale_control, events, guest_commands))
@@ -443,6 +471,7 @@ impl GatewaySockets {
                 events: events_rx,
                 event_notify: event_read,
                 commands: command_sender,
+                lifecycle_events,
             },
         ))
     }
@@ -456,10 +485,10 @@ impl Drop for GatewaySockets {
     }
 }
 
-fn bind_private(path: &PathBuf, description: &str) -> Result<UnixListener> {
+fn bind_socket(path: &PathBuf, description: &str, mode: u32) -> Result<UnixListener> {
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding {description} {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
         .with_context(|| format!("securing {description} {}", path.display()))?;
     Ok(listener)
 }

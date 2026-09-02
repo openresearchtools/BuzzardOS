@@ -11,7 +11,11 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::WaylandCapabilities;
+/// New machines use Podman's native rootless user-namespace default. Users may
+/// select any other stock Podman mapping, including keep-id, host, auto,
+/// nomap, or explicit uidmap/gidmap arguments, without a Buzzard translation
+/// layer.
+pub const DEFAULT_PODMAN_ARGUMENTS: &str = "";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -294,6 +298,11 @@ pub struct MachineConfig {
     /// exposes no host filesystem path to the guest.
     #[serde(default)]
     pub shares: Vec<SharedPath>,
+    /// Unrestricted Podman creation arguments entered by the user. The value
+    /// is parsed into argv without invoking a shell and is otherwise passed
+    /// to Podman unchanged.
+    #[serde(default)]
+    pub custom_podman_arguments: String,
     /// Authenticated OCI process metadata retained for portability. Buzzard
     /// OS always boots systemd as PID 1, but applies the image environment to
     /// that guest process and preserves the remaining metadata on export.
@@ -423,7 +432,7 @@ fn default_title() -> String {
 }
 
 fn default_gpus() -> Vec<String> {
-    vec!["all".into()]
+    Vec::new()
 }
 
 impl MachineConfig {
@@ -437,7 +446,7 @@ impl MachineConfig {
         gpus: Vec<String>,
     ) -> Self {
         Self {
-            schema: 5,
+            schema: 1,
             id: Uuid::new_v4(),
             title: name.clone(),
             name,
@@ -451,6 +460,7 @@ impl MachineConfig {
             guest_scale_120: None,
             integrations: IntegrationSettings::default(),
             shares: Vec::new(),
+            custom_podman_arguments: DEFAULT_PODMAN_ARGUMENTS.into(),
             oci: OciImageMetadata::default(),
             retained_oci_archive: None,
         }
@@ -470,9 +480,6 @@ impl MachineConfig {
     }
 
     pub fn validate_gpus(gpus: &[String]) -> Result<()> {
-        if gpus.is_empty() {
-            bail!("at least one --gpu value is required");
-        }
         if gpus.iter().any(|gpu| gpu == "all") && gpus.len() != 1 {
             bail!("GPU selection 'all' cannot be combined with another GPU");
         }
@@ -496,7 +503,7 @@ impl MachineConfig {
         let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self = serde_json::from_slice(&bytes)
             .with_context(|| format!("parsing {}", path.display()))?;
-        if config.schema != 5 {
+        if config.schema != 1 {
             bail!("unsupported machine metadata schema {}", config.schema);
         }
         Self::validate_name(&config.name)?;
@@ -508,12 +515,13 @@ impl MachineConfig {
         }
         config.integrations.validate(config.network)?;
         Self::validate_shares(&config.shares)?;
+        Self::parse_custom_podman_arguments(&config.custom_podman_arguments)?;
         Self::validate_display_size(config.width, config.height)?;
         Ok(config)
     }
 
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
-        if self.schema != 5 {
+        if self.schema != 1 {
             bail!("unsupported machine metadata schema {}", self.schema);
         }
         Self::validate_name(&self.name)?;
@@ -526,6 +534,7 @@ impl MachineConfig {
         }
         self.integrations.validate(self.network)?;
         Self::validate_shares(&self.shares)?;
+        Self::parse_custom_podman_arguments(&self.custom_podman_arguments)?;
         atomic_json(&machine_dir.join(Self::FILE), self)
     }
 
@@ -562,6 +571,10 @@ impl MachineConfig {
         Ok(())
     }
 
+    pub fn parse_custom_podman_arguments(value: &str) -> Result<Vec<String>> {
+        shell_words::split(value).context("parsing custom Podman arguments")
+    }
+
     fn validate_display_size(width: u32, height: u32) -> Result<()> {
         if !(320..=16384).contains(&width) || !(240..=16384).contains(&height) {
             bail!("machine display size {width}x{height} is outside the supported range");
@@ -582,71 +595,14 @@ pub enum MachineState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeState {
+    pub schema: u32,
     pub state: MachineState,
-    pub launcher_pid: Option<u32>,
-    pub container_pid: Option<u32>,
+    #[serde(default)]
+    pub container_id: Option<String>,
+    #[serde(default)]
+    pub definition_digest: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub detail: Option<String>,
-    #[serde(default)]
-    pub display: Option<DisplayDiagnostics>,
-    #[serde(default)]
-    pub integrations: Option<IntegrationDiagnostics>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IntegrationDiagnostics {
-    pub schema: u32,
-    pub generation: u64,
-    #[serde(default)]
-    pub ports: Vec<PortIntegrationDiagnostics>,
-    pub guest_audio_output: MediaIntegrationDiagnostics,
-    pub host_microphone: MediaIntegrationDiagnostics,
-    pub host_camera: MediaIntegrationDiagnostics,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PortIntegrationDiagnostics {
-    pub id: Uuid,
-    pub direction: PortDirection,
-    pub protocol: PortProtocol,
-    pub enabled: bool,
-    pub active: bool,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MediaIntegrationDiagnostics {
-    pub enabled: bool,
-    pub active: bool,
-    #[serde(default)]
-    pub host_pid: Option<u32>,
-    #[serde(default)]
-    pub guest_pid: Option<u32>,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisplayDiagnostics {
-    pub host: WaylandCapabilities,
-    #[serde(default)]
-    pub renderer: String,
-    #[serde(default)]
-    pub selected_render_device_identity: Option<String>,
-    #[serde(default)]
-    pub exposed_devices: Vec<String>,
-    pub render_nodes: Vec<String>,
-    #[serde(default)]
-    pub render_device_identities: Vec<String>,
-    #[serde(default)]
-    pub host_device_identity: Option<String>,
-    #[serde(default)]
-    pub application_devices: Vec<String>,
-    #[serde(default)]
-    pub window: Option<WindowDiagnostics>,
-    #[serde(default)]
-    pub presentation: Option<PresentationDiagnostics>,
-    pub zero_copy: String,
-    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -809,29 +765,35 @@ impl RuntimeState {
 
     pub fn new(state: MachineState) -> Self {
         Self {
+            schema: 1,
             state,
-            launcher_pid: Some(std::process::id()),
-            container_pid: None,
+            container_id: None,
+            definition_digest: None,
             updated_at: Utc::now(),
             detail: None,
-            display: None,
-            integrations: None,
         }
     }
 
     pub fn load(machine_dir: &Path) -> Result<Option<Self>> {
         let path = machine_dir.join(Self::FILE);
         match fs::read(&path) {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes)
-                    .with_context(|| format!("parsing {}", path.display()))?,
-            )),
+            Ok(bytes) => {
+                let state: Self = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("parsing {}", path.display()))?;
+                if state.schema != 1 {
+                    bail!("unsupported runtime metadata schema {}", state.schema);
+                }
+                Ok(Some(state))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
         }
     }
 
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
+        if self.schema != 1 {
+            bail!("unsupported runtime metadata schema {}", self.schema);
+        }
         atomic_json(&machine_dir.join(Self::FILE), self)
     }
 }

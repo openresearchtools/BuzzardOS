@@ -5,16 +5,13 @@
 0755	assets/buzzardos-session	@runtime/libexec/buzzardos-session
 0755	assets/buzzardos-sway-session	@runtime/libexec/buzzardos-sway-session
 0755	assets/buzzardos-output-sync	@runtime/libexec/buzzardos-output-sync
-0755	assets/buzzardos-desktop-stopped	@runtime/libexec/buzzardos-desktop-stopped
 0755	assets/buzzardos-desktop-services	@runtime/libexec/buzzardos-desktop-services
 0755	assets/buzzardos-integration-agent	@runtime/libexec/buzzardos-integration-agent
 0755	assets/buzzardos-appimage-ready	@runtime/libexec/buzzardos-appimage-ready
 0755	assets/buzzardos-fusermount	@runtime/libexec/buzzardos-fusermount
 0755	assets/buzzardos-fusermount-exec	@runtime/libexec/buzzardos-fusermount-exec
-0644	assets/buzzardos-sudo.socket	usr/lib/systemd/system/buzzardos-sudo.socket
-0644	assets/buzzardos-sudo@.service	usr/lib/systemd/system/buzzardos-sudo@.service
 0644	assets/buzzardos-fusermount.socket	usr/lib/systemd/system/buzzardos-fusermount.socket
 0644	assets/buzzardos-fusermount@.service	usr/lib/systemd/system/buzzardos-fusermount@.service
 0644	assets/sway-config	etc/buzzardos/sway-config
-0440	assets/90-buzzardos-sudoers	etc/sudoers.d/90-buzzardos
+0440	assets/90-buzzardos-user-sudo	etc/sudoers.d/90-buzzardos-user
 0644	assets/portals.conf	etc/buzzardos/xdg/xdg-desktop-portal/portals.conf

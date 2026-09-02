@@ -25,13 +25,6 @@ install -d -o user -g user -m 0700 \
     /home/user/.local/share \
     /home/user/.local/state
 
-# The package owns this wrapper under /usr. Reference-image setup places one
-# deliberate link ahead of distro sudo without making a Debian package own
-# anything under /usr/local.
-install -d -m 0755 /usr/local/bin
-ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudo
-ln -sfn /usr/libexec/buzzardos-guest/sudo /usr/local/bin/sudoedit
-
 # Construct the initial desktop home exactly once. These are image defaults,
 # not login work: package upgrades and machine starts never recreate folders,
 # bookmarks, or a user-modified Thunar action file.

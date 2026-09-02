@@ -10,7 +10,8 @@ use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -25,18 +26,18 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use uuid::Uuid;
 use wb_core::{
-    HostMediaDevice, HostMediaKind, MachineConfig, MachineState, NetworkMode, PortDirection,
-    PortForward, PortProtocol, PresentationDiagnostics, ResourceLocator, RuntimeState,
-    WindowDiagnostics, discover_host_media,
+    MachineConfig, MachineState, Podman, PodmanDefinition, PodmanRuntimePaths,
+    PresentationDiagnostics, ResourceLocator, RuntimeState, WindowDiagnostics,
 };
 
 use crate::clipboard::{self, ClipboardValue};
 use crate::frame_paintable::FramePaintable;
 use crate::gateway::{
-    CursorImage, CursorStorage, DmabufFormat, DmabufFrame, GatewayCommand, GatewayCommandSender,
-    GatewayConnection, GatewayEvent, GatewaySockets, GuestScalePreset, GuestScaleReply,
-    GuestScaleRequest, HostCommand, OutputMode,
+    CursorImage, CursorStorage, DmabufFormat, DmabufFrame, EventSender, GatewayCommand,
+    GatewayCommandSender, GatewayConnection, GatewayEvent, GatewaySockets, GuestFrame,
+    GuestScalePreset, GuestScaleReply, GuestScaleRequest, HostCommand, OutputMode, ShmFrame,
 };
+use crate::host_media::{self, MediaWorker};
 use crate::launch::Launch;
 
 const RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -145,8 +146,10 @@ struct NativeWindow {
     events: RefCell<Receiver<GatewayEvent>>,
     event_notify: GatewayConnectionNotifier,
     commands: GatewayCommandSender,
+    lifecycle_events: EventSender,
 
     window: gtk::ApplicationWindow,
+    lifecycle_button: gtk::Button,
     status_label: gtk::Label,
     state_title: gtk::Label,
     detail_label: gtk::Label,
@@ -162,6 +165,8 @@ struct NativeWindow {
     clipboard_busy: Cell<bool>,
     clipboard_epoch: Cell<u64>,
     clipboard_connection: RefCell<Option<(u64, UnixStream)>>,
+    media_worker: RefCell<Option<MediaWorker>>,
+    media_session_started: Cell<bool>,
     viewport_width: Cell<u32>,
     viewport_height: Cell<u32>,
     /// Fractional scale of the native host surface.
@@ -179,6 +184,8 @@ struct NativeWindow {
     gateway_configured: Cell<bool>,
     failure: RefCell<Option<String>>,
     last_runtime_check: Cell<Instant>,
+    container_watch_active: Cell<bool>,
+    container_watch_epoch: Cell<u64>,
     last_host_frame_tick: Cell<Instant>,
     last_background_frame_tick: Cell<Instant>,
     pending_frame: RefCell<Option<PendingFrame>>,
@@ -196,19 +203,6 @@ struct NativeWindow {
     cursor_state: Cell<u8>,
 }
 
-#[derive(Clone)]
-struct PortEditorRow {
-    id: uuid::Uuid,
-    row: gtk::ListBoxRow,
-    enabled: gtk::Switch,
-    direction: gtk::DropDown,
-    protocol: gtk::DropDown,
-    host_address: gtk::Entry,
-    host_port: gtk::SpinButton,
-    guest_address: gtk::Entry,
-    guest_port: gtk::SpinButton,
-}
-
 struct PendingFrame {
     id: u64,
     submitted_monotonic_us: u64,
@@ -224,6 +218,7 @@ struct PendingPresentation {
 }
 
 struct FrameMetadata {
+    transport: FrameTransport,
     geometry_generation: u64,
     width: u32,
     height: u32,
@@ -231,6 +226,42 @@ struct FrameMetadata {
     modifier: u64,
     planes: u32,
     explicit_sync: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameTransport {
+    Dmabuf,
+    Shm,
+}
+
+impl FrameTransport {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Dmabuf => "dmabuf",
+            Self::Shm => "wl_shm",
+        }
+    }
+}
+
+struct ShmFrameBytes {
+    pixels: Vec<u8>,
+    id: u64,
+    commands: GatewayCommandSender,
+}
+
+impl AsRef<[u8]> for ShmFrameBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+impl Drop for ShmFrameBytes {
+    fn drop(&mut self) {
+        let _ = self.commands.send(GatewayCommand::ReleaseFrame {
+            id: self.id,
+            released_monotonic_us: monotonic_us(),
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -628,7 +659,7 @@ impl NativeWindow {
         let header = gtk::HeaderBar::builder().show_title_buttons(true).build();
         window.set_titlebar(Some(&header));
 
-        let header_controls = build_header_controls();
+        let (header_controls, lifecycle_button) = build_header_controls();
         header.pack_start(&header_controls);
 
         let status_label = gtk::Label::new(Some(MonitorState::Starting.label()));
@@ -718,7 +749,9 @@ impl NativeWindow {
             events: RefCell::new(connection.events),
             event_notify: GatewayConnectionNotifier(connection.event_notify),
             commands: connection.commands,
+            lifecycle_events: connection.lifecycle_events,
             window,
+            lifecycle_button,
             status_label,
             state_title,
             detail_label,
@@ -733,6 +766,8 @@ impl NativeWindow {
             clipboard_busy: Cell::new(false),
             clipboard_epoch: Cell::new(1),
             clipboard_connection: RefCell::new(None),
+            media_worker: RefCell::new(None),
+            media_session_started: Cell::new(false),
             viewport_width: Cell::new(1),
             viewport_height: Cell::new(1),
             host_surface_scale_120: Cell::new(120),
@@ -744,6 +779,8 @@ impl NativeWindow {
             gateway_configured: Cell::new(false),
             failure: RefCell::new(None),
             last_runtime_check: Cell::new(Instant::now() - RUNTIME_POLL_INTERVAL),
+            container_watch_active: Cell::new(false),
+            container_watch_epoch: Cell::new(1),
             last_host_frame_tick: Cell::new(Instant::now()),
             last_background_frame_tick: Cell::new(Instant::now()),
             pending_frame: RefCell::new(None),
@@ -1232,25 +1269,9 @@ impl NativeWindow {
             let this = Rc::clone(self);
             move || this.request_stop(true)
         });
-        self.add_action("shutdown", {
-            let this = Rc::clone(self);
-            move || this.request_stop(false)
-        });
-        self.add_action("close", {
-            let this = Rc::clone(self);
-            move || this.request_close()
-        });
         self.add_action("settings", {
             let this = Rc::clone(self);
             move || this.open_settings()
-        });
-        self.add_action("ports", {
-            let this = Rc::clone(self);
-            move || this.open_ports()
-        });
-        self.add_action("media", {
-            let this = Rc::clone(self);
-            move || this.open_media()
         });
         self.add_action("clipboard-to-guest", {
             let this = Rc::clone(self);
@@ -1265,8 +1286,6 @@ impl NativeWindow {
             move || this.open_diagnostics()
         });
 
-        self.application
-            .set_accels_for_action("app.close", &["<Primary>q"]);
         self.application
             .set_accels_for_action("app.settings", &["<Primary>comma"]);
         self.application
@@ -1291,8 +1310,16 @@ impl NativeWindow {
                 }
                 GatewayEvent::GuestDisconnected => {
                     self.detach_monitor("guest-disconnected");
-                    if self.state.get() != MonitorState::Failed {
-                        self.set_state(MonitorState::Stopped);
+                    if !matches!(
+                        self.state.get(),
+                        MonitorState::Stopping | MonitorState::Failed
+                    ) && !machine_restart_is_pending(&self.launch.machine_dir)
+                    {
+                        *self.failure.borrow_mut() = Some(
+                            "The guest display disconnected while its Podman container was still active."
+                                .into(),
+                        );
+                        self.set_state(MonitorState::Failed);
                     }
                 }
                 GatewayEvent::GuestFailed(error) => {
@@ -1331,6 +1358,9 @@ impl NativeWindow {
                 GatewayEvent::GuestScaleRequest { request, reply } => {
                     let _ = reply.send(self.apply_guest_scale_request(request));
                 }
+                GatewayEvent::ContainerWaitFinished { epoch, result } => {
+                    self.finish_container_watch(epoch, result);
+                }
             }
         }
 
@@ -1356,13 +1386,14 @@ impl NativeWindow {
         let state = if self.initial_monitor_sizing.borrow().failed() {
             MonitorState::Failed
         } else {
-            match runtime.state {
+            let reported = match runtime.state {
                 MachineState::Starting => MonitorState::Starting,
                 MachineState::Running => MonitorState::Running,
                 MachineState::Stopping => MonitorState::Stopping,
                 MachineState::Stopped => MonitorState::Stopped,
                 MachineState::Failed => MonitorState::Failed,
-            }
+            };
+            effective_monitor_state(self.state.get(), reported)
         };
         if state == MonitorState::Failed
             && self.failure.borrow().is_none()
@@ -1379,14 +1410,13 @@ impl NativeWindow {
         if state != self.state.get() {
             self.set_state(state);
         }
-        let microphone_active = runtime
-            .integrations
+        let media = host_media::read_status(&self.launch.status_dir);
+        let microphone_active = media
             .as_ref()
-            .is_some_and(|integrations| integrations.host_microphone.active);
-        let camera_active = runtime
-            .integrations
+            .is_some_and(|status| status.error.is_none() && status.host_microphone);
+        let camera_active = media
             .as_ref()
-            .is_some_and(|integrations| integrations.host_camera.active);
+            .is_some_and(|status| status.error.is_none() && status.host_camera);
         self.update_header_status(microphone_active, camera_active);
         if self.close_requested.get()
             && matches!(runtime.state, MachineState::Stopped | MachineState::Failed)
@@ -1395,7 +1425,14 @@ impl NativeWindow {
         }
     }
 
-    fn install_frame(&self, frame: DmabufFrame) -> Result<()> {
+    fn install_frame(&self, frame: GuestFrame) -> Result<()> {
+        match frame {
+            GuestFrame::Dmabuf(frame) => self.install_dmabuf_frame(frame),
+            GuestFrame::Shm(frame) => self.install_shm_frame(frame),
+        }
+    }
+
+    fn install_dmabuf_frame(&self, frame: DmabufFrame) -> Result<()> {
         let DmabufFrame {
             id,
             geometry_generation,
@@ -1422,6 +1459,7 @@ impl NativeWindow {
         }
         let plane_count = planes.len() as u32;
         let metadata = FrameMetadata {
+            transport: FrameTransport::Dmabuf,
             geometry_generation,
             width,
             height,
@@ -1471,6 +1509,70 @@ impl NativeWindow {
 
         self.reset_offload_claim();
         self.frame_paintable.set_texture(&texture);
+        self.finish_frame_install(
+            id,
+            submitted_monotonic_us,
+            metadata,
+            explicit_sync,
+            acquire_wait_us,
+        );
+        Ok(())
+    }
+
+    fn install_shm_frame(&self, frame: ShmFrame) -> Result<()> {
+        let ShmFrame {
+            id,
+            geometry_generation,
+            width,
+            height,
+            stride,
+            pixels,
+            submitted_monotonic_us,
+        } = frame;
+        if geometry_generation != self.geometry_generation.get() {
+            self.release_rejected_frame(id)?;
+            let mut stats = self.presentation.borrow_mut();
+            stats.dropped_frames = stats.dropped_frames.saturating_add(1);
+            drop(stats);
+            self.presentation_dirty.set(true);
+            return Ok(());
+        }
+        let bytes = glib::Bytes::from_owned(ShmFrameBytes {
+            pixels,
+            id,
+            commands: self.commands.clone(),
+        });
+        let texture = gdk::MemoryTexture::new(
+            i32::try_from(width).context("wl_shm texture width overflow")?,
+            i32::try_from(height).context("wl_shm texture height overflow")?,
+            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+            &bytes,
+            stride,
+        );
+        let metadata = FrameMetadata {
+            transport: FrameTransport::Shm,
+            geometry_generation,
+            width,
+            height,
+            fourcc: 0,
+            modifier: 0,
+            planes: 0,
+            explicit_sync: false,
+        };
+        self.reset_offload_claim();
+        self.frame_paintable.set_texture(&texture);
+        self.finish_frame_install(id, submitted_monotonic_us, metadata, false, 0);
+        Ok(())
+    }
+
+    fn finish_frame_install(
+        &self,
+        id: u64,
+        submitted_monotonic_us: u64,
+        metadata: FrameMetadata,
+        explicit_sync: bool,
+        acquire_wait_us: u64,
+    ) {
         self.continuity.borrow_mut().record_frame_installed(id);
         self.update_state_ui();
         let superseded = self
@@ -1500,7 +1602,6 @@ impl NativeWindow {
         self.picture.queue_draw();
         self.observe_monitor_continuity("frame-installed");
         self.presentation_dirty.set(true);
-        Ok(())
     }
 
     fn install_cursor(&self, cursor: CursorImage) {
@@ -1802,21 +1903,28 @@ impl NativeWindow {
         sequence: u64,
     ) {
         let mut stats = self.presentation.borrow_mut();
+        let transport = frame.metadata.transport.label();
+        let modifier = if frame.metadata.transport == FrameTransport::Dmabuf {
+            format!("0x{:016x}", frame.metadata.modifier)
+        } else {
+            "not-applicable".to_owned()
+        };
         let same_presented_path = stats.presented
+            && stats.transport == transport
             && frame.metadata.geometry_generation == self.geometry_generation.get()
             && stats.width == frame.metadata.width
             && stats.height == frame.metadata.height
             && stats.format == frame.metadata.fourcc
-            && stats.modifier == format!("0x{:016x}", frame.metadata.modifier)
+            && stats.modifier == modifier
             && stats.planes == frame.metadata.planes
             && stats.scale_120 == self.host_surface_scale_120.get()
             && stats.viewport_width == self.viewport_width.get()
             && stats.viewport_height == self.viewport_height.get();
-        stats.transport = "dmabuf".into();
+        stats.transport = transport.into();
         stats.width = frame.metadata.width;
         stats.height = frame.metadata.height;
         stats.format = frame.metadata.fourcc;
-        stats.modifier = format!("0x{:016x}", frame.metadata.modifier);
+        stats.modifier.clone_from(&modifier);
         stats.planes = frame.metadata.planes;
         stats.scale_120 = self.host_surface_scale_120.get();
         stats.viewport_width = self.viewport_width.get();
@@ -1838,7 +1946,9 @@ impl NativeWindow {
         stats.presentation_feedback = true;
         stats.gtk_subsurface_offload = frame.offloaded;
         stats.last_pacing_source = "host-vblank".into();
-        stats.explicit_sync = if frame.metadata.explicit_sync {
+        stats.explicit_sync = if frame.metadata.transport == FrameTransport::Shm {
+            "not-applicable (wl_shm)".into()
+        } else if frame.metadata.explicit_sync {
             "linux-drm-syncobj-v1/gateway-wait/gtk-host-sync".into()
         } else {
             "implicit-dmabuf".into()
@@ -1863,7 +1973,9 @@ impl NativeWindow {
         stats.presented = true;
         stats.discarded = false;
         stats.vsync = refresh_interval_us > 0;
-        stats.zero_copy = frame.offloaded && exact_native_mapping;
+        stats.zero_copy = frame.metadata.transport == FrameTransport::Dmabuf
+            && frame.offloaded
+            && exact_native_mapping;
         stats.sequence = sequence;
         stats.refresh_ns = refresh_interval_us
             .max(0)
@@ -1913,24 +2025,34 @@ impl NativeWindow {
             MonitorState::Running => {
                 self.spinner.stop();
                 self.state_title.set_label("Machine running");
+                self.lifecycle_button.set_label("Stop");
+                self.lifecycle_button.set_action_name(Some("app.stop"));
+                self.lifecycle_button.set_sensitive(true);
             }
             MonitorState::Stopped => {
                 self.spinner.stop();
                 self.state_title.set_label("Machine stopped");
                 self.detail_label
-                    .set_label("Use Machine → Start to boot this persistent desktop.");
+                    .set_label("Select Start to boot this persistent desktop.");
+                self.lifecycle_button.set_label("Start");
+                self.lifecycle_button.set_action_name(Some("app.start"));
+                self.lifecycle_button.set_sensitive(true);
             }
             MonitorState::Starting => {
                 self.spinner.start();
                 self.state_title.set_label("Starting machine");
                 self.detail_label
                     .set_label("Starting systemd, Sway, desktop services, and CUA driver…");
+                self.lifecycle_button.set_label("Starting…");
+                self.lifecycle_button.set_sensitive(false);
             }
             MonitorState::Stopping => {
                 self.spinner.start();
                 self.state_title.set_label("Stopping machine");
                 self.detail_label
                     .set_label("Waiting for orderly guest shutdown and state persistence…");
+                self.lifecycle_button.set_label("Stopping…");
+                self.lifecycle_button.set_sensitive(false);
             }
             MonitorState::Failed => {
                 self.spinner.stop();
@@ -1941,7 +2063,20 @@ impl NativeWindow {
                         .as_deref()
                         .unwrap_or("Machine startup failed. Open Diagnostics for details."),
                 );
+                self.lifecycle_button.set_label("Start");
+                self.lifecycle_button.set_action_name(Some("app.start"));
+                self.lifecycle_button.set_sensitive(true);
             }
+        }
+        if let Some(action) = self
+            .application
+            .lookup_action("restart")
+            .and_downcast::<gio::SimpleAction>()
+        {
+            action.set_enabled(matches!(
+                self.state.get(),
+                MonitorState::Running | MonitorState::Failed
+            ));
         }
         // Lifecycle labels and display attachment are separate state
         // machines. Once a frame is attached, stale runtime.json values must
@@ -1949,7 +2084,99 @@ impl NativeWindow {
         self.state_overlay
             .set_visible(!self.frame_paintable.has_frame());
         self.update_clipboard_action_state();
+        self.sync_media_worker();
         self.observe_monitor_continuity("lifecycle-ui");
+        if self.state.get() == MonitorState::Running {
+            self.ensure_container_watch();
+        }
+    }
+
+    fn ensure_container_watch(&self) {
+        if self.container_watch_active.replace(true) {
+            return;
+        }
+        let setup = (|| -> Result<(Podman, String)> {
+            let config = MachineConfig::load(&self.launch.machine_dir)?;
+            let resources = ResourceLocator::discover()?;
+            let podman = Podman::discover(&resources)?;
+            let runtime = PodmanRuntimePaths::discover(config.id)?;
+            let definition =
+                PodmanDefinition::for_machine(&config, &self.launch.machine_dir, &runtime)?;
+            Ok((podman, definition.container_name))
+        })();
+        let (podman, container) = match setup {
+            Ok(value) => value,
+            Err(error) => {
+                self.container_watch_active.set(false);
+                *self.failure.borrow_mut() = Some(format!(
+                    "Could not observe the persistent Podman container: {error:#}"
+                ));
+                self.set_state(MonitorState::Failed);
+                return;
+            }
+        };
+        let epoch = self.container_watch_epoch.get();
+        let events = self.lifecycle_events.clone();
+        std::thread::spawn(move || {
+            let result = podman
+                .wait(&container)
+                .map_err(|error| format!("{error:#}"));
+            let _ = events.send(GatewayEvent::ContainerWaitFinished { epoch, result });
+        });
+    }
+
+    fn invalidate_container_watch(&self) {
+        self.container_watch_epoch
+            .set(self.container_watch_epoch.get().wrapping_add(1));
+        self.container_watch_active.set(false);
+    }
+
+    fn finish_container_watch(&self, epoch: u64, result: Result<i32, String>) {
+        if epoch != self.container_watch_epoch.get() {
+            return;
+        }
+        self.container_watch_active.set(false);
+        match result {
+            Ok(exit_code) => {
+                if machine_restart_is_pending(&self.launch.machine_dir) {
+                    self.set_state(MonitorState::Starting);
+                    return;
+                }
+                let mut runtime = RuntimeState::new(MachineState::Stopped);
+                if let Ok(Some(previous)) = RuntimeState::load(&self.launch.machine_dir) {
+                    runtime.container_id = previous.container_id;
+                    runtime.definition_digest = previous.definition_digest;
+                }
+                runtime.detail = Some(format!("Podman container exited with status {exit_code}"));
+                let _ = runtime.save(&self.launch.machine_dir);
+                self.application.quit();
+            }
+            Err(error) => {
+                *self.failure.borrow_mut() = Some(format!(
+                    "Could not observe the persistent Podman container: {error}"
+                ));
+                self.set_state(MonitorState::Failed);
+            }
+        }
+    }
+
+    fn sync_media_worker(&self) {
+        if self.state.get() != MonitorState::Running {
+            self.media_session_started.set(false);
+            self.media_worker.borrow_mut().take();
+            return;
+        }
+        if self.media_session_started.replace(true) {
+            return;
+        }
+        match MediaWorker::start(&self.launch.machine_dir, &self.launch.status_dir) {
+            Ok(worker) => {
+                self.media_worker.replace(worker);
+            }
+            Err(error) => {
+                self.show_error("Could not start media sharing", &error);
+            }
+        }
     }
 
     fn update_header_status(&self, microphone_active: bool, camera_active: bool) {
@@ -2314,7 +2541,14 @@ impl NativeWindow {
             }
             HostCommand::ToggleMaximize if self.window.is_maximized() => self.window.unmaximize(),
             HostCommand::ToggleMaximize => self.window.maximize(),
-            HostCommand::Close => self.request_close(),
+            // The control socket's Close command is sent by the lifecycle
+            // owner only after Podman has stopped the machine (or after the
+            // container has exited).  Do not launch another asynchronous
+            // `buzzardos stop` here: that second operation can retain the
+            // machine lock and race a subsequent start.  A human titlebar
+            // close still enters `request_close` above and therefore requests
+            // an orderly Podman stop before the application exits.
+            HostCommand::Close => self.application.quit(),
             HostCommand::Start => self.request_start(),
             HostCommand::Stop | HostCommand::ShutDown => self.request_stop(false),
             HostCommand::Restart => self.request_stop(true),
@@ -2341,9 +2575,8 @@ impl NativeWindow {
     }
 
     fn request_start(&self) {
-        // The lifecycle supervisor consumes this fixed host-only request. It
-        // never contains an arbitrary command or a guest-provided path.
-        if let Err(error) = self.save_host_request("start") {
+        self.invalidate_container_watch();
+        if let Err(error) = self.run_lifecycle_command("start") {
             self.show_error("Could not request machine start", &error);
             return;
         }
@@ -2351,8 +2584,9 @@ impl NativeWindow {
     }
 
     fn request_stop(&self, restart: bool) {
+        self.invalidate_container_watch();
         let action = if restart { "restart" } else { "stop" };
-        if let Err(error) = self.save_host_request(action) {
+        if let Err(error) = self.run_lifecycle_command(action) {
             self.show_error("Could not request orderly shutdown", &error);
             return;
         }
@@ -2360,18 +2594,28 @@ impl NativeWindow {
         self.close_requested.set(!restart);
     }
 
-    fn save_host_request(&self, action: &str) -> Result<()> {
-        // The selected machine directory is deliberately independent from
-        // the human-facing machine name.  Authenticate lifecycle requests
-        // with the name in the self-describing machine metadata, never with
-        // the directory basename.
+    fn run_lifecycle_command(&self, action: &str) -> Result<()> {
         let config = MachineConfig::load(&self.launch.machine_dir)?;
-        let value = serde_json::json!({
-            "schema": 1,
-            "action": action,
-            "machine": config.name,
+        let launcher = ResourceLocator::discover()?.helper_or_path("buzzardos")?;
+        let mut command = Command::new(&launcher);
+        command
+            .arg("--machine-dir")
+            .arg(&self.launch.machine_dir)
+            .arg(action)
+            .arg(&config.name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if action == "start" {
+            command.arg("--detach");
+        }
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("starting {} with {}", launcher.display(), action))?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
         });
-        atomic_json(&self.launch.status_dir.join("host-request.json"), &value)
+        Ok(())
     }
 
     fn clipboard_ready_path(&self) -> PathBuf {
@@ -2617,405 +2861,29 @@ impl NativeWindow {
     }
 
     fn open_settings(&self) {
-        let config = match MachineConfig::load(&self.launch.machine_dir) {
-            Ok(config) => config,
-            Err(error) => {
-                self.show_error("Could not load machine settings", &error);
-                return;
-            }
-        };
-        let dialog = gtk::Window::builder()
-            .title("Machine Settings")
-            .transient_for(&self.window)
-            .modal(true)
-            .destroy_with_parent(true)
-            .default_width(520)
-            .default_height(520)
-            .resizable(false)
-            .build();
-        dialog.set_titlebar(Some(&gtk::HeaderBar::new()));
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        content.set_margin_top(18);
-        content.set_margin_bottom(18);
-        content.set_margin_start(18);
-        content.set_margin_end(18);
-        let grid = gtk::Grid::builder()
-            .row_spacing(12)
-            .column_spacing(16)
-            .hexpand(true)
-            .build();
-        content.append(&grid);
-
-        let width = gtk::SpinButton::with_range(320.0, 16_384.0, 1.0);
-        width.set_value(config.width as f64);
-        let height = gtk::SpinButton::with_range(240.0, 16_384.0, 1.0);
-        height.set_value(config.height as f64);
-        let network = gtk::DropDown::from_strings(&[
-            "Private user-mode network",
-            "Host network (reduced isolation)",
-            "No network",
-        ]);
-        network.set_selected(match config.network {
-            NetworkMode::User => 0,
-            NetworkMode::Host => 1,
-            NetworkMode::None => 2,
-        });
-        let guest_scale = gtk::DropDown::from_strings(&[
-            "Follow host (pixel-perfect default)",
-            "100%",
-            "125%",
-            "150%",
-            "175%",
-            "200%",
-        ]);
-        guest_scale.set_selected(match config.guest_scale_120 {
-            None => 0,
-            Some(120) => 1,
-            Some(150) => 2,
-            Some(180) => 3,
-            Some(210) => 4,
-            Some(240) => 5,
-            Some(_) => 0,
-        });
-        let gpus = gtk::Entry::builder()
-            .text(config.gpus.join(","))
-            .placeholder_text("all, index, or GPU UUIDs")
-            .hexpand(true)
-            .build();
-        let machine_location = machine_location_control(&dialog, &self.launch.machine_dir);
-        let restart = gtk::Label::new(Some(
-            "Display, network, and GPU changes take effect on the next machine start.",
-        ));
-        restart.add_css_class("dim-label");
-        restart.set_wrap(true);
-        restart.set_xalign(0.0);
-
-        attach_setting(&grid, 0, "Machine location", &machine_location);
-        attach_setting(&grid, 1, "Initial monitor width", &width);
-        attach_setting(&grid, 2, "Initial monitor height", &height);
-        attach_setting(&grid, 3, "Desktop scale", &guest_scale);
-        attach_setting(&grid, 4, "Network mode", &network);
-        attach_setting(&grid, 5, "GPU passthrough", &gpus);
-        grid.attach(&restart, 0, 6, 2, 1);
-
-        let actions = gtk::ActionBar::new();
-        let cancel = gtk::Button::with_label("Cancel");
-        let save = gtk::Button::with_label("Save");
-        save.set_receives_default(true);
-        actions.pack_end(&save);
-        actions.pack_end(&cancel);
-        content.append(&actions);
-        dialog.set_child(Some(&content));
-        dialog.set_default_widget(Some(&save));
-
-        let cancel_dialog = dialog.clone();
-        cancel.connect_clicked(move |_| cancel_dialog.close());
-        let machine_dir = self.launch.machine_dir.clone();
-        let parent = self.window.clone();
-        let save_dialog = dialog.clone();
-        save.connect_clicked(move |_| {
-            let mut updated = config.clone();
-            updated.width = width.value_as_int() as u32;
-            updated.height = height.value_as_int() as u32;
-            updated.guest_scale_120 = match guest_scale.selected() {
-                1 => Some(120),
-                2 => Some(150),
-                3 => Some(180),
-                4 => Some(210),
-                5 => Some(240),
-                _ => None,
-            };
-            updated.network = match network.selected() {
-                1 => NetworkMode::Host,
-                2 => NetworkMode::None,
-                _ => NetworkMode::User,
-            };
-            updated.gpus = gpus
-                .text()
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect();
-            let result = MachineConfig::validate_gpus(&updated.gpus)
-                .and_then(|_| updated.save(&machine_dir));
-            if let Err(error) = result {
-                show_error_dialog(&parent, "Could not save machine settings", &error);
-                return;
-            }
-            save_dialog.close();
-        });
-        dialog.present();
-    }
-
-    fn open_ports(&self) {
-        let config = match MachineConfig::load(&self.launch.machine_dir) {
-            Ok(config) => config,
-            Err(error) => {
-                self.show_error("Could not load port settings", &error);
-                return;
-            }
-        };
-        let dialog = gtk::Window::builder()
-            .title("Live Port Mappings")
-            .transient_for(&self.window)
-            .modal(true)
-            .destroy_with_parent(true)
-            .default_width(940)
-            .default_height(560)
-            .resizable(true)
-            .build();
-        dialog.set_titlebar(Some(&gtk::HeaderBar::new()));
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        content.set_margin_top(16);
-        content.set_margin_bottom(16);
-        content.set_margin_start(16);
-        content.set_margin_end(16);
-
-        let explanation = gtk::Label::new(Some(
-            "Mappings apply while the machine is running—no restart. Host → Guest publishes a guest service. Guest → Host exposes only the selected host destination through a private relay; host loopback otherwise remains blocked.",
-        ));
-        explanation.set_wrap(true);
-        explanation.set_xalign(0.0);
-        explanation.add_css_class("dim-label");
-        content.append(&explanation);
-
-        if !matches!(config.network, NetworkMode::User) {
-            let warning = gtk::Label::new(Some(
-                "Live mappings require Private user-mode network in Machine Settings.",
-            ));
-            warning.set_xalign(0.0);
-            warning.add_css_class("warning");
-            content.append(&warning);
+        let result = (|| -> Result<()> {
+            let resources = ResourceLocator::discover()?;
+            let display = resources.helper_or_path("buzzardos-display")?;
+            let launcher = resources.helper_or_path("buzzardos")?;
+            let mut child = Command::new(&display)
+                .arg("--machine-manager")
+                .arg("--launcher")
+                .arg(launcher)
+                .arg("--settings-machine")
+                .arg(&self.launch.machine_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .with_context(|| format!("starting {}", display.display()))?;
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.show_error("Could not open machine settings", &error);
         }
-
-        let header = gtk::Grid::builder().column_spacing(8).hexpand(true).build();
-        for (column, (label, width)) in [
-            ("On", 4),
-            ("Direction", 15),
-            ("Protocol", 8),
-            ("Host address", 16),
-            ("Host port", 8),
-            ("Guest address", 16),
-            ("Guest port", 8),
-            ("", 4),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let widget = gtk::Label::new(Some(label));
-            widget.set_xalign(0.0);
-            widget.set_width_chars(width);
-            widget.add_css_class("dim-label");
-            header.attach(&widget, column as i32, 0, 1, 1);
-        }
-        content.append(&header);
-
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::None);
-        list.add_css_class("boxed-list");
-        let rows: Rc<RefCell<Vec<PortEditorRow>>> = Rc::new(RefCell::new(Vec::new()));
-        for mapping in &config.integrations.ports {
-            append_port_editor(&list, &rows, mapping.clone());
-        }
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .vexpand(true)
-            .child(&list)
-            .build();
-        content.append(&scroll);
-
-        let add_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let add_inbound = gtk::Button::with_label("Add Host → Guest");
-        let add_reverse = gtk::Button::with_label("Add Guest → Host");
-        add_bar.append(&add_inbound);
-        add_bar.append(&add_reverse);
-        content.append(&add_bar);
-
-        let list_for_inbound = list.clone();
-        let rows_for_inbound = Rc::clone(&rows);
-        add_inbound.connect_clicked(move |_| {
-            append_port_editor(
-                &list_for_inbound,
-                &rows_for_inbound,
-                PortForward::new(PortDirection::HostToGuest),
-            );
-        });
-        let list_for_reverse = list.clone();
-        let rows_for_reverse = Rc::clone(&rows);
-        add_reverse.connect_clicked(move |_| {
-            append_port_editor(
-                &list_for_reverse,
-                &rows_for_reverse,
-                PortForward::new(PortDirection::GuestToHost),
-            );
-        });
-
-        let actions = gtk::ActionBar::new();
-        let cancel = gtk::Button::with_label("Cancel");
-        let apply = gtk::Button::with_label("Apply Live");
-        actions.pack_end(&apply);
-        actions.pack_end(&cancel);
-        content.append(&actions);
-        dialog.set_child(Some(&content));
-
-        let cancel_dialog = dialog.clone();
-        cancel.connect_clicked(move |_| cancel_dialog.close());
-        let machine_dir = self.launch.machine_dir.clone();
-        let parent = self.window.clone();
-        let save_dialog = dialog.clone();
-        apply.connect_clicked(move |_| {
-            let mut updated = config.clone();
-            updated.integrations.ports = rows
-                .borrow()
-                .iter()
-                .map(|row| PortForward {
-                    id: row.id,
-                    enabled: row.enabled.is_active(),
-                    direction: if row.direction.selected() == 1 {
-                        PortDirection::GuestToHost
-                    } else {
-                        PortDirection::HostToGuest
-                    },
-                    protocol: if row.protocol.selected() == 1 {
-                        PortProtocol::Udp
-                    } else {
-                        PortProtocol::Tcp
-                    },
-                    host_address: row.host_address.text().trim().to_owned(),
-                    host_port: row.host_port.value_as_int() as u16,
-                    guest_address: row.guest_address.text().trim().to_owned(),
-                    guest_port: row.guest_port.value_as_int() as u16,
-                })
-                .collect();
-            if let Err(error) = updated.save(&machine_dir) {
-                show_error_dialog(&parent, "Could not apply live port mappings", &error);
-                return;
-            }
-            save_dialog.close();
-        });
-        dialog.present();
-    }
-
-    fn open_media(&self) {
-        let config = match MachineConfig::load(&self.launch.machine_dir) {
-            Ok(config) => config,
-            Err(error) => {
-                self.show_error("Could not load media sharing settings", &error);
-                return;
-            }
-        };
-        let devices = match ResourceLocator::discover()
-            .and_then(|resources| discover_host_media(&resources))
-        {
-            Ok(devices) => devices,
-            Err(error) => {
-                self.show_error("Could not discover host media devices", &error);
-                return;
-            }
-        };
-        let dialog = gtk::Window::builder()
-            .title("Audio, Microphone and Camera")
-            .transient_for(&self.window)
-            .modal(true)
-            .destroy_with_parent(true)
-            .default_width(640)
-            .default_height(520)
-            .resizable(true)
-            .build();
-        dialog.set_titlebar(Some(&gtk::HeaderBar::new()));
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
-        content.set_margin_top(18);
-        content.set_margin_bottom(18);
-        content.set_margin_start(18);
-        content.set_margin_end(18);
-        let explanation = gtk::Label::new(Some(
-            "Each switch is independent and applies live. Microphone and Camera authorize continuous capture while enabled, and the native Buzzard OS header labels each active input. Microphone activation completes only after the host PipeWire-Pulse session reports Buzzard OS as a running, uncorked recording stream, which drives GNOME and compatible desktop privacy indicators. Turning either switch off terminates capture, removes its private mapping, and removes the guest source. The host PipeWire socket is never mounted into the machine.",
-        ));
-        explanation.set_wrap(true);
-        explanation.set_xalign(0.0);
-        content.append(&explanation);
-
-        let grid = gtk::Grid::builder()
-            .row_spacing(14)
-            .column_spacing(16)
-            .hexpand(true)
-            .build();
-        let audio = gtk::Switch::builder()
-            .active(config.integrations.media.guest_audio_output)
-            .halign(gtk::Align::End)
-            .build();
-        let microphone = gtk::Switch::builder()
-            .active(config.integrations.media.host_microphone)
-            .halign(gtk::Align::End)
-            .build();
-        let camera = gtk::Switch::builder()
-            .active(config.integrations.media.host_camera)
-            .halign(gtk::Align::End)
-            .build();
-        let (audio_target, audio_targets) = media_device_dropdown(
-            &devices,
-            HostMediaKind::AudioSink,
-            config.integrations.media.audio_target.as_deref(),
-        );
-        let (microphone_target, microphone_targets) = media_device_dropdown(
-            &devices,
-            HostMediaKind::Microphone,
-            config.integrations.media.microphone_target.as_deref(),
-        );
-        let (camera_target, camera_targets) = media_device_dropdown(
-            &devices,
-            HostMediaKind::Camera,
-            config.integrations.media.camera_target.as_deref(),
-        );
-        attach_setting(&grid, 0, "Guest audio → host speakers", &audio);
-        attach_setting(&grid, 1, "Host audio output", &audio_target);
-        attach_setting(&grid, 2, "Host microphone → guest", &microphone);
-        attach_setting(&grid, 3, "Microphone device", &microphone_target);
-        attach_setting(&grid, 4, "Host camera → guest", &camera);
-        attach_setting(&grid, 5, "Camera device", &camera_target);
-        content.append(&grid);
-
-        let note = gtk::Label::new(Some(
-            "Devices are discovered from the live host PipeWire graph. Microphone capture always uses the selected host PipeWire source through its desktop-accounted PipeWire-Pulse recording service, even when that source is backed by ALSA; no ALSA device is opened directly or exposed to the guest. Camera capture uses its validated host-advertised backend. All media bridges require Private user-mode network.",
-        ));
-        note.set_wrap(true);
-        note.set_xalign(0.0);
-        note.add_css_class("dim-label");
-        content.append(&note);
-
-        let actions = gtk::ActionBar::new();
-        let cancel = gtk::Button::with_label("Cancel");
-        let apply = gtk::Button::with_label("Apply Live");
-        actions.pack_end(&apply);
-        actions.pack_end(&cancel);
-        content.append(&actions);
-        dialog.set_child(Some(&content));
-
-        let cancel_dialog = dialog.clone();
-        cancel.connect_clicked(move |_| cancel_dialog.close());
-        let machine_dir = self.launch.machine_dir.clone();
-        let parent = self.window.clone();
-        let save_dialog = dialog.clone();
-        apply.connect_clicked(move |_| {
-            let mut updated = config.clone();
-            updated.integrations.media.guest_audio_output = audio.is_active();
-            updated.integrations.media.host_microphone = microphone.is_active();
-            updated.integrations.media.host_camera = camera.is_active();
-            updated.integrations.media.audio_target =
-                selected_media_target(&audio_target, &audio_targets);
-            updated.integrations.media.microphone_target =
-                selected_media_target(&microphone_target, &microphone_targets);
-            updated.integrations.media.camera_target =
-                selected_media_target(&camera_target, &camera_targets);
-            if let Err(error) = updated.save(&machine_dir) {
-                show_error_dialog(&parent, "Could not apply live media sharing", &error);
-                return;
-            }
-            save_dialog.close();
-        });
-        dialog.present();
     }
 
     fn open_diagnostics(&self) {
@@ -3352,6 +3220,13 @@ impl NativeWindow {
     }
 }
 
+fn machine_restart_is_pending(machine_dir: &Path) -> bool {
+    RuntimeState::load(machine_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|runtime| runtime.state == MachineState::Starting)
+}
+
 const HOST_CLIPBOARD_DEADLINE: Duration = Duration::from_secs(5);
 
 struct ZeroizingBytes(Vec<u8>);
@@ -3582,270 +3457,43 @@ async fn read_bounded_stream(stream: gio::InputStream, limit: usize) -> Result<V
     Ok(std::mem::take(&mut value.0))
 }
 
-const HEADER_MENU_LABELS: [&str; 4] = ["Machine", "Ports", "Devices", "Clipboard"];
-const MACHINE_LIFECYCLE_MENU_ITEMS: [(&str, &str); 3] = [
-    ("Start", "app.start"),
-    ("Stop", "app.stop"),
-    ("Restart", "app.restart"),
-];
-const MACHINE_WINDOW_MENU_ITEMS: [(&str, &str); 2] = [
-    ("Shut Down Machine", "app.shutdown"),
-    ("Close Window", "app.close"),
-];
-const PORTS_MENU_ITEMS: [(&str, &str); 1] = [("Configure Live Port Mappings…", "app.ports")];
-const DEVICES_MENU_ITEMS: [(&str, &str); 1] = [("Audio, Microphone and Camera…", "app.media")];
-const CLIPBOARD_MENU_ITEMS: [(&str, &str); 2] = [
-    ("Send Host Clipboard to Guest", "app.clipboard-to-guest"),
-    ("Copy Guest Clipboard to Host", "app.clipboard-to-host"),
-];
-const SETTINGS_MENU_ITEMS: [(&str, &str); 2] = [
-    ("Machine Settings…", "app.settings"),
-    ("Display Diagnostics…", "app.diagnostics"),
+const MACHINE_HEADER_ACTIONS: [(&str, &str, &str); 4] = [
+    ("Restart", "Restart this machine", "app.restart"),
+    (
+        "Settings",
+        "Open this machine in Buzzard OS Settings",
+        "app.settings",
+    ),
+    (
+        "Copy to Host",
+        "Copy one clipboard value from the machine to the host",
+        "app.clipboard-to-host",
+    ),
+    (
+        "Copy to VM",
+        "Copy one clipboard value from the host to the machine",
+        "app.clipboard-to-guest",
+    ),
 ];
 
-fn build_header_controls() -> gtk::Box {
-    let machine = gio::Menu::new();
-    append_menu_items(&machine, &MACHINE_LIFECYCLE_MENU_ITEMS);
-    let shutdown = gio::Menu::new();
-    append_menu_items(&shutdown, &MACHINE_WINDOW_MENU_ITEMS);
-    machine.append_section(None, &shutdown);
-    let settings = gio::Menu::new();
-    append_menu_items(&settings, &SETTINGS_MENU_ITEMS);
-    machine.append_section(None, &settings);
-
-    let ports = gio::Menu::new();
-    append_menu_items(&ports, &PORTS_MENU_ITEMS);
-
-    let devices = gio::Menu::new();
-    append_menu_items(&devices, &DEVICES_MENU_ITEMS);
-
-    let clipboard = gio::Menu::new();
-    append_menu_items(&clipboard, &CLIPBOARD_MENU_ITEMS);
-
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+fn build_header_controls() -> (gtk::Box, gtk::Button) {
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     controls.set_valign(gtk::Align::Center);
-    for (label, tooltip, model) in [
-        (
-            HEADER_MENU_LABELS[0],
-            "Machine lifecycle and window actions",
-            machine,
-        ),
-        (HEADER_MENU_LABELS[1], "Configure live port mappings", ports),
-        (
-            HEADER_MENU_LABELS[2],
-            "Configure guest audio, microphone and camera access",
-            devices,
-        ),
-        (
-            HEADER_MENU_LABELS[3],
-            "Explicit one-shot text or image clipboard transfer",
-            clipboard,
-        ),
-    ] {
-        let button = gtk::MenuButton::builder()
+    let lifecycle = gtk::Button::builder()
+        .label("Stop")
+        .action_name("app.stop")
+        .tooltip_text("Start or stop this machine")
+        .build();
+    controls.append(&lifecycle);
+    for (label, tooltip, action) in MACHINE_HEADER_ACTIONS {
+        let button = gtk::Button::builder()
             .label(label)
-            .menu_model(&model)
-            .can_shrink(true)
-            .has_frame(false)
+            .action_name(action)
             .tooltip_text(tooltip)
             .build();
         controls.append(&button);
     }
-    controls
-}
-
-fn append_menu_items(menu: &gio::Menu, items: &[(&str, &str)]) {
-    for (label, action) in items {
-        menu.append(Some(label), Some(action));
-    }
-}
-
-fn append_port_editor(
-    list: &gtk::ListBox,
-    rows: &Rc<RefCell<Vec<PortEditorRow>>>,
-    mapping: PortForward,
-) {
-    let row = gtk::ListBoxRow::new();
-    let grid = gtk::Grid::builder()
-        .column_spacing(8)
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-    let enabled = gtk::Switch::builder().active(mapping.enabled).build();
-    let direction = gtk::DropDown::from_strings(&["Host → Guest", "Guest → Host"]);
-    direction.set_selected(if mapping.direction == PortDirection::GuestToHost {
-        1
-    } else {
-        0
-    });
-    let protocol = gtk::DropDown::from_strings(&["TCP", "UDP"]);
-    protocol.set_selected(if mapping.protocol == PortProtocol::Udp {
-        1
-    } else {
-        0
-    });
-    let host_address = gtk::Entry::builder()
-        .text(&mapping.host_address)
-        .width_chars(16)
-        .build();
-    let host_port = gtk::SpinButton::with_range(1.0, 65_535.0, 1.0);
-    host_port.set_value(mapping.host_port as f64);
-    host_port.set_width_chars(7);
-    let guest_address = gtk::Entry::builder()
-        .text(&mapping.guest_address)
-        .width_chars(16)
-        .build();
-    let guest_port = gtk::SpinButton::with_range(1.0, 65_535.0, 1.0);
-    guest_port.set_value(mapping.guest_port as f64);
-    guest_port.set_width_chars(7);
-    let remove = gtk::Button::from_icon_name("edit-delete-symbolic");
-    remove.set_tooltip_text(Some("Remove mapping"));
-    for (column, widget) in [
-        enabled.clone().upcast::<gtk::Widget>(),
-        direction.clone().upcast(),
-        protocol.clone().upcast(),
-        host_address.clone().upcast(),
-        host_port.clone().upcast(),
-        guest_address.clone().upcast(),
-        guest_port.clone().upcast(),
-        remove.clone().upcast(),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        grid.attach(&widget, column as i32, 0, 1, 1);
-    }
-    row.set_child(Some(&grid));
-    list.append(&row);
-    let editor = PortEditorRow {
-        id: mapping.id,
-        row: row.clone(),
-        enabled,
-        direction,
-        protocol,
-        host_address,
-        host_port,
-        guest_address,
-        guest_port,
-    };
-    rows.borrow_mut().push(editor);
-    let rows_for_remove = Rc::clone(rows);
-    let list_for_remove = list.clone();
-    let id = mapping.id;
-    remove.connect_clicked(move |_| {
-        if let Some(index) = rows_for_remove
-            .borrow()
-            .iter()
-            .position(|candidate| candidate.id == id)
-        {
-            let removed = rows_for_remove.borrow_mut().remove(index);
-            list_for_remove.remove(&removed.row);
-        }
-    });
-}
-
-fn media_device_dropdown(
-    devices: &[HostMediaDevice],
-    kind: HostMediaKind,
-    current: Option<&str>,
-) -> (gtk::DropDown, Vec<Option<String>>) {
-    let matching: Vec<_> = devices
-        .iter()
-        .filter(|device| device.kind == kind)
-        .collect();
-    let default = matching.iter().find(|device| device.is_default);
-    let mut labels = vec![default.map_or_else(
-        || "System default — no device currently advertised".to_owned(),
-        |device| format!("System default — {}", device.description),
-    )];
-    let mut targets = vec![None];
-    for device in matching {
-        let duplicate_description = devices.iter().any(|other| {
-            other.kind == kind
-                && other.node_name != device.node_name
-                && other.description == device.description
-        });
-        let mut label = if duplicate_description {
-            format!("{} — {}", device.description, device.node_name)
-        } else {
-            device.description.clone()
-        };
-        if device.is_default {
-            label.push_str(" (default)");
-        }
-        labels.push(label);
-        targets.push(Some(device.node_name.clone()));
-    }
-    if let Some(current) = current
-        && !targets.iter().flatten().any(|target| target == current)
-    {
-        labels.push(format!("Unavailable — {current}"));
-        targets.push(Some(current.to_owned()));
-    }
-    let labels: Vec<_> = labels.iter().map(String::as_str).collect();
-    let dropdown = gtk::DropDown::from_strings(&labels);
-    dropdown.set_hexpand(true);
-    let selected = current
-        .and_then(|current| {
-            targets
-                .iter()
-                .position(|target| target.as_deref() == Some(current))
-        })
-        .unwrap_or(0);
-    dropdown.set_selected(u32::try_from(selected).unwrap_or(0));
-    (dropdown, targets)
-}
-
-fn selected_media_target(dropdown: &gtk::DropDown, targets: &[Option<String>]) -> Option<String> {
-    usize::try_from(dropdown.selected())
-        .ok()
-        .and_then(|index| targets.get(index))
-        .cloned()
-        .flatten()
-}
-
-fn attach_setting(grid: &gtk::Grid, row: i32, name: &str, value: &impl IsA<gtk::Widget>) {
-    let label = gtk::Label::new(Some(name));
-    label.set_xalign(0.0);
-    label.set_mnemonic_widget(Some(value));
-    grid.attach(&label, 0, row, 1, 1);
-    grid.attach(value, 1, row, 1, 1);
-}
-
-fn machine_location_control(parent: &gtk::Window, machine_dir: &std::path::Path) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let location = gtk::Entry::builder()
-        .text(machine_dir.to_string_lossy())
-        .editable(false)
-        .hexpand(true)
-        .tooltip_text("The machine location is fixed; move a stopped machine folder and re-register it to change this path")
-        .build();
-    let open = gtk::Button::builder()
-        .icon_name("folder-open-symbolic")
-        .label("Open Folder")
-        .tooltip_text("Open this machine folder in the system file manager")
-        .build();
-    row.append(&location);
-    row.append(&open);
-
-    let parent = parent.clone();
-    let machine_dir = machine_dir.to_path_buf();
-    open.connect_clicked(move |_| {
-        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&machine_dir)));
-        let parent = parent.clone();
-        glib::spawn_future_local(async move {
-            if let Err(error) = launcher.launch_future(Some(&parent)).await {
-                show_error_dialog(
-                    &parent,
-                    "Could not open the machine folder",
-                    &anyhow::Error::new(error),
-                );
-            }
-        });
-    });
-    row
+    (controls, lifecycle)
 }
 
 fn add_diagnostic(grid: &gtk::Grid, row: i32, name: &str, value: &str) {
@@ -4148,6 +3796,19 @@ fn header_status_text(state: MonitorState, microphone_active: bool, camera_activ
     text
 }
 
+fn effective_monitor_state(current: MonitorState, reported: MonitorState) -> MonitorState {
+    match (current, reported) {
+        // A lifecycle command updates runtime.json asynchronously. Never let
+        // its previous value undo the immediate native-window transition.
+        (MonitorState::Starting, MonitorState::Stopped) => current,
+        (MonitorState::Stopping, MonitorState::Running) => current,
+        // A compositor disconnect is Failed until an explicit Start produces
+        // a new lifecycle epoch; stale Running metadata cannot hide it.
+        (MonitorState::Failed, MonitorState::Running) => current,
+        _ => reported,
+    }
+}
+
 fn atomic_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value).context("serializing display state")?;
@@ -4187,46 +3848,26 @@ mod tests {
     }
 
     #[test]
-    fn header_menus_keep_every_host_action_in_the_requested_order() {
+    fn header_contains_exactly_the_requested_machine_actions() {
         assert_eq!(
-            HEADER_MENU_LABELS,
-            ["Machine", "Ports", "Devices", "Clipboard"]
-        );
-        assert_eq!(
-            MACHINE_LIFECYCLE_MENU_ITEMS,
+            MACHINE_HEADER_ACTIONS,
             [
-                ("Start", "app.start"),
-                ("Stop", "app.stop"),
-                ("Restart", "app.restart"),
-            ]
-        );
-        assert_eq!(
-            MACHINE_WINDOW_MENU_ITEMS,
-            [
-                ("Shut Down Machine", "app.shutdown"),
-                ("Close Window", "app.close"),
-            ]
-        );
-        assert_eq!(
-            PORTS_MENU_ITEMS,
-            [("Configure Live Port Mappings…", "app.ports")]
-        );
-        assert_eq!(
-            DEVICES_MENU_ITEMS,
-            [("Audio, Microphone and Camera…", "app.media")]
-        );
-        assert_eq!(
-            CLIPBOARD_MENU_ITEMS,
-            [
-                ("Send Host Clipboard to Guest", "app.clipboard-to-guest"),
-                ("Copy Guest Clipboard to Host", "app.clipboard-to-host"),
-            ]
-        );
-        assert_eq!(
-            SETTINGS_MENU_ITEMS,
-            [
-                ("Machine Settings…", "app.settings"),
-                ("Display Diagnostics…", "app.diagnostics"),
+                ("Restart", "Restart this machine", "app.restart"),
+                (
+                    "Settings",
+                    "Open this machine in Buzzard OS Settings",
+                    "app.settings",
+                ),
+                (
+                    "Copy to Host",
+                    "Copy one clipboard value from the machine to the host",
+                    "app.clipboard-to-host",
+                ),
+                (
+                    "Copy to VM",
+                    "Copy one clipboard value from the host to the machine",
+                    "app.clipboard-to-guest",
+                ),
             ]
         );
     }
@@ -4244,6 +3885,30 @@ mod tests {
         assert_eq!(
             header_status_text(MonitorState::Stopped, false, false),
             "Stopped"
+        );
+    }
+
+    #[test]
+    fn asynchronous_runtime_snapshots_cannot_undo_lifecycle_transitions() {
+        assert_eq!(
+            effective_monitor_state(MonitorState::Starting, MonitorState::Stopped),
+            MonitorState::Starting
+        );
+        assert_eq!(
+            effective_monitor_state(MonitorState::Stopping, MonitorState::Running),
+            MonitorState::Stopping
+        );
+        assert_eq!(
+            effective_monitor_state(MonitorState::Failed, MonitorState::Running),
+            MonitorState::Failed
+        );
+        assert_eq!(
+            effective_monitor_state(MonitorState::Starting, MonitorState::Running),
+            MonitorState::Running
+        );
+        assert_eq!(
+            effective_monitor_state(MonitorState::Running, MonitorState::Stopped),
+            MonitorState::Stopped
         );
     }
 
@@ -4746,6 +4411,22 @@ mod tests {
             ),
             stopping_epoch
         );
+    }
+
+    #[test]
+    fn planned_restart_keeps_the_native_window_across_the_container_exit() {
+        let machine = tempfile::tempdir().unwrap();
+        assert!(!machine_restart_is_pending(machine.path()));
+
+        RuntimeState::new(MachineState::Starting)
+            .save(machine.path())
+            .unwrap();
+        assert!(machine_restart_is_pending(machine.path()));
+
+        RuntimeState::new(MachineState::Stopped)
+            .save(machine.path())
+            .unwrap();
+        assert!(!machine_restart_is_pending(machine.path()));
     }
 
     #[test]

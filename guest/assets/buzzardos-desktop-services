@@ -109,7 +109,10 @@ start_service "$runtime/libexec/buzzardos-output-sync"
 # or retry loops.  The authenticated marker means the real services were
 # launched for this session; deeper validation belongs in tests/acceptance.
 desktop_ready_tmp=$(mktemp "$status_dir/.desktop-ready.XXXXXX")
-chmod 0600 "$desktop_ready_tmp"
+# The enclosing host runtime directory is 0700.  The marker itself must be
+# readable by the desktop user outside every stock Podman user-namespace
+# mapping, including the default subordinate-ID mapping and keep-id.
+chmod 0644 "$desktop_ready_tmp"
 printf '%s\n' "$BUZZARDOS_SESSION_TOKEN" >"$desktop_ready_tmp"
 mv -f "$desktop_ready_tmp" "$status_dir/desktop-ready"
 

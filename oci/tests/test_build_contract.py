@@ -264,18 +264,21 @@ class OciBuildContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, sound)
 
     def test_production_startup_has_no_acceptance_probes(self) -> None:
-        broker = (ROOT / "host/crates/buzzardos-broker/src/main.rs").read_text(
+        display = (ROOT / "host/crates/buzzardos/src/display.rs").read_text(
+            encoding="utf-8"
+        )
+        operations = (ROOT / "host/crates/buzzardos/src/operations.rs").read_text(
             encoding="utf-8"
         )
         services = (ROOT / "guest/assets/buzzardos-desktop-services").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"BUZZARDOS_SESSION_TOKEN".into()', broker)
-        self.assertIn("Uuid::new_v4().simple().to_string()", broker)
-        self.assertIn("desktop_ready_for_session(marker, expected_session_token)", broker)
-        self.assertIn("const GUEST_RUNTIME_MODE: u32 = 0o700", broker)
+        self.assertIn("Uuid::new_v4().simple().to_string()", display)
+        self.assertIn("BUZZARDOS_SESSION_TOKEN={session_token}", display)
+        self.assertIn('join("desktop-ready")', operations)
+        self.assertIn("value.trim() == session_token", operations)
         self.assertIn("mktemp \"$status_dir/.desktop-ready.XXXXXX\"", services)
-        self.assertIn("chmod 0600 \"$desktop_ready_tmp\"", services)
+        self.assertIn("chmod 0644 \"$desktop_ready_tmp\"", services)
         self.assertIn("$BUZZARDOS_SESSION_TOKEN", services)
         self.assertNotIn("health_report", services)
         self.assertNotIn("get_desktop_state", services)
@@ -324,15 +327,10 @@ class OciBuildContractTests(unittest.TestCase):
         )
 
     def test_runtime_creates_no_buzzard_logs_or_activity_telemetry(self) -> None:
-        host_display = (
-            ROOT / "host/crates/buzzardos-display/src/host_app.rs"
-        ).read_text(encoding="utf-8")
-        host_broker = (
-            ROOT / "host/crates/buzzardos-broker/src/main.rs"
-        ).read_text(encoding="utf-8")
-        host_integrations = (
-            ROOT / "host/crates/buzzardos-broker/src/integrations.rs"
-        ).read_text(encoding="utf-8")
+        host_sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (ROOT / "host/crates").rglob("*.rs")
+        )
         cua_tools = (ROOT / "cua/src/platform/tools/impl_.rs").read_text(
             encoding="utf-8"
         )
@@ -367,14 +365,12 @@ class OciBuildContractTests(unittest.TestCase):
             "received_events",
             "forwarded_events",
         ):
-            self.assertNotIn(forbidden, host_display)
+            self.assertNotIn(forbidden, host_sources)
         for forbidden in (
             "display-gateway.log",
-            "nvidia-ctk.log",
             "BUZZARDOS_KEEP_RUNTIME",
         ):
-            self.assertNotIn(forbidden, host_broker)
-        self.assertNotIn(".log", host_integrations)
+            self.assertNotIn(forbidden, host_sources)
         self.assertNotIn("BUZZARDOS_CUA_EVIDENCE_DIR", cua_tools)
         self.assertNotIn("tracing =", cua_manifest)
         self.assertNotIn("last_log_id", update_state)

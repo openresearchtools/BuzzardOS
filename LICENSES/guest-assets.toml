@@ -6,8 +6,6 @@ id = "buzzardos-project-assets"
 paths = [
   "guest/assets/**",
   "host/packaging/BuzzardOS.desktop",
-  "host/packaging/buzzardos.apparmor",
-  "host/packaging/buzzardos-nvidia-container-cli",
   "host/packaging/generate-icons.sh",
 ]
 exclude = ["guest/assets/themes/BuzzardOS-Dark/**", "guest/assets/themes/BuzzardOS-Light/**", "guest/assets/themes/BuzzardOS-Shared/**", "guest/assets/icons/BuzzardOS/**"]

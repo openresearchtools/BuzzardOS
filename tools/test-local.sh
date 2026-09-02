@@ -107,9 +107,9 @@ runtime_manifest = json.loads((runtime / "runtime.manifest.json").read_text())
 assert runtime_manifest["revision"] == str(revision)
 for required in (
     "libexec/buzzardos-clipboard-agent",
-    "libexec/buzzardos-sudo-exec",
 ):
     assert (runtime / required).is_file(), required
+assert (root / "usr/libexec/buzzardos-guest/sudo-policy").is_file()
 for required in (
     "usr/bin/buzzardos-desktop",
     "usr/bin/buzzardos-settings",

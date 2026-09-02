@@ -42,6 +42,7 @@ WATCH_MASK = (
 EVENT = struct.Struct("iIII")
 FALLBACK_SCAN_MIN_SECONDS = 1.0
 FALLBACK_SCAN_MAX_SECONDS = 5.0
+INOTIFY_CAPACITY_ERRORS = (errno.EMFILE, errno.ENFILE, errno.ENOSPC)
 
 
 class InotifyCapacityExhausted(OSError):
@@ -300,7 +301,7 @@ def main() -> int:
     try:
         watcher = Inotify()
     except OSError as error:
-        if error.errno != errno.ENOSPC:
+        if error.errno not in INOTIFY_CAPACITY_ERRORS:
             raise
         print(
             "buzzardos-appimage-ready: cannot allocate an inotify instance: "

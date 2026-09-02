@@ -40,13 +40,13 @@ Buzzard OS. Machine-readable component and asset records are under
 
 ## Native Debian packages
 
-- Host runtime tools such as `bubblewrap`, `buildah`, `slirp4netns`, `uidmap`,
+- Podman, Buildah, their native OCI runtime and networking dependencies,
   GStreamer, GTK, and PipeWire are normal Debian dependencies. They are not
   copied into or statically repackaged by `buzzardos`; their distro packages
   retain the authoritative copyright and source records.
-- OCI pull and build operations use the distribution's normal `buildah`
-  executable with isolated temporary storage. No Crane, Skopeo, or downloaded
-  Go executable is shipped by Buzzard OS.
+- OCI lifecycle, pull, build, import, export, networking, devices, CDI, and
+  user-namespace behavior use the distribution's stock Podman and Buildah.
+  Buzzard OS ships no copied container runtime or downloaded Go executable.
 - `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` each
   carry only the project, embedded dependency, asset, and upstream-fork
   evidence applicable to that package. Their notice bundles are intentionally

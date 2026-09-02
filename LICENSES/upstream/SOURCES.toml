@@ -1,38 +1,6 @@
 schema = 1
 
 [[file]]
-path = "LICENSES/upstream/go-runtime/go-1.26-LICENSE"
-source = "https://raw.githubusercontent.com/golang/go/go1.26.3/LICENSE"
-sha256 = "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
-normalization = "Preserved byte-for-byte."
-
-[[file]]
-path = "LICENSES/upstream/go-runtime/go-1.26-PATENTS"
-source = "https://raw.githubusercontent.com/golang/go/go1.26.3/PATENTS"
-sha256 = "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
-normalization = "Preserved byte-for-byte."
-
-[[file]]
-path = "LICENSES/upstream/slirp4netns-v1.3.4-COPYING"
-source = "https://raw.githubusercontent.com/rootless-containers/slirp4netns/129916bd8dc2b8eaf621671b3431799c827d689e/COPYING"
-sha256 = "58db3cfabf8ec806bc060e54ab5466a31de4a3ae80fe4a8aa02fb6b1c053c93f"
-
-[[file]]
-path = "LICENSES/upstream/libslirp-v4.9.2-LICENSE"
-source = "https://gitlab.freedesktop.org/slirp/libslirp/-/raw/97b325339a1377249e68e6c58e9c15a6e1bba4c1/LICENSE"
-sha256 = "51f17bd7051622101fd3ce477ba3eca5e8f0705a523f3426dfbbddf9973a80bd"
-
-[[file]]
-path = "LICENSES/upstream/libslirp-v4.9.2-COPYRIGHT"
-source = "https://gitlab.freedesktop.org/slirp/libslirp/-/raw/97b325339a1377249e68e6c58e9c15a6e1bba4c1/COPYRIGHT"
-sha256 = "5e81ad3841c9073bee91f65c8c74fdc4b67d1f6742cd35fbd22039bb1e920818"
-
-[[file]]
-path = "LICENSES/upstream/libseccomp-v2.5.3-LICENSE"
-source = "https://raw.githubusercontent.com/seccomp/libseccomp/57357d2741a3b3d3e8425889a6b79a130e0fa2f3/LICENSE"
-sha256 = "102900208eef27b766380135906d431dba87edaa7ec6aa72e6ebd3dd67f3a97b"
-
-[[file]]
 path = "LICENSES/upstream/appimage-type2-runtime-75849dce-LICENSE"
 source = "https://raw.githubusercontent.com/AppImage/type2-runtime/75849dce7cc37e4319b633df1f116ca895c71a12/LICENSE"
 sha256 = "aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1"

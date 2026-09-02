@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
-usage='usage: install-rootfs-assets.sh ROOTFS CLIPBOARD_AGENT_BINARY SUDO_BRIDGE_BINARY'
+usage='usage: install-rootfs-assets.sh ROOTFS CLIPBOARD_AGENT_BINARY SUDO_POLICY_BINARY'
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 target_root=${1:?$usage}
 clipboard_agent_binary=${2:?$usage}
-sudo_bridge_binary=${3:?$usage}
+sudo_policy_binary=${3:?$usage}
 asset_manifest="$script_dir/runtime-asset-manifest.tsv"
 revision=$(tr -d '\n' <"$script_dir/ASSET_REVISION")
 
 test -d "$target_root"
 test ! -L "$target_root"
 test -x "$clipboard_agent_binary"
-test -x "$sudo_bridge_binary"
+test -x "$sudo_policy_binary"
 
 case "$revision" in
     ''|*[!A-Za-z0-9._+~-]*|.*|*/*)
@@ -84,15 +84,10 @@ done <"$asset_manifest"
 
 install -D -m 0755 "$clipboard_agent_binary" \
     "$stage/libexec/buzzardos-clipboard-agent"
-install -D -m 0755 "$sudo_bridge_binary" \
-    "$stage/libexec/buzzardos-sudo-exec"
-install -D -m 0755 "$sudo_bridge_binary" \
-    "$target_root/usr/libexec/buzzardos-guest/sudo"
-install -D -m 0755 "$sudo_bridge_binary" \
+install -D -m 0755 "$sudo_policy_binary" \
     "$target_root/usr/libexec/buzzardos-guest/sudo-policy"
 for required in \
     libexec/buzzardos-clipboard-agent \
-    libexec/buzzardos-sudo-exec \
     libexec/buzzardos-init \
     libexec/buzzardos-session \
     libexec/buzzardos-sway-session \

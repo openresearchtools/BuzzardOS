@@ -1,7 +1,0 @@
-#!/bin/sh
-# SPDX-License-Identifier: AGPL-3.0-or-later
-set -eu
-
-if systemctl is-system-running --quiet 2>/dev/null; then
-    systemctl --no-block start poweroff.target
-fi

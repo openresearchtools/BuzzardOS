@@ -80,22 +80,15 @@ class PackageLicenseBoundaryTests(unittest.TestCase):
         self.assertNotIn("buzzardos-desktop_*_amd64.deb", host_block)
         self.assertNotIn("buzzardoscua_*_amd64.deb", host_block)
 
-    def test_host_nvidia_payload_keeps_exact_upstream_evidence(self) -> None:
+    def test_host_package_declares_stock_container_runtime(self) -> None:
         build = (ROOT / "packaging/build-debs.sh").read_text()
         host_notice = (ROOT / "LICENSES/package-notices/buzzardos.md").read_text()
         copyright_record = (ROOT / "packaging/copyright/buzzardos").read_text()
-        for package in (
-            "nvidia-container-toolkit-base",
-            "libnvidia-container-tools",
-            "libnvidia-container1",
-        ):
-            self.assertIn(f"licenses/nvidia/{package}.copyright", copyright_record)
-        self.assertIn('"$documentation/$package.copyright"', build)
-        self.assertIn('"$extract/usr/share/doc/$package/copyright"', build)
-        self.assertIn("fetch-go-source-archives.sh", build)
-        self.assertIn("nvidia-go-dependencies.toml", build)
-        self.assertIn("unmodified", host_notice.lower())
-        self.assertIn("NVIDIA does not sponsor, endorse, or support Buzzard OS", host_notice)
+        host_block = build.split("build_host() {", 1)[1].split("build_guest() {", 1)[0]
+        self.assertIn("podman", host_block)
+        self.assertIn("buildah", host_block)
+        self.assertIn("host executables", copyright_record)
+        self.assertIn("Podman, Buildah", host_notice)
 
 
 if __name__ == "__main__":

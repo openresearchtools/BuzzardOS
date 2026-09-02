@@ -1,8 +1,0 @@
-#!/bin/sh
-# SPDX-License-Identifier: AGPL-3.0-or-later
-set -eu
-
-helper_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-library_dir="$helper_dir/nvidia-libs"
-export LD_LIBRARY_PATH="$library_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$helper_dir/nvidia-container-cli.real" "$@"

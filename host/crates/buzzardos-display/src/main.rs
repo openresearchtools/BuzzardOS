@@ -6,6 +6,7 @@ mod frame_paintable;
 mod gateway;
 mod guest_display;
 mod host_app;
+mod host_media;
 mod host_theme;
 mod keyboard;
 mod launch;
@@ -29,6 +30,9 @@ fn main() {
 
 fn run() -> Result<()> {
     if let Some(result) = clipboard::maybe_run_image_worker() {
+        return result;
+    }
+    if let Some(result) = host_media::maybe_run() {
         return result;
     }
     configure_gtk_portal_policy();

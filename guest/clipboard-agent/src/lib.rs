@@ -35,8 +35,6 @@ use zeroize::Zeroize;
 const RUNTIME_DIRECTORY: &str = "/run/buzzardos-host";
 const SOCKET_PATH: &str = "/run/buzzardos-host/clipboard-agent.sock";
 const READY_PATH: &str = "/run/buzzardos-host/clipboard-ready";
-const EXPECTED_HOST_PEER_UID: u32 = 1000;
-const EXPECTED_HOST_PEER_GID: u32 = 1000;
 const PRE_REQUEST_IDLE_SECONDS: u64 = IO_TIMEOUT_SECONDS + 1;
 const MAX_MIME_OFFERS: usize = 128;
 const MAX_MIME_METADATA_BYTES: usize = 64 * 1024;
@@ -48,6 +46,8 @@ const WORKER_OPEN_FILES: u64 = 64;
 const WORKER_NONCE: [u8; 16] = *b"WB-CLIP-WORKER1!";
 const WORKER_ENVIRONMENT: &str = "BUZZARDOS_CLIPBOARD_INTERNAL_WORKER";
 const WORKER_ENVIRONMENT_VALUE: &str = "fixed-v1";
+const SOCKET_MODE: u32 = 0o666;
+const READY_MODE: u32 = 0o644;
 
 /// Exact private mode used only by the parent clipboard agent. It accepts one
 /// fixed clipboard-protocol frame over stdin; it is not a command, path, or
@@ -273,15 +273,18 @@ impl Endpoint {
         require_absent(Path::new(SOCKET_PATH))?;
         require_absent(Path::new(READY_PATH))?;
 
-        // A 0177 umask makes the filesystem socket 0600 at bind time without
-        // a chmod-by-path race. The process creates no public filesystem data.
-        rustix::process::umask(Mode::from_raw_mode(0o177));
+        // The enclosing host runtime directory is 0700.  Use a connectable
+        // socket inside it so the host desktop user can reach this guest-owned
+        // endpoint with every stock Podman user-namespace mapping, including
+        // the default subordinate-ID mapping and keep-id.  The private parent
+        // remains the authorization boundary and avoids a chmod-by-path race.
+        rustix::process::umask(Mode::from_raw_mode((!SOCKET_MODE) & 0o777));
         let listener = UnixListener::bind(SOCKET_PATH).map_err(|_| RunError::new("socket_bind"))?;
         ensure_cloexec(&listener).map_err(|_| RunError::new("socket_cloexec"))?;
         let socket_path = OwnedRuntimePath::capture(Path::new(SOCKET_PATH), PathKind::Socket)?;
         let socket_metadata =
             fs::symlink_metadata(SOCKET_PATH).map_err(|_| RunError::new("socket_inspection"))?;
-        if socket_metadata.mode() & 0o777 != 0o600 {
+        if socket_metadata.mode() & 0o777 != SOCKET_MODE {
             return Err(RunError::new("socket_permissions"));
         }
         Ok(Self {
@@ -295,7 +298,7 @@ impl Endpoint {
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(0o600)
+            .mode(READY_MODE)
             .open(READY_PATH)
             .map_err(|_| RunError::new("readiness_create"))?;
         ensure_cloexec(&file).map_err(|_| RunError::new("readiness_cloexec"))?;
@@ -1320,8 +1323,22 @@ fn dispatch(
     result
 }
 
-fn peer_uid_allowed(uid: u32) -> bool {
-    uid == EXPECTED_HOST_PEER_UID
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PeerIdentity {
+    uid: u32,
+    gid: u32,
+}
+
+fn mounted_host_identity(runtime: &Path) -> Result<PeerIdentity, RunError> {
+    let metadata =
+        fs::symlink_metadata(runtime).map_err(|_| RunError::new("runtime_directory_missing"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(RunError::new("runtime_directory_type"));
+    }
+    Ok(PeerIdentity {
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+    })
 }
 
 fn peer_credentials(stream: &UnixStream) -> io::Result<libc::ucred> {
@@ -1370,11 +1387,12 @@ fn protocol_failure(error: &ProtocolError) -> Failure {
 fn serve_connection(
     stream: UnixStream,
     backend: &mut impl ClipboardBackend,
+    host: PeerIdentity,
 ) -> Result<(), Failure> {
     ensure_cloexec(&stream).map_err(|_| Failure::new(Status::Internal, "socket_cloexec"))?;
     let credentials = peer_credentials(&stream)
         .map_err(|_| Failure::new(Status::InvalidRequest, "peer_credentials"))?;
-    if !peer_uid_allowed(credentials.uid) || credentials.gid != EXPECTED_HOST_PEER_GID {
+    if credentials.uid != host.uid || credentials.gid != host.gid {
         return Err(Failure::new(Status::InvalidRequest, "peer_uid"));
     }
 
@@ -1413,10 +1431,14 @@ fn serve_connection(
 
 /// Bind the fixed private endpoint and serve one framed transaction per
 /// connection. The outer desktop UID maps directly to guest UID 1000 in this
-/// machine's user namespace; all other peers are rejected by `SO_PEERCRED`.
+/// machine's active Podman user namespace. The bind-mounted directory owner
+/// is the kernel-translated identity of the host process in that namespace,
+/// so this remains exact for `host`, `keep-id`, `auto`, `nomap`, and explicit
+/// UID/GID maps without Buzzard interpreting the selected mapping.
 pub fn run() -> Result<(), RunError> {
     rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
         .map_err(|_| RunError::new("core_dump_policy"))?;
+    let host = mounted_host_identity(Path::new(RUNTIME_DIRECTORY))?;
     let mut endpoint = Endpoint::bind()?;
     let mut backend = WaylandClipboard::new();
     backend
@@ -1427,7 +1449,7 @@ pub fn run() -> Result<(), RunError> {
     loop {
         match endpoint.listener.accept() {
             Ok((stream, _)) => {
-                if let Err(failure) = serve_connection(stream, &mut backend) {
+                if let Err(failure) = serve_connection(stream, &mut backend, host) {
                     Audit {
                         direction: "transport",
                         mime: "none",
@@ -1634,40 +1656,47 @@ mod tests {
     }
 
     #[test]
-    fn mapped_desktop_uid_is_the_only_accepted_host_peer() {
-        assert!(!peer_uid_allowed(0));
-        assert!(peer_uid_allowed(1000));
-        assert!(!peer_uid_allowed(u32::MAX));
-    }
-
-    #[test]
     fn peer_credentials_come_from_the_connected_unix_process() {
         let (server, _client) = UnixStream::pair().unwrap();
         let credentials = peer_credentials(&server).unwrap();
         assert_eq!(credentials.uid, rustix::process::getuid().as_raw());
-        assert_eq!(
-            peer_uid_allowed(credentials.uid),
-            credentials.uid == EXPECTED_HOST_PEER_UID
-        );
+        assert_eq!(credentials.gid, rustix::process::getgid().as_raw());
     }
 
     #[test]
-    fn framed_connection_enforces_the_real_peer_credential() {
+    fn framed_connection_accepts_the_kernel_translated_mount_owner() {
         let nonce = [0x71; 16];
         let (server, mut client) = UnixStream::pair().unwrap();
         write_frame(&mut client, &Frame::probe(nonce)).unwrap();
         let mut backend = mock(Err(Failure::new(Status::UnsupportedMime, "empty")));
-        let result = serve_connection(server, &mut backend);
-        if rustix::process::getuid().as_raw() == EXPECTED_HOST_PEER_UID {
-            result.unwrap();
-            let response = read_frame(&mut client).unwrap();
-            assert_eq!(response.kind, Kind::ProbeResult);
-            assert_eq!(response.nonce, nonce);
-            assert_eq!(response.status, Status::Ok);
-        } else {
-            assert_eq!(result.unwrap_err().category, "peer_uid");
-            assert_eq!(backend.probes, 0);
-        }
+        let host = PeerIdentity {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        };
+        serve_connection(server, &mut backend, host).unwrap();
+        let response = read_frame(&mut client).unwrap();
+        assert_eq!(response.kind, Kind::ProbeResult);
+        assert_eq!(response.nonce, nonce);
+        assert_eq!(response.status, Status::Ok);
+    }
+
+    #[test]
+    fn framed_connection_rejects_an_identity_other_than_the_mapped_mount_owner() {
+        let nonce = [0x72; 16];
+        let (server, mut client) = UnixStream::pair().unwrap();
+        write_frame(&mut client, &Frame::probe(nonce)).unwrap();
+        let mut backend = mock(Err(Failure::new(Status::UnsupportedMime, "empty")));
+        let host = PeerIdentity {
+            uid: rustix::process::getuid().as_raw().wrapping_add(1),
+            gid: rustix::process::getgid().as_raw(),
+        };
+        assert_eq!(
+            serve_connection(server, &mut backend, host)
+                .unwrap_err()
+                .category,
+            "peer_uid"
+        );
+        assert_eq!(backend.probes, 0);
     }
 
     #[test]

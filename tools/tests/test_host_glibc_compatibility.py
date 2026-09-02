@@ -46,26 +46,18 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
         self.assertIn("docker.io/library/debian:13", matrix)
         self.assertIn("docker.io/library/ubuntu:26.04", matrix)
         self.assertIn("buzzardos --version", matrix)
-        self.assertIn("nvidia-ctk --version", matrix)
-        self.assertIn("nvidia-container-cli --version", matrix)
+        self.assertIn("podman --version", matrix)
         self.assertIn("test-host-package-matrix.sh", self.workflow)
 
     def test_host_package_uses_normal_debian_paths(self) -> None:
         self.assertIn('"$root/usr/bin/buzzardos"', self.packager)
-        self.assertIn('"$root/usr/libexec/buzzardos/buzzardos-broker"', self.packager)
         self.assertIn('"$root/usr/libexec/buzzardos/buzzardos-display"', self.packager)
         self.assertNotIn("AppRun", self.packager)
 
-    def test_host_package_bundles_pinned_rootless_nvidia_helpers(self) -> None:
-        self.assertIn("stage_nvidia_toolkit", self.packager)
-        self.assertIn("nvidia_toolkit_version=1.19.1-1", self.packager)
-        self.assertIn('"$root/usr/libexec/buzzardos/nvidia-ctk"', self.packager)
-        self.assertIn('"$root/usr/libexec/buzzardos/nvidia-cdi-hook"', self.packager)
-        self.assertIn('"$root/usr/libexec/buzzardos/nvidia-container-cli"', self.packager)
-        self.assertNotIn("nvidia-container-toolkit,", self.packager)
-        broker = (ROOT / "host/crates/buzzardos-broker/src/main.rs").read_text()
-        self.assertIn('.helper("nvidia-ctk")', broker)
-        self.assertNotIn('.helper_or_path("nvidia-ctk")', broker)
+    def test_host_package_uses_distro_podman_without_copied_helpers(self) -> None:
+        self.assertIn("podman", self.packager)
+        self.assertIn("buildah", self.packager)
+        self.assertIn("passt", self.packager)
 
 
 if __name__ == "__main__":

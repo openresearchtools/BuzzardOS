@@ -573,7 +573,8 @@ impl Write for BoundedWriter {
     }
 }
 
-const PRIVATE_ENDPOINT_MODE: u32 = 0o600;
+const PRIVATE_SOCKET_MODE: u32 = 0o666;
+const PRIVATE_READY_MODE: u32 = 0o644;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EndpointKind {
@@ -622,6 +623,7 @@ impl FileIdentity {
 pub(crate) struct EndpointSnapshot {
     socket_path: PathBuf,
     ready_path: PathBuf,
+    runtime_root: FileIdentity,
     parent: FileIdentity,
     socket: FileIdentity,
     ready: FileIdentity,
@@ -635,26 +637,37 @@ impl EndpointSnapshot {
         if ready_path.parent() != Some(socket_parent) {
             bail!("guest clipboard endpoint and readiness marker are not colocated");
         }
+        let runtime_root_path = socket_parent
+            .parent()
+            .context("guest clipboard endpoint has no private runtime root")?;
+        let runtime_root = FileIdentity::capture(runtime_root_path, EndpointKind::Directory)?;
         let parent = FileIdentity::capture(socket_parent, EndpointKind::Directory)?;
         let socket = FileIdentity::capture(socket_path, EndpointKind::Socket)?;
         let ready = FileIdentity::capture(ready_path, EndpointKind::File)?;
         let expected_uid = Uid::effective().as_raw();
         let expected_gid = Gid::effective().as_raw();
-        if parent.uid != expected_uid || parent.gid != expected_gid || parent.mode != 0o700 {
+        if runtime_root.uid != expected_uid
+            || runtime_root.gid != expected_gid
+            || runtime_root.mode != 0o700
+            || parent.uid != expected_uid
+            || parent.gid != expected_gid
+            || parent.mode != 0o777
+        {
             bail!("guest clipboard runtime directory is not private to the host user");
         }
-        for identity in [socket, ready] {
-            if identity.uid != expected_uid
-                || identity.gid != expected_gid
-                || identity.mode != PRIVATE_ENDPOINT_MODE
-                || identity.links != 1
-            {
-                bail!("guest clipboard endpoint ownership or permissions are invalid");
-            }
+        if socket.uid != ready.uid
+            || socket.gid != ready.gid
+            || socket.mode != PRIVATE_SOCKET_MODE
+            || ready.mode != PRIVATE_READY_MODE
+            || socket.links != 1
+            || ready.links != 1
+        {
+            bail!("guest clipboard endpoint ownership or permissions are invalid");
         }
         Ok(Self {
             socket_path: socket_path.to_path_buf(),
             ready_path: ready_path.to_path_buf(),
+            runtime_root,
             parent,
             socket,
             ready,
@@ -670,7 +683,11 @@ impl EndpointSnapshot {
             .socket_path
             .parent()
             .context("guest clipboard endpoint has no runtime directory")?;
-        if FileIdentity::capture(parent_path, EndpointKind::Directory)? != self.parent
+        let runtime_root_path = parent_path
+            .parent()
+            .context("guest clipboard endpoint has no private runtime root")?;
+        if FileIdentity::capture(runtime_root_path, EndpointKind::Directory)? != self.runtime_root
+            || FileIdentity::capture(parent_path, EndpointKind::Directory)? != self.parent
             || FileIdentity::capture(&self.socket_path, EndpointKind::Socket)? != self.socket
             || FileIdentity::capture(&self.ready_path, EndpointKind::File)? != self.ready
         {
@@ -836,13 +853,7 @@ fn exchange_with_timeout(
 fn validate_connected_peer(connection: &UnixStream, socket: &FileIdentity) -> Result<()> {
     let credentials = getsockopt(connection, sockopt::PeerCredentials)
         .context("authenticating guest clipboard peer credentials")?;
-    let expected_uid = Uid::effective().as_raw();
-    let expected_gid = Gid::effective().as_raw();
-    if credentials.pid() <= 0
-        || credentials.uid() != expected_uid
-        || credentials.gid() != expected_gid
-        || socket.uid != credentials.uid()
-        || socket.gid != credentials.gid()
+    if credentials.pid() <= 0 || socket.uid != credentials.uid() || socket.gid != credentials.gid()
     {
         bail!("guest clipboard peer credentials do not match the confined endpoint");
     }
@@ -943,12 +954,15 @@ mod tests {
         temporary: &tempfile::TempDir,
     ) -> (PathBuf, PathBuf, UnixListener, EndpointSnapshot) {
         fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = temporary.path().join("clipboard.sock");
-        let ready = temporary.path().join("clipboard-ready");
+        let exchange = temporary.path().join("host");
+        fs::create_dir(&exchange).unwrap();
+        fs::set_permissions(&exchange, fs::Permissions::from_mode(0o777)).unwrap();
+        let socket = exchange.join("clipboard.sock");
+        let ready = exchange.join("clipboard-ready");
         let listener = UnixListener::bind(&socket).unwrap();
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(PRIVATE_SOCKET_MODE)).unwrap();
         fs::write(&ready, b"").unwrap();
-        fs::set_permissions(&ready, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&ready, fs::Permissions::from_mode(PRIVATE_READY_MODE)).unwrap();
         let snapshot = EndpointSnapshot::capture(&socket, &ready).unwrap();
         (socket, ready, listener, snapshot)
     }
@@ -1069,7 +1083,7 @@ mod tests {
         let old_socket = temporary.path().join("old.sock");
         fs::rename(&socket, &old_socket).unwrap();
         let replacement = UnixListener::bind(&socket).unwrap();
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(PRIVATE_SOCKET_MODE)).unwrap();
 
         let error = snapshot.connect().unwrap_err();
         assert!(error.to_string().contains("changed"));
@@ -1084,7 +1098,7 @@ mod tests {
         let pending = snapshot.begin_connect().unwrap();
         fs::rename(&socket, temporary.path().join("old.sock")).unwrap();
         let replacement = UnixListener::bind(&socket).unwrap();
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(PRIVATE_SOCKET_MODE)).unwrap();
         replacement.set_nonblocking(true).unwrap();
 
         // The delayed worker can only finish the already-connected fd. It

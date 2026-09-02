@@ -41,11 +41,8 @@ for image in \
             version=$(dpkg-query -W -f="\${Version}" buzzardos)
             test "$(buzzardos --version)" = "Buzzard OS $version"
             /usr/libexec/buzzardos/buzzardos-display --help >/dev/null
-            /usr/libexec/buzzardos/buzzardos-broker --help >/dev/null
-            /usr/libexec/buzzardos/nvidia-ctk --version | grep -q "NVIDIA Container Toolkit CLI version 1.19.1"
-            /usr/libexec/buzzardos/nvidia-container-cli --version | grep -q "cli-version: 1.19.1"
-            test -s /etc/apparmor.d/usr.libexec.buzzardos
-            apparmor_parser -Q -T /etc/apparmor.d/usr.libexec.buzzardos
+            podman --version >/dev/null
+            buildah --version >/dev/null
             test -s /usr/share/doc/buzzardos/copyright
             test -s /usr/share/applications/org.openresearchtools.buzzardos.desktop
             test -s /usr/share/metainfo/org.openresearchtools.buzzardos.metainfo.xml

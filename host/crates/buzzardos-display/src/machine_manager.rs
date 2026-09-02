@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -18,8 +19,10 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk4 as gtk;
 use wb_core::{
-    MachineConfig, MachineRegistry, MachineState, NetworkMode, PortDirection, PortForward,
-    PortProtocol, RuntimeState, SharedPath,
+    DEFAULT_PODMAN_ARGUMENTS, HostMediaDevice, HostMediaKind, MachineConfig, MachineRegistry,
+    MachineState, NetworkMode, Podman, PodmanContainerState, PodmanDefinition, PodmanRuntimePaths,
+    PortDirection, PortForward, PortProtocol, ResourceLocator, RuntimeState, SharedPath,
+    discover_host_media,
 };
 
 const HOST_PROJECT_LICENSE: &str = include_str!("../../../../LICENSE");
@@ -39,13 +42,17 @@ const BUILTIN_APT_LIVE_SOURCES: &[u8] =
 const BUILTIN_APT_SNAPSHOT_CONFIG: &[u8] =
     include_bytes!("../../../../oci/desktop/apt/99buzzardos-snapshot");
 const MACHINE_LICENSE_EXCLUSION: &str = "This About view covers only the installed Buzzard OS host package. It does not cover machine images or root filesystems, software installed inside a machine, or the separately packaged Buzzard guest components. Those retain their own license records.";
-const EXTERNAL_HOST_DEPENDENCIES: &str = "The following are runtime packages installed separately by APT; they are not bundled into the Buzzard OS host package:\n\nbubblewrap, buildah, GStreamer and its PipeWire/plugins packages, GTK 4, GLib, Wayland, libxkbcommon, xkb-data, PipeWire, slirp4netns, tar, uidmap, and util-linux.\n\nTheir package metadata and /usr/share/doc/<package>/copyright files are authoritative for the versions installed on this host.";
+const EXTERNAL_HOST_DEPENDENCIES: &str = "The following runtime packages are installed separately by APT and are not bundled into the Buzzard OS host package:\n\nPodman, Buildah, their native OCI runtime and networking dependencies, GStreamer and its PipeWire plugins, GTK 4, GLib, Wayland, libxkbcommon, xkb-data, and PipeWire.\n\nTheir package metadata and /usr/share/doc/<package>/copyright files are authoritative for the versions installed on this host.";
 
 #[derive(Debug, Parser)]
 #[command(name = "buzzardos-display --machine-manager")]
 struct ManagerArgs {
     #[arg(long)]
     launcher: PathBuf,
+
+    /// Open this machine's manager-owned settings page immediately.
+    #[arg(long)]
+    settings_machine: Option<PathBuf>,
 }
 
 pub(crate) fn run_from_args() -> Result<()> {
@@ -59,50 +66,97 @@ pub(crate) fn run_from_args() -> Result<()> {
             args.launcher.display()
         );
     }
+    let application_id = manager_application_id(&args.launcher);
+    let invocation = manager_invocation(&args)?;
     let application = gtk::Application::builder()
-        .application_id("org.openresearchtools.buzzardos")
-        .flags(gio::ApplicationFlags::NON_UNIQUE)
+        .application_id(application_id)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
     let system_theme = Rc::new(RefCell::new(None::<gio::Settings>));
-    let system_theme_for_activation = Rc::clone(&system_theme);
-    let activation = Rc::new(RefCell::new(Some(args.launcher)));
+    let system_theme_for_command_line = Rc::clone(&system_theme);
     // GTK owns the application window after it is presented, but the window
     // does not own `ManagerUi`.  Keep the controller alive for the complete
     // application lifetime so its weak button callbacks remain usable.
     let active_manager = Rc::new(RefCell::new(None::<Rc<ManagerUi>>));
-    let active_manager_for_activation = Rc::clone(&active_manager);
-    application.connect_activate(move |application| {
-        if system_theme_for_activation.borrow().is_none() {
-            system_theme_for_activation.replace(crate::host_theme::follow_system_color_scheme());
-        }
-        if let Some(manager) = active_manager_for_activation.borrow().as_ref() {
-            manager.window.present();
-            return;
-        }
-        let Some(launcher) = activation.borrow_mut().take() else {
-            if let Some(window) = application.active_window() {
-                window.present();
+    let active_manager_for_command_line = Rc::clone(&active_manager);
+    application.connect_command_line(move |application, command_line| {
+        let request = match ManagerArgs::try_parse_from(command_line.arguments()) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("Buzzard OS machine manager: {error}");
+                return glib::ExitCode::FAILURE;
             }
-            return;
         };
-        match ManagerUi::build(application, launcher) {
+        if system_theme_for_command_line.borrow().is_none() {
+            system_theme_for_command_line.replace(crate::host_theme::follow_system_color_scheme());
+        }
+        if let Some(manager) = active_manager_for_command_line.borrow().as_ref().cloned() {
+            manager.window.present();
+            if let Some(machine_dir) = request.settings_machine {
+                manager.show_machine_settings(&machine_dir);
+            }
+            return glib::ExitCode::SUCCESS;
+        }
+        match ManagerUi::build(application, request.launcher) {
             Ok(manager) => {
                 manager.window.present();
-                active_manager_for_activation.replace(Some(manager));
+                if let Some(machine_dir) = request.settings_machine {
+                    manager.show_machine_settings(&machine_dir);
+                }
+                active_manager_for_command_line.replace(Some(manager));
+                glib::ExitCode::SUCCESS
             }
             Err(error) => {
                 eprintln!("Buzzard OS machine manager: {error:#}");
                 application.quit();
+                glib::ExitCode::FAILURE
             }
         }
     });
-    let status = application.run_with_args(&["BuzzardOS"]);
+    let status = application.run_with_args(&invocation);
     drop(active_manager);
     drop(system_theme);
     if status != glib::ExitCode::SUCCESS {
         bail!("machine manager exited with {status:?}");
     }
     Ok(())
+}
+
+fn manager_application_id(launcher: &Path) -> String {
+    // One primary manager belongs to one portable application folder.  The
+    // path-derived suffix prevents an independently copied portable folder
+    // from stealing another copy's Settings requests.
+    let identity = launcher
+        .canonicalize()
+        .unwrap_or_else(|_| launcher.to_path_buf());
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in identity.as_os_str().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("org.openresearchtools.buzzardos.manager.x{hash:016x}")
+}
+
+fn manager_invocation(args: &ManagerArgs) -> Result<Vec<String>> {
+    let launcher = args
+        .launcher
+        .to_str()
+        .context("machine manager launcher path is not valid UTF-8")?;
+    let mut invocation = vec![
+        "BuzzardOS".to_owned(),
+        "--launcher".to_owned(),
+        launcher.to_owned(),
+    ];
+    if let Some(machine_dir) = &args.settings_machine {
+        invocation.push("--settings-machine".to_owned());
+        invocation.push(
+            machine_dir
+                .to_str()
+                .context("machine Settings path is not valid UTF-8")?
+                .to_owned(),
+        );
+    }
+    Ok(invocation)
 }
 
 struct ManagerUi {
@@ -624,6 +678,14 @@ impl ManagerUi {
             .placeholder_text("all, index, or GPU UUIDs")
             .hexpand(true)
             .build();
+        let podman_arguments = gtk::Entry::builder()
+            .text(&config.custom_podman_arguments)
+            .placeholder_text(
+                "Native modes: --userns=host, keep-id, auto, nomap, or explicit UID/GID maps",
+            )
+            .tooltip_text("Any native podman create arguments, including host, keep-id, auto, nomap, explicit UID/GID maps, devices, CDI, and other Podman-supported flags")
+            .hexpand(true)
+            .build();
         let general_grid = gtk::Grid::builder()
             .row_spacing(12)
             .column_spacing(18)
@@ -636,9 +698,15 @@ impl ManagerUi {
         attach_manager_setting(&general_grid, 4, "Desktop scale", &guest_scale);
         attach_manager_setting(&general_grid, 5, "Network mode", &network);
         attach_manager_setting(&general_grid, 6, "GPU passthrough", &gpus);
+        attach_manager_setting(
+            &general_grid,
+            7,
+            "Native Podman create arguments",
+            &podman_arguments,
+        );
         general_content.append(&general_grid);
         let restart_note = gtk::Label::new(Some(
-            "Display, network, and GPU changes take effect on the next machine start.",
+            "Podman definition changes take effect at the next start or restart. Arguments are passed directly to stock Podman without filtering or rewriting.",
         ));
         restart_note.set_xalign(0.0);
         restart_note.set_wrap(true);
@@ -707,32 +775,33 @@ impl ManagerUi {
             .active(config.integrations.media.host_camera)
             .halign(gtk::Align::End)
             .build();
-        let audio_target = optional_target_entry(
+        let media_devices = ResourceLocator::discover()
+            .and_then(|resources| discover_host_media(&resources))
+            .unwrap_or_default();
+        let (audio_target, audio_targets) = manager_media_device_dropdown(
+            &media_devices,
+            HostMediaKind::AudioSink,
             config.integrations.media.audio_target.as_deref(),
-            "System default audio output",
         );
-        let microphone_target = optional_target_entry(
+        let (microphone_target, microphone_targets) = manager_media_device_dropdown(
+            &media_devices,
+            HostMediaKind::Microphone,
             config.integrations.media.microphone_target.as_deref(),
-            "System default microphone",
         );
-        let camera_target = optional_target_entry(
+        let (camera_target, camera_targets) = manager_media_device_dropdown(
+            &media_devices,
+            HostMediaKind::Camera,
             config.integrations.media.camera_target.as_deref(),
-            "System default camera",
         );
         attach_manager_setting(&device_grid, 0, "Guest audio → host speakers", &audio);
-        attach_manager_setting(&device_grid, 1, "Audio PipeWire node", &audio_target);
+        attach_manager_setting(&device_grid, 1, "Audio output", &audio_target);
         attach_manager_setting(&device_grid, 2, "Host microphone → guest", &microphone);
-        attach_manager_setting(
-            &device_grid,
-            3,
-            "Microphone PipeWire node",
-            &microphone_target,
-        );
+        attach_manager_setting(&device_grid, 3, "Microphone", &microphone_target);
         attach_manager_setting(&device_grid, 4, "Host camera → guest", &camera);
-        attach_manager_setting(&device_grid, 5, "Camera PipeWire node", &camera_target);
+        attach_manager_setting(&device_grid, 5, "Camera", &camera_target);
         devices.1.append(&device_grid);
         let devices_note = gtk::Label::new(Some(
-            "Leave a PipeWire node blank to follow the host default. Live media and ports require Private user-mode networking.",
+            "Automatic follows the host default. Media changes apply when the machine next starts or restarts.",
         ));
         devices_note.set_xalign(0.0);
         devices_note.set_wrap(true);
@@ -794,14 +863,18 @@ impl ManagerUi {
                 _ => NetworkMode::User,
             };
             updated.gpus = comma_separated(&gpus.text());
+            updated.custom_podman_arguments = podman_arguments.text().trim().to_owned();
             updated.integrations.ports =
                 port_rows.borrow().iter().map(manager_port_value).collect();
             updated.integrations.media.guest_audio_output = audio.is_active();
             updated.integrations.media.host_microphone = microphone.is_active();
             updated.integrations.media.host_camera = camera.is_active();
-            updated.integrations.media.audio_target = optional_entry_value(&audio_target);
-            updated.integrations.media.microphone_target = optional_entry_value(&microphone_target);
-            updated.integrations.media.camera_target = optional_entry_value(&camera_target);
+            updated.integrations.media.audio_target =
+                selected_manager_media_target(&audio_target, &audio_targets);
+            updated.integrations.media.microphone_target =
+                selected_manager_media_target(&microphone_target, &microphone_targets);
+            updated.integrations.media.camera_target =
+                selected_manager_media_target(&camera_target, &camera_targets);
             updated.shares = share_rows
                 .borrow()
                 .iter()
@@ -1227,6 +1300,11 @@ impl ManagerUi {
         destination_row.append(&browse_destination);
         grid.attach(&destination_label, 0, 2, 1, 1);
         grid.attach(&destination_row, 1, 2, 1, 1);
+        let podman_arguments_label = gtk::Label::new(Some("Native Podman create arguments"));
+        podman_arguments_label.set_xalign(0.0);
+        let podman_arguments = podman_arguments_entry(None);
+        grid.attach(&podman_arguments_label, 0, 3, 1, 1);
+        grid.attach(&podman_arguments, 1, 3, 1, 1);
         root.append(&grid);
         let import_as_copy = gtk::CheckButton::with_label("Import as a new copy");
         if importing {
@@ -1300,7 +1378,7 @@ impl ManagerUi {
                     );
                     return;
                 }
-                let arguments = if importing {
+                let mut arguments = if importing {
                     vec![
                         "import".into(),
                         source_value,
@@ -1316,6 +1394,7 @@ impl ManagerUi {
                 } else {
                     vec!["pull".into(), machine_name, source_value]
                 };
+                append_podman_arguments(&mut arguments, &podman_arguments.text());
                 manager.run_command_with_cleanup(Some(machine_dir), arguments, None, None);
                 close.close();
             }
@@ -1352,6 +1431,7 @@ impl ManagerUi {
         let context = gtk::Entry::new();
         let containerfile = gtk::Entry::new();
         let destination = gtk::Entry::new();
+        let podman_arguments = podman_arguments_entry(None);
         let cuda_support =
             gtk::CheckButton::with_label("Include NVIDIA CUDA support (recommended)");
         cuda_support.set_active(!matches!(built_in, Some(BuiltInMachine::Standard)));
@@ -1388,6 +1468,10 @@ impl ManagerUi {
                 "Containerfile (optional)",
                 file_row.clone().upcast::<gtk::Widget>(),
             ),
+            (
+                "Native Podman create arguments",
+                podman_arguments.clone().upcast::<gtk::Widget>(),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -1418,7 +1502,7 @@ impl ManagerUi {
                 &context_browse,
                 &dialog,
                 &context,
-                "Choose Buildah context folder",
+                "Choose Containerfile build context",
             );
         } else {
             context_browse.set_visible(false);
@@ -1504,6 +1588,7 @@ impl ManagerUi {
                     arguments.push("--file".into());
                     arguments.push(selected_file.to_string_lossy().into_owned());
                 }
+                append_podman_arguments(&mut arguments, &podman_arguments.text());
                 manager.run_command_with_cleanup(
                     Some(machine_dir),
                     arguments,
@@ -1544,7 +1629,7 @@ impl ManagerUi {
         folder_row.append(&browse);
         root.append(&folder_row);
 
-        let filename = format!("{machine}.oci.tar.zst");
+        let filename = format!("{machine}.oci.tar");
         let output_note = gtk::Label::new(Some(&format!("Archive name: {filename}")));
         output_note.set_xalign(0.0);
         output_note.add_css_class("dim-label");
@@ -1614,6 +1699,10 @@ impl ManagerUi {
         destination_row.append(&destination);
         destination_row.append(&browse);
         root.append(&destination_row);
+        let podman_arguments = podman_arguments_entry(Some(
+            "Leave blank to inherit the source machine's native Podman arguments",
+        ));
+        root.append(&podman_arguments);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
@@ -1637,12 +1726,9 @@ impl ManagerUi {
                     show_manager_error(&close, "Check the machine details", &error);
                     return;
                 }
-                manager.run_command_with_cleanup(
-                    Some(machine_dir),
-                    vec!["clone".into(), source.clone(), new_name],
-                    None,
-                    None,
-                );
+                let mut arguments = vec!["clone".into(), source.clone(), new_name];
+                append_optional_podman_arguments(&mut arguments, &podman_arguments.text());
+                manager.run_command_with_cleanup(Some(machine_dir), arguments, None, None);
                 close.close();
             }
         });
@@ -1902,16 +1988,37 @@ const MACHINE_OVERFLOW_ACTIONS: [(&str, &str); 3] = [
 
 fn discover_machine_list() -> Result<Vec<MachineListItem>> {
     let registry = MachineRegistry::discover()?;
+    let resources = ResourceLocator::discover()?;
+    let podman = Podman::discover(&resources)?;
     let mut machines = registry
         .entries()
         .iter()
         .filter_map(|entry| {
             let config = MachineConfig::load(&entry.machine_dir).ok()?;
-            let state = RuntimeState::load(&entry.machine_dir)
-                .ok()
-                .flatten()
-                .map(|state| state.state)
+            let runtime = PodmanRuntimePaths::discover(config.id).ok()?;
+            let definition =
+                PodmanDefinition::for_machine(&config, &entry.machine_dir, &runtime).ok()?;
+            let inspection = podman.inspect(&definition.container_name).ok().flatten();
+            let state = inspection
+                .as_ref()
+                .map(|inspection| match inspection.state {
+                    PodmanContainerState::Running | PodmanContainerState::Paused => {
+                        MachineState::Running
+                    }
+                    PodmanContainerState::Stopping => MachineState::Stopping,
+                    PodmanContainerState::Unknown => MachineState::Failed,
+                    PodmanContainerState::Configured
+                    | PodmanContainerState::Created
+                    | PodmanContainerState::Stopped
+                    | PodmanContainerState::Exited => MachineState::Stopped,
+                })
                 .unwrap_or(MachineState::Stopped);
+            let mut runtime_state = RuntimeState::new(state);
+            if let Some(inspection) = inspection {
+                runtime_state.container_id = Some(inspection.id);
+                runtime_state.definition_digest = inspection.definition_digest;
+            }
+            let _ = runtime_state.save(&entry.machine_dir);
             Some(MachineListItem {
                 directory: entry.machine_dir.clone(),
                 config,
@@ -1995,6 +2102,34 @@ fn validate_machine_destination(name: &str, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn podman_arguments_entry(placeholder: Option<&str>) -> gtk::Entry {
+    let entry = gtk::Entry::builder()
+        .placeholder_text(placeholder.unwrap_or(
+            "Native modes: --userns=host, keep-id, auto, nomap, or explicit UID/GID maps",
+        ))
+        .tooltip_text(
+            "Unrestricted native podman create arguments. Buzzard parses quoting into argv and passes every argument to stock Podman without filtering or rewriting.",
+        )
+        .hexpand(true)
+        .build();
+    if placeholder.is_none() {
+        entry.set_text(DEFAULT_PODMAN_ARGUMENTS);
+    }
+    entry
+}
+
+fn append_podman_arguments(arguments: &mut Vec<String>, value: &str) {
+    arguments.push("--podman-arguments".into());
+    arguments.push(value.trim().into());
+}
+
+fn append_optional_podman_arguments(arguments: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() {
+        append_podman_arguments(arguments, value);
+    }
+}
+
 fn export_destination(folder: &Path, machine: &str) -> Result<PathBuf> {
     MachineConfig::validate_name(machine)?;
     if folder.as_os_str().is_empty() || !folder.is_absolute() {
@@ -2005,7 +2140,7 @@ fn export_destination(folder: &Path, machine: &str) -> Result<PathBuf> {
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("the export destination must be a real folder");
     }
-    let destination = folder.join(format!("{machine}.oci.tar.zst"));
+    let destination = folder.join(format!("{machine}.oci.tar"));
     if destination.exists() {
         bail!(
             "the export archive already exists: {}",
@@ -2112,17 +2247,67 @@ fn machine_location_control(parent: &gtk::Window, machine_dir: &Path) -> gtk::Bo
     row
 }
 
-fn optional_target_entry(value: Option<&str>, placeholder: &str) -> gtk::Entry {
-    gtk::Entry::builder()
-        .text(value.unwrap_or_default())
-        .placeholder_text(placeholder)
-        .hexpand(true)
-        .build()
+fn manager_media_device_dropdown(
+    devices: &[HostMediaDevice],
+    kind: HostMediaKind,
+    current: Option<&str>,
+) -> (gtk::DropDown, Vec<Option<String>>) {
+    let matching: Vec<_> = devices
+        .iter()
+        .filter(|device| device.kind == kind)
+        .collect();
+    let default = matching.iter().find(|device| device.is_default);
+    let mut labels = vec![default.map_or_else(
+        || "Automatic — no device currently advertised".to_owned(),
+        |device| format!("Automatic — {}", device.description),
+    )];
+    let mut targets = vec![None];
+    for device in matching {
+        let duplicate_description = devices.iter().any(|other| {
+            other.kind == kind
+                && other.node_name != device.node_name
+                && other.description == device.description
+        });
+        let mut label = if duplicate_description {
+            format!("{} — {}", device.description, device.node_name)
+        } else {
+            device.description.clone()
+        };
+        if device.is_default {
+            label.push_str(" (default)");
+        }
+        labels.push(label);
+        targets.push(Some(device.node_name.clone()));
+    }
+    if let Some(current) = current
+        && !targets.iter().flatten().any(|target| target == current)
+    {
+        labels.push(format!("Unavailable — {current}"));
+        targets.push(Some(current.to_owned()));
+    }
+    let label_refs: Vec<_> = labels.iter().map(String::as_str).collect();
+    let dropdown = gtk::DropDown::from_strings(&label_refs);
+    dropdown.set_hexpand(true);
+    let selected = current
+        .and_then(|current| {
+            targets
+                .iter()
+                .position(|target| target.as_deref() == Some(current))
+        })
+        .unwrap_or(0);
+    dropdown.set_selected(u32::try_from(selected).unwrap_or(0));
+    (dropdown, targets)
 }
 
-fn optional_entry_value(entry: &gtk::Entry) -> Option<String> {
-    let value = entry.text().trim().to_owned();
-    (!value.is_empty()).then_some(value)
+fn selected_manager_media_target(
+    dropdown: &gtk::DropDown,
+    targets: &[Option<String>],
+) -> Option<String> {
+    usize::try_from(dropdown.selected())
+        .ok()
+        .and_then(|index| targets.get(index))
+        .cloned()
+        .flatten()
 }
 
 fn comma_separated(value: &str) -> Vec<String> {
@@ -2639,31 +2824,8 @@ fn host_license_document() -> String {
         "The complete checksum-verified Rust standard-library notice is installed at /usr/share/doc/buzzardos/rust/COPYRIGHT-library.html in the packaged application."
             .to_owned()
     });
-    let nvidia_notices = [
-        (
-            "NVIDIA CONTAINER TOOLKIT",
-            "/usr/share/doc/buzzardos/licenses/nvidia/nvidia-container-toolkit-base.copyright",
-        ),
-        (
-            "LIBNVIDIA-CONTAINER TOOLS",
-            "/usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container-tools.copyright",
-        ),
-        (
-            "LIBNVIDIA-CONTAINER RUNTIME",
-            "/usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container1.copyright",
-        ),
-    ]
-    .into_iter()
-    .map(|(heading, path)| {
-        let notice = std::fs::read_to_string(path).unwrap_or_else(|_| {
-            format!("The complete pinned upstream record is installed at {path}.")
-        });
-        format!("{heading}\n\n{notice}")
-    })
-    .collect::<Vec<_>>()
-    .join("\n\n");
     format!(
-        "BUZZARD OS — AGPL-3.0-OR-LATER\n\n{HOST_PROJECT_LICENSE}\n\nAPPLICATION METADATA — CC0-1.0\n\norg.openresearchtools.BuzzardOS.metainfo.xml is licensed under CC0-1.0. The full text is installed at /usr/share/common-licenses/CC0-1.0.\n\n{nvidia_notices}\n\nRUST STANDARD LIBRARY\n\n{rust_standard_library_notice}\n\nRUST DEPENDENCIES\n\n{HOST_RUST_DEPENDENCY_NOTICES}"
+        "BUZZARD OS — AGPL-3.0-OR-LATER\n\n{HOST_PROJECT_LICENSE}\n\nAPPLICATION METADATA — CC0-1.0\n\norg.openresearchtools.BuzzardOS.metainfo.xml is licensed under CC0-1.0. The full text is installed at /usr/share/common-licenses/CC0-1.0.\n\nRUST STANDARD LIBRARY\n\n{rust_standard_library_notice}\n\nRUST DEPENDENCIES\n\n{HOST_RUST_DEPENDENCY_NOTICES}"
     )
 }
 
@@ -2689,6 +2851,32 @@ fn document_page(contents: &str, monospace: bool) -> gtk::ScrolledWindow {
 #[cfg(test)]
 mod license_tests {
     use super::*;
+
+    #[test]
+    fn manager_identity_is_stable_per_portable_launcher() {
+        let first = Path::new("/opt/BuzzardOS/BuzzardOS");
+        let second = Path::new("/mnt/portable/BuzzardOS/BuzzardOS");
+        assert_eq!(manager_application_id(first), manager_application_id(first));
+        assert_ne!(
+            manager_application_id(first),
+            manager_application_id(second)
+        );
+        assert!(
+            manager_application_id(first).starts_with("org.openresearchtools.buzzardos.manager.x")
+        );
+    }
+
+    #[test]
+    fn manager_command_line_preserves_settings_destination() {
+        let request = ManagerArgs {
+            launcher: PathBuf::from("/opt/BuzzardOS/BuzzardOS"),
+            settings_machine: Some(PathBuf::from("/data/Machines/demo")),
+        };
+        let invocation = manager_invocation(&request).unwrap();
+        let parsed = ManagerArgs::try_parse_from(invocation).unwrap();
+        assert_eq!(parsed.launcher, request.launcher);
+        assert_eq!(parsed.settings_machine, request.settings_machine);
+    }
 
     #[test]
     fn new_folder_name_is_one_safe_path_component() {
@@ -2751,7 +2939,7 @@ mod license_tests {
     fn export_uses_a_selected_folder_and_a_safe_automatic_filename() {
         let temp = tempfile::tempdir().unwrap();
         let output = export_destination(temp.path(), "portable-demo").unwrap();
-        assert_eq!(output, temp.path().join("portable-demo.oci.tar.zst"));
+        assert_eq!(output, temp.path().join("portable-demo.oci.tar"));
         std::fs::write(&output, b"existing archive").unwrap();
         assert!(export_destination(temp.path(), "portable-demo").is_err());
         assert!(export_destination(Path::new("relative"), "portable-demo").is_err());

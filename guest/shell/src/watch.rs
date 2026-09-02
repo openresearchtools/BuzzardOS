@@ -43,7 +43,7 @@ impl DirectoryWatcher {
         let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
         if descriptor < 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENOSPC) {
+            if inotify_quota_exhausted(&error) {
                 return Ok(Self {
                     backend: WatchBackend::Unavailable,
                 });
@@ -83,7 +83,7 @@ impl DirectoryWatcher {
             if unsafe { libc::inotify_add_watch(descriptor.as_raw_fd(), path_c.as_ptr(), mask) } < 0
             {
                 let error = std::io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ENOSPC) {
+                if inotify_quota_exhausted(&error) {
                     return Ok(Self {
                         backend: WatchBackend::Unavailable,
                     });
@@ -165,7 +165,7 @@ impl FileWatcher {
         let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
         if descriptor < 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENOSPC) {
+            if inotify_quota_exhausted(&error) {
                 return Ok(Self {
                     backend: WatchBackend::Unavailable,
                     file_name,
@@ -186,7 +186,7 @@ impl FileWatcher {
         // SAFETY: descriptor and NUL-terminated path are valid.
         if unsafe { libc::inotify_add_watch(descriptor.as_raw_fd(), parent_c.as_ptr(), mask) } < 0 {
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENOSPC) {
+            if inotify_quota_exhausted(&error) {
                 return Ok(Self {
                     backend: WatchBackend::Unavailable,
                     file_name,
@@ -274,6 +274,13 @@ impl FileWatcher {
     }
 }
 
+fn inotify_quota_exhausted(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE) | Some(libc::ENOSPC)
+    )
+}
+
 fn nearest_real_directory(path: &Path) -> Result<Option<(PathBuf, bool)>> {
     let mut candidate = Some(path);
     while let Some(current) = candidate {
@@ -339,6 +346,9 @@ mod tests {
         let watched = temp.path().join("watched");
         fs::create_dir(&watched).unwrap();
         let watcher = DirectoryWatcher::new(std::slice::from_ref(&watched)).unwrap();
+        if watcher.raw_fd().is_none() {
+            return;
+        }
         fs::write(watched.join("new.desktop"), b"fixture").unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         while Instant::now() < deadline {
@@ -359,6 +369,9 @@ mod tests {
         fs::create_dir(&real).unwrap();
         symlink(&real, &link).unwrap();
         let watcher = DirectoryWatcher::new(&[link]).unwrap();
+        if watcher.raw_fd().is_none() {
+            return;
+        }
         fs::write(real.join("hidden.desktop"), b"fixture").unwrap();
         assert!(!watcher.changed().unwrap());
     }
@@ -368,6 +381,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join(".local/share/applications");
         let watcher = DirectoryWatcher::new(std::slice::from_ref(&missing)).unwrap();
+        if watcher.raw_fd().is_none() {
+            return;
+        }
         fs::create_dir_all(&missing).unwrap();
         fs::write(missing.join("first.desktop"), b"fixture").unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -395,6 +411,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let watched = temp.path().join("settings.json");
         let watcher = FileWatcher::new(&watched).unwrap();
+        if watcher.raw_fd().is_none() {
+            return;
+        }
         fs::write(temp.path().join("unrelated"), b"noise").unwrap();
         assert!(!watcher.changed().unwrap());
 
@@ -409,5 +428,18 @@ mod tests {
             std::thread::yield_now();
         }
         panic!("exact-file inotify did not report atomic replacement");
+    }
+
+    #[test]
+    fn both_kernel_quota_errors_select_the_event_only_fallback() {
+        assert!(inotify_quota_exhausted(&std::io::Error::from_raw_os_error(
+            libc::EMFILE
+        )));
+        assert!(inotify_quota_exhausted(&std::io::Error::from_raw_os_error(
+            libc::ENOSPC
+        )));
+        assert!(!inotify_quota_exhausted(
+            &std::io::Error::from_raw_os_error(libc::EINVAL)
+        ));
     }
 }

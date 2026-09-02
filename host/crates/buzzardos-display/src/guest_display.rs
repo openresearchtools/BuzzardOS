@@ -4,14 +4,14 @@
 //!
 //! This is deliberately a server, not a byte proxy to the host compositor.
 //! The only client permitted here is Sway. Its final output buffer becomes a
-//! [`DmabufFrame`] for the GTK monitor; guest-created xdg objects never become
-//! host xdg objects.
+//! a typed [`GuestFrame`] for the GTK monitor; guest-created xdg objects never
+//! become host xdg objects.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +45,7 @@ use xkbcommon::xkb;
 use crate::drm_syncobj::{SyncobjDevice, SyncobjTimeline};
 use crate::gateway::{
     CursorImage, CursorStorage, DmabufFormat, DmabufFrame, DmabufPlane, EventSender,
-    GatewayCommand, GatewayEvent, OutputMode,
+    GatewayCommand, GatewayEvent, GuestFrame, OutputMode, ShmFrame,
 };
 use crate::keyboard::{
     CompiledKeymap, KeyboardMapFailure, KeyboardMapReply, KeyboardMapRequest, KeyboardMapResponse,
@@ -53,6 +53,7 @@ use crate::keyboard::{
 };
 
 const MAX_DMABUF_PLANES: usize = 4;
+const MAX_SHM_FRAME_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PENDING_KEY_EVENTS: usize = 256;
 #[cfg(test)]
 const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
@@ -152,7 +153,11 @@ fn set_private_display_socket_connected(path: &std::path::Path, connected: bool)
 }
 
 fn private_display_socket_mode(connected: bool) -> u32 {
-    if connected { 0o000 } else { 0o600 }
+    // The socket is inside a machine-private bind mount, but the connecting
+    // Sway process may use any native Podman user-namespace mapping. Do not
+    // assume its host UID. Remove connect permission while a compositor is
+    // attached, then restore it for the next connection.
+    if connected { 0o000 } else { 0o666 }
 }
 
 fn wait_for_configuration(
@@ -188,9 +193,9 @@ fn create_globals(handle: &DisplayHandle, dmabuf_version: u32, explicit_sync: bo
     handle.create_global::<GuestState, wl_seat::WlSeat, _>(9, ());
     handle.create_global::<GuestState, xdg_wm_base::XdgWmBase, _>(1, ());
     handle.create_global::<GuestState, wp_viewporter::WpViewporter, _>(1, ());
-    // The broker admits only hosts with v4 main-device feedback. Keep the
-    // explicit version argument as an internal protocol guard between the
-    // independently packaged broker and display helper.
+    // Host setup admits only compositors with v4 main-device feedback. Keep
+    // the explicit version argument as an internal guard at the private
+    // nested-display protocol boundary.
     handle
         .create_global::<GuestState, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _>(dmabuf_version, ());
     handle.create_global::<GuestState, wp_presentation::WpPresentation, _>(1, ());
@@ -1309,7 +1314,9 @@ impl GuestState {
             .data::<BufferData>()
             .and_then(|data| match data {
                 BufferData::Dmabuf(data) => Some((data.width, data.height)),
-                BufferData::Shm(_) => None,
+                BufferData::Shm(data) => u32::try_from(data.width)
+                    .ok()
+                    .zip(u32::try_from(data.height).ok()),
             })
             .is_some_and(|size| size != (self.mode.physical_width, self.mode.physical_height))
         {
@@ -1694,67 +1701,129 @@ fn frame_from_buffer(
     formats: &[DmabufFormat],
     explicit_sync: bool,
     acquire_wait_us: u64,
-) -> Result<DmabufFrame> {
+) -> Result<GuestFrame> {
     let data = buffer
         .data::<BufferData>()
         .context("nested compositor attached an unknown wl_buffer")?;
-    let data = match data {
-        BufferData::Dmabuf(data) => data,
-        BufferData::Shm(data) => {
-            let _ = (
-                data.offset,
-                data.width,
-                data.height,
-                data.stride,
-                data.format,
-            );
-            bail!(
-                "nested compositor attached shared memory to its primary output; fast path failed"
-            );
+    match data {
+        BufferData::Dmabuf(data) => {
+            if data.width != mode.physical_width || data.height != mode.physical_height {
+                bail!(
+                    "nested output buffer {}x{} does not match native physical mode {}x{}",
+                    data.width,
+                    data.height,
+                    mode.physical_width,
+                    mode.physical_height
+                );
+            }
+            if !formats
+                .iter()
+                .any(|format| format.fourcc == data.fourcc && format.modifier == data.modifier)
+            {
+                bail!(
+                    "guest dmabuf format {:#010x}/{:#018x} is not importable by the host display",
+                    data.fourcc,
+                    data.modifier
+                );
+            }
+            let planes = data
+                .planes
+                .iter()
+                .map(|plane| {
+                    Ok(DmabufPlane {
+                        fd: plane.fd.try_clone().context("duplicating dmabuf plane")?,
+                        offset: plane.offset,
+                        stride: plane.stride,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(GuestFrame::Dmabuf(DmabufFrame {
+                id,
+                geometry_generation: mode.geometry_generation,
+                width: data.width,
+                height: data.height,
+                fourcc: data.fourcc,
+                modifier: data.modifier,
+                planes,
+                submitted_monotonic_us: monotonic_us(),
+                explicit_sync,
+                acquire_wait_us,
+            }))
         }
-    };
-    if data.width != mode.physical_width || data.height != mode.physical_height {
-        bail!(
-            "nested output buffer {}x{} does not match native physical mode {}x{}",
-            data.width,
-            data.height,
-            mode.physical_width,
-            mode.physical_height
-        );
+        BufferData::Shm(data) => {
+            let width = u32::try_from(data.width).context("wl_shm frame width is invalid")?;
+            let height = u32::try_from(data.height).context("wl_shm frame height is invalid")?;
+            anyhow::ensure!(
+                width == mode.physical_width && height == mode.physical_height,
+                "nested output buffer {}x{} does not match native physical mode {}x{}",
+                width,
+                height,
+                mode.physical_width,
+                mode.physical_height
+            );
+            anyhow::ensure!(
+                matches!(
+                    data.format,
+                    wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888
+                ),
+                "primary-output wl_shm format {:?} is unsupported",
+                data.format
+            );
+            let offset = u64::try_from(data.offset).context("wl_shm frame offset is invalid")?;
+            let stride = usize::try_from(data.stride).context("wl_shm frame stride is invalid")?;
+            let minimum_stride = usize::try_from(width)
+                .context("wl_shm frame width overflow")?
+                .checked_mul(4)
+                .context("wl_shm minimum stride overflow")?;
+            anyhow::ensure!(
+                stride >= minimum_stride,
+                "wl_shm frame stride {stride} is smaller than {minimum_stride}"
+            );
+            let length = stride
+                .checked_mul(usize::try_from(height).context("wl_shm frame height overflow")?)
+                .context("wl_shm frame byte length overflow")?;
+            anyhow::ensure!(
+                length <= MAX_SHM_FRAME_BYTES,
+                "wl_shm frame is larger than the {}-byte display limit",
+                MAX_SHM_FRAME_BYTES
+            );
+            let end = offset
+                .checked_add(u64::try_from(length).context("wl_shm frame length overflow")?)
+                .context("wl_shm frame range overflow")?;
+            let file = File::from(
+                data.fd
+                    .try_clone()
+                    .context("duplicating primary-output wl_shm pool")?,
+            );
+            let pool_length = file
+                .metadata()
+                .context("reading primary-output wl_shm pool metadata")?
+                .len();
+            anyhow::ensure!(
+                end <= pool_length,
+                "wl_shm frame range ends at {end}, beyond its {pool_length}-byte pool"
+            );
+            let mut pixels = vec![0_u8; length];
+            file.read_exact_at(&mut pixels, offset)
+                .context("copying primary-output wl_shm frame")?;
+            if data.format == wl_shm::Format::Xrgb8888 {
+                for row in pixels.chunks_exact_mut(stride) {
+                    for pixel in row[..minimum_stride].chunks_exact_mut(4) {
+                        pixel[3] = u8::MAX;
+                    }
+                }
+            }
+            Ok(GuestFrame::Shm(ShmFrame {
+                id,
+                geometry_generation: mode.geometry_generation,
+                width,
+                height,
+                stride,
+                pixels,
+                submitted_monotonic_us: monotonic_us(),
+            }))
+        }
     }
-    if !formats
-        .iter()
-        .any(|format| format.fourcc == data.fourcc && format.modifier == data.modifier)
-    {
-        bail!(
-            "guest dmabuf format {:#010x}/{:#018x} is not importable by the host display",
-            data.fourcc,
-            data.modifier
-        );
-    }
-    let planes = data
-        .planes
-        .iter()
-        .map(|plane| {
-            Ok(DmabufPlane {
-                fd: plane.fd.try_clone().context("duplicating dmabuf plane")?,
-                offset: plane.offset,
-                stride: plane.stride,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(DmabufFrame {
-        id,
-        geometry_generation: mode.geometry_generation,
-        width: data.width,
-        height: data.height,
-        fourcc: data.fourcc,
-        modifier: data.modifier,
-        planes,
-        submitted_monotonic_us: monotonic_us(),
-        explicit_sync,
-        acquire_wait_us,
-    })
 }
 
 fn cursor_image_from_buffer(
@@ -2743,7 +2812,7 @@ mod tests {
 
     #[test]
     fn private_display_accepts_only_during_compositor_reconnect() {
-        assert_eq!(private_display_socket_mode(false), 0o600);
+        assert_eq!(private_display_socket_mode(false), 0o666);
         assert_eq!(private_display_socket_mode(true), 0o000);
     }
 

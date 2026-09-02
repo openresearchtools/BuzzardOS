@@ -2,7 +2,6 @@
 members = [
     "crates/wb-core",
     "crates/buzzardos",
-    "crates/buzzardos-broker",
     "crates/buzzardos-display",
 ]
 resolver = "2"
@@ -26,6 +25,7 @@ nix = { version = "0.30", features = ["fs", "mount", "process", "signal", "socke
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+shell-words = "1.1"
 tar = "0.4"
 tempfile = "3.20"
 tiff = "=0.10.3"

@@ -30,8 +30,9 @@ pub enum HostMediaBackend {
     /// The host PipeWire node itself is the only advertised capture route.
     PipeWire,
     /// Physical ALSA endpoint advertised by the PipeWire node. This is
-    /// discovery evidence only for microphones: the broker must still capture
-    /// their stable PipeWire node through the desktop-accounted Pulse service.
+    /// discovery evidence only for microphones: the host media bridge still
+    /// captures their stable PipeWire node through the desktop-accounted
+    /// Pulse service.
     Alsa { device: String },
     /// Physical Video4Linux endpoint advertised by the PipeWire node.
     V4l2 { device: PathBuf },

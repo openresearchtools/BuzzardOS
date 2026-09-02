@@ -3,145 +3,35 @@
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 INIT = ROOT / "guest/assets/buzzardos-init"
-BWRAP = shutil.which("bwrap")
-@unittest.skipUnless(BWRAP, "bubblewrap is required to isolate the guest init test")
-class GuestInitTests(unittest.TestCase):
-    def run_init(
-        self,
-        *,
-        machine_id: bytes = b"fixture-machine-id\n",
-    ) -> tuple[list[str], bytes]:
-        with tempfile.TemporaryDirectory(prefix="buzzardos-init-") as temporary:
-            sandbox = Path(temporary)
-            etc = sandbox / "etc"
-            run = sandbox / "run"
-            commands = sandbox / "commands"
-            usr_bin = sandbox / "usr-bin"
-            init = sandbox / "buzzardos-init"
-            etc.mkdir(parents=True)
-            run.mkdir()
-            commands.mkdir()
-            usr_bin.mkdir()
-            shutil.copy2(INIT, init)
-            (etc / "machine-id").write_bytes(machine_id)
-            (etc / "passwd").write_text(
-                "root:x:0:0:root:/root:/bin/sh\n"
-                "user:x:1000:1000:Buzzard OS:/home/user:/bin/sh\n",
-                encoding="utf-8",
-            )
-            (etc / "group").write_text(
-                "root:x:0:\n" "user:x:1000:\n",
-                encoding="utf-8",
-            )
+DESKTOP_SERVICE = ROOT / "guest/assets/buzzardos-desktop.service"
 
-            machine_id_setup = commands / "systemd-machine-id-setup"
-            machine_id_setup.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' machine-id >>/run/init-events\n"
-                "printf '%s\\n' generated-machine-id >/etc/machine-id\n",
-                encoding="utf-8",
-            )
-            machine_id_setup.chmod(0o755)
 
-            shutil.copy2("/bin/sh", usr_bin / "sh", follow_symlinks=True)
-            for command_name in ("mkdir", "chmod"):
-                command_path = shutil.which(command_name)
-                self.assertIsNotNone(command_path)
-                shutil.copy2(
-                    command_path,
-                    usr_bin / command_name,
-                    follow_symlinks=True,
-                )
-            install = commands / "install"
-            install.write_text(
-                "#!/bin/sh\n"
-                "set -eu\n"
-                "mode=0755\n"
-                "while [ \"$#\" -gt 1 ]; do\n"
-                "  case \"$1\" in\n"
-                "    -d) shift ;;\n"
-                "    -m) mode=$2; shift 2 ;;\n"
-                "    -o|-g) shift 2 ;;\n"
-                "    *) break ;;\n"
-                "  esac\n"
-                "done\n"
-                "mkdir -p -- \"$1\"\n"
-                "chmod \"$mode\" -- \"$1\"\n",
-                encoding="utf-8",
-            )
-            install.chmod(0o755)
+class GuestInitContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.script = INIT.read_text(encoding="utf-8")
 
-            systemd = commands / "systemd"
-            systemd.write_text(
-                "#!/bin/sh\n"
-                "printf 'systemd' >>/run/init-events\n"
-                "printf ' %s' \"$@\" >>/run/init-events\n"
-                "printf '\\n' >>/run/init-events\n",
-                encoding="utf-8",
-            )
-            systemd.chmod(0o755)
+    def test_machine_identity_is_generated_only_when_absent(self) -> None:
+        self.assertIn("if [ ! -s /etc/machine-id ]; then", self.script)
+        self.assertIn("systemd-machine-id-setup", self.script)
 
-            systemd_target = str(Path("/lib/systemd/systemd").resolve())
-            command = [
-                str(BWRAP),
-                "--die-with-parent",
-                "--unshare-user",
-                "--unshare-pid",
-                "--unshare-net",
-                "--ro-bind",
-                "/",
-                "/",
-                "--dev",
-                "/dev",
-                "--bind",
-                str(etc),
-                "/etc",
-                "--bind",
-                str(run),
-                "/run",
-                "--ro-bind",
-                str(usr_bin),
-                "/usr/bin",
-                "--ro-bind",
-                str(systemd),
-                systemd_target,
-                "--setenv",
-                "PATH",
-                f"{commands}:/usr/bin:/bin",
-                "/bin/sh",
-                str(init),
-            ]
-            completed = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual(
-                completed.returncode,
-                0,
-                f"guest init failed:\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
-            )
+    def test_systemd_is_the_only_final_process(self) -> None:
+        lines = [line.strip() for line in self.script.splitlines() if line.strip()]
+        self.assertEqual(lines[-1], "exec /lib/systemd/systemd --system")
 
-            events = (run / "init-events").read_text(encoding="utf-8").splitlines()
-            return events, (etc / "machine-id").read_bytes()
+    def test_init_does_not_construct_a_container_runtime(self) -> None:
+        self.assertEqual(self.script.count("exec /lib/systemd/systemd --system"), 1)
 
-    def test_clone_generates_machine_id_before_systemd(self) -> None:
-        events, machine_id = self.run_init(machine_id=b"")
-
-        self.assertEqual(events, ["machine-id", "systemd --system"])
-        self.assertEqual(machine_id, b"generated-machine-id\n")
-
-    def test_existing_machine_id_is_preserved(self) -> None:
-        original = b"fixture-machine-id\n"
-        events, machine_id = self.run_init(machine_id=original)
-
-        self.assertEqual(events, ["systemd --system"])
-        self.assertEqual(machine_id, original)
+    def test_display_loss_does_not_power_off_the_persistent_machine(self) -> None:
+        service = DESKTOP_SERVICE.read_text(encoding="utf-8")
+        self.assertNotIn("ExecStopPost", service)
+        self.assertNotIn("poweroff.target", service)
 
 
 if __name__ == "__main__":

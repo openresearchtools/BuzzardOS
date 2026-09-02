@@ -20,8 +20,7 @@ guest-package licensing.
 `package-inputs.toml` mirrors the ordered APT and direct-download blocks used
 when locally verifying the Containerfiles. The Standard and CUDA recipes have
 separate exact package inventories because the CUDA choice intentionally adds
-NVIDIA's independently installed package closure. `nvidia-go-dependencies.toml` and
-`go-runtime.toml` record the dependency closure of separately reviewed NVIDIA helper artifacts.
+NVIDIA's independently installed package closure.
 `rust-runtime.toml` records compiler-runtime licensing that does not appear in
 Cargo metadata.
 

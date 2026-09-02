@@ -1,14 +1,14 @@
 [package]
-name = "buzzardos-sudo-bridge"
+name = "buzzardos-sudo-policy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "buzzardos-sudo-policy"
+path = "src/main.rs"
+
 [dependencies]
 libc.workspace = true
-
-[[bin]]
-name = "buzzardos-sudo"
-path = "src/main.rs"

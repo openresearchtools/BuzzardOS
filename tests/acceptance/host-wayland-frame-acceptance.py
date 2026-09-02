@@ -246,7 +246,21 @@ class HostSession:
 
 
 def runtime_snapshot(runtime_path: Path) -> dict[str, Any]:
-    return json.loads(runtime_path.read_text())
+    runtime = json.loads(runtime_path.read_text())
+    machine = json.loads((runtime_path.parent / "machine.json").read_text())
+    machine_id = str(machine["id"]).replace("-", "")
+    status_dir = (
+        Path(os.environ["XDG_RUNTIME_DIR"])
+        / "buzzardos"
+        / "machines"
+        / machine_id
+        / "host-status"
+    )
+    runtime["display"] = {
+        "window": json.loads((status_dir / "window.json").read_text()),
+        "presentation": json.loads((status_dir / "presentation.json").read_text()),
+    }
+    return runtime
 
 
 def wait_until(

@@ -24,7 +24,6 @@ Environment=NO_AT_BRIDGE=0
 Environment=BUZZARDOS_STATUS_DIR=/run/buzzardos-host
 EnvironmentFile=/run/buzzardos-host/driver.env
 ExecStart=/usr/lib/buzzardos/runtime/current/libexec/buzzardos-session
-ExecStopPost=+/usr/lib/buzzardos/runtime/current/libexec/buzzardos-desktop-stopped
 StandardOutput=null
 StandardError=null
 KillMode=mixed
