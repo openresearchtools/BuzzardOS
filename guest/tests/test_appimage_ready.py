@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "assets" / "wildbuzzard-appimage-ready"
+SCRIPT = Path(__file__).resolve().parents[1] / "assets" / "buzzardos-appimage-ready"
 
 
 class AppImageReadyTests(unittest.TestCase):

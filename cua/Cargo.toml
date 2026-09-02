@@ -1,0 +1,40 @@
+[package]
+name = "buzzardoscua"
+version = "0.1.0"
+edition = "2021"
+authors = ["Open Research Tools contributors"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/openresearchtools/BuzzardOS"
+description = "Daemonless computer-use CLI for the Buzzard OS Sway session"
+default-run = "cua"
+
+[[bin]]
+name = "cua"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+atspi = { version = "0.30", features = ["tokio", "zbus"] }
+base64 = "0.22"
+clipboard-rs = { version = "0.3.5", features = ["wayland"] }
+crossbeam-channel = "0.5"
+evdev = "0.12"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+libc = "0.2"
+schemars = "1.2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+wayland-backend = "0.3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-scanner = "0.31"
+wl-clipboard-rs = "0.9.3"
+x11 = { version = "2.21", features = ["xlib", "xinput", "xtest"] }
+x11rb = { version = "0.13", features = ["xinput", "randr", "xfixes", "composite", "shape", "xtest"] }
+xkbcommon = "0.9"
+zbus = { version = "5", default-features = false, features = ["tokio"] }

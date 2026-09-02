@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+status_dir=${BUZZARDOS_STATUS_DIR:-/run/buzzardos-host}
+
+dbus-update-activation-environment \
+    DBUS_SESSION_BUS_ADDRESS \
+    ELECTRON_OZONE_PLATFORM_HINT \
+    GTK_MODULES \
+    HOME \
+    LD_LIBRARY_PATH \
+    MOZ_ENABLE_WAYLAND \
+    NO_AT_BRIDGE \
+    QT_ACCESSIBILITY \
+    QT_QPA_PLATFORM \
+    QT_QPA_PLATFORMTHEME \
+    USER \
+    XDG_CONFIG_DIRS \
+    XDG_CURRENT_DESKTOP \
+    XKB_CONFIG_ROOT \
+    XDG_RUNTIME_DIR \
+    XDG_SESSION_DESKTOP \
+    XDG_SESSION_TYPE
+
+# Activate the private AT-SPI bus before applications or agents connect.
+dbus-send \
+    --session \
+    --dest=org.a11y.Bus \
+    --type=method_call \
+    --print-reply \
+    /org/a11y/bus \
+    org.freedesktop.DBus.Properties.Get \
+    string:org.a11y.Status \
+    string:IsEnabled >/dev/null 2>&1 || true
+
+# Keep exactly one parent-Wayland output for the native Buzzard OS window.
+# Stock Sway's `create_output` command selects the first eligible backend, so
+# put its stock headless backend first without pre-creating an output. Every
+# runtime CUA/manual output is then genuinely guest-only and cannot inherit the
+# parent Wayland seat, cursor, surface, or input devices.
+export WLR_BACKENDS=headless,wayland
+export WLR_HEADLESS_OUTPUTS=0
+export WLR_WL_OUTPUTS=1
+export WLR_LIBINPUT_NO_DEVICES=1
+
+/usr/bin/sway \
+    --unsupported-gpu --config /etc/buzzardos/sway-config \
+    >/dev/null 2>&1 &
+sway_pid=$!
+
+ready=0
+attempt=0
+while [ "$attempt" -lt 300 ]; do
+    if ! kill -0 "$sway_pid" 2>/dev/null; then
+        wait "$sway_pid"
+        exit $?
+    fi
+    # Sway exports SWAYSOCK to processes it launches, but a child cannot
+    # modify this parent shell's environment. The runtime directory is a fresh
+    # tmpfs on every machine boot, so the only matching socket belongs to this
+    # session.
+    if [ -z "${SWAYSOCK:-}" ]; then
+        for socket in "$XDG_RUNTIME_DIR"/sway-ipc.*.sock; do
+            if [ -S "$socket" ]; then
+                export SWAYSOCK=$socket
+                break
+            fi
+        done
+    fi
+    if /usr/bin/swaymsg -t get_outputs -r 2>/dev/null |
+        grep -q '"active":[[:space:]]*true'; then
+        ready=1
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+
+if [ "$ready" -ne 1 ]; then
+    kill "$sway_pid" 2>/dev/null || true
+    wait "$sway_pid" || true
+    exit 1
+fi
+
+set +e
+wait "$sway_pid"
+status=$?
+set -e
+
+exit "$status"

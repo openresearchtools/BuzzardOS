@@ -11,10 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class OciBuildContractTests(unittest.TestCase):
+    def containerfiles(self) -> list[Path]:
+        return [
+            ROOT / "oci/desktop/Containerfile",
+            ROOT / "oci/desktop/Containerfile.cuda",
+        ]
+
     def test_every_non_scratch_base_is_an_exact_amd64_manifest(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
-            encoding="utf-8"
-        )
         lock = tomllib.loads(
             (ROOT / "oci/base-images.lock.toml").read_text(encoding="utf-8")
         )
@@ -24,30 +27,32 @@ class OciBuildContractTests(unittest.TestCase):
             image["reference"]: image["manifest_digest"]
             for image in lock["image"]
         }
-        from_references = [
-            match.group(1)
-            for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
-            if match.group(1) != "scratch"
-        ]
-        self.assertEqual(len(from_references), 6)
-        for reference in from_references:
-            name, separator, digest = reference.partition("@")
-            self.assertEqual(separator, "@", reference)
-            self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
-            self.assertEqual(digest, locked[name], reference)
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            from_references = [
+                match.group(1)
+                for match in re.finditer(r"^FROM\s+(\S+)", containerfile, re.MULTILINE)
+                if match.group(1) != "scratch"
+            ]
+            self.assertEqual(len(from_references), 1, path)
+            for reference in from_references:
+                name, separator, digest = reference.partition("@")
+                self.assertEqual(separator, "@", reference)
+                self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+                self.assertEqual(digest, locked[name], reference)
 
     def test_dockerfile_frontend_is_an_exact_amd64_manifest(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
-            encoding="utf-8"
-        )
         lock = tomllib.loads(
             (ROOT / "oci/base-images.lock.toml").read_text(encoding="utf-8")
         )
         frontend = lock["frontend"]
-        self.assertEqual(
-            containerfile.splitlines()[0],
-            f'# syntax={frontend["reference"]}@{frontend["manifest_digest"]}',
-        )
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            self.assertEqual(
+                containerfile.splitlines()[0],
+                f'# syntax={frontend["reference"]}@{frontend["manifest_digest"]}',
+                path,
+            )
 
     def test_build_time_debian_repositories_are_immutable_snapshots(self) -> None:
         lock = tomllib.loads(
@@ -60,149 +65,106 @@ class OciBuildContractTests(unittest.TestCase):
         sid = (ROOT / "oci/desktop/apt/debian-sid-snapshot.sources").read_text(
             encoding="utf-8"
         )
-        trixie = (
-            ROOT / "oci/desktop/apt/debian-trixie-snapshot.sources"
-        ).read_text(encoding="utf-8")
         self.assertIn(snapshots["docker.io/library/debian:sid"], sid)
-        self.assertIn(snapshots["docker.io/library/rust:1.96-slim"], trixie)
-        for sources in (sid, trixie):
-            self.assertIn("snapshot.debian.org", sources)
-            self.assertNotIn("deb.debian.org", sources)
-            self.assertIn("Check-Valid-Until: no", sources)
+        self.assertIn("snapshot.debian.org", sid)
+        self.assertNotIn("deb.debian.org", sid)
+        self.assertIn("Check-Valid-Until: no", sid)
         live = (ROOT / "oci/desktop/apt/debian-sid-live.sources").read_text(
             encoding="utf-8"
         )
         self.assertIn("http://deb.debian.org/debian", live)
 
-    def test_docker_context_contains_every_repository_copy_input(self) -> None:
-        rules = {
-            line.strip()
-            for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        self.assertIn("**", rules)
-        for file_name in (
-            ".dockerignore",
-            "LICENSE",
-            "NOTICE",
-            "THIRD_PARTY_NOTICES.md",
-        ):
-            self.assertIn(f"!{file_name}", rules)
-        for directory in ("oci", "LICENSES"):
-            self.assertIn(f"!{directory}/", rules)
-            self.assertIn(f"!{directory}/**", rules)
-        self.assertIn("!guest/", rules)
-        for guest_input in (
-            "Cargo.toml",
-            "Cargo.lock",
-            "ASSET_REVISION",
-            "asset-manifest.tsv",
-            "install-rootfs-assets.sh",
-        ):
-            self.assertIn(f"!guest/{guest_input}", rules)
-        for guest_directory in (
-            "clipboard-agent",
-            "desktop-core",
-            "settings",
-            "shell",
-            "shortcut-helper",
-            "assets",
-            "updater",
-            "third_party/trycua-cua",
-        ):
-            self.assertIn(f"!guest/{guest_directory}/", rules)
-            self.assertIn(f"!guest/{guest_directory}/**", rules)
-        self.assertIn("!clipboard-protocol/", rules)
-        self.assertIn("!clipboard-protocol/**", rules)
-        self.assertIn("!tools/", rules)
-        self.assertIn("!tools/fetch-mpl-sources.sh", rules)
-        self.assertFalse(any(rule.startswith("!host/") for rule in rules))
+    def test_finished_images_retain_a_live_apt_catalogue(self) -> None:
+        for path in self.containerfiles():
+            containerfile = path.read_text(encoding="utf-8")
+            live_source = containerfile.rfind(
+                "COPY apt/debian-sid-live.sources"
+            )
+            self.assertGreaterEqual(live_source, 0, path)
+            finished_image = containerfile[live_source:]
+            self.assertRegex(
+                finished_image,
+                r"apt-get(?:\s+-o\s+Acquire::ForceIPv4=true)?\s+update",
+                path,
+            )
+            self.assertNotIn(
+                "rm -rf /var/lib/apt/lists/*",
+                finished_image,
+                path,
+            )
 
-    def test_compose_uses_only_the_local_reference_image_target(self) -> None:
-        compose = (ROOT / "oci/compose.yaml").read_text(encoding="utf-8")
-        self.assertIn("context: ..", compose)
-        self.assertIn("dockerfile: oci/desktop/Containerfile", compose)
-        self.assertIn("linux/amd64", compose)
-        for publishing_key in ("push:", "registry:", "pull_policy: always"):
-            self.assertNotIn(publishing_key, compose)
+        provision = (ROOT / "oci/desktop/provision-image.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('APT::Periodic::Update-Package-Lists "1";', provision)
+        self.assertIn(
+            "systemctl enable apt-daily.timer apt-daily-upgrade.timer",
+            provision,
+        )
 
-    def test_final_sway_payload_excludes_development_files(self) -> None:
+    def test_buildah_uses_a_minimal_context_and_discards_its_private_store(self) -> None:
+        builder = (ROOT / "oci/build-local.sh").read_text(encoding="utf-8")
+        for required in (
+            "buildah_local build",
+            "--storage-driver vfs",
+            "--no-cache",
+            "--pull=always",
+            'install -d -m 0755 "$context/apt"',
+            'variant=${BUZZARDOS_OCI_VARIANT:-standard}',
+            'containerfile=Containerfile.cuda',
+            'BUZZARDOS_EXPECT_CUDA="$expect_cuda"',
+            'rm -rf -- "$context" "$work"',
+        ):
+            self.assertIn(required, builder)
+        for redundant in ("docker ", "podman ", "skopeo", "crane"):
+            self.assertNotIn(redundant, builder)
+        self.assertNotIn("BUZZARDOS_GUEST_DEB_DIR", builder)
+        self.assertNotIn('"$context/debs"', builder)
+
+    def test_reference_image_uses_only_distribution_sway_and_wlroots(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"/sway-root$runtime_prefix/include"', containerfile)
-        self.assertIn('"/sway-root$runtime_prefix/lib/pkgconfig"', containerfile)
-        self.assertIn("-name '*.a'", containerfile)
-        self.assertIn("-name '*.la'", containerfile)
-        self.assertIn("-Wl,-rpath,$ORIGIN/../lib", containerfile)
-        self.assertIn("AS sway-runtime-artifact", containerfile)
-
-    def test_sway_runtime_carries_one_pinned_normalized_xkb_tree(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
+        packages = (ROOT / "packaging/build-debs.sh").read_text(encoding="utf-8")
+        self.assertIn("sway (>= 1.9)", packages)
+        self.assertIn("xkb-data", packages)
+        for forbidden in (
+            "AS sway-builder",
+            "AS sway-runtime-artifact",
+            "SWAY_COMMIT",
+            "WLROOTS_COMMIT",
+            "wlroots.git",
+            "meson setup sway",
+            "meson setup wlroots",
+            "/runtime-payload/bin/sway",
+        ):
+            self.assertNotIn(forbidden, containerfile)
+        session = (ROOT / "guest/assets/buzzardos-sway-session").read_text(
             encoding="utf-8"
         )
-        self.assertRegex(
-            containerfile,
-            r"(?m)^\s+xkb-data \\$",
-        )
-        for required in (
-            "xkb_library=$(readlink -f /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0)",
-            "/runtime-payload/lib/libxkbcommon.so.0",
-            "libxkbcommon0.manifest.sha256",
-            "libxkbcommon0.version",
-            "/runtime-payload/share/doc/libxkbcommon0/copyright",
-            "xkb_entry=/usr/share/X11/xkb",
-            'xkb_source=$(readlink -f -- "$xkb_entry")',
-            "/usr/share/xkeyboard-config-[0-9]*",
-            "xkb_destination=/runtime-payload/share/X11/xkb",
-            'case "$resolved" in',
-            'cp -aL "$xkb_source" "$xkb_destination"',
-            "xkb-data.manifest.sha256",
-            "xkb-data.version",
-            "/runtime-payload/share/doc/xkb-data/copyright",
-        ):
-            self.assertIn(required, containerfile)
-        self.assertIn(
-            '! find "$xkb_destination" -type l -print -quit | grep -q .',
-            containerfile,
-        )
-        self.assertIn(
-            '! find "$xkb_destination" -mindepth 1 ! -type d ! -type f',
-            containerfile,
-        )
+        self.assertIn("/usr/bin/sway", session)
+        self.assertIn("/usr/bin/swaymsg", session)
 
-    def test_portable_app_stages_the_same_pinned_xkb_tree_at_a_stable_path(self) -> None:
-        packager = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
-        for required in (
-            'host_xkb_root="$appdir/usr/share/wildbuzzard/xkb"',
-            '"$guest_compositor_runtime/share/X11/xkb/."',
-            '"$appdir/usr/share/wildbuzzard/xkb-data.manifest.sha256"',
-            '"$appdir/usr/share/wildbuzzard/xkb-data.version"',
-            '"$appdir/usr/share/doc/xkb-data/copyright"',
-            '"$appdir/usr/lib/libxkbcommon.so.0"',
-            '"$appdir/usr/share/wildbuzzard/libxkbcommon0.manifest.sha256"',
-            '"$appdir/usr/share/doc/libxkbcommon0/copyright"',
-            '"$guest_runtime_destination/$guest_revision/share/X11/xkb"',
-            "host and guest pinned XKB manifests differ",
-            "host and guest pinned libxkbcommon payloads differ",
-            "verify_elf_relocation_closure",
-            'ldd -r -- "$object"',
-            "undefined symbol|relocation error|symbol lookup error",
-            "gtk_builder_lib=$(pkg-config --variable=libdir gtk4)",
-            'cargo_rustflags="-L native=$gtk_builder_lib',
+    def test_guest_defaults_do_not_overwrite_distribution_gtk_configuration(self) -> None:
+        manifest = (ROOT / "guest/desktop-asset-manifest.tsv").read_text(encoding="utf-8")
+        for forbidden in (
+            "etc/gtk-3.0/settings.ini",
+            "etc/gtk-4.0/settings.ini",
+            "etc/xdg/kwalletrc",
         ):
-            self.assertIn(required, packager)
-        self.assertIn("verify_xkb_payload", packager)
-        self.assertIn("followlinks=False", packager)
-        self.assertNotIn("cp -a -- /usr/share/X11/xkb", packager)
-        verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
-        self.assertIn('ldd -r -- "$runtime/lib/libxkbcommon.so.0"', verifier)
-        self.assertIn("undefined symbol|relocation error|symbol lookup error", verifier)
+            self.assertNotRegex(manifest, rf"(?m)\t{re.escape(forbidden)}$")
+        for managed in (
+            "etc/buzzardos/xdg/gtk-3.0/settings.ini",
+            "etc/buzzardos/xdg/gtk-4.0/settings.ini",
+            "etc/buzzardos/xdg/kwalletrc",
+        ):
+            self.assertRegex(manifest, rf"(?m)\t{re.escape(managed)}$")
 
     def test_runtime_contract_names_desktop_and_appimage_dependencies(self) -> None:
         containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
             encoding="utf-8"
         )
+        packages = (ROOT / "packaging/build-debs.sh").read_text(encoding="utf-8")
         for package in (
             "ffmpeg",
             "firefox-esr",
@@ -223,10 +185,7 @@ class OciBuildContractTests(unittest.TestCase):
             "xkb-data",
             "xwayland",
         ):
-            self.assertRegex(
-                containerfile,
-                rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
-            )
+            self.assertIn(package, packages)
         for package in (
             "chromium",
             "dolphin",
@@ -236,10 +195,7 @@ class OciBuildContractTests(unittest.TestCase):
             "x11-apps",
             "xterm",
         ):
-            self.assertNotRegex(
-                containerfile,
-                rf"(?m)^\s+{re.escape(package)} (?:\\|&&)",
-            )
+            self.assertNotRegex(packages, rf"(?:^|, ){re.escape(package)}(?:,|')")
         verifier = (ROOT / "oci/verify-image.sh").read_text(encoding="utf-8")
         self.assertRegex(verifier, r"(?m)^\s+gsettings(?:\s|\\)")
         self.assertIn("dconf-gsettings-backend", verifier)
@@ -247,18 +203,29 @@ class OciBuildContractTests(unittest.TestCase):
         self.assertIn("gsettings list-keys org.gnome.desktop.interface", verifier)
         self.assertIn("gsettings set org.gnome.desktop.interface gtk-theme", verifier)
         self.assertIn("gsettings get org.gnome.desktop.interface gtk-theme", verifier)
-        self.assertIn("AS settings-builder", containerfile)
-        self.assertRegex(containerfile, r"(?m)^\s+libglib2\.0-dev \\")
-        self.assertRegex(containerfile, r"(?m)^\s+libpulse-dev \\")
-        self.assertIn("--package wildbuzzard-settings", containerfile)
-        self.assertIn("--package wildbuzzard-shortcut-helper", containerfile)
-        self.assertIn("--package wildbuzzard-clipboard-agent", containerfile)
-        self.assertIn("/usr/libexec/wildbuzzard-shortcut-helper", verifier)
-        self.assertIn("/libexec/wildbuzzard-clipboard-agent", verifier)
+        self.assertIn("https://keyring.openresearchtools.com", containerfile)
+        self.assertIn('"buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"', containerfile)
+        self.assertIn('"buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"', containerfile)
+        self.assertIn('"buzzardoscua=${BUZZARDOS_CUA_VERSION}"', containerfile)
+        self.assertIn("OPENRESEARCHTOOLS_KEYRING_SHA256", containerfile)
+        self.assertNotIn("COPY debs/", containerfile)
+        self.assertNotIn("AS deb-builder", containerfile)
+        self.assertNotIn("cargo build", containerfile)
+        self.assertNotIn("packaging/build-debs.sh", containerfile)
+        self.assertNotIn("COPY . .", containerfile)
+        self.assertIn("/usr/libexec/buzzardos-shortcut-helper", verifier)
+        self.assertIn("/libexec/buzzardos-clipboard-agent", verifier)
         self.assertIn("unsquashfs", verifier)
-        self.assertIn("cargo clippy", containerfile)
-        self.assertIn("cargo test", containerfile)
+        self.assertNotIn("AS shell-builder", containerfile)
+        self.assertNotIn("AS settings-builder", containerfile)
         self.assertIn("libpulse.so.0", verifier)
+        provisioning = (ROOT / "oci/desktop/provision-image.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("20auto-upgrades", provisioning)
+        self.assertIn("unattended-upgrades", packages)
+        self.assertNotIn("openssh-client", containerfile)
+        self.assertNotIn("buzzardos-updater.service", containerfile)
         for forbidden in (
             "blender",
             "build-essential",
@@ -296,30 +263,25 @@ class OciBuildContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, sound)
 
-    def test_runtime_readiness_is_bound_to_one_broker_session(self) -> None:
-        broker = (ROOT / "host/crates/wildbuzzard-broker/src/main.rs").read_text(
+    def test_production_startup_has_no_acceptance_probes(self) -> None:
+        broker = (ROOT / "host/crates/buzzardos-broker/src/main.rs").read_text(
             encoding="utf-8"
         )
-        services = (ROOT / "guest/assets/wildbuzzard-desktop-services").read_text(
+        services = (ROOT / "guest/assets/buzzardos-desktop-services").read_text(
             encoding="utf-8"
         )
-        readiness = (ROOT / "guest/assets/wildbuzzard-runtime-ready").read_text(
-            encoding="utf-8"
-        )
-        unit = (ROOT / "guest/assets/wildbuzzard-runtime-ready.service").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('"WILDBUZZARD_SESSION_TOKEN".into()', broker)
+        self.assertIn('"BUZZARDOS_SESSION_TOKEN".into()', broker)
         self.assertIn("Uuid::new_v4().simple().to_string()", broker)
         self.assertIn("desktop_ready_for_session(marker, expected_session_token)", broker)
         self.assertIn("const GUEST_RUNTIME_MODE: u32 = 0o700", broker)
         self.assertIn("mktemp \"$status_dir/.desktop-ready.XXXXXX\"", services)
         self.assertIn("chmod 0600 \"$desktop_ready_tmp\"", services)
-        self.assertIn("$WILDBUZZARD_SESSION_TOKEN", services)
-        self.assertIn("EnvironmentFile=/run/wildbuzzard-host/driver.env", unit)
-        self.assertIn("SESSION_TOKEN_RE", readiness)
-        self.assertIn("HOST_RUNTIME_MODE = 0o700", readiness)
-        self.assertIn("read_desktop_ready(DESKTOP_READY, session_token)", readiness)
+        self.assertIn("$BUZZARDOS_SESSION_TOKEN", services)
+        self.assertNotIn("health_report", services)
+        self.assertNotIn("get_desktop_state", services)
+        self.assertNotIn("start_output_sync_supervisor", services)
+        self.assertFalse((ROOT / "guest/assets/buzzardos-runtime-ready").exists())
+        self.assertFalse((ROOT / "guest/assets/buzzardos-runtime-ready.service").exists())
 
     def test_managed_sway_config_does_not_invoke_unpackaged_swaybg(self) -> None:
         sway_config = (ROOT / "guest/assets/sway-config").read_text(
@@ -349,33 +311,117 @@ class OciBuildContractTests(unittest.TestCase):
             "managed Sway config invokes swaybg without packaging and verifying it",
         )
 
-    def test_cuda_packages_are_exact_hash_verified_downloads(self) -> None:
-        containerfile = (ROOT / "oci/desktop/Containerfile").read_text(
+    def test_managed_sway_config_does_not_grab_a_global_keyboard_modifier(self) -> None:
+        sway_config = (ROOT / "guest/assets/sway-config").read_text(
             encoding="utf-8"
         )
-        expected_hashes = (
-            "282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc",
-            "5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8",
-            "f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a",
-            "b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84",
-            "0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7",
+
+        self.assertNotRegex(sway_config, r"(?m)^\s*set\s+\$mod\b")
+        self.assertNotRegex(sway_config, r"(?m)^\s*floating_modifier\b")
+        self.assertNotRegex(
+            sway_config,
+            r"(?m)^\s*bind(?:code|sym)\b(?![^\n]*\bbutton[1-9]\b)",
         )
-        for digest in expected_hashes:
-            self.assertIn(digest, containerfile)
-        for package in (
-            "cuda-toolkit-config-common",
-            "cuda-toolkit-13-config-common",
-            "cuda-toolkit-13-1-config-common",
-            "cuda-cudart-13-1",
-            "libcublas-13-1",
+
+    def test_runtime_creates_no_buzzard_logs_or_activity_telemetry(self) -> None:
+        host_display = (
+            ROOT / "host/crates/buzzardos-display/src/host_app.rs"
+        ).read_text(encoding="utf-8")
+        host_broker = (
+            ROOT / "host/crates/buzzardos-broker/src/main.rs"
+        ).read_text(encoding="utf-8")
+        host_integrations = (
+            ROOT / "host/crates/buzzardos-broker/src/integrations.rs"
+        ).read_text(encoding="utf-8")
+        cua_tools = (ROOT / "cua/src/platform/tools/impl_.rs").read_text(
+            encoding="utf-8"
+        )
+        cua_manifest = (ROOT / "cua/Cargo.toml").read_text(encoding="utf-8")
+        update_state = (ROOT / "guest/desktop-core/src/state.rs").read_text(
+            encoding="utf-8"
+        )
+        desktop_shell = (ROOT / "guest/shell/src/main.rs").read_text(
+            encoding="utf-8"
+        )
+        desktop_services = (
+            ROOT / "guest/assets/buzzardos-desktop-services"
+        ).read_text(encoding="utf-8")
+        sway_session = (ROOT / "guest/assets/buzzardos-sway-session").read_text(
+            encoding="utf-8"
+        )
+        integration_agent = (
+            ROOT / "guest/assets/buzzardos-integration-agent"
+        ).read_text(encoding="utf-8")
+        desktop_unit = (
+            ROOT / "guest/assets/buzzardos-desktop.service"
+        ).read_text(encoding="utf-8")
+
+        for forbidden in (
+            "InputStats",
+            "input.json",
+            "clipboard.json",
+            "offload-verification.json",
+            "monitor-continuity.json",
+            "last_key",
+            "last_button",
+            "received_events",
+            "forwarded_events",
         ):
-            self.assertIn(f"/{package}_", containerfile)
-        self.assertIn("sha256sum --check", containerfile)
-        self.assertNotIn("cuda-keyring", containerfile)
-        cuda_section = containerfile.split(
-            "# The reference machine carries only the CUDA runtime", 1
-        )[1].split("COPY --from=sway-builder", 1)[0]
-        self.assertNotIn("apt-get", cuda_section)
+            self.assertNotIn(forbidden, host_display)
+        for forbidden in (
+            "display-gateway.log",
+            "nvidia-ctk.log",
+            "BUZZARDOS_KEEP_RUNTIME",
+        ):
+            self.assertNotIn(forbidden, host_broker)
+        self.assertNotIn(".log", host_integrations)
+        self.assertNotIn("BUZZARDOS_CUA_EVIDENCE_DIR", cua_tools)
+        self.assertNotIn("tracing =", cua_manifest)
+        self.assertNotIn("last_log_id", update_state)
+        self.assertNotIn("opened controls for", desktop_shell)
+        self.assertNotIn(".log", desktop_services)
+        self.assertNotIn(".log", sway_session)
+        self.assertNotIn(".log", integration_agent)
+        self.assertIn('"$@" >/dev/null 2>&1 &', desktop_services)
+        self.assertIn("export PIPEWIRE_DEBUG=0", desktop_services)
+        self.assertIn("export SPA_DEBUG=0", desktop_services)
+        self.assertIn("export PIPEWIRE_LOG_SYSTEMD=false", desktop_services)
+        self.assertIn(">/dev/null 2>&1 &", sway_session)
+        self.assertIn("StandardOutput=null", desktop_unit)
+        self.assertIn("StandardError=null", desktop_unit)
+        self.assertFalse(
+            (ROOT / "host/crates/buzzardos-display/src/offload_verifier.rs").exists()
+        )
+
+    def test_cuda_variant_is_the_complete_standard_file_plus_one_tail(self) -> None:
+        standard = (ROOT / "oci/desktop/Containerfile").read_bytes()
+        cuda = (ROOT / "oci/desktop/Containerfile.cuda").read_bytes()
+        self.assertTrue(cuda.startswith(standard + b"\n"))
+        self.assertNotIn(b"CUDA", standard)
+
+        cuda_tail = cuda[len(standard) :].decode("utf-8")
+        for required in (
+            "cuda-keyring_",
+            "cuda-cudart-13-3=",
+            "cuda-compat-13-3=",
+            "cuda-libraries-13-3=",
+            "libnpp-13-3=",
+            "cuda-nvtx-13-3=",
+            "libcusparse-13-3=",
+            "libcublas-13-3=",
+            "libnccl2=",
+            "NVIDIA_VISIBLE_DEVICES=all",
+            "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+            "NVIDIA_PRODUCT_NAME=CUDA",
+            "CUDA_KEYRING_SOURCE_COMMIT=c63770f25b9ece2006956c9be86a72b20c2e67ba",
+            "CUDA_KEYRING_LICENSE_SHA256=be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d",
+            "/usr/share/doc/cuda-keyring/copyright",
+            "/usr/share/doc/cuda-libraries-13-3/copyright",
+            "sha256sum --check --strict",
+        ):
+            self.assertIn(required, cuda_tail)
+        for forbidden in ("nvcc", "cuda-toolkit-13-3=", "cuda-drivers"):
+            self.assertNotIn(forbidden, cuda_tail)
 
 
 if __name__ == "__main__":

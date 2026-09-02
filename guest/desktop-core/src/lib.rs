@@ -37,9 +37,10 @@ pub use persistence::{
 };
 pub use settings::{KeyboardSettings, SETTINGS_SCHEMA_VERSION, Settings};
 pub use state::{
-    BackgroundChoice, DisplayGeometry, GuestScalePreset, SolidColor, StateValidationError,
-    ThemeMode, UPDATE_STATE_SCHEMA_VERSION, UpdateAction, UpdatePackage, UpdateProgress,
-    UpdateProgressPhase, UpdateProgressUnit, UpdateState, UpdateStateError, UpdateStatus,
+    BackgroundChoice, DARK_WALLPAPER, DisplayGeometry, GuestScalePreset, LIGHT_WALLPAPER,
+    SolidColor, StateValidationError, ThemeMode, UPDATE_STATE_SCHEMA_VERSION, UpdateAction,
+    UpdatePackage, UpdateProgress, UpdateProgressPhase, UpdateProgressUnit, UpdateState,
+    UpdateStateError, UpdateStatus,
 };
 pub use theme::{
     AppliedThemeFiles, ThemeApplyError, ThemeConfigSet, ThemePalette, apply_theme_files,

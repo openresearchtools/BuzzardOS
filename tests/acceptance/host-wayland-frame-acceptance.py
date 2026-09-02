@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Drive and verify Wild Buzzard's real host Wayland application frame.
+"""Drive and verify Buzzard OS's real host Wayland application frame.
 
 This is intentionally a hardware/session acceptance test rather than a unit
 test.  It uses GNOME Mutter's own ScreenCast and RemoteDesktop D-Bus APIs so
@@ -263,7 +263,7 @@ def wait_until(
 def host_frame() -> Any:
     for app in Atspi.get_desktop(0):
         try:
-            if app.get_name() != "wildbuzzard-display":
+            if app.get_name() != "buzzardos-display":
                 continue
             for index in range(app.get_child_count()):
                 child = app.get_child_at_index(index)
@@ -271,7 +271,7 @@ def host_frame() -> Any:
                     return child
         except Exception:
             continue
-    fail("wildbuzzard-display host frame is absent from host AT-SPI")
+    fail("buzzardos-display host frame is absent from host AT-SPI")
 
 
 def frame_size() -> tuple[int, int]:
@@ -560,13 +560,13 @@ def pointer_continuity_sweep(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("portable_folder", type=Path)
+    parser.add_argument("machine_dir", type=Path)
     parser.add_argument("machine")
     parser.add_argument("artifact_dir", type=Path)
     args = parser.parse_args()
 
-    portable_folder = args.portable_folder.resolve()
-    runtime_path = portable_folder / "vm" / args.machine / "runtime.json"
+    machine_dir = args.machine_dir.resolve()
+    runtime_path = machine_dir / "runtime.json"
     if not runtime_path.is_file():
         fail(f"runtime metadata is missing: {runtime_path}")
     runtime = runtime_snapshot(runtime_path)
@@ -870,7 +870,7 @@ def main() -> int:
         },
     )
     print(
-        "Wild Buzzard native host Wayland frame acceptance passed; "
+        "Buzzard OS native host Wayland frame acceptance passed; "
         f"artifacts: {artifact_dir}"
     )
     return 0

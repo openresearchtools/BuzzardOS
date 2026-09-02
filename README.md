@@ -1,205 +1,186 @@
 # Buzzard OS
 
-Buzzard OS is a rootless, persistent Linux desktop-machine launcher. It boots
-systemd and a complete Sway desktop inside Linux namespaces while presenting
-the whole guest monitor in one native host Wayland window.
+Buzzard OS is a rootless manager for persistent Linux desktop machines. Each
+machine boots systemd and a complete stock-Sway desktop inside Linux
+namespaces, while the entire guest monitor remains inside one native host
+Wayland window.
 
-It is intentionally closer to a portable desktop VM than an ephemeral
-application container:
+This is not an ephemeral application container. A machine has one directly
+writable rootfs; guest packages, files, settings, and application state survive
+restarts. The host owns lifecycle, window chrome, ports, devices, and explicit
+one-shot clipboard transfers.
 
-- each machine has one flat mutable rootfs that persists across restarts;
-- `apt install`, user files, application state, and desktop settings survive;
-- the guest has its own systemd, D-Bus, PipeWire, AT-SPI, Xwayland, and CUA
-  services;
-- every guest window stays inside one nested Sway output;
-- the host application owns its normal titlebar, machine controls, devices,
-  ports, settings, and explicit one-shot clipboard actions.
+## Debian packages
 
-## Portable distribution
-
-The Linux download is one high-compression archive:
-
-`BuzzardOS-portable-linux-x86_64.tar.xz`
-
-Extract it and run `BuzzardOS/BuzzardOS`. Buzzard OS itself is not an AppImage
-and does not use FUSE. Its layout follows ordinary extracted applications such
-as Blender. Its OCI exporter uses a pinned GLIBC-2.31-compatible GNU tar
-runtime rather than inheriting the build machine's newer tar ABI:
+Buzzard OS is built as four independently versioned packages:
 
 ```text
-BuzzardOS/
-├── BuzzardOS                         executable entry point
-├── Install-Dependencies              Debian/Ubuntu uidmap setup
-├── app/
-│   ├── AppRun                        internal dependency environment
-│   ├── usr/bin/                      launcher, broker, display
-│   ├── usr/lib/                      private native libraries
-│   ├── usr/libexec/                  bundled helpers
-│   ├── runtime/
-│   │   ├── default-rootfs.oci.tar.zst
-│   │   └── default-rootfs.oci.json
-│   ├── licenses/{host,guest}/
-│   └── provenance/
-├── Machines/
-└── shared/
+buzzardos_<version>_amd64.deb
+buzzardos-guest_<version>_amd64.deb
+buzzardos-desktop_<version>_amd64.deb
+buzzardoscua_<version>_amd64.deb
 ```
 
-All paths are resolved relative to the top-level `BuzzardOS` executable. No
-machine state is written to `~/.wb`, XDG data directories, Docker/Podman
-storage, or a system directory. Copying the entire folder moves the install
-media, machines, and shared data together.
+- `buzzardos` installs the host manager, broker, native display application,
+  desktop-menu entry, AppStream metadata, icons, and helpers.
+- `buzzardos-guest` installs guest mechanics: systemd/session integration,
+  clipboard and media integration, AppImage support, and the distribution's
+  normal `sway`/wlroots stack.
+- `buzzardos-desktop` installs the optional Buzzard OS desktop shell,
+  Settings, themes, icons, Thunar integration, and reference applications.
+- `buzzardoscua` installs the reviewed, daemonless in-guest `cua`/`cuaN`
+  computer-use commands while retaining upstream attribution.
 
-On first launch, the digest-verified OCI seed is imported once into
-`Machines/default/rootfs/`. The compressed seed is install media; it is not the
-running filesystem and no overlay is used. `shared/` is mounted read/write at
-`/shared` in every machine and remains ordinary host-owned storage.
+The versions come from [`VERSION`](VERSION),
+[`guest/GUEST_VERSION`](guest/GUEST_VERSION),
+[`guest/DESKTOP_VERSION`](guest/DESKTOP_VERSION), and
+[`cua/VERSION`](cua/VERSION). Version tags publish all four packages to the
+Buzzard OS GitHub release, and the signed Open Research Tools APT repository
+indexes them for normal installation and upgrades.
 
-## Host prerequisites
+`cua/VERSION` is Buzzard CUA's own product version. The TryCua tag and commit
+from which its reviewed Linux subset originated are retained only in the CUA
+license and provenance records; they do not participate in package updates.
 
-Buzzard OS bundles its application dependencies and helpers. A supported host
-needs:
+## Per-machine storage
 
-- x86-64 Linux with unprivileged user, PID, mount, IPC, UTS, network, and
-  cgroup namespaces;
-- a host Wayland session;
-- configured subordinate UID/GID ranges and the distribution's trusted
-  `newuidmap`/`newgidmap` authorization helpers;
-- working host GPU drivers and permissions for selected devices;
-- a normal host PipeWire session only for optional audio, microphone, and
-  camera integration.
+There is no global Buzzard OS storage root. Every create, import, or clone
+chooses the complete destination machine directory:
 
-On Debian or Ubuntu, `./Install-Dependencies` installs only `uidmap` and
-verifies the authorization helpers and subordinate ranges. Buzzard OS uses
-its bundled namespace helper with those distro-owned authorization gates. It
-does not install or use LXC and does not disable the host's AppArmor policy.
-Buzzard OS remains rootless and installs no daemon, service, setuid helper,
-kernel module, or package of its own.
+```text
+<chosen-machine-directory>/
+├── machine.json
+├── runtime.json
+├── machine.lock
+├── cache/
+└── rootfs/
+```
 
-## Machines and OCI exchange
+The small JSON index at `$XDG_CONFIG_HOME/buzzardos/machines.json` records each
+machine's UUID, name, and directory. It is only an index. Machine directories
+are self-describing, may live on different disks, and can be moved and
+registered again.
 
-Running `./BuzzardOS` opens the native machine manager. The first launch creates
-the bundled `default` machine. The manager can Create, Import, Export, Clone,
-Start, Stop, and Delete machines. Every running machine gets a separate native
-window and exclusive lock; separate launcher instances can run different
-machines simultaneously.
+Sharing is optional. A machine can have zero or more selected host files or
+folders, each exposed as a separate entry below `/shared` in that guest. The
+GUI has repeatable **Add File**, **Add Folder**, and **Remove** controls. It
+does not create or mount a mandatory global shared directory.
 
-The same operations are available from the command line:
+## GUI and CLI
+
+Run `buzzardos` from the application menu or a terminal. The native manager
+shows every registered machine in a conventional list with Start/Stop,
+Settings, and a compact menu for open, export, clone, and confirmed deletion.
+**Add Machine** offers an official build with a CUDA-support/Standard variant
+dropdown (CUDA recommended), OCI pull, custom Containerfile/Dockerfile build,
+and OCI import. Creation always
+asks for the exact destination folder and provides optional share pickers.
+Built-in recipes consume the three separately distributed Buzzard guest `.deb`
+artifacts; they are not embedded in the host package.
+
+The same operations are fully scriptable. `--machine-dir` is the exact machine
+directory, not a global parent:
 
 ```sh
-./BuzzardOS
-./BuzzardOS create work
-./BuzzardOS start work
-./BuzzardOS stop work
-./BuzzardOS import SOURCE --name restored --mode restore
-./BuzzardOS import SOURCE --name independent-copy --mode clone
-./BuzzardOS export work --output shared/work.oci.tar.zst
-./BuzzardOS clone work work-copy
-./BuzzardOS delete work-copy --yes
-./BuzzardOS list
-./BuzzardOS doctor
+buzzardos --machine-dir /data/projects/research-vm create research \
+  --image docker.io/example/research:latest \
+  --share /data/datasets \
+  --share /home/me/notes.txt
+
+buzzardos --machine-dir /fast-disk/imported import ./machine.oci.tar.zst \
+  --name imported --mode clone
+
+buzzardos --machine-dir /fast-disk/pulled pull pulled \
+  docker.io/openresearchtools/example:latest --keep-oci-archive
+
+buzzardos --machine-dir /fast-disk/local-build build local-build \
+  --context ./my-image --file Containerfile
+
+buzzardos start research
+buzzardos stop research
+buzzardos status research
+buzzardos list
+
+buzzardos --machine-dir /moved/research-vm register
+buzzardos unregister research
 ```
 
-Import accepts a local OCI image-layout directory, a tar/gzip/zstd OCI archive,
-a Buzzard OS export, or a remote OCI reference. A multi-platform/multi-image
-local layout requires an unambiguous native Linux entry or `--manifest`
-selection. `--mode restore` preserves the identity carried by a Buzzard OS
-export and rejects a duplicate in the same portable folder. `--mode clone`
-regenerates the host metadata UUID and removes the guest machine ID, random
-seed, and SSH host keys while the new machine is still private staging; a
-failed reset never commits a partially cloned machine. On first boot, guest
-init creates the new machine ID and asks the distro `ssh-keygen`, when present,
-to create only missing default host keys before systemd starts. Generic OCI
-images have no portable Buzzard OS identity annotation and therefore always
-receive fresh local identity.
-Layers are applied in order with OCI whiteouts and preserved ownership, modes,
-times, links, xattrs, ACLs, and file capabilities.
+Import accepts a local OCI image-layout directory, tar/gzip/zstd OCI archive,
+Buzzard OS export, or remote OCI reference. OCI indexes with multiple matching
+images require `--manifest`. Restore retains a Buzzard OS export's portable
+host metadata identity, while every exported rootfs has its guest machine ID,
+random seed, and any stale SSH host keys cleared in a private copy. The source
+machine is never modified. Clone also assigns a fresh host metadata identity
+before committing the destination. Pulled and built install media is discarded by default;
+`--keep-oci-archive` retains a verified OCI archive in the machine's cache.
 
-Authenticated OCI environment values and descriptive process metadata are
-retained and round-trip through export. Buzzard OS is a desktop-machine
-runtime, so an imported image must provide systemd and always boots systemd as
-PID 1; an image's foreground `Entrypoint`, `Cmd`, `User`, or `WorkingDir` is
-preserved as OCI metadata rather than replacing the machine boot contract.
-
-Export requires a stopped, exclusively locked machine. Buzzard OS enters the
-same subordinate-ID namespace used by that machine, archives the canonical
-guest IDs directly, and writes a standards-compliant OCI layout containing a
-config, manifest, index, content-addressed blobs, and portable machine
-annotation. It excludes `/shared` and ephemeral mounts. Importing the export on
-another host remaps canonical guest IDs to that host's ranges. Clone preserves
-the filesystem but resets machine identity and host keys for first-boot
-regeneration.
-
-Docker and Podman are not runtime dependencies. They are used only by
-developers and the disposable Actions runner to build the reference image from
-`oci/desktop/Containerfile`. Buzzard OS implements import and export itself.
+Buildah is the only end-user OCI tool dependency. Pull and build use isolated
+temporary Buildah storage beside the selected destination, never the user's
+normal Buildah cache; builds use `--no-cache`, and temporary images/layers are
+deleted after rootfs import. Export requires a stopped, exclusively locked
+machine. It emits an identity-free canonical
+OCI archive with numeric guest IDs, hardlinks, symlinks, modes, timestamps,
+xattrs, ACLs, capabilities, and sparse files. Runtime mounts and configured
+host shares are excluded. Docker and Podman are not end-user dependencies.
 
 ## Guest desktop
 
-The reference Debian guest contains unmodified pinned Sway/wlroots, systemd,
-private D-Bus and PipeWire services, Xwayland, AT-SPI, and the Linux Wayland CUA
-driver. The shipped general applications are Firefox ESR, customized Thunar,
-Mousepad, and Foot. Users can install other Debian packages and native Type-2
-AppImages inside their persistent machine.
+The repository distributes a Containerfile recipe for building a Debian-family
+guest containing systemd, distro Sway and wlroots, Xwayland, private D-Bus and
+PipeWire services, AT-SPI, Buzzard OS Guest Desktop, and Buzzard CUA. Buzzard OS
+does not distribute the resulting Debian rootfs or OCI image. Debian and other
+non-Buzzard packages are obtained by the builder from their own repositories
+and retain their own package licenses. The four preinstalled general
+applications selected by the recipe are Firefox ESR, Thunar, Mousepad, and
+Foot. Guest applications may also use native Type-2 AppImages; Buzzard OS
+itself is not an AppImage.
 
-The lightweight classic shell provides one desktop, desktop shortcuts, an
-adaptive Applications menu, a bottom taskbar, one task button per running
-application, Show Desktop, compositor-owned move/resize/minimize/maximize/close
-operations, and accessible AT-SPI actions. Guest Settings contains only:
+All guest windows remain inside one nested Sway output. Guest applications
+cannot create host windows, enumerate or capture the host desktop, observe
+host-global input, or access the host clipboard. Clipboard transfer happens
+only after one of the two explicit host actions is clicked.
 
-- Display scaling;
-- output and microphone volume/mute;
-- keyboard language/layout/hardware model;
-- Light/Dark appearance plus solid background colour;
-- Debian package updates;
-- time and installed IANA time zone.
+## Local development
 
-## Isolation and explicit sharing
+The broad Ubuntu 24.04 development image is stored under the gitignored
+`build/podman-dev/` data-disk directory. It uses rootless Podman, passwordless
+sudo inside the build container, and applies no CPU, memory, or PID limit:
 
-Guest applications see only the nested Sway display and private guest services.
-They cannot enumerate or capture the host desktop, observe host-global input,
-create host windows, or access the host clipboard.
+```sh
+./build/podman-dev/build-image.sh
+./build/podman-dev/run.sh buzzardos-build test
+./build/podman-dev/run.sh buzzardos-build debs
+./build/podman-dev/run.sh buzzardos-build oci
+```
 
-The host header exposes exactly two one-shot clipboard actions: send the
-current host clipboard snapshot to the guest, or copy one requested guest
-snapshot to the host. Text and bounded still images are validated and copied;
-the clipboards are never synchronized and no persistent guest-to-host clipboard
-capability exists.
+The direct package entry point is:
 
-Ports, custom shares, audio output, microphone input, camera input, and GPU
-devices are separately host-authorized capabilities. The default network is
-private user-mode networking. A host bind on `127.0.0.1` remains local; an
-explicit `0.0.0.0` bind warns before exposing the port to the LAN.
+```sh
+BUZZARDOS_DEB_OUTPUT_DIR=/path/on/data-disk/debs \
+  packaging/build-debs.sh all
+```
 
-## Building locally
-
-OCI development entry points never publish an image:
+The OCI build consumes the locally built guest `.deb` files and installs stock
+Sway/wlroots with APT:
 
 ```sh
 ./oci/build-local.sh
 ```
 
-`host/build-portable-app.sh` builds the dependency-complete `app/` payload
-outside the repository. It requires the pinned compositor runtime artifact via
-`WILDBUZZARD_GUEST_RUNTIME_PAYLOAD`. `tools/build-release-rootfs.sh` builds and
-verifies the OCI seed. `tools/assemble-release-assets.sh` creates the final
-`tar.xz` archive with maximum multithreaded xz compression.
+Generated Cargo targets, packages, OCI archives, downloads, screenshots, and
+other build artifacts remain outside the tracked source tree.
 
-Generated Cargo targets, OCI layouts, downloaded applications, screenshots,
-and release artifacts stay outside the source tree.
+## Supported hosts
 
-## GitHub Actions
-
-`.github/workflows/build-release-assets.yml` is manual and artifact-only. It
-has read-only repository permission, uses a disposable local Docker builder,
-never pushes an OCI image, and never creates a Release, tag, environment,
-Package, or registry object. It uploads exactly one short-lived Actions
-artifact named `BuzzardOS-portable-linux-x86_64.tar.xz`, containing that
-archive and `BuzzardOS-portable-linux-x86_64.tar.xz.sha256`.
+The host package is built on Ubuntu 24.04 and install-tested on Ubuntu 24.04,
+Debian 13, and Ubuntu 26.04. Runtime prerequisites include a Wayland session,
+unprivileged namespaces, configured subordinate UID/GID ranges, the distro
+`newuidmap`/`newgidmap` gates, and working permissions for any selected GPU or
+media devices. Buzzard OS installs no privileged daemon, custom setuid helper,
+kernel module, or LXC dependency.
 
 ## Licensing
 
-Project-authored code is AGPL-3.0-or-later. Bundled dependencies keep their own
-licenses and corresponding-source/provenance records. The portable archive
-separates native host notices under `app/licenses/host/` from guest/rootfs
-notices under `app/licenses/guest/` and binds them to the exact source commit,
-OCI seed, package inventories, and payload hashes under `app/provenance/`.
+Project-authored code is AGPL-3.0-or-later. Dependencies and the Buzzard CUA
+fork retain their own notices, source provenance, and attribution under
+[`LICENSES/`](LICENSES/) and the corresponding package documentation paths.

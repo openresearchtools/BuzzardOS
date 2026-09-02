@@ -1,22 +1,23 @@
-name: Build portable Actions artifact
+name: Build and publish Buzzard OS Debian packages
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: buzzardos-portable-${{ github.ref }}
+  group: buzzardos-debs-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-portable:
-    name: Build Buzzard OS portable folder
+  build:
+    name: Build Buzzard OS Debian packages
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      BUILD_IMAGE: buzzardos-portable-builder:${{ github.run_id }}
     steps:
       - name: Check out the selected commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -24,185 +25,131 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Enforce artifact-only workflow and validate sources
+      - name: Validate release sources
         shell: bash
         run: |
           set -euo pipefail
-          bash -n \
-            host/build-portable-app.sh \
-            host/packaging/AppRun \
-            host/packaging/BuzzardOS \
-            host/packaging/Install-Dependencies \
-            tools/build-release-rootfs.sh \
-            tools/assemble-release-assets.sh
-          python3 -m py_compile \
-            tools/license_audit.py \
-            tools/release_metadata.py \
-            tools/verify-elf-glibc-floor.py \
-            tools/verify-portable-release-inputs.py
-          python3 -m unittest discover -s tools/tests -v
+          bash -n packaging/build-debs.sh oci/build-local.sh oci/verify-image.sh
+          python3 -m unittest oci.tests.test_build_contract
           ./tools/check-licenses.sh --structural
-          # Bracket the final character so this guard cannot match its own
-          # source line while still rejecting release/publish actions.
-          ! grep -Eq 'uses: .*(releas[e]|publis[h])' \
-            .github/workflows/build-release-assets.yml
 
-      - name: Install disposable runner build tools
+      - name: Install Ubuntu 24.04 package-build dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            acl attr jq rsync skopeo uidmap xz-utils zstd
+            binutils build-essential buildah curl dpkg-dev libdrm-dev libglib2.0-dev libgtk-4-dev \
+            libpulse-dev libx11-dev libxfixes-dev libxi-dev libxkbcommon-dev \
+            libxrandr-dev libxtst-dev pkg-config python3
           rustup toolchain install 1.96.0 --profile minimal
           rustup default 1.96.0
-          docker buildx version
 
-      - name: Create pinned Ubuntu 24.04 application build environment
+      - name: Build the four versioned Debian packages
         shell: bash
         run: |
           set -euo pipefail
-          build_environment="$RUNNER_TEMP/buzzardos-portable-builder.Dockerfile"
-          cat >"$build_environment" <<'EOF'
-          FROM rust:1.96.0-bookworm@sha256:c993d32d95cc146bd12c84d66f0b924a6a96f3988325f39c144f2f9893dea120 AS rust-toolchain
-          FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467
-          COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
-          COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
-          ENV PATH=/usr/local/cargo/bin:${PATH}
-          ENV RUSTUP_HOME=/usr/local/rustup
-          ENV CARGO_HOME=/usr/local/cargo
-          RUN export DEBIAN_FRONTEND=noninteractive; \
-              apt-get update; \
-              apt-get install --yes --no-install-recommends \
-                binutils bubblewrap build-essential ca-certificates curl \
-                desktop-file-utils dpkg-dev file fuse3 git \
-                gstreamer1.0-pipewire gstreamer1.0-plugins-bad \
-                gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-                gstreamer1.0-tools libdrm-dev libfuse3-dev libgbm-dev \
-                libgraphene-1.0-dev libgtk-4-dev libpipewire-0.3-dev \
-                libpulse-dev libslirp0 libspa-0.2-modules libwayland-dev \
-                libx11-dev libxfixes-dev libxi-dev libxkbcommon-dev \
-                libxrandr-dev libxtst-dev make ninja-build patch patchelf \
-                pipewire-bin pkg-config python3 squashfs-tools unzip \
-                util-linux xz-utils zstd; \
-              rm -rf /var/lib/apt/lists/*
-          EOF
-          docker build --platform linux/amd64 \
-            --file "$build_environment" --tag "$BUILD_IMAGE" "$RUNNER_TEMP"
-
-      - name: Build dependency-complete native application folder
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p \
-            "$RUNNER_TEMP/buzzardos-build" \
-            "$RUNNER_TEMP/buzzardos-app-output" \
-            "$RUNNER_TEMP/buzzardos-guest-runtime" \
-            "$RUNNER_TEMP/BuzzardOS"
-          docker buildx build \
-            --platform linux/amd64 --provenance=false --sbom=false \
-            --target sway-runtime-artifact \
-            --output "type=local,dest=$RUNNER_TEMP/buzzardos-guest-runtime" \
-            --file oci/desktop/Containerfile .
-          docker run --rm --platform linux/amd64 \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            --volume "$RUNNER_TEMP/buzzardos-build:/build" \
-            --volume "$RUNNER_TEMP/buzzardos-app-output:/output" \
-            --volume "$RUNNER_TEMP/buzzardos-guest-runtime:/guest-runtime:ro" \
-            --env WILDBUZZARD_BUILD_ROOT=/build \
-            --env WILDBUZZARD_OUTPUT_DIR=/output \
-            --env WILDBUZZARD_GUEST_RUNTIME_PAYLOAD=/guest-runtime \
-            --env OUTPUT_UID="$(id -u)" --env OUTPUT_GID="$(id -g)" \
-            "$BUILD_IMAGE" bash -euo pipefail -c '
-              git config --global --add safe.directory /workspace
-              /workspace/host/build-portable-app.sh
-              chown -R "$OUTPUT_UID:$OUTPUT_GID" /output
-            '
-          mv "$RUNNER_TEMP/buzzardos-app-output/app" "$RUNNER_TEMP/BuzzardOS/app"
-          install -m0755 host/packaging/BuzzardOS "$RUNNER_TEMP/BuzzardOS/BuzzardOS"
-          install -m0755 host/packaging/Install-Dependencies "$RUNNER_TEMP/BuzzardOS/Install-Dependencies"
-          docker run --rm --platform linux/amd64 \
-            --volume "$RUNNER_TEMP/BuzzardOS:/portable:ro" \
-            "$BUILD_IMAGE" /portable/BuzzardOS --version
-
-      - name: Verify the portable dynamic-link closure on Debian trixie
-        shell: bash
-        run: |
-          set -euo pipefail
-          smoke_image=debian:trixie-slim@sha256:38a76d01668772e381ad2826d876627c89e7133e2f8a0f5d567306798b0f2a16
-          docker run --rm --platform linux/amd64 \
-            --volume "$RUNNER_TEMP/BuzzardOS:/portable:ro" \
-            "$smoke_image" bash -euo pipefail -c '
-              export LD_LIBRARY_PATH=/portable/app/usr/lib:/portable/app/usr/lib/x86_64-linux-gnu
-              for executable in \
-                /portable/app/usr/bin/wildbuzzard \
-                /portable/app/usr/bin/wildbuzzard-broker \
-                /portable/app/usr/bin/wildbuzzard-display \
-                /portable/app/usr/libexec/wildbuzzard/bwrap \
-                /portable/app/usr/libexec/wildbuzzard/unshare \
-                /portable/app/usr/libexec/wildbuzzard/gst-launch-1.0 \
-                /portable/app/usr/libexec/wildbuzzard/pw-dump \
-                /portable/app/usr/libexec/wildbuzzard/gst-plugin-scanner \
-                /portable/app/usr/libexec/wildbuzzard/slirp4netns \
-                /portable/app/usr/libexec/wildbuzzard/nvidia-ctk \
-                /portable/app/usr/libexec/wildbuzzard/nvidia-cdi-hook \
-                /portable/app/usr/libexec/wildbuzzard/nvidia-container-cli \
-                /portable/app/usr/libexec/wildbuzzard/tar.real; do
-                test -x "$executable"
-                linkage_status=0
-                linkage=$(ldd -r -- "$executable" 2>&1) || linkage_status=$?
-                printf "%s\n" "$linkage"
-                if grep -Fq "=> not found" <<<"$linkage"; then
-                  exit 1
-                fi
-                if [[ $linkage_status -ne 0 ]] &&
-                    ! grep -Fq "not a dynamic executable" <<<"$linkage"; then
-                  exit "$linkage_status"
-                fi
-              done
-              /portable/BuzzardOS --version
-              /portable/app/usr/bin/wildbuzzard-display --version
-            '
-
-      - name: Build verified OCI seed and assemble portable archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          rootfs_stage="$RUNNER_TEMP/buzzardos-rootfs-stage"
-          release_output="$RUNNER_TEMP/buzzardos-release"
-          ./tools/build-release-rootfs.sh "$RUNNER_TEMP/BuzzardOS" "$rootfs_stage"
-          ./tools/assemble-release-assets.sh \
-            "$RUNNER_TEMP/BuzzardOS" "$rootfs_stage" "$release_output"
-          archive="$release_output/BuzzardOS-portable-linux-x86_64.tar.xz"
-          checksum="$archive.sha256"
-          test -s "$archive"
-          test -s "$checksum"
-          xz -t "$archive"
-          (cd "$release_output" && sha256sum --check --strict "$(basename "$checksum")")
-          [[ "$(tar -tJf "$archive" | sed -n '1s,/.*,,p')" == BuzzardOS ]]
-
-      - name: Remove disposable build state
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker image rm --force "$BUILD_IMAGE" >/dev/null 2>&1 || true
-          docker builder prune --all --force >/dev/null 2>&1 || true
-          for path in \
-            "$RUNNER_TEMP/buzzardos-build" \
-            "$RUNNER_TEMP/buzzardos-app-output" \
-            "$RUNNER_TEMP/buzzardos-guest-runtime" \
-            "$RUNNER_TEMP/buzzardos-rootfs-stage"; do
-            if [[ -d "$path" ]]; then sudo find "$path" -mindepth 1 -delete; fi
+          build_root="$RUNNER_TEMP/buzzardos-deb-build"
+          output="$RUNNER_TEMP/buzzardos-debs"
+          BUZZARDOS_DEB_BUILD_ROOT="$build_root" \
+          BUZZARDOS_DEB_OUTPUT_DIR="$output" \
+            packaging/build-debs.sh all
+          version=$(tr -d '\n' <VERSION)
+          guest_version=$(tr -d '\n' <guest/GUEST_VERSION)
+          desktop_version=$(tr -d '\n' <guest/DESKTOP_VERSION)
+          cua_version=$(tr -d '\n' <cua/VERSION)
+          license_audit=(./tools/check-licenses.sh --structural)
+          for package in \
+            "$output/buzzardos_${version}_amd64.deb" \
+            "$output/buzzardos-guest_${guest_version}_amd64.deb" \
+            "$output/buzzardos-desktop_${desktop_version}_amd64.deb" \
+            "$output/buzzardoscua_${cua_version}_amd64.deb"; do
+            test -s "$package"
+            dpkg-deb --info "$package" >/dev/null
+            dpkg-deb --contents "$package" >/dev/null
+            (
+              cd "$output"
+              sha256sum --check --strict "$(basename "$package").sha256"
+            )
+            license_audit+=(--deb "$package")
           done
+          "${license_audit[@]}"
 
-      - name: Upload the single portable artifact
+      - name: Install-smoke the host package on every supported host distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\n' <VERSION)
+          BUZZARDOS_CONTAINER_RUNTIME=docker \
+            tools/test-host-package-matrix.sh \
+              "$RUNNER_TEMP/buzzardos-debs/buzzardos_${version}_amd64.deb"
+
+      - name: Build and verify the stock-Sway reference OCI locally
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUZZARDOS_BUILD_ROOT="$RUNNER_TEMP/buzzardos-oci-build" \
+          BUZZARDOS_OCI_TAG="buzzardos-desktop:actions-${GITHUB_RUN_ID}" \
+            ./oci/build-local.sh
+
+      - name: Upload the Debian package artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: BuzzardOS-portable-linux-x86_64.tar.xz
+          name: BuzzardOS-debian-packages-amd64
           path: |
-            ${{ runner.temp }}/buzzardos-release/BuzzardOS-portable-linux-x86_64.tar.xz
-            ${{ runner.temp }}/buzzardos-release/BuzzardOS-portable-linux-x86_64.tar.xz.sha256
+            ${{ runner.temp }}/buzzardos-debs/*.deb
+            ${{ runner.temp }}/buzzardos-debs/*.deb.sha256
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+      - name: Publish newly versioned packages on a version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t built_assets < <(
+            find "$RUNNER_TEMP/buzzardos-debs" -maxdepth 1 -type f \
+              \( -name '*.deb' -o -name '*.deb.sha256' \) -print | sort
+          )
+          test "${#built_assets[@]}" -eq 8
+
+          # Components have independent versions. A tag still builds and
+          # audits all four packages, but a stable release must not republish
+          # an unchanged Package/Version/Architecture tuple that the central
+          # APT catalogue already indexes from an earlier release.
+          declare -A published=()
+          while IFS=$'\t' read -r tag asset_name; do
+            if [[ -n "$asset_name" && "$tag" != "$GITHUB_REF_NAME" ]]; then
+              published["$asset_name"]=1
+            fi
+          done < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] as $release | $release.assets[]? | [$release.tag_name, .name] | @tsv'
+          )
+
+          assets=()
+          for candidate in "${built_assets[@]}"; do
+            asset_name=$(basename "$candidate")
+            if [[ -z "${published[$asset_name]+present}" ]]; then
+              assets+=("$candidate")
+            fi
+          done
+          test "${#assets[@]}" -gt 0
+          test "$(( ${#assets[@]} % 2 ))" -eq 0
+          for candidate in "${assets[@]}"; do
+            if [[ "$candidate" == *.deb ]]; then
+              test -s "$candidate.sha256"
+            fi
+          done
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag \
+              --title "Buzzard OS $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::WaylandCapabilities;
@@ -154,6 +154,71 @@ pub struct IntegrationSettings {
     pub media: MediaSharing,
 }
 
+/// One host-authorized file or directory exposed below `/shared`.
+///
+/// The host path is intentionally absolute: shares describe resources on the
+/// current host and are disabled by a missing source after moving/importing a
+/// machine. The guest name is one safe path component, never a guest-chosen
+/// mount destination.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedPath {
+    pub id: Uuid,
+    pub host_path: PathBuf,
+    pub guest_name: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+impl SharedPath {
+    pub fn from_host_path(host_path: PathBuf) -> Result<Self> {
+        if !host_path.is_absolute() {
+            bail!("shared host path must be absolute: {}", host_path.display());
+        }
+        let metadata = fs::symlink_metadata(&host_path)
+            .with_context(|| format!("inspecting shared path {}", host_path.display()))?;
+        if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) {
+            bail!("shared path must be a regular file or real directory");
+        }
+        let host_path = host_path
+            .canonicalize()
+            .with_context(|| format!("resolving shared path {}", host_path.display()))?;
+        let guest_name = host_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("shared host path must have a UTF-8 file name")?
+            .to_owned();
+        let share = Self {
+            id: Uuid::new_v4(),
+            host_path,
+            guest_name,
+            read_only: false,
+        };
+        share.validate_metadata()?;
+        Ok(share)
+    }
+
+    pub fn guest_path(&self) -> PathBuf {
+        Path::new("/shared").join(&self.guest_name)
+    }
+
+    pub fn validate_metadata(&self) -> Result<()> {
+        if !self.host_path.is_absolute() {
+            bail!(
+                "shared host path must be absolute: {}",
+                self.host_path.display()
+            );
+        }
+        if self.guest_name.is_empty()
+            || self.guest_name.len() > 255
+            || matches!(self.guest_name.as_str(), "." | "..")
+            || self.guest_name.contains(['/', '\0', '\n', '\r'])
+        {
+            bail!("shared guest name must be one safe non-empty path component");
+        }
+        Ok(())
+    }
+}
+
 impl IntegrationSettings {
     pub fn validate(&self, network: NetworkMode) -> Result<()> {
         if !matches!(network, NetworkMode::User)
@@ -225,11 +290,41 @@ pub struct MachineConfig {
     /// is outside the guest rootfs and cannot be changed by guest processes.
     #[serde(default)]
     pub integrations: IntegrationSettings,
+    /// Optional host-authorized file and directory shares. An empty list
+    /// exposes no host filesystem path to the guest.
+    #[serde(default)]
+    pub shares: Vec<SharedPath>,
     /// Authenticated OCI process metadata retained for portability. Buzzard
     /// OS always boots systemd as PID 1, but applies the image environment to
     /// that guest process and preserves the remaining metadata on export.
     #[serde(default)]
     pub oci: OciImageMetadata,
+    /// Optional verified install media retained below this machine's cache.
+    /// The running rootfs never depends on this archive.
+    #[serde(default)]
+    pub retained_oci_archive: Option<RetainedOciArchive>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedOciArchive {
+    pub relative_path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl RetainedOciArchive {
+    pub fn validate(&self) -> Result<()> {
+        if self.relative_path != "cache/source.oci.tar" {
+            bail!("retained OCI archive must use cache/source.oci.tar");
+        }
+        if self.sha256.len() != 64 || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("retained OCI archive has an invalid SHA-256 digest");
+        }
+        if self.size == 0 {
+            bail!("retained OCI archive cannot be empty");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -342,7 +437,7 @@ impl MachineConfig {
         gpus: Vec<String>,
     ) -> Self {
         Self {
-            schema: 3,
+            schema: 5,
             id: Uuid::new_v4(),
             title: name.clone(),
             name,
@@ -355,7 +450,9 @@ impl MachineConfig {
             gpus,
             guest_scale_120: None,
             integrations: IntegrationSettings::default(),
+            shares: Vec::new(),
             oci: OciImageMetadata::default(),
+            retained_oci_archive: None,
         }
     }
 
@@ -399,20 +496,24 @@ impl MachineConfig {
         let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self = serde_json::from_slice(&bytes)
             .with_context(|| format!("parsing {}", path.display()))?;
-        if !matches!(config.schema, 1..=3) {
+        if config.schema != 5 {
             bail!("unsupported machine metadata schema {}", config.schema);
         }
         Self::validate_name(&config.name)?;
         Self::validate_gpus(&config.gpus)?;
         Self::validate_guest_scale(config.guest_scale_120)?;
         config.oci.validate()?;
+        if let Some(archive) = &config.retained_oci_archive {
+            archive.validate()?;
+        }
         config.integrations.validate(config.network)?;
+        Self::validate_shares(&config.shares)?;
         Self::validate_display_size(config.width, config.height)?;
         Ok(config)
     }
 
     pub fn save(&self, machine_dir: &Path) -> Result<()> {
-        if !matches!(self.schema, 1..=3) {
+        if self.schema != 5 {
             bail!("unsupported machine metadata schema {}", self.schema);
         }
         Self::validate_name(&self.name)?;
@@ -420,8 +521,37 @@ impl MachineConfig {
         Self::validate_gpus(&self.gpus)?;
         Self::validate_display_size(self.width, self.height)?;
         self.oci.validate()?;
+        if let Some(archive) = &self.retained_oci_archive {
+            archive.validate()?;
+        }
         self.integrations.validate(self.network)?;
+        Self::validate_shares(&self.shares)?;
         atomic_json(&machine_dir.join(Self::FILE), self)
+    }
+
+    pub fn validate_shares(shares: &[SharedPath]) -> Result<()> {
+        if shares.len() > 128 {
+            bail!("a machine may configure at most 128 shared paths");
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        let mut paths = std::collections::BTreeSet::new();
+        for share in shares {
+            share.validate_metadata()?;
+            if !ids.insert(share.id) {
+                bail!("duplicate shared-path id {}", share.id);
+            }
+            if !names.insert(share.guest_name.as_str()) {
+                bail!("two shared paths use guest name '{}'", share.guest_name);
+            }
+            if !paths.insert(&share.host_path) {
+                bail!(
+                    "host path is shared more than once: {}",
+                    share.host_path.display()
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn validate_guest_scale(scale_120: Option<u32>) -> Result<()> {
@@ -911,7 +1041,7 @@ mod tests {
                     .mode()
                     & 0o777,
                 0o600,
-                "{name} exposed portable machine metadata"
+                "{name} exposed private machine metadata"
             );
         }
     }

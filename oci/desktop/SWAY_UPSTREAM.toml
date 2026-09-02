@@ -1,13 +1,15 @@
-schema = 1
+schema = 2
+policy = "distribution-packages-only"
+snapshot_evidence = ["oci/desktop/apt/debian-sid-snapshot.sources", "LICENSES/generated/oci-packages.tsv"]
 
 [sway]
 repository = "https://github.com/swaywm/sway"
-release = "1.12"
-commit = "88869399f421d9180dd8b6ed0b5a1f4a3585d252"
+package = "sway"
+version_source = "dpkg package inventory"
 license = "MIT"
 
 [wlroots]
 repository = "https://gitlab.freedesktop.org/wlroots/wlroots"
-release = "0.20.2"
-commit = "d783533489e1f75d6886c2ab5c5960090ef268f8"
+package_source = "resolved dependency of the distro sway package"
+version_source = "dpkg package inventory"
 license = "MIT"

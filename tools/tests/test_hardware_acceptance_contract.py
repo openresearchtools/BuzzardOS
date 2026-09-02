@@ -11,8 +11,7 @@ HARDWARE_ACCEPTANCE = PROJECT_DIR / "tests/acceptance/hardware-acceptance.sh"
 SWAY_CONFIG = PROJECT_DIR / "guest/assets/sway-config"
 CUA_VIRTUAL_KEYBOARD = (
     PROJECT_DIR
-    / "guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/src"
-    / "wayland/virtual_keyboard.rs"
+    / "cua/src/platform/wayland/virtual_keyboard.rs"
 )
 class HardwareAcceptanceContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -42,9 +41,19 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
     def test_guest_json_is_parsed_by_host_jq(self) -> None:
         self.assertNotRegex(self.script, r"\bguest\s+jq\b")
 
-    def test_portable_relocation_waits_for_both_broker_processes(self) -> None:
+    def test_acceptance_targets_installed_package_and_exact_machine_directory(self) -> None:
+        self.assertIn("default_launcher=/usr/bin/buzzardos", self.script)
+        self.assertIn('runtime="$machine_dir/runtime.json"', self.script)
+        self.assertIn(
+            '"$launcher" --machine-dir "$machine_dir" "$@"', self.script
+        )
+        self.assertIn('--share "$shared_dir"', self.script)
+        self.assertNotIn("Machines/", self.script)
+        self.assertNotIn("portable_dir", self.script)
+
+    def test_machine_directory_relocation_waits_for_both_brokers(self) -> None:
         relocation = self.script.split(
-            "# Move the complete stopped portable folder", maxsplit=1
+            "# Move the complete stopped machine directory", maxsplit=1
         )[1].split(
             "# `stop` must not return while its detached broker", maxsplit=1
         )[0]
@@ -72,12 +81,15 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         return_move = relocation.index('mv -- "$relocation_target" "$relocation_original"')
         self.assertLess(return_close, return_wait)
         self.assertLess(return_wait, return_move)
+        self.assertIn("machine_dir=$relocation_target", relocation)
+        self.assertIn("machine_dir=$relocation_original", relocation)
+        self.assertNotIn("portable_dir", relocation)
 
     def test_fractional_scale_override_uses_fresh_display_lifecycles(self) -> None:
         fractional = self.script.split(
             "# Exercise the native fractional-scale bridge", maxsplit=1
         )[1].split(
-            'rm -f -- "$portable_dir/shared/.wildbuzzard-acceptance"', maxsplit=1
+            'rm -f -- "$shared_dir/.buzzardos-acceptance"', maxsplit=1
         )[0]
         self.assertNotIn('wb stop "$machine"', fractional)
         self.assertEqual(fractional.count('wb window "$machine" close'), 2)
@@ -92,7 +104,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             "wait_stopped",
             "wait_process_identity_gone \\\n"
             '    "$fractional_baseline_broker_pid" "$fractional_baseline_broker_start_time"',
-            "WILDBUZZARD_TEST_FRACTIONAL_SCALE_120=180",
+            "BUZZARDOS_TEST_FRACTIONAL_SCALE_120=180",
             "fractional_override_broker_pid=$(jq -er '.launcher_pid' \"$runtime\")",
             'process_start_time "$fractional_override_broker_pid"',
             "wait_scaled_window_frame 180",
@@ -141,18 +153,16 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             "# Classic state changes remain compositor-owned", maxsplit=1
         )[0]
         ordered_fragments = (
-            "assert_cua_ok start_session",
             "assert_cua_ok hotkey",
-            r'[\"ctrl\",\"l\"]',
+            '["ctrl","l"]',
             "assert_cua_ok type_text",
             "assert_cua_ok press_key",
-            r'\"key\":\"backspace\"',
+            '"key":"backspace"',
             "assert_cua_ok type_text",
-            r'\"text\":\"z\"',
+            '"text":"z"',
             "assert_cua_ok press_key",
-            r'\"key\":\"enter\"',
-            'cat /home/wildbuzzard/.wildbuzzard-cua-input) == "${marker%?}z"',
-            "assert_cua_ok end_session",
+            '"key":"enter"',
+            'cat /home/user/.buzzardos-cua-input) == "${marker%?}z"',
         )
         cursor = 0
         for fragment in ordered_fragments:
@@ -161,22 +171,14 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("guest wtype", coexistence)
         self.assertNotIn("host_keyboard_input", self.script)
         self.assertNotIn('wb window "$machine" focus-monitor', self.script)
-        self.assertNotIn("WILDBUZZARD_ACCEPT_HOST_INPUT_HOOK", self.script)
+        self.assertNotIn("BUZZARDOS_ACCEPT_HOST_INPUT_HOOK", self.script)
 
-    def test_cua_session_end_waits_for_a_neutral_keyboard_acknowledgement(self) -> None:
-        self.assertIn("register_session_end_hook", self.cua_keyboard)
-        self.assertIn(
-            "send_timeout(Cmd::Reset { reply }, remaining)", self.cua_keyboard
-        )
-        self.assertIn(
-            "receive.recv_timeout(DEADLINE.saturating_sub(started.elapsed()))",
-            self.cua_keyboard,
-        )
+    def test_cua_invocation_restores_a_neutral_keyboard(self) -> None:
+        self.assertIn("Cmd::Reset { reply }", self.cua_keyboard)
         self.assertIn("self.keyboard.modifiers(0, 0, 0, 0)", self.cua_keyboard)
         self.assertIn("self.pressed.cleanup_transitions()", self.cua_keyboard)
         self.assertIn("same_client_neutral", self.cua_keyboard)
-        self.assertIn("session.restore_fixed_neutral().is_ok()", self.cua_keyboard)
-        self.assertIn("cancelled_teardown_unproven = true", self.cua_keyboard)
+        self.assertIn("restore_fixed_neutral().is_ok()", self.cua_keyboard)
         self.assertIn(
             "cancelled CUA keyboard could not prove same-client neutral delivery",
             self.cua_keyboard,
@@ -196,7 +198,7 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
             self.cua_keyboard,
         )
         self.assertIn(
-            "session_end_reset_then_parent_backspace_is_neutral",
+            "invocation_reset_then_parent_backspace_is_neutral",
             self.cua_keyboard,
         )
         self.assertIn(
@@ -205,19 +207,13 @@ class HardwareAcceptanceContractTests(unittest.TestCase):
         )
         self.assertNotIn("repair_transitions", self.cua_keyboard)
         self.assertIn("wlr_keyboard_finish emits releases", self.cua_keyboard)
-        self.assertIn("SHUTDOWN_EPOCH.fetch_add", self.cua_keyboard)
         self.assertIn("cancellable_delay(delay_ms, admission)", self.cua_keyboard)
-        hook = self.cua_keyboard.split("register_session_end_hook", 1)[1].split(
-            "owner_thread", 1
-        )[0]
-        self.assertNotIn("OPERATION_LOCK.try_lock", hook)
         self.assertGreaterEqual(self.cua_keyboard.count("keycode: 14"), 2)
 
     def test_supported_sway_text_does_not_spawn_one_shot_wtype(self) -> None:
         wayland = (
             PROJECT_DIR
-            / "guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/src"
-            / "wayland/mod.rs"
+            / "cua/src/platform/wayland/mod.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn('Command::new("wtype")', wayland)
         self.assertIn("virtual_keyboard::type_text", wayland)

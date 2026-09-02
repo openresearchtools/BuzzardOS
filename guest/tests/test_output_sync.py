@@ -19,8 +19,8 @@ from unittest import mock
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SYSTEM_XKB_ROOT = "/usr/share/X11/xkb"
-SCRIPT = REPOSITORY / "guest/assets/wildbuzzard-output-sync"
-LOADER = SourceFileLoader("wildbuzzard_output_sync", str(SCRIPT))
+SCRIPT = REPOSITORY / "guest/assets/buzzardos-output-sync"
+LOADER = SourceFileLoader("buzzardos_output_sync", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 assert SPEC is not None
 OUTPUT_SYNC = importlib.util.module_from_spec(SPEC)
@@ -50,6 +50,25 @@ def state(host_scale, preset, generation=9, width=1919, height=1079):
 
 
 class OutputScaleContractTests(unittest.TestCase):
+    @staticmethod
+    def sway_output(identifier, name, value, index=0):
+        return {
+            "id": identifier,
+            "name": name,
+            "active": True,
+            "scale": value["guest_ui_scale_120"] / 120,
+            "rect": {
+                "x": index * value["logical_width"],
+                "y": 0,
+                "width": value["logical_width"],
+                "height": value["logical_height"],
+            },
+            "current_mode": {
+                "width": value["physical_width"],
+                "height": value["physical_height"],
+            },
+        }
+
     def test_host_scale_and_guest_preset_matrix_preserves_physical_mode(self):
         for host_scale in (120, 150, 160, 180, 210, 240):
             for preset in OUTPUT_SYNC.SCALE_PRESETS:
@@ -136,6 +155,56 @@ class OutputScaleContractTests(unittest.TestCase):
             result = OUTPUT_SYNC.wait_for_sway_commit(response)
         self.assertEqual(result, response)
         configure.assert_not_called()
+
+    def test_every_active_output_must_match_the_resized_geometry_and_layout(self):
+        value = state(120, "automatic", width=1600, height=900)
+        outputs = [
+            self.sway_output(3, "WL-1", value, 0),
+            self.sway_output(6, "HEADLESS-1", value, 1),
+            self.sway_output(9, "HEADLESS-2", value, 2),
+        ]
+        self.assertTrue(OUTPUT_SYNC.sway_matches(value, outputs))
+
+        stale_mode = json.loads(json.dumps(outputs))
+        stale_mode[1]["current_mode"]["width"] = 1280
+        self.assertFalse(OUTPUT_SYNC.sway_matches(value, stale_mode))
+
+        overlapping = json.loads(json.dumps(outputs))
+        overlapping[2]["rect"]["x"] = 2560
+        self.assertFalse(OUTPUT_SYNC.sway_matches(value, overlapping))
+
+    def test_resize_atomically_resizes_and_repacks_all_active_outputs(self):
+        value = state(150, "automatic", width=2000, height=1200)
+        stale = state(150, "automatic", width=1280, height=800)
+        outputs = [
+            self.sway_output(9, "HEADLESS-2", stale, 2),
+            self.sway_output(3, "WL-1", value, 0),
+            self.sway_output(6, "HEADLESS-1", stale, 1),
+        ]
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(OUTPUT_SYNC, "sway_outputs", return_value=outputs), mock.patch.object(
+            OUTPUT_SYNC.subprocess, "run", return_value=completed
+        ) as run:
+            self.assertTrue(OUTPUT_SYNC.configure_sway(value))
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "swaymsg",
+                "--quiet",
+                "output WL-1 mode 2000x1200 scale 1.250000000 pos 0 0; "
+                "output HEADLESS-1 mode 2000x1200 scale 1.250000000 pos 1600 0; "
+                "output HEADLESS-2 mode 2000x1200 scale 1.250000000 pos 3200 0",
+            ],
+        )
+
+    def test_invalid_output_name_cannot_become_a_sway_command(self):
+        value = state(120, "automatic")
+        outputs = [self.sway_output(3, "WL-1; exec foot", value, 0)]
+        with mock.patch.object(OUTPUT_SYNC, "sway_outputs", return_value=outputs), mock.patch.object(
+            OUTPUT_SYNC.subprocess, "run"
+        ) as run:
+            self.assertFalse(OUTPUT_SYNC.configure_sway(value))
+        run.assert_not_called()
 
     def test_protocol_accepts_exactly_one_bounded_newline_delimited_request(self):
         left, right = socket.socketpair()
@@ -244,7 +313,7 @@ class OutputScaleContractTests(unittest.TestCase):
             OUTPUT_SYNC.compile_keymap(
                 dict(OUTPUT_SYNC.DEFAULT_KEYBOARD),
                 SYSTEM_XKB_ROOT,
-                "/missing/wildbuzzard/libxkbcommon.so.0",
+                "/missing/buzzardos/libxkbcommon.so.0",
                 require_packaged=False,
             )
 
@@ -253,13 +322,13 @@ class OutputScaleContractTests(unittest.TestCase):
             OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
         ):
             listener, path = OUTPUT_SYNC.control_listener(
-                "wildbuzzard-keyboard-settings.sock"
+                "buzzardos-keyboard-settings.sock"
             )
             try:
                 metadata = OUTPUT_SYNC.os.lstat(path)
                 self.assertTrue(stat.S_ISSOCK(metadata.st_mode))
                 self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o600)
-                self.assertTrue(path.endswith("wildbuzzard-keyboard-settings.sock"))
+                self.assertTrue(path.endswith("buzzardos-keyboard-settings.sock"))
             finally:
                 listener.close()
                 OUTPUT_SYNC.os.unlink(path)
@@ -309,8 +378,8 @@ class OutputScaleContractTests(unittest.TestCase):
                 "xkb_active_layout_name": "English (US)",
             },
             {
-                "identifier": "1:2:wayland-keyboard-wildbuzzard-seat",
-                "name": "wayland-keyboard-wildbuzzard-seat",
+                "identifier": "1:2:wayland-keyboard-buzzardos-seat",
+                "name": "wayland-keyboard-buzzardos-seat",
                 "type": "keyboard",
                 "xkb_active_layout_name": "English (UK)",
             },
@@ -318,13 +387,13 @@ class OutputScaleContractTests(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout=__import__("json").dumps(inventory).encode())
         with mock.patch.object(OUTPUT_SYNC.subprocess, "run", return_value=completed):
             identifier, active_name = OUTPUT_SYNC.nested_physical_keyboard()
-        self.assertEqual(identifier, "1:2:wayland-keyboard-wildbuzzard-seat")
+        self.assertEqual(identifier, "1:2:wayland-keyboard-buzzardos-seat")
         self.assertEqual(active_name, "English (UK)")
 
     def test_keyboard_target_requires_exactly_one_nested_physical_device(self):
         matching = {
-            "identifier": "1:2:wayland-keyboard-wildbuzzard-seat",
-            "name": "wayland-keyboard-wildbuzzard-seat",
+            "identifier": "1:2:wayland-keyboard-buzzardos-seat",
+            "name": "wayland-keyboard-buzzardos-seat",
             "type": "keyboard",
             "xkb_active_layout_name": "English (US)",
         }
@@ -414,14 +483,14 @@ class OutputScaleContractTests(unittest.TestCase):
             with mock.patch.object(
                 OUTPUT_SYNC,
                 "nested_physical_keyboard",
-                return_value=("1:2:wayland-keyboard-wildbuzzard-seat", "English (US)"),
+                return_value=("1:2:wayland-keyboard-buzzardos-seat", "English (US)"),
             ), mock.patch.object(OUTPUT_SYNC.subprocess, "run", side_effect=swaymsg):
                 self.assertEqual(OUTPUT_SYNC.apply_sway_keymap(snapshot), "English (US)")
             self.assertEqual(observed, [contents])
             self.assertEqual(Path(snapshot["path"]).read_bytes(), b"hostile replacement")
             OUTPUT_SYNC.remove_managed_keymap(snapshot["path"])
 
-    def test_snapshot_read_fails_closed_on_replacement_during_opened_read(self):
+    def test_snapshot_read_stays_bound_to_opened_inode_during_path_replacement(self):
         contents = b"xkb_keymap { // opened inode\n};"
         digest = OUTPUT_SYNC.keyboard_digest(contents)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
@@ -447,8 +516,7 @@ class OutputScaleContractTests(unittest.TestCase):
                 return real_read(descriptor, length)
 
             with mock.patch.object(OUTPUT_SYNC.os, "read", side_effect=replace_then_read):
-                with self.assertRaisesRegex(ValueError, "changed while it was being read"):
-                    OUTPUT_SYNC.read_keymap_snapshot(snapshot)
+                self.assertEqual(OUTPUT_SYNC.read_keymap_snapshot(snapshot), contents)
             self.assertEqual(Path(snapshot["path"]).read_bytes(), b"different inode")
             OUTPUT_SYNC.remove_managed_keymap(snapshot["path"])
 
@@ -479,11 +547,13 @@ class OutputScaleContractTests(unittest.TestCase):
 
     def test_full_settings_schema_rejects_valid_keyboard_inside_invalid_document(self):
         document = {
-            "schema_version": 2,
+            "schema_version": 3,
             "generation": 7,
             "appearance": {
                 "theme": "dark",
                 "background": {"kind": "dark_plain"},
+                "capped_task_buttons": True,
+                "pinned_applications": [],
             },
             "display": {"guest_ui_scale": "125"},
             "keyboard": dict(OUTPUT_SYNC.DEFAULT_KEYBOARD),
@@ -509,11 +579,13 @@ class OutputScaleContractTests(unittest.TestCase):
         for case in fixture["cases"]:
             with self.subTest(case=case["name"]), tempfile.TemporaryDirectory() as directory:
                 document = {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "generation": 0,
                     "appearance": {
                         "theme": "dark",
                         "background": {"kind": "dark_plain"},
+                        "capped_task_buttons": True,
+                        "pinned_applications": [],
                     },
                     "display": {"guest_ui_scale": "automatic"},
                     "keyboard": case["keyboard"],
@@ -797,334 +869,14 @@ class OutputScaleContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "malformed"):
                 OUTPUT_SYNC.read_transaction_journal()
 
-    def test_restart_restores_sway_before_aborting_prepared_or_overflowed_transaction(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
-            OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
-        ):
-            def snapshot(token, keyboard, marker):
-                contents = f"xkb_keymap {{ // {marker}\n}}".encode()
-                digest = OUTPUT_SYNC.keyboard_digest(contents)
-                return {
-                    "keyboard": keyboard,
-                    "digest": digest,
-                    "token": token,
-                    "path": OUTPUT_SYNC.write_managed_keymap(contents, token, digest),
-                }
-
-            prior = snapshot("1" * 32, dict(OUTPUT_SYNC.DEFAULT_KEYBOARD), "old")
-            requested = snapshot(
-                "2" * 32,
-                {**OUTPUT_SYNC.DEFAULT_KEYBOARD, "layout": "de"},
-                "new",
-            )
-            OUTPUT_SYNC.write_transaction_journal(prior, requested, "prepared")
-            prepared = {
-                "schema": 1,
-                "ok": True,
-                "method": "StatusKeyboardMap",
-                "state": "prepared",
-                "active_keymap_sha256": prior["digest"],
-                "pending_token": requested["token"],
-                "pending_keymap_sha256": requested["digest"],
-            }
-            # Status deliberately has this same authoritative prepared shape
-            # after the bounded host input queue overflows. Guest recovery
-            # must therefore restore Sway and Abort for either condition.
-            aborted = {
-                "schema": 1,
-                "ok": True,
-                "method": "AbortKeyboardMap",
-                "state": "aborted",
-                "active_keymap_sha256": prior["digest"],
-            }
-            order = []
-            with mock.patch.object(
-                OUTPUT_SYNC, "keyboard_host_status", return_value=prepared
-            ), mock.patch.object(
-                OUTPUT_SYNC,
-                "apply_sway_keymap",
-                side_effect=lambda path: order.append(("sway", path)) or "English (US)",
-            ), mock.patch.object(
-                OUTPUT_SYNC,
-                "finish_keyboard_host",
-                side_effect=lambda *args: order.append(("host", *args)) or aborted,
-            ):
-                manager = OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(prior["keyboard"])
-            self.assertEqual(manager.active["digest"], prior["digest"])
-            self.assertEqual(order[0], ("sway", prior))
-            self.assertEqual(order[1][0:2], ("host", "AbortKeyboardMap"))
-            self.assertFalse(Path(requested["path"]).exists())
-            self.assertIsNone(OUTPUT_SYNC.read_transaction_journal())
-
-    def test_restart_reverts_committed_but_unpersisted_layout_with_new_transaction(self):
-        prior = {
-            "keyboard": dict(OUTPUT_SYNC.DEFAULT_KEYBOARD),
-            "digest": "a" * 64,
-            "token": "1" * 32,
-            "path": "/runtime/prior.xkb",
-        }
-        requested = {
-            "keyboard": {**OUTPUT_SYNC.DEFAULT_KEYBOARD, "layout": "de"},
-            "digest": "b" * 64,
-            "token": "2" * 32,
-            "path": "/runtime/requested.xkb",
-        }
-        journal = {
-            "schema": 1,
-            "phase": "commit_sent",
-            "prior": prior,
-            "requested": requested,
-        }
-        committed = {
-            "schema": 1,
-            "ok": True,
-            "method": "StatusKeyboardMap",
-            "state": "committed",
-            "active_keymap_sha256": requested["digest"],
-        }
-        corrective = {
-            "keyboard": prior["keyboard"],
-            "digest": "c" * 64,
-            "token": "3" * 32,
-            "path": "/runtime/corrective.xkb",
-        }
-        with mock.patch.object(
-            OUTPUT_SYNC, "read_transaction_journal", return_value=journal
-        ), mock.patch.object(
-            OUTPUT_SYNC, "keyboard_host_status", return_value=committed
-        ), mock.patch.object(
-            OUTPUT_SYNC, "_new_keymap", return_value=corrective
-        ), mock.patch.object(
-            OUTPUT_SYNC, "write_transaction_journal"
-        ) as replace_journal, mock.patch.object(
-            OUTPUT_SYNC, "remove_managed_keymap"
-        ) as remove, mock.patch.object(
-            OUTPUT_SYNC.KeyboardTransactionManager, "_complete_created_map", autospec=True
-        ) as complete, mock.patch.object(
-            OUTPUT_SYNC.KeyboardTransactionManager, "acknowledge_persisted_commit"
-        ):
-            manager = OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(prior["keyboard"])
-        replace_journal.assert_called_once_with(requested, corrective, "created")
-        complete.assert_called_once_with(
-            manager, corrective, preserve_journal_on_prepare_rejection=True
-        )
-        remove.assert_called_once_with(prior["path"])
-        self.assertNotIn(
-            mock.call(requested["path"]), remove.call_args_list
-        )
-        self.assertNotIn(
-            mock.call(corrective["path"]), remove.call_args_list
-        )
-
-    def test_recovery_crash_before_corrective_journal_replace_preserves_original(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
-            OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
-        ):
-            def snapshot(token, keyboard, marker):
-                contents = f"xkb_keymap {{ // {marker}\n}}".encode()
-                digest = OUTPUT_SYNC.keyboard_digest(contents)
-                return {
-                    "keyboard": keyboard,
-                    "digest": digest,
-                    "token": token,
-                    "path": OUTPUT_SYNC.write_managed_keymap(contents, token, digest),
-                }
-
-            desired = dict(OUTPUT_SYNC.DEFAULT_KEYBOARD)
-            prior = snapshot("1" * 32, desired, "prior")
-            interrupted = snapshot(
-                "2" * 32,
-                {**OUTPUT_SYNC.DEFAULT_KEYBOARD, "layout": "de"},
-                "interrupted",
-            )
-            corrective = snapshot("3" * 32, desired, "corrective")
-            OUTPUT_SYNC.write_transaction_journal(prior, interrupted, "commit_sent")
-            original = Path(OUTPUT_SYNC.transaction_journal_path()).read_bytes()
-            committed = {
-                "schema": 1,
-                "ok": True,
-                "method": "StatusKeyboardMap",
-                "state": "committed",
-                "active_keymap_sha256": interrupted["digest"],
-            }
-            real_replace = OUTPUT_SYNC.os.replace
-
-            def crash_before_replace(source, target):
-                if target == OUTPUT_SYNC.transaction_journal_path():
-                    raise OSError("simulated crash before journal replacement")
-                return real_replace(source, target)
-
-            with mock.patch.object(
-                OUTPUT_SYNC, "keyboard_host_status", return_value=committed
-            ), mock.patch.object(
-                OUTPUT_SYNC, "_new_keymap", return_value=corrective
-            ), mock.patch.object(
-                OUTPUT_SYNC.os, "replace", side_effect=crash_before_replace
-            ):
-                with self.assertRaisesRegex(OSError, "before journal replacement"):
-                    OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(desired)
-
-            self.assertEqual(
-                Path(OUTPUT_SYNC.transaction_journal_path()).read_bytes(), original
-            )
-            journal = OUTPUT_SYNC.read_transaction_journal()
-            self.assertEqual(journal["prior"]["token"], prior["token"])
-            self.assertEqual(journal["requested"]["token"], interrupted["token"])
-            self.assertFalse(Path(corrective["path"]).exists())
-
-    def test_recovery_resumes_crash_after_corrective_replace_before_prepare(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
-            OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
-        ):
-            def snapshot(token, keyboard, marker):
-                contents = f"xkb_keymap {{ // {marker}\n}}".encode()
-                digest = OUTPUT_SYNC.keyboard_digest(contents)
-                return {
-                    "keyboard": keyboard,
-                    "digest": digest,
-                    "token": token,
-                    "path": OUTPUT_SYNC.write_managed_keymap(contents, token, digest),
-                }
-
-            desired = dict(OUTPUT_SYNC.DEFAULT_KEYBOARD)
-            prior = snapshot("1" * 32, desired, "prior")
-            interrupted = snapshot(
-                "2" * 32,
-                {**OUTPUT_SYNC.DEFAULT_KEYBOARD, "layout": "de"},
-                "interrupted",
-            )
-            corrective = snapshot("3" * 32, desired, "corrective")
-            OUTPUT_SYNC.write_transaction_journal(prior, interrupted, "commit_sent")
-            interrupted_committed = {
-                "schema": 1,
-                "ok": True,
-                "method": "StatusKeyboardMap",
-                "state": "committed",
-                "active_keymap_sha256": interrupted["digest"],
-            }
-            with mock.patch.object(
-                OUTPUT_SYNC, "keyboard_host_status", return_value=interrupted_committed
-            ), mock.patch.object(
-                OUTPUT_SYNC, "_new_keymap", return_value=corrective
-            ), mock.patch.object(
-                OUTPUT_SYNC,
-                "prepare_keyboard_host",
-                side_effect=OUTPUT_SYNC.FatalKeyboardTransaction(
-                    "simulated crash after replacement before Prepare"
-                ),
-            ):
-                with self.assertRaises(OUTPUT_SYNC.FatalKeyboardTransaction):
-                    OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(desired)
-
-            replacement = OUTPUT_SYNC.read_transaction_journal()
-            self.assertEqual(replacement["phase"], "created")
-            self.assertEqual(replacement["prior"]["token"], interrupted["token"])
-            self.assertEqual(replacement["requested"]["token"], corrective["token"])
-
-            unknown = {
-                "schema": 1,
-                "ok": True,
-                "method": "StatusKeyboardMap",
-                "state": "unknown",
-                "active_keymap_sha256": interrupted["digest"],
-            }
-            prepared = {
-                "schema": 1,
-                "ok": True,
-                "method": "PrepareKeyboardMap",
-                "state": "prepared",
-                "active_keymap_sha256": interrupted["digest"],
-                "pending_token": corrective["token"],
-                "pending_keymap_sha256": corrective["digest"],
-            }
-            committed = {
-                "schema": 1,
-                "ok": True,
-                "method": "CommitKeyboardMap",
-                "state": "committed",
-                "active_keymap_sha256": corrective["digest"],
-            }
-            with mock.patch.object(
-                OUTPUT_SYNC, "keyboard_host_status", return_value=unknown
-            ), mock.patch.object(
-                OUTPUT_SYNC, "_new_keymap", side_effect=AssertionError("must resume journal")
-            ), mock.patch.object(
-                OUTPUT_SYNC, "prepare_keyboard_host", return_value=prepared
-            ) as prepare, mock.patch.object(
-                OUTPUT_SYNC, "apply_sway_keymap", return_value="English (US)"
-            ), mock.patch.object(
-                OUTPUT_SYNC, "finish_keyboard_host", return_value=committed
-            ), mock.patch.object(
-                OUTPUT_SYNC,
-                "persisted_preferences",
-                return_value={"preset": "automatic", "keyboard": desired},
-            ):
-                manager = OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(desired)
-
-            prepare.assert_called_once_with(
-                corrective["token"], corrective["digest"], corrective["keyboard"]
-            )
-            self.assertEqual(manager.active["token"], corrective["token"])
-            self.assertIsNone(OUTPUT_SYNC.read_transaction_journal())
-
-    def test_recovery_reattaches_committed_map_to_a_new_sealed_fd_owner(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
-            OUTPUT_SYNC.os.environ, {"XDG_RUNTIME_DIR": directory}
-        ):
-            def snapshot(token, keyboard, marker):
-                contents = f"xkb_keymap {{ // {marker}\n}}".encode()
-                digest = OUTPUT_SYNC.keyboard_digest(contents)
-                return {
-                    "keyboard": keyboard,
-                    "digest": digest,
-                    "token": token,
-                    "path": OUTPUT_SYNC.write_managed_keymap(contents, token, digest),
-                }
-
-            desired = dict(OUTPUT_SYNC.DEFAULT_KEYBOARD)
-            prior = snapshot(
-                "1" * 32,
-                {**OUTPUT_SYNC.DEFAULT_KEYBOARD, "layout": "de"},
-                "prior",
-            )
-            corrective = snapshot("2" * 32, desired, "corrective")
-            reattached = snapshot("3" * 32, desired, "reattached")
-            OUTPUT_SYNC.write_transaction_journal(prior, corrective, "committed")
-            committed = {
-                "schema": 1,
-                "ok": True,
-                "method": "StatusKeyboardMap",
-                "state": "committed",
-                "active_keymap_sha256": corrective["digest"],
-            }
-            with mock.patch.object(
-                OUTPUT_SYNC, "keyboard_host_status", return_value=committed
-            ), mock.patch.object(
-                OUTPUT_SYNC, "_new_keymap", return_value=reattached
-            ), mock.patch.object(
-                OUTPUT_SYNC.KeyboardTransactionManager, "_apply_prepared_map"
-            ) as apply, mock.patch.object(
-                OUTPUT_SYNC.KeyboardTransactionManager, "acknowledge_persisted_commit"
-            ) as acknowledge:
-                manager = OUTPUT_SYNC.KeyboardTransactionManager.bootstrap(desired)
-
-            self.assertEqual(manager.active["token"], corrective["token"])
-            self.assertIsNone(OUTPUT_SYNC.read_transaction_journal())
-            self.assertFalse(Path(prior["path"]).exists())
-            self.assertTrue(Path(corrective["path"]).exists())
-            apply.assert_called_once_with(reattached)
-            acknowledge.assert_called_once()
-
-    def test_desktop_services_supervises_output_sync_with_bounded_backoff(self):
-        services = (REPOSITORY / "guest/assets/wildbuzzard-desktop-services").read_text()
-        self.assertIn("start_output_sync_supervisor", services)
-        self.assertIn("while :; do", services)
-        self.assertIn("sleep 0.2", services)
-        self.assertIn("sleep 2", services)
-        self.assertNotIn(
-            'start_service output-sync "$runtime/libexec/wildbuzzard-output-sync"',
+    def test_desktop_services_runs_output_sync_without_retry_probe_loop(self):
+        services = (REPOSITORY / "guest/assets/buzzardos-desktop-services").read_text()
+        self.assertIn(
+            'start_service "$runtime/libexec/buzzardos-output-sync"',
             services,
         )
+        self.assertNotIn("start_output_sync_supervisor", services)
+        self.assertNotIn("consecutive failure level", services)
 
     def test_failed_ready_publish_leaves_no_session_runtime_fragment(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(

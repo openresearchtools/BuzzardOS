@@ -1,0 +1,141 @@
+# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720
+# This recipe bootstraps the signed Open Research Tools APT archive and installs
+# the three independently versioned Buzzard OS guest packages from it. No
+# source tree, compiler, language toolchain, or local package artifact enters
+# the reference image build.
+FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Resolve every Debian package against the immutable archive snapshot named by
+# the pinned sid base.  The normal live sid source is restored after the image
+# is assembled so persistent guest machines continue to receive user-requested
+# package updates.
+COPY apt/debian-sid-snapshot.sources \
+    /etc/apt/sources.list.d/debian.sources
+COPY apt/99buzzardos-snapshot \
+    /etc/apt/apt.conf.d/99buzzardos-snapshot
+
+ARG BUZZARDOS_GUEST_VERSION=0.1.1
+ARG BUZZARDOS_DESKTOP_VERSION=0.1.3
+ARG BUZZARDOS_CUA_VERSION=0.1.0
+ARG OPENRESEARCHTOOLS_KEYRING_SHA256=e46f7b021b56748c749f49afa3ef97974e96fceeedeb0f2ac7ecbef8b676c441
+
+# Bootstrap only the public archive key/source package over HTTPS. APT then
+# authenticates the signed catalogue and verifies every Buzzard package hash.
+# Keeping the keyring and source installed makes persistent machines ordinary
+# APT-updatable systems after image construction.
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        ca-certificates \
+        wget && \
+    wget --quiet --output-document=/tmp/openresearchtools-archive-keyring.deb \
+        https://keyring.openresearchtools.com && \
+    printf '%s  %s\n' "$OPENRESEARCHTOOLS_KEYRING_SHA256" \
+        /tmp/openresearchtools-archive-keyring.deb \
+        | sha256sum --check --strict - && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        /tmp/openresearchtools-archive-keyring.deb && \
+    rm -f /tmp/openresearchtools-archive-keyring.deb && \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        "buzzardoscua=${BUZZARDOS_CUA_VERSION}" \
+        "buzzardos-guest=${BUZZARDOS_GUEST_VERSION}" \
+        "buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}" && \
+    rm -f \
+        /usr/share/applications/org.kde.ksecretd.desktop \
+        /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.kwallet.service \
+        /usr/share/dbus-1/services/org.kde.kwalletd5.service \
+        /usr/share/dbus-1/services/org.kde.kwalletd6.service \
+        /usr/share/dbus-1/services/org.kde.secretservicecompat.service \
+        /usr/share/xdg-desktop-portal/portals/kwallet.portal && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY apt/debian-sid-live.sources \
+    /etc/apt/sources.list.d/debian.sources
+# The finished machine is a persistent desktop, not a disposable container.
+# Replace the immutable build snapshot with the live signed archive and retain
+# its package catalogue so package installation works immediately on first
+# boot. Distro APT timers keep this catalogue current afterwards.
+RUN rm -f /etc/apt/apt.conf.d/99buzzardos-snapshot && \
+    apt-get -o Acquire::ForceIPv4=true update
+
+COPY provision-image.sh /tmp/buzzardos-provision-image
+RUN chmod 0755 /tmp/buzzardos-provision-image && \
+    /tmp/buzzardos-provision-image && \
+    rm -f /tmp/buzzardos-provision-image
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]
+
+# Everything above this line is byte-for-byte identical to Containerfile.
+# Everything below is NVIDIA's CUDA 13.3.1 runtime recipe, translated only
+# from its Ubuntu repository name to NVIDIA's Debian 13 repository. Systemd
+# remains the final image command above instead of NVIDIA's shell entrypoint.
+ARG CUDA_KEYRING_VERSION=1.1-1
+ARG CUDA_KEYRING_SHA256=d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f
+ARG CUDA_KEYRING_SOURCE_COMMIT=c63770f25b9ece2006956c9be86a72b20c2e67ba
+ARG CUDA_KEYRING_LICENSE_SHA256=be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d
+ARG NV_CUDA_CUDART_VERSION=13.3.29-1
+ARG NV_CUDA_LIB_VERSION=13.3.1-1
+ARG NV_CUDA_COMPAT_VERSION=610.43.02-1
+ARG NV_NVTX_VERSION=13.3.29-1
+ARG NV_LIBNPP_VERSION=13.1.2.81-1
+ARG NV_LIBCUSPARSE_VERSION=12.8.2.51-1
+ARG NV_LIBCUBLAS_VERSION=13.6.0.2-1
+ARG NV_LIBNCCL_PACKAGE_VERSION=2.30.7-1+cuda13.3
+
+RUN apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        gnupg2 && \
+    wget --tries=4 --output-document=/tmp/cuda-keyring.deb \
+        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-keyring_${CUDA_KEYRING_VERSION}_all.deb" && \
+    printf '%s  %s\n' "$CUDA_KEYRING_SHA256" /tmp/cuda-keyring.deb \
+        | sha256sum --check --strict - && \
+    wget --tries=4 --output-document=/tmp/cuda-keyring.LICENSE \
+        "https://raw.githubusercontent.com/NVIDIA/apt-packaging-cuda-keyring/${CUDA_KEYRING_SOURCE_COMMIT}/LICENSE" && \
+    printf '%s  %s\n' "$CUDA_KEYRING_LICENSE_SHA256" \
+        /tmp/cuda-keyring.LICENSE | sha256sum --check --strict - && \
+    dpkg --install /tmp/cuda-keyring.deb && \
+    rm -f /tmp/cuda-keyring.deb && \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        cuda-cudart-13-3="$NV_CUDA_CUDART_VERSION" \
+        cuda-toolkit-13-3-config-common="$NV_CUDA_CUDART_VERSION" \
+        cuda-toolkit-13-config-common="$NV_CUDA_CUDART_VERSION" \
+        cuda-toolkit-config-common="$NV_CUDA_CUDART_VERSION" \
+        cuda-compat-13-3="$NV_CUDA_COMPAT_VERSION" \
+        cuda-libraries-13-3="$NV_CUDA_LIB_VERSION" \
+        libnpp-13-3="$NV_LIBNPP_VERSION" \
+        cuda-nvtx-13-3="$NV_NVTX_VERSION" \
+        libcusparse-13-3="$NV_LIBCUSPARSE_VERSION" \
+        libcublas-13-3="$NV_LIBCUBLAS_VERSION" \
+        libnccl2="$NV_LIBNCCL_PACKAGE_VERSION" && \
+    install -m 0644 /tmp/cuda-keyring.LICENSE \
+        /usr/share/doc/cuda-keyring/copyright && \
+    install -m 0644 /usr/share/doc/cuda-cudart-13-3/copyright \
+        /usr/share/doc/cuda-libraries-13-3/copyright && \
+    rm -f /tmp/cuda-keyring.LICENSE && \
+    apt-mark hold libcublas-13-3 libnccl2 && \
+    printf '%s\n' /usr/local/cuda/lib64 >>/etc/ld.so.conf.d/nvidia.conf && \
+    ldconfig && \
+    apt-get clean
+
+ENV PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    NVARCH=x86_64 \
+    NVIDIA_REQUIRE_CUDA="cuda>=13.3 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=570,driver<571 brand=grid,driver>=570,driver<571 brand=tesla,driver>=570,driver<571 brand=nvidia,driver>=570,driver<571 brand=quadro,driver>=570,driver<571 brand=quadrortx,driver>=570,driver<571 brand=nvidiartx,driver>=570,driver<571 brand=vapps,driver>=570,driver<571 brand=vpc,driver>=570,driver<571 brand=vcs,driver>=570,driver<571 brand=vws,driver>=570,driver<571 brand=cloudgaming,driver>=570,driver<571 brand=unknown,driver>=580,driver<581 brand=grid,driver>=580,driver<581 brand=tesla,driver>=580,driver<581 brand=nvidia,driver>=580,driver<581 brand=quadro,driver>=580,driver<581 brand=quadrortx,driver>=580,driver<581 brand=nvidiartx,driver>=580,driver<581 brand=vapps,driver>=580,driver<581 brand=vpc,driver>=580,driver<581 brand=vcs,driver>=580,driver<581 brand=vws,driver>=580,driver<581 brand=cloudgaming,driver>=580,driver<581 brand=unknown,driver>=590,driver<591 brand=grid,driver>=590,driver<591 brand=tesla,driver>=590,driver<591 brand=nvidia,driver>=590,driver<591 brand=quadro,driver>=590,driver<591 brand=quadrortx,driver>=590,driver<591 brand=nvidiartx,driver>=590,driver<591 brand=vapps,driver>=590,driver<591 brand=vpc,driver>=590,driver<591 brand=vcs,driver>=590,driver<591 brand=vws,driver>=590,driver<591 brand=cloudgaming,driver>=590,driver<591 brand=unknown,driver>=595,driver<596 brand=grid,driver>=595,driver<596 brand=tesla,driver>=595,driver<596 brand=nvidia,driver>=595,driver<596 brand=quadro,driver>=595,driver<596 brand=quadrortx,driver>=595,driver<596 brand=nvidiartx,driver>=595,driver<596 brand=vapps,driver>=595,driver<596 brand=vpc,driver>=595,driver<596 brand=vcs,driver>=595,driver<596 brand=vws,driver>=595,driver<596 brand=cloudgaming,driver>=595,driver<596" \
+    CUDA_VERSION=13.3.1 \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    NV_CUDA_LIB_VERSION=13.3.1-1 \
+    NV_NVTX_VERSION=13.3.29-1 \
+    NV_LIBNPP_VERSION=13.1.2.81-1 \
+    NV_LIBCUSPARSE_VERSION=12.8.2.51-1 \
+    NV_LIBCUBLAS_PACKAGE_NAME=libcublas-13-3 \
+    NV_LIBCUBLAS_VERSION=13.6.0.2-1 \
+    NV_LIBNCCL_PACKAGE_NAME=libnccl2 \
+    NV_LIBNCCL_PACKAGE_VERSION=2.30.7-1 \
+    NCCL_VERSION=2.30.7-1 \
+    NVIDIA_PRODUCT_NAME=CUDA

@@ -1,0 +1,116 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+# PipeWire otherwise detects the systemd journal and writes directly to it,
+# bypassing stdout/stderr redirection.  Buzzard services keep no production
+# log stream; immediate failures are represented by readiness/state instead.
+export PIPEWIRE_DEBUG=0
+export SPA_DEBUG=0
+export PIPEWIRE_LOG_SYSTEMD=false
+
+if [ "${BUZZARDOS_SERVICES_LOCKED:-0}" != 1 ]; then
+    export BUZZARDOS_SERVICES_LOCKED=1
+    exec flock -n /run/user/1000/buzzardos-desktop-services.lock "$0"
+fi
+
+status_dir=${BUZZARDOS_STATUS_DIR:-/run/buzzardos-host}
+: "${BUZZARDOS_SESSION_TOKEN:?missing Buzzard OS session token}"
+rm -f \
+    "$status_dir/desktop-ready" \
+    "$status_dir/shell-ready" \
+    "$status_dir/clipboard-ready" \
+    "$status_dir/clipboard-agent.sock"
+
+# Sway sets WAYLAND_DISPLAY and SWAYSOCK for its exec command. Publish the
+# private guest-compositor endpoints to D-Bus activation only after Sway is running so
+# activated applications can never inherit the display gateway connection.
+dbus-update-activation-environment \
+    DBUS_SESSION_BUS_ADDRESS \
+    DISPLAY \
+    ELECTRON_OZONE_PLATFORM_HINT \
+    GTK_MODULES \
+    HOME \
+    LD_LIBRARY_PATH \
+    MOZ_ENABLE_WAYLAND \
+    NO_AT_BRIDGE \
+    QT_ACCESSIBILITY \
+    QT_QPA_PLATFORM \
+    QT_QPA_PLATFORMTHEME \
+    SWAYSOCK \
+    USER \
+    WAYLAND_DISPLAY \
+    XKB_CONFIG_ROOT \
+    XDG_CONFIG_DIRS \
+    XDG_CURRENT_DESKTOP \
+    XDG_RUNTIME_DIR \
+    XDG_SESSION_DESKTOP \
+    XDG_SESSION_TYPE
+
+service_pids=
+last_service_pid=
+
+start_service() {
+    "$@" >/dev/null 2>&1 &
+    last_service_pid=$!
+    service_pids="$service_pids $last_service_pid"
+}
+
+start_optional_service() {
+    executable=$1
+    shift
+    if command -v "$executable" >/dev/null 2>&1; then
+        start_service "$executable" "$@"
+    fi
+}
+
+cleanup() {
+    rm -f \
+        "$status_dir/desktop-ready" \
+        "$status_dir/shell-ready" \
+        "$status_dir/clipboard-ready" \
+        "$status_dir/clipboard-agent.sock"
+    # The list is populated only from numeric child PIDs created above.
+    # shellcheck disable=SC2086
+    kill $service_pids 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# These are guest-private services. No host PipeWire or portal socket is
+# mounted, and none of them participates in the visible host presentation.
+start_optional_service pipewire
+attempt=0
+while [ "$attempt" -lt 200 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+done
+if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+    echo "private PipeWire socket did not become ready" >&2
+    exit 1
+fi
+start_optional_service pipewire-pulse
+start_optional_service wireplumber
+runtime=/usr/lib/buzzardos/runtime/current
+
+start_service "$runtime/libexec/buzzardos-appimage-ready"
+start_service "$runtime/libexec/buzzardos-clipboard-agent"
+start_service "$runtime/libexec/buzzardos-integration-agent"
+start_optional_service /usr/libexec/xdg-desktop-portal-wlr
+start_optional_service /usr/libexec/xdg-desktop-portal
+
+start_optional_service mako
+if [ -x /usr/bin/buzzardos-desktop ]; then
+    start_service /usr/bin/buzzardos-desktop
+fi
+start_service "$runtime/libexec/buzzardos-output-sync"
+
+# Production startup performs no acceptance probes, screenshots, health RPCs,
+# or retry loops.  The authenticated marker means the real services were
+# launched for this session; deeper validation belongs in tests/acceptance.
+desktop_ready_tmp=$(mktemp "$status_dir/.desktop-ready.XXXXXX")
+chmod 0600 "$desktop_ready_tmp"
+printf '%s\n' "$BUZZARDOS_SESSION_TOKEN" >"$desktop_ready_tmp"
+mv -f "$desktop_ready_tmp" "$status_dir/desktop-ready"
+
+wait

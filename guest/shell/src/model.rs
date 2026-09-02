@@ -1,18 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::Result;
+use buzzardos_desktop_core::{DesktopItemKind, XdgPaths, discover_applications};
 #[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
-use wildbuzzard_desktop_core::{DesktopItemKind, XdgPaths, discover_applications};
 
 pub const PANEL_HEIGHT: i32 = 42;
+pub const TOP_BAR_HEIGHT: i32 = 28;
 pub const APPLICATIONS_BUTTON_WIDTH: i32 = 126;
 pub const SHOW_DESKTOP_WIDTH: i32 = 18;
 pub const APPLICATIONS_MENU_HEADER_HEIGHT: i32 = 54;
 pub const APPLICATIONS_MENU_SECTION_HEIGHT: i32 = 26;
 pub const APPLICATIONS_MENU_FOOTER_HEIGHT: i32 = 50;
 pub const MENU_ROW_HEIGHT: i32 = 36;
+pub const CAPPED_TASK_BUTTON_WIDTH: i32 = 260;
+pub const MIN_TASK_BUTTON_WIDTH: i32 = 96;
+pub const TASK_PAGE_STEP: usize = 5;
+const TASK_PAGE_BUTTON_WIDTH: i32 = 28;
+const WORKSPACE_ADD_WIDTH: i32 = 34;
+const WORKSPACE_TAB_MAX_WIDTH: i32 = 150;
+pub const MANUAL_WORKSPACE_FLAG: u32 = 1 << 31;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceTab {
+    pub index: u32,
+    pub label: String,
+    pub active: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Application {
@@ -20,6 +35,7 @@ pub struct Application {
     pub name: String,
     pub generic_name: Option<String>,
     pub icon: Option<String>,
+    pub startup_wm_class: Option<String>,
     pub categories: Vec<String>,
     pub source: PathBuf,
 }
@@ -32,6 +48,9 @@ pub struct GuestWindow {
     pub focused: bool,
     pub minimized: bool,
     pub maximized: bool,
+    pub workspace_index: Option<u32>,
+    pub workspace: String,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,12 +73,18 @@ impl Rect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellAction {
     ToggleApplications,
+    FocusApplicationSearch,
     OpenFiles,
     OpenShared,
     OpenDesktopItem(PathBuf, DesktopItemKind),
     LaunchApplication(String),
     AddApplicationDesktopShortcut(String),
-    RemoveApplicationDesktopShortcut(String),
+    ExtractApplication(String),
+    ExtractApplicationNoSandbox(String),
+    PinApplication(String),
+    UnpinApplication(String),
+    RenameApplication(String),
+    DeleteApplication(String),
     DesktopOpenSelection,
     DesktopCut,
     DesktopCopy,
@@ -69,7 +94,6 @@ pub enum ShellAction {
     DesktopNewFolder,
     DesktopArrangeIcons,
     DesktopAddToApplications,
-    DesktopRemoveFromApplications,
     DesktopEditConfirm,
     DesktopDeleteConfirm,
     DesktopCollisionReplace,
@@ -81,11 +105,102 @@ pub enum ShellAction {
     MinimizeWindow(u32),
     ToggleMaximizeWindow(u32),
     CloseWindow(u32),
+    MoveWindowToWorkspace {
+        window_id: u32,
+        workspace_index: u32,
+    },
+    SwitchWorkspace(u32),
+    CreateWorkspace,
+    CloseWorkspace(u32),
     TaskbarPrevious,
     TaskbarNext,
     ShowDesktop,
     CloseApplicationsMenu,
-    ShutdownMachine,
+}
+
+pub fn workspace_name(index: u32) -> String {
+    match index {
+        0 => "Desktop".to_owned(),
+        1 => "CUA".to_owned(),
+        other if other & MANUAL_WORKSPACE_FLAG != 0 => {
+            format!("Workspace{}", other & !MANUAL_WORKSPACE_FLAG)
+        }
+        other => format!("CUA{other}"),
+    }
+}
+
+pub fn workspace_index(name: &str) -> Option<u32> {
+    match name {
+        "Desktop" => Some(0),
+        "CUA" => Some(1),
+        _ => name
+            .strip_prefix("CUA")
+            .filter(|suffix| !suffix.is_empty() && !suffix.starts_with('0'))
+            .and_then(|suffix| suffix.parse::<u32>().ok())
+            .filter(|index| *index >= 2 && *index < MANUAL_WORKSPACE_FLAG)
+            .or_else(|| {
+                name.strip_prefix("Workspace")
+                    .filter(|suffix| !suffix.is_empty() && !suffix.starts_with('0'))
+                    .and_then(|suffix| suffix.parse::<u32>().ok())
+                    .filter(|index| *index > 0 && *index < MANUAL_WORKSPACE_FLAG)
+                    .map(|index| MANUAL_WORKSPACE_FLAG | index)
+            }),
+    }
+}
+
+pub fn is_cua_workspace(index: u32) -> bool {
+    index > 0 && index & MANUAL_WORKSPACE_FLAG == 0
+}
+
+pub fn next_manual_workspace(workspaces: &[WorkspaceTab]) -> u32 {
+    let next = workspaces
+        .iter()
+        .filter_map(|workspace| {
+            (workspace.index & MANUAL_WORKSPACE_FLAG != 0)
+                .then_some(workspace.index & !MANUAL_WORKSPACE_FLAG)
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1);
+    MANUAL_WORKSPACE_FLAG | next
+}
+
+pub fn top_bar_targets(width: u32, workspaces: &[WorkspaceTab]) -> Vec<HitTarget> {
+    let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
+    let add_width = WORKSPACE_ADD_WIDTH.min(width);
+    let available = width.saturating_sub(add_width);
+    let tab_width = if workspaces.is_empty() {
+        0
+    } else {
+        (available / i32::try_from(workspaces.len()).unwrap_or(1)).clamp(1, WORKSPACE_TAB_MAX_WIDTH)
+    };
+    let mut x = 0;
+    let mut targets = Vec::with_capacity(workspaces.len() + 1);
+    for workspace in workspaces {
+        targets.push(HitTarget {
+            rect: Rect {
+                x,
+                y: 0,
+                width: tab_width,
+                height: TOP_BAR_HEIGHT,
+            },
+            label: workspace.label.clone(),
+            action: ShellAction::SwitchWorkspace(workspace.index),
+        });
+        x = x.saturating_add(tab_width);
+    }
+    targets.push(HitTarget {
+        rect: Rect {
+            x: x.min(width.saturating_sub(add_width)),
+            y: 0,
+            width: add_width,
+            height: TOP_BAR_HEIGHT,
+        },
+        label: "Create workspace".to_owned(),
+        action: ShellAction::CreateWorkspace,
+    });
+    targets
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,10 +210,12 @@ pub struct HitTarget {
     pub action: ShellAction,
 }
 
-pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<HitTarget> {
-    const NAV_WIDTH: i32 = 24;
-    const MIN_TASK_WIDTH: i32 = 148;
-
+pub fn panel_targets(
+    width: u32,
+    windows: &[GuestWindow],
+    offset: usize,
+    capped_task_buttons: bool,
+) -> Vec<HitTarget> {
     let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
     let show_desktop_width = SHOW_DESKTOP_WIDTH.min(width);
     let taskbar_right = width.saturating_sub(show_desktop_width);
@@ -118,12 +235,27 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
 
     let right_edge = taskbar_right.max(x);
     let available = right_edge.saturating_sub(x).max(0);
-    let initial_slots = usize::try_from((available / MIN_TASK_WIDTH).max(1)).unwrap_or(1);
-    let needs_paging = windows.len() > initial_slots;
-    let task_space = available.saturating_sub(if needs_paging { NAV_WIDTH * 2 } else { 0 });
-    let slots = usize::try_from((task_space / MIN_TASK_WIDTH).max(1)).unwrap_or(1);
-    let pages = windows.len().div_ceil(slots).max(1);
-    let start = (page % pages).saturating_mul(slots).min(windows.len());
+    let needs_paging = capped_task_buttons
+        && i32::try_from(windows.len())
+            .unwrap_or(i32::MAX)
+            .saturating_mul(MIN_TASK_BUTTON_WIDTH)
+            > available;
+    let task_space = available.saturating_sub(if needs_paging {
+        TASK_PAGE_BUTTON_WIDTH * 2
+    } else {
+        0
+    });
+    let slots = if needs_paging {
+        usize::try_from((task_space / MIN_TASK_BUTTON_WIDTH).max(1)).unwrap_or(1)
+    } else {
+        windows.len()
+    };
+    let maximum_offset = windows.len().saturating_sub(slots);
+    let start = if needs_paging {
+        offset.min(maximum_offset)
+    } else {
+        0
+    };
     let end = start.saturating_add(slots).min(windows.len());
     let visible = &windows[start..end];
 
@@ -132,19 +264,35 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
             rect: Rect {
                 x,
                 y: 0,
-                width: NAV_WIDTH,
+                width: TASK_PAGE_BUTTON_WIDTH,
                 height: PANEL_HEIGHT,
             },
             label: "Previous running applications".to_owned(),
             action: ShellAction::TaskbarPrevious,
         });
-        x += NAV_WIDTH;
+        x += TASK_PAGE_BUTTON_WIDTH;
+        targets.push(HitTarget {
+            rect: Rect {
+                x,
+                y: 0,
+                width: TASK_PAGE_BUTTON_WIDTH,
+                height: PANEL_HEIGHT,
+            },
+            label: "Next running applications".to_owned(),
+            action: ShellAction::TaskbarNext,
+        });
+        x += TASK_PAGE_BUTTON_WIDTH;
     }
 
     let task_width = if visible.is_empty() {
-        task_space
+        0
     } else {
-        task_space / i32::try_from(visible.len()).unwrap_or(1)
+        let equal_width = task_space / i32::try_from(visible.len()).unwrap_or(1);
+        if capped_task_buttons {
+            equal_width.clamp(MIN_TASK_BUTTON_WIDTH, CAPPED_TASK_BUTTON_WIDTH)
+        } else {
+            equal_width
+        }
     };
     for window in visible {
         targets.push(HitTarget {
@@ -160,18 +308,6 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
         x += task_width;
     }
 
-    if needs_paging {
-        targets.push(HitTarget {
-            rect: Rect {
-                x,
-                y: 0,
-                width: NAV_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            label: "Next running applications".to_owned(),
-            action: ShellAction::TaskbarNext,
-        });
-    }
     targets.push(HitTarget {
         rect: Rect {
             x: taskbar_right,
@@ -183,6 +319,20 @@ pub fn panel_targets(width: u32, windows: &[GuestWindow], page: usize) -> Vec<Hi
         action: ShellAction::ShowDesktop,
     });
     targets
+}
+
+pub fn taskbar_max_offset(width: u32, window_count: usize, capped_task_buttons: bool) -> usize {
+    if !capped_task_buttons {
+        return 0;
+    }
+    let width = i32::try_from(width).unwrap_or(i32::MAX).max(1);
+    let available = width
+        .saturating_sub(SHOW_DESKTOP_WIDTH.min(width))
+        .saturating_sub(APPLICATIONS_BUTTON_WIDTH.min(width))
+        .saturating_sub(TASK_PAGE_BUTTON_WIDTH * 2)
+        .max(MIN_TASK_BUTTON_WIDTH);
+    let slots = usize::try_from((available / MIN_TASK_BUTTON_WIDTH).max(1)).unwrap_or(1);
+    window_count.saturating_sub(slots)
 }
 
 pub fn menu_targets(
@@ -215,19 +365,6 @@ pub fn menu_targets(
         y += MENU_ROW_HEIGHT;
     }
 
-    targets.push(HitTarget {
-        rect: Rect {
-            x: 8,
-            y: menu_height
-                .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
-                .saturating_add(6)
-                .max(0),
-            width: menu_width.saturating_sub(16),
-            height: MENU_ROW_HEIGHT,
-        },
-        label: "Shut Down Machine".to_owned(),
-        action: ShellAction::ShutdownMachine,
-    });
     targets
 }
 
@@ -246,76 +383,161 @@ pub fn applications_menu_close_target(menu_width: u32) -> HitTarget {
     }
 }
 
-pub fn window_menu_targets(window: &GuestWindow) -> Vec<HitTarget> {
+pub fn applications_menu_search_target(menu_width: u32, menu_height: u32) -> HitTarget {
+    let menu_width = i32::try_from(menu_width).unwrap_or(i32::MAX);
+    let menu_height = i32::try_from(menu_height).unwrap_or(i32::MAX);
+    HitTarget {
+        rect: Rect {
+            x: 8,
+            y: menu_height
+                .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
+                .saturating_add(6),
+            width: menu_width.saturating_sub(16),
+            height: MENU_ROW_HEIGHT,
+        },
+        label: "Search applications".to_owned(),
+        action: ShellAction::FocusApplicationSearch,
+    }
+}
+
+pub fn window_menu_targets(window: &GuestWindow, workspaces: &[WorkspaceTab]) -> Vec<HitTarget> {
     const HEADER_HEIGHT: i32 = 44;
     const MENU_WIDTH: i32 = 260;
-    [
-        ("Focus", ShellAction::ActivateWindow(window.id)),
+    let mut entries: Vec<(String, ShellAction)> = vec![
+        ("Focus".to_owned(), ShellAction::ActivateWindow(window.id)),
         (
-            "Bring Into View",
+            "Bring Into View".to_owned(),
             ShellAction::BringIntoViewWindow(window.id),
         ),
-        ("Minimize", ShellAction::MinimizeWindow(window.id)),
+        (
+            "Minimize".to_owned(),
+            ShellAction::MinimizeWindow(window.id),
+        ),
         (
             if window.minimized || window.maximized {
-                "Restore"
+                "Restore".to_owned()
             } else {
-                "Maximize"
+                "Maximize".to_owned()
             },
             ShellAction::ToggleMaximizeWindow(window.id),
         ),
-        ("Close", ShellAction::CloseWindow(window.id)),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (label, action))| HitTarget {
+        ("Close".to_owned(), ShellAction::CloseWindow(window.id)),
+    ];
+    entries.extend(
+        workspaces
+            .iter()
+            .filter(|workspace| window.workspace_index != Some(workspace.index))
+            .map(|workspace| {
+                (
+                    format!("Move to {}", workspace.label),
+                    ShellAction::MoveWindowToWorkspace {
+                        window_id: window.id,
+                        workspace_index: workspace.index,
+                    },
+                )
+            }),
+    );
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action))| HitTarget {
+            rect: Rect {
+                x: 8,
+                y: HEADER_HEIGHT + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+                width: MENU_WIDTH - 16,
+                height: MENU_ROW_HEIGHT,
+            },
+            label,
+            action,
+        })
+        .collect()
+}
+
+pub fn window_menu_height(window: &GuestWindow, workspaces: &[WorkspaceTab]) -> u32 {
+    let rows = window_menu_targets(window, workspaces).len();
+    44_u32.saturating_add(
+        u32::try_from(rows)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(MENU_ROW_HEIGHT as u32),
+    )
+}
+
+pub fn workspace_menu_targets(index: u32) -> Vec<HitTarget> {
+    if index == 0 {
+        return Vec::new();
+    }
+    vec![HitTarget {
         rect: Rect {
             x: 8,
-            y: HEADER_HEIGHT + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
-            width: MENU_WIDTH - 16,
+            y: 44,
+            width: 244,
             height: MENU_ROW_HEIGHT,
         },
-        label: label.to_owned(),
-        action,
-    })
-    .collect()
+        label: format!("Close {}", workspace_name(index)),
+        action: ShellAction::CloseWorkspace(index),
+    }]
 }
 
 pub fn application_context_targets(
     application: &Application,
-    shortcut_exists: bool,
+    pinned: bool,
+    managed_appimage: bool,
 ) -> Vec<HitTarget> {
     const CONTEXT_WIDTH: i32 = 252;
-    [
+    let mut entries = vec![(
+        "Open",
+        ShellAction::LaunchApplication(application.id.clone()),
+    )];
+    if managed_appimage {
+        entries.extend([
+            (
+                "Extract and Run",
+                ShellAction::ExtractApplication(application.id.clone()),
+            ),
+            (
+                "Extract and Run --no-sandbox",
+                ShellAction::ExtractApplicationNoSandbox(application.id.clone()),
+            ),
+        ]);
+    }
+    entries.push(if pinned {
         (
-            "Open",
-            ShellAction::LaunchApplication(application.id.clone()),
-        ),
-        if shortcut_exists {
+            "Unpin",
+            ShellAction::UnpinApplication(application.id.clone()),
+        )
+    } else {
+        ("Pin", ShellAction::PinApplication(application.id.clone()))
+    });
+    entries.push((
+        "Add to Desktop",
+        ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
+    ));
+    if managed_appimage {
+        entries.extend([
             (
-                "Remove Desktop Shortcut",
-                ShellAction::RemoveApplicationDesktopShortcut(application.id.clone()),
-            )
-        } else {
+                "Rename…",
+                ShellAction::RenameApplication(application.id.clone()),
+            ),
             (
-                "Add Desktop Shortcut",
-                ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
-            )
-        },
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (label, action))| HitTarget {
-        rect: Rect {
-            x: 6,
-            y: 6 + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
-            width: CONTEXT_WIDTH - 12,
-            height: MENU_ROW_HEIGHT,
-        },
-        label: label.to_owned(),
-        action,
-    })
-    .collect()
+                "Delete from Applications",
+                ShellAction::DeleteApplication(application.id.clone()),
+            ),
+        ]);
+    }
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, action))| HitTarget {
+            rect: Rect {
+                x: 6,
+                y: 6 + i32::try_from(index).unwrap_or_default() * MENU_ROW_HEIGHT,
+                width: CONTEXT_WIDTH - 12,
+                height: MENU_ROW_HEIGHT,
+            },
+            label: label.to_owned(),
+            action,
+        })
+        .collect()
 }
 
 pub fn builtin_desktop_targets() -> Vec<HitTarget> {
@@ -323,7 +545,7 @@ pub fn builtin_desktop_targets() -> Vec<HitTarget> {
         (
             Rect {
                 x: 18,
-                y: 20,
+                y: TOP_BAR_HEIGHT + 20,
                 width: 88,
                 height: 92,
             },
@@ -333,7 +555,7 @@ pub fn builtin_desktop_targets() -> Vec<HitTarget> {
         (
             Rect {
                 x: 18,
-                y: 120,
+                y: TOP_BAR_HEIGHT + 120,
                 width: 88,
                 height: 92,
             },
@@ -358,17 +580,17 @@ pub fn scan_applications() -> Result<Vec<Application>> {
 #[cfg(test)]
 pub fn scan_application_directories(directories: &[PathBuf]) -> Result<Vec<Application>> {
     Ok(adapt_catalog(
-        wildbuzzard_desktop_core::desktop_entry::discover_application_directories(
+        buzzardos_desktop_core::desktop_entry::discover_application_directories(
             directories,
             &["sway".to_owned()],
         ),
     ))
 }
 
-fn adapt_catalog(catalog: wildbuzzard_desktop_core::ApplicationCatalog) -> Vec<Application> {
+fn adapt_catalog(catalog: buzzardos_desktop_core::ApplicationCatalog) -> Vec<Application> {
     for diagnostic in catalog.diagnostics {
         eprintln!(
-            "wildbuzzard-shell: ignored desktop entry {}: {}",
+            "buzzardos-shell: ignored desktop entry {}: {}",
             diagnostic.path.display(),
             diagnostic.message
         );
@@ -376,13 +598,19 @@ fn adapt_catalog(catalog: wildbuzzard_desktop_core::ApplicationCatalog) -> Vec<A
     catalog
         .applications
         .into_iter()
-        .map(|application| Application {
-            id: application.id.as_str().to_owned(),
-            name: application.name,
-            generic_name: application.generic_name,
-            icon: application.icon,
-            categories: application.categories,
-            source: application.source,
+        .map(|application| {
+            let startup_wm_class = gio::DesktopAppInfo::from_filename(&application.source)
+                .and_then(|info| info.startup_wm_class())
+                .map(|value| value.to_string());
+            Application {
+                id: application.id.as_str().to_owned(),
+                name: application.name,
+                generic_name: application.generic_name,
+                icon: application.icon,
+                startup_wm_class,
+                categories: application.categories,
+                source: application.source,
+            }
         })
         .collect()
 }
@@ -397,8 +625,113 @@ mod tests {
             name: name.to_owned(),
             generic_name: None,
             icon: None,
+            startup_wm_class: None,
             categories: Vec::new(),
             source: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn cua_and_manual_workspace_identities_do_not_overlap() {
+        assert_eq!(workspace_index("Desktop"), Some(0));
+        assert_eq!(workspace_index("CUA"), Some(1));
+        assert_eq!(workspace_index("CUA19"), Some(19));
+        assert_eq!(
+            workspace_index("Workspace1"),
+            Some(MANUAL_WORKSPACE_FLAG | 1)
+        );
+        assert_eq!(workspace_name(MANUAL_WORKSPACE_FLAG | 7), "Workspace7");
+        assert!(is_cua_workspace(1));
+        assert!(!is_cua_workspace(MANUAL_WORKSPACE_FLAG | 1));
+    }
+
+    #[test]
+    fn plus_allocates_only_the_next_manual_workspace() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 8,
+                label: "CUA8".into(),
+                active: false,
+            },
+            WorkspaceTab {
+                index: MANUAL_WORKSPACE_FLAG | 2,
+                label: "Workspace2".into(),
+                active: false,
+            },
+        ];
+        assert_eq!(
+            next_manual_workspace(&workspaces),
+            MANUAL_WORKSPACE_FLAG | 3
+        );
+    }
+
+    #[test]
+    fn top_bar_keeps_selectors_and_plus_adjacent() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 1,
+                label: "CUA".into(),
+                active: false,
+            },
+        ];
+        let targets = top_bar_targets(640, &workspaces);
+        assert_eq!(targets.len(), 3);
+        assert!(matches!(targets[0].action, ShellAction::SwitchWorkspace(0)));
+        assert!(matches!(targets[1].action, ShellAction::SwitchWorkspace(1)));
+        assert_eq!(targets[2].action, ShellAction::CreateWorkspace);
+        assert_eq!(targets[1].rect.x + targets[1].rect.width, targets[2].rect.x);
+    }
+
+    #[test]
+    fn every_workspace_button_is_clickable_across_its_entire_area() {
+        let workspaces = vec![
+            WorkspaceTab {
+                index: 0,
+                label: "Desktop".into(),
+                active: true,
+            },
+            WorkspaceTab {
+                index: 1,
+                label: "CUA".into(),
+                active: false,
+            },
+            WorkspaceTab {
+                index: MANUAL_WORKSPACE_FLAG | 1,
+                label: "Workspace1".into(),
+                active: false,
+            },
+        ];
+        for target in top_bar_targets(640, &workspaces) {
+            let left = f64::from(target.rect.x) + 0.5;
+            let right = f64::from(target.rect.x + target.rect.width) - 0.5;
+            let top = f64::from(target.rect.y) + 0.5;
+            let bottom = f64::from(target.rect.y + target.rect.height) - 0.5;
+            assert!(target.rect.contains(left, top), "{} top-left", target.label);
+            assert!(
+                target.rect.contains(right, top),
+                "{} top-right",
+                target.label
+            );
+            assert!(
+                target.rect.contains(left, bottom),
+                "{} bottom-left",
+                target.label
+            );
+            assert!(
+                target.rect.contains(right, bottom),
+                "{} bottom-right",
+                target.label
+            );
         }
     }
 
@@ -454,6 +787,33 @@ mod tests {
     }
 
     #[test]
+    fn application_context_matches_gnozzard_menu_ownership() {
+        let application = app("Fixture");
+        let managed = application_context_targets(&application, false, true)
+            .into_iter()
+            .map(|target| target.label)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            managed,
+            [
+                "Open",
+                "Extract and Run",
+                "Extract and Run --no-sandbox",
+                "Pin",
+                "Add to Desktop",
+                "Rename…",
+                "Delete from Applications",
+            ]
+        );
+
+        let ordinary = application_context_targets(&application, true, false)
+            .into_iter()
+            .map(|target| target.label)
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary, ["Open", "Unpin", "Add to Desktop"]);
+    }
+
+    #[test]
     fn taskbar_has_one_simple_button_per_visible_window() {
         let windows = vec![
             GuestWindow {
@@ -467,7 +827,7 @@ mod tests {
                 ..GuestWindow::default()
             },
         ];
-        let targets = panel_targets(1280, &windows, 0);
+        let targets = panel_targets(1280, &windows, 0, true);
         let actions: Vec<_> = targets
             .iter()
             .filter_map(|target| match target.action {
@@ -493,14 +853,77 @@ mod tests {
     }
 
     #[test]
-    fn classic_menu_keeps_shutdown_separate_from_host_chrome() {
-        let targets = menu_targets(300, 166, &[app("Browser")], 0);
+    fn capped_taskbar_pages_by_five_only_after_minimum_width_is_exhausted() {
+        let windows = (0..10)
+            .map(|index| GuestWindow {
+                id: index + 1,
+                title: format!("Window {}", index + 1),
+                ..GuestWindow::default()
+            })
+            .collect::<Vec<_>>();
+        let first = panel_targets(640, &windows, 0, true);
         assert!(
-            targets
+            first
                 .iter()
-                .any(|target| target.action == ShellAction::ShutdownMachine
-                    && target.label == "Shut Down Machine")
+                .any(|target| target.action == ShellAction::TaskbarPrevious)
         );
+        assert!(
+            first
+                .iter()
+                .any(|target| target.action == ShellAction::TaskbarNext)
+        );
+        let first_ids = first
+            .iter()
+            .filter_map(|target| match target.action {
+                ShellAction::ActivateWindow(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let second_ids = panel_targets(640, &windows, TASK_PAGE_STEP, true)
+            .into_iter()
+            .filter_map(|target| match target.action {
+                ShellAction::ActivateWindow(id) => Some(id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_ids, [1, 2, 3, 4]);
+        assert_eq!(second_ids, [6, 7, 8, 9]);
+        let applications = &first[0];
+        let previous = first
+            .iter()
+            .find(|target| target.action == ShellAction::TaskbarPrevious)
+            .expect("previous-page target");
+        let next = first
+            .iter()
+            .find(|target| target.action == ShellAction::TaskbarNext)
+            .expect("next-page target");
+        assert_eq!(
+            applications.rect.x + applications.rect.width,
+            previous.rect.x
+        );
+        assert_eq!(previous.rect.x + previous.rect.width, next.rect.x);
+        assert!(first_ids.iter().all(|id| {
+            first
+                .iter()
+                .find(|target| target.action == ShellAction::ActivateWindow(*id))
+                .is_some_and(|target| target.rect.x >= next.rect.x + next.rect.width)
+        }));
+
+        let fitting = panel_targets(640, &windows[..5], 0, true);
+        assert!(!fitting.iter().any(|target| matches!(
+            target.action,
+            ShellAction::TaskbarPrevious | ShellAction::TaskbarNext
+        )));
+        for pair in fitting.windows(2) {
+            if !matches!(pair[1].action, ShellAction::ShowDesktop) {
+                assert_eq!(pair[0].rect.x + pair[0].rect.width, pair[1].rect.x);
+            }
+        }
+    }
+
+    #[test]
+    fn classic_menu_contains_applications_but_no_host_lifecycle_actions() {
+        let targets = menu_targets(300, 208, &[app("Browser")], 0);
         assert_eq!(
             targets
                 .iter()
@@ -524,6 +947,17 @@ mod tests {
     }
 
     #[test]
+    fn applications_search_is_a_real_click_target() {
+        let target = applications_menu_search_target(300, 238);
+        assert_eq!(target.action, ShellAction::FocusApplicationSearch);
+        assert_eq!(target.label, "Search applications");
+        assert_eq!(target.rect.x, 8);
+        assert_eq!(target.rect.y, 194);
+        assert_eq!(target.rect.width, 284);
+        assert_eq!(target.rect.height, MENU_ROW_HEIGHT);
+    }
+
+    #[test]
     fn applications_menu_can_have_no_visual_rows_on_an_extremely_short_output() {
         let targets = menu_targets(220, 120, &[app("Browser")], 0);
         assert!(
@@ -531,11 +965,7 @@ mod tests {
                 .iter()
                 .all(|target| !matches!(target.action, ShellAction::LaunchApplication(_)))
         );
-        assert!(
-            targets
-                .iter()
-                .any(|target| target.action == ShellAction::ShutdownMachine)
-        );
+        assert!(targets.is_empty());
     }
 
     #[test]
@@ -546,7 +976,7 @@ mod tests {
             maximized: false,
             ..GuestWindow::default()
         };
-        let targets = window_menu_targets(&window);
+        let targets = window_menu_targets(&window, &[]);
         assert_eq!(
             targets
                 .iter()
@@ -558,21 +988,20 @@ mod tests {
             maximized: true,
             ..window
         };
-        assert_eq!(window_menu_targets(&maximized)[3].label, "Restore");
+        assert_eq!(window_menu_targets(&maximized, &[])[3].label, "Restore");
         let minimized = GuestWindow {
             minimized: true,
             maximized: false,
             ..maximized
         };
-        assert_eq!(window_menu_targets(&minimized)[3].label, "Restore");
+        assert_eq!(window_menu_targets(&minimized, &[])[3].label, "Restore");
     }
 
     #[test]
     fn desktop_has_files_and_shared_shortcuts() {
-        let labels: Vec<_> = builtin_desktop_targets()
-            .into_iter()
-            .map(|target| target.label)
-            .collect();
+        let targets = builtin_desktop_targets();
+        let labels: Vec<_> = targets.iter().map(|target| target.label.as_str()).collect();
         assert_eq!(labels, ["Files", "Shared"]);
+        assert!(targets.iter().all(|target| target.rect.y >= TOP_BAR_HEIGHT));
     }
 }

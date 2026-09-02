@@ -1,14 +1,14 @@
 [workspace]
 members = [
     "crates/wb-core",
-    "crates/wildbuzzard",
-    "crates/wildbuzzard-broker",
-    "crates/wildbuzzard-display",
+    "crates/buzzardos",
+    "crates/buzzardos-broker",
+    "crates/buzzardos-display",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.5"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/openresearchtools/BuzzardOS"
@@ -22,7 +22,7 @@ flate2 = "1.1"
 fs2 = "0.4"
 futures-util = "0.3"
 libc = "0.2"
-nix = { version = "0.30", features = ["fs", "process", "signal", "socket", "uio", "user"] }
+nix = { version = "0.30", features = ["fs", "mount", "process", "signal", "socket", "uio", "user"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -36,7 +36,7 @@ wayland-protocols = { version = "0.32", features = ["client", "server", "staging
 wayland-server = "0.31"
 xkbcommon = "0.8"
 zstd = { version = "0.13", features = ["zstdmt"] }
-wildbuzzard-clipboard-protocol = { path = "../clipboard-protocol" }
+buzzardos-clipboard-protocol = { path = "../clipboard-protocol" }
 
 [profile.release]
 lto = "thin"

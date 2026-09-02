@@ -4,7 +4,6 @@ mod desktop;
 mod icons;
 mod model;
 mod sway_ipc;
-mod updates;
 mod watch;
 
 use accesskit::{
@@ -13,14 +12,25 @@ use accesskit::{
 };
 use accesskit_unix::Adapter as A11yAdapter;
 use anyhow::{Context, Result};
+use buzzardos_desktop_core::{
+    CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind, RegistrationId,
+    Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
+    read_bounded,
+};
+use buzzardos_shortcut_helper::{
+    HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore, extract_and_launch, launch_path,
+};
 use fontdue::{Font, FontSettings};
 use gio::prelude::*;
 use icons::{AppIcon, load_application_icons, load_icon};
 use model::{
     APPLICATIONS_MENU_FOOTER_HEIGHT, APPLICATIONS_MENU_HEADER_HEIGHT,
     APPLICATIONS_MENU_SECTION_HEIGHT, Application, GuestWindow, HitTarget, MENU_ROW_HEIGHT,
-    PANEL_HEIGHT, Rect, ShellAction, application_context_targets, applications_menu_close_target,
-    builtin_desktop_targets, menu_targets, panel_targets, scan_applications, window_menu_targets,
+    PANEL_HEIGHT, Rect, ShellAction, TASK_PAGE_STEP, TOP_BAR_HEIGHT, WorkspaceTab,
+    application_context_targets, applications_menu_close_target, applications_menu_search_target,
+    builtin_desktop_targets, menu_targets, next_manual_workspace, panel_targets, scan_applications,
+    taskbar_max_offset, top_bar_targets, window_menu_height, window_menu_targets, workspace_index,
+    workspace_menu_targets, workspace_name,
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -33,7 +43,10 @@ use smithay_client_toolkit::{
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-        pointer::{BTN_LEFT, BTN_RIGHT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            BTN_LEFT, BTN_RIGHT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler,
+            ThemeSpec, ThemedPointer,
+        },
     },
     shell::{
         WaylandSurface,
@@ -57,7 +70,7 @@ use std::sync::{
     Arc, Mutex,
     mpsc::{self, Receiver, Sender},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     globals::registry_queue_init,
@@ -71,51 +84,45 @@ use wayland_protocols::wp::{
     },
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
-use wildbuzzard_desktop_core::{
-    CollisionChoice, DeleteConsequence, DesktopDirectory, DesktopItemKind, RegistrationId,
-    Settings, ThemeConfigSet, ThemeMode, ThemePalette, XdgPaths, apply_theme_files, atomic_write,
-    read_bounded,
-};
-use wildbuzzard_shortcut_helper::{HELPER_EXECUTABLE, RegistrationFlags, RegistrationStore};
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
 
 use crate::desktop::DesktopModel;
-use crate::updates::{UPDATER_STATE_DIRECTORY, UPDATER_STATE_PATH, UpdateTracker};
-use crate::watch::DirectoryWatcher;
+use crate::watch::{DirectoryWatcher, FileWatcher};
 
 const SHELL_NAME: &str = "Buzzard OS Desktop";
-const REPAINT_REQUEST: &str = "wildbuzzard-shell-repaint";
-const REPAINT_ACKNOWLEDGEMENT: &str = "wildbuzzard-shell-repaint-ack";
+const REPAINT_REQUEST: &str = "buzzardos-shell-repaint";
+const REPAINT_ACKNOWLEDGEMENT: &str = "buzzardos-shell-repaint-ack";
 const SHELL_READY: &str = "shell-ready";
-const SHELL_CONTROL_SOCKET: &str = "wildbuzzard-shell-control.sock";
+const SHELL_CONTROL_SOCKET: &str = "buzzardos-shell-control.sock";
 const REQUEST_FOCUSED_WINDOW_MENU: &str = "--request-focused-window-menu";
-const HOST_POINTER_CLICK_STATE: &str = "/run/wildbuzzard-display-state/pointer-click.json";
-const CUA_POINTER_CLICK_STATE: &str = "wildbuzzard-cua-pointer-click.json";
-const POINTER_CLICK_MAX_AGE: Duration = Duration::from_secs(3);
-const OUTPUT_SETTLE_REPAINT_FRAMES: u8 = 90;
 const OUTPUT_SETTLE_DEBOUNCE: Duration = Duration::from_millis(80);
-const SETTINGS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const WINDOW_REFLOW_DEBOUNCE: Duration = Duration::from_millis(160);
+const WINDOW_MENU_POINTER_REFRESH_DELAY: Duration = Duration::from_millis(16);
+const WORKSPACE_REFRESH_RETRY: Duration = Duration::from_millis(100);
+const SINGLE_INSTANCE_FALLBACK_DELAY: Duration = Duration::from_secs(2);
+const APPLICATION_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
 const FILE_MODEL_DEBOUNCE: Duration = Duration::from_millis(180);
 const WINDOW_MENU_WIDTH: u32 = 260;
-const WINDOW_MENU_HEIGHT: u32 = 44 + 5 * MENU_ROW_HEIGHT as u32;
+const WORKSPACE_MENU_WIDTH: u32 = 260;
+const WORKSPACE_MENU_HEIGHT: u32 = 44 + MENU_ROW_HEIGHT as u32;
 const APPLICATION_CONTEXT_WIDTH: u32 = 252;
-const APPLICATION_CONTEXT_HEIGHT: u32 = 12 + 2 * MENU_ROW_HEIGHT as u32;
 const DESKTOP_CONTEXT_WIDTH: u32 = 272;
 const DESKTOP_DIALOG_WIDTH: u32 = 430;
 const DESKTOP_DIALOG_HEIGHT: u32 = 190;
-const DESKTOP_CLIPBOARD_MIME: &str = "application/x-wildbuzzard-desktop-operation+json";
+const DESKTOP_CLIPBOARD_MIME: &str = "application/x-buzzardos-desktop-operation+json";
 const URI_LIST_MIME: &str = "text/uri-list";
 const MAX_DESKTOP_CLIPBOARD_BYTES: usize = 1024 * 1024;
 const DOUBLE_CLICK_MILLIS: u32 = 400;
 const DRAG_THRESHOLD: f64 = 6.0;
-const SETTINGS_DESKTOP_ENTRY_ID: &str = "org.openresearchtools.WildBuzzard.Settings1.desktop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellSurface {
     Desktop,
+    TopBar,
     Panel,
     Menu,
     Context,
+    Auxiliary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -150,6 +157,7 @@ struct PasteSession {
 enum EditOperation {
     NewFolder,
     Rename(PathBuf),
+    RenameApplication(RegistrationId),
 }
 
 #[derive(Debug, Clone)]
@@ -209,15 +217,22 @@ enum DesktopPointerGesture {
 }
 
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--version" || argument == "-V")
+    {
+        println!("Buzzard OS Desktop {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(OsStr::new(REQUEST_FOCUSED_WINDOW_MENU)) {
         if let Err(error) = request_focused_window_menu() {
-            eprintln!("wildbuzzard-shell: titlebar menu request failed: {error:#}");
+            eprintln!("buzzardos-shell: titlebar menu request failed: {error:#}");
             std::process::exit(1);
         }
         return;
     }
     if let Err(error) = run() {
-        eprintln!("wildbuzzard-shell: {error:#}");
+        eprintln!("buzzardos-shell: {error:#}");
         std::process::exit(1);
     }
 }
@@ -234,12 +249,9 @@ fn request_focused_window_menu() -> Result<()> {
         .into_iter()
         .find(|window| window.focused && !window.minimized)
         .context("Sway has no focused visible toplevel")?;
-    let pointer = recent_titlebar_pointer(&focused);
     let payload = serde_json::json!({
         "schema": 1,
         "identifier": focused.identifier,
-        "x": pointer.map(|point| point.0),
-        "y": pointer.map(|point| point.1),
     });
     let socket = UnixDatagram::unbound().context("creating shell-control datagram")?;
     socket
@@ -251,96 +263,54 @@ fn request_focused_window_menu() -> Result<()> {
     Ok(())
 }
 
-fn unix_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShellControlRequest {
+    WindowMenu(String),
+    DesktopChanged,
 }
 
-fn pointer_click(path: &std::path::Path) -> Option<(u64, f64, f64)> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-    if value.get("button").and_then(serde_json::Value::as_u64) != Some(3) {
-        return None;
-    }
-    let timestamp = value
-        .get("timestamp_ms")
-        .and_then(serde_json::Value::as_u64)?;
-    let x = value.get("x").and_then(serde_json::Value::as_f64)?;
-    let y = value.get("y").and_then(serde_json::Value::as_f64)?;
-    (x.is_finite() && y.is_finite()).then_some((timestamp, x, y))
-}
-
-fn recent_titlebar_pointer(window: &sway_ipc::WindowState) -> Option<(f64, f64)> {
-    let runtime_pointer = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|runtime| runtime.join(CUA_POINTER_CLICK_STATE));
-    let mut latest = pointer_click(std::path::Path::new(HOST_POINTER_CLICK_STATE));
-    if let Some(candidate) = runtime_pointer.as_deref().and_then(pointer_click)
-        && latest.is_none_or(|current| candidate.0 > current.0)
-    {
-        latest = Some(candidate);
-    }
-    let (timestamp, x, y) = latest?;
-    let age = unix_time_millis().saturating_sub(timestamp);
-    if age > POINTER_CLICK_MAX_AGE.as_millis() as u64 {
-        return None;
-    }
-    let titlebar_bottom = window
-        .rect
-        .y
-        .saturating_add(window.decoration_height.max(1));
-    let window_right = window.rect.x.saturating_add(window.rect.width.max(1));
-    (x >= f64::from(window.rect.x)
-        && x < f64::from(window_right)
-        && y >= f64::from(window.rect.y)
-        && y < f64::from(titlebar_bottom))
-    .then_some((x, y))
-}
-
-fn parse_window_menu_request(bytes: &[u8]) -> Option<(String, Option<(f64, f64)>)> {
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
-        && let Some(identifier) = value
+fn parse_shell_control_request(bytes: &[u8]) -> Option<ShellControlRequest> {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if value
+            .get("desktop_changed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return Some(ShellControlRequest::DesktopChanged);
+        }
+        if let Some(identifier) = value
             .get("identifier")
             .and_then(serde_json::Value::as_str)
             .filter(|identifier| !identifier.is_empty())
-    {
-        let pointer = value
-            .get("x")
-            .and_then(serde_json::Value::as_f64)
-            .zip(value.get("y").and_then(serde_json::Value::as_f64))
-            .filter(|(x, y)| x.is_finite() && y.is_finite());
-        return Some((identifier.to_owned(), pointer));
+        {
+            return Some(ShellControlRequest::WindowMenu(identifier.to_owned()));
+        }
     }
     std::str::from_utf8(bytes)
         .ok()
         .filter(|identifier| !identifier.is_empty())
-        .map(|identifier| (identifier.to_owned(), None))
+        .map(str::to_owned)
+        .map(ShellControlRequest::WindowMenu)
 }
 
 fn titlebar_menu_origin(
     frame: sway_ipc::Rect,
     decoration_height: i32,
     desktop_size: (u32, u32),
-    pointer: Option<(f64, f64)>,
+    pointer_x: f64,
+    menu_height: u32,
 ) -> (i32, i32) {
     let desktop_width = i32::try_from(desktop_size.0).unwrap_or(i32::MAX);
     let desktop_height = i32::try_from(desktop_size.1).unwrap_or(i32::MAX);
     let maximum_left = desktop_width.saturating_sub(WINDOW_MENU_WIDTH as i32);
     let maximum_top = desktop_height
         .saturating_sub(PANEL_HEIGHT)
-        .saturating_sub(WINDOW_MENU_HEIGHT as i32);
-    let requested_left = pointer
-        .filter(|(x, y)| {
-            let titlebar_bottom = frame.y.saturating_add(decoration_height.max(1));
-            *x >= f64::from(frame.x)
-                && *x < f64::from(frame.x.saturating_add(frame.width.max(1)))
-                && *y >= f64::from(frame.y)
-                && *y < f64::from(titlebar_bottom)
-        })
-        .map_or(frame.x, |(x, _)| x.floor() as i32);
+        .saturating_sub(menu_height as i32);
+    let requested_left = if pointer_x.is_finite() {
+        pointer_x.floor() as i32
+    } else {
+        frame.x
+    };
     (
         requested_left.clamp(0, maximum_left.max(0)),
         frame
@@ -354,7 +324,7 @@ fn dispatch_with_timeout(
     event_queue: &mut EventQueue<Shell>,
     shell: &mut Shell,
     timeout: Duration,
-) -> Result<()> {
+) -> Result<GuestEventReadiness> {
     event_queue
         .dispatch_pending(shell)
         .context("dispatching pending guest Wayland events")?;
@@ -366,29 +336,92 @@ fn dispatch_with_timeout(
         event_queue
             .dispatch_pending(shell)
             .context("dispatching guest Wayland events before polling")?;
-        return Ok(());
+        return Ok(GuestEventReadiness::default());
     };
     let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-    let mut descriptor = libc::pollfd {
+    let mut descriptors = vec![libc::pollfd {
         fd: guard.connection_fd().as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
-    };
+    }];
+    let control_index = descriptors.len();
+    descriptors.push(libc::pollfd {
+        fd: shell.control_socket.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    });
+    let application_index = shell.application_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let desktop_index = shell.desktop_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let settings_index = shell.settings_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let repaint_index = shell.repaint_watcher.raw_fd().map(|fd| {
+        let index = descriptors.len();
+        descriptors.push(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        index
+    });
+    let mut readiness = GuestEventReadiness::default();
     loop {
-        // SAFETY: `descriptor` is one initialized pollfd, and the Wayland
-        // read guard keeps its borrowed connection fd valid for this call.
-        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        // SAFETY: every element is an initialized pollfd. The Wayland read
+        // guard keeps its borrowed connection fd valid; the shell owns the
+        // independent control and inotify descriptors for this call.
+        let descriptor_count =
+            libc::nfds_t::try_from(descriptors.len()).unwrap_or(libc::nfds_t::MAX);
+        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), descriptor_count, timeout_ms) };
         if result > 0 {
-            guard
-                .read()
-                .context("reading guest Wayland events after poll")?;
+            let signalled = |descriptor: &libc::pollfd| {
+                descriptor.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)
+                    != 0
+            };
+            readiness.control_socket = signalled(&descriptors[control_index]);
+            readiness.application_watch =
+                application_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.desktop_watch =
+                desktop_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.settings_watch =
+                settings_index.is_some_and(|index| signalled(&descriptors[index]));
+            readiness.repaint_watch =
+                repaint_index.is_some_and(|index| signalled(&descriptors[index]));
+            if signalled(&descriptors[0]) {
+                guard
+                    .read()
+                    .context("reading guest Wayland events after poll")?;
+            } else {
+                drop(guard);
+            }
             break;
         }
         if result == 0 {
-            // Dropping a prepared read guard cancels it. This timeout is what
-            // lets the shell process repaint files, AT-SPI actions, and newly
-            // installed .desktop entries while the compositor is otherwise
-            // completely idle.
+            // Dropping a prepared read guard cancels it. The existing bounded
+            // shell deadline still services resize settling, accessibility,
+            // and Sway state; filesystem models are handled only when their
+            // event descriptors signal above.
             drop(guard);
             break;
         }
@@ -402,14 +435,25 @@ fn dispatch_with_timeout(
     event_queue
         .dispatch_pending(shell)
         .context("dispatching guest Wayland events after polling")?;
-    Ok(())
+    Ok(readiness)
+}
+
+/// Independent readiness flags for guest-local shell event sources. These
+/// descriptors share one blocking wait only to avoid idle wakeups; their data
+/// and handlers remain isolated from Wayland and from the host gateway.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GuestEventReadiness {
+    control_socket: bool,
+    application_watch: bool,
+    desktop_watch: bool,
+    settings_watch: bool,
+    repaint_watch: bool,
 }
 
 #[derive(Debug)]
 struct SettingsTracker {
     path: PathBuf,
     applied: Settings,
-    last_check: Instant,
     last_error: Option<String>,
 }
 
@@ -418,16 +462,11 @@ impl SettingsTracker {
         Self {
             path,
             applied,
-            last_check: Instant::now(),
             last_error: None,
         }
     }
 
     fn candidate(&mut self) -> Option<Settings> {
-        if self.last_check.elapsed() < SETTINGS_POLL_INTERVAL {
-            return None;
-        }
-        self.last_check = Instant::now();
         let candidate = match load_settings(&self.path) {
             Ok(settings) => settings,
             Err(error) => {
@@ -467,7 +506,7 @@ impl SettingsTracker {
 
     fn report_error(&mut self, error: String) {
         if self.last_error.as_ref() != Some(&error) {
-            eprintln!("wildbuzzard-shell: {error}");
+            eprintln!("buzzardos-shell: {error}");
             self.last_error = Some(error);
         }
     }
@@ -546,7 +585,7 @@ fn apply_runtime_theme(config_home: &std::path::Path, mode: ThemeMode) -> Result
         GSettingsAvailability::Available => {
             for (key, value) in [
                 ("gtk-theme", mode.gtk_theme_name()),
-                ("icon-theme", "WildBuzzard"),
+                ("icon-theme", "BuzzardOS"),
                 ("color-scheme", mode.color_scheme_preference()),
             ] {
                 run_required(
@@ -561,10 +600,10 @@ fn apply_runtime_theme(config_home: &std::path::Path, mode: ThemeMode) -> Result
             }
         }
         GSettingsAvailability::MissingSchema => eprintln!(
-            "wildbuzzard-shell: theme compatibility warning: org.gnome.desktop.interface is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install gsettings-desktop-schemas dconf-gsettings-backend"
+            "buzzardos-shell: theme compatibility warning: org.gnome.desktop.interface is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install gsettings-desktop-schemas dconf-gsettings-backend"
         ),
         GSettingsAvailability::MissingTool => eprintln!(
-            "wildbuzzard-shell: theme compatibility warning: gsettings is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend"
+            "buzzardos-shell: theme compatibility warning: gsettings is absent; GTK portal propagation is degraded. Inside this persistent guest, run: sudo apt install libglib2.0-bin gsettings-desktop-schemas dconf-gsettings-backend"
         ),
     }
     sway_ipc::apply_theme(mode.palette()).context("updating Sway decoration palette")?;
@@ -607,12 +646,12 @@ fn run() -> Result<()> {
     let config_home = PathBuf::from(
         std::env::var_os("XDG_CONFIG_HOME").context("XDG_CONFIG_HOME is unavailable")?,
     );
-    let settings_path = config_home.join("wildbuzzard/settings.json");
+    let settings_path = config_home.join("buzzardos/settings.json");
     let initial_settings = match load_settings(&settings_path) {
         Ok(settings) => settings,
         Err(error) => {
             eprintln!(
-                "wildbuzzard-shell: persisted settings are unusable and were preserved: {error:#}"
+                "buzzardos-shell: persisted settings are unusable and were preserved: {error:#}"
             );
             Settings::default()
         }
@@ -640,7 +679,7 @@ fn run() -> Result<()> {
         &qh,
         desktop_surface,
         Layer::Background,
-        Some("wildbuzzard-desktop"),
+        Some("buzzardos-desktop"),
         None,
     );
     desktop.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -652,12 +691,29 @@ fn run() -> Result<()> {
     let desktop_viewport = viewporter.get_viewport(desktop.wl_surface(), &qh, ());
     desktop.commit();
 
+    let top_bar_surface = compositor.create_surface(&qh);
+    let top_bar = layer_shell.create_layer_surface(
+        &qh,
+        top_bar_surface,
+        Layer::Top,
+        Some("buzzardos-workspaces"),
+        None,
+    );
+    top_bar.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+    top_bar.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    top_bar.set_exclusive_zone(TOP_BAR_HEIGHT);
+    top_bar.set_size(0, TOP_BAR_HEIGHT as u32);
+    let top_bar_fractional =
+        fractional_manager.get_fractional_scale(top_bar.wl_surface(), &qh, ShellSurface::TopBar);
+    let top_bar_viewport = viewporter.get_viewport(top_bar.wl_surface(), &qh, ());
+    top_bar.commit();
+
     let panel_surface = compositor.create_surface(&qh);
     let panel = layer_shell.create_layer_surface(
         &qh,
         panel_surface,
         Layer::Top,
-        Some("wildbuzzard-panel"),
+        Some("buzzardos-panel"),
         None,
     );
     panel.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -674,7 +730,7 @@ fn run() -> Result<()> {
         &qh,
         menu_surface,
         Layer::Overlay,
-        Some("wildbuzzard-applications-menu"),
+        Some("buzzardos-applications-menu"),
         None,
     );
     menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
@@ -694,7 +750,7 @@ fn run() -> Result<()> {
         &qh,
         context_surface,
         Layer::Overlay,
-        Some("wildbuzzard-application-context"),
+        Some("buzzardos-application-context"),
         None,
     );
     context.set_anchor(Anchor::TOP | Anchor::LEFT);
@@ -733,66 +789,70 @@ fn run() -> Result<()> {
     let desktop_model = DesktopModel::discover().context("initializing desktop items")?;
     let desktop_watcher = DirectoryWatcher::new(&[desktop_model.directory_path().to_path_buf()])
         .context("watching XDG Desktop")?;
-    let update_watch_root = PathBuf::from(UPDATER_STATE_DIRECTORY);
-    let update_rescan_after =
-        (!update_watch_root.is_dir()).then(|| Instant::now() + Duration::from_secs(5));
-    let update_watcher = DirectoryWatcher::new(std::slice::from_ref(&update_watch_root))
-        .context("watching fixed updater state")?;
-    let mut update_tracker = UpdateTracker::new(
-        PathBuf::from(UPDATER_STATE_PATH),
-        xdg_paths
-            .managed_state_dir()
-            .join("update-notification.json"),
-    );
-    if let Err(error) = update_tracker.reload() {
-        eprintln!("wildbuzzard-shell: startup updater state was preserved: {error}");
-    }
+    let settings_watcher = FileWatcher::new(&settings_path).context("watching desktop settings")?;
     let applications = scan_applications().unwrap_or_default();
     let application_icons = load_application_icons(&applications);
+    let desktop_theme_icons = ["folder", "user-home", "folder-publicshare"]
+        .into_iter()
+        .filter_map(|name| load_icon(name).map(|icon| (name.to_owned(), icon)))
+        .collect();
     let pool = SlotPool::new(3840 * 2160 * 4, &shm).context("creating shell render pool")?;
-    let repaint_request = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|runtime| runtime.join(REPAINT_REQUEST));
+    let repaint_request = PathBuf::from(
+        std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is unavailable")?,
+    )
+    .join(REPAINT_REQUEST);
+    let repaint_watcher =
+        FileWatcher::new(&repaint_request).context("watching shell repaint requests")?;
     let mut shell = Shell {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         shm,
         compositor,
+        layer_shell,
         foreign_toplevel_list,
         _fractional_manager: fractional_manager,
         _viewporter: viewporter,
         _fractional_scales: [
             desktop_fractional,
+            top_bar_fractional,
             panel_fractional,
             menu_fractional,
             context_fractional,
         ],
         viewports: [
             desktop_viewport,
+            top_bar_viewport,
             panel_viewport,
             menu_viewport,
             context_viewport,
         ],
         desktop,
+        top_bar,
         panel,
         menu,
         context,
+        auxiliary_outputs: Vec::new(),
         pool,
         font: load_font(),
         desktop_size: (1280, 800),
+        top_bar_size: (1280, TOP_BAR_HEIGHT as u32),
         panel_size: (1280, PANEL_HEIGHT as u32),
         menu_size: (1, 1),
         menu_origin: (0, 0),
         context_size: (1, 1),
         context_origin: (0, 0),
         desktop_configured: false,
+        top_bar_configured: false,
         panel_configured: false,
         menu_configured: false,
         context_configured: false,
         menu_open: false,
         menu_kind: MenuKind::Applications,
+        window_menu_pending_pointer: false,
+        window_menu_pointer_refresh_at: None,
         menu_scroll: 0,
+        application_search_focused: false,
         context_state: ContextState::Hidden,
         desktop_selection: BTreeSet::new(),
         desktop_selection_anchor: None,
@@ -804,7 +864,22 @@ fn run() -> Result<()> {
         clipboard_generation: 0,
         paste_available: false,
         scale_120: 120,
-        task_page: 0,
+        task_offset: 0,
+        workspace_tabs: vec![WorkspaceTab {
+            index: 0,
+            label: "Desktop".to_owned(),
+            active: true,
+        }],
+        current_workspace: "Desktop".to_owned(),
+        visible_workspaces: BTreeMap::new(),
+        capped_task_buttons: initial_settings.appearance.capped_task_buttons,
+        pinned_applications: initial_settings
+            .appearance
+            .pinned_applications
+            .iter()
+            .cloned()
+            .collect(),
+        application_search: String::new(),
         hovered: None,
         exit: false,
         dirty: true,
@@ -813,6 +888,7 @@ fn run() -> Result<()> {
         seat: None,
         applications,
         application_icons,
+        desktop_theme_icons,
         desktop_icons: BTreeMap::new(),
         application_watch_roots,
         application_watcher,
@@ -822,22 +898,25 @@ fn run() -> Result<()> {
         desktop_accessible_targets: Vec::new(),
         desktop_watcher,
         desktop_rescan_after: None,
-        update_watch_root,
-        update_watcher,
-        update_rescan_after,
-        update_tracker,
         exact_toplevels: BTreeMap::new(),
+        pending_window_normalization: BTreeSet::new(),
+        window_normalization_retry_after: None,
+        window_reflow_after: None,
+        process_workspace_affinity: BTreeMap::new(),
+        pending_application_launches: Vec::new(),
+        workspace_refresh_retry_after: None,
         sway_window_changes: sway_ipc::subscribe_window_changes()
             .context("subscribing to authoritative Sway window events")?,
         repaint_request,
+        repaint_watcher,
         // An output-sync request may predate the shell process by a few
         // milliseconds. Treat the first observed generation as pending.
         repaint_generation: None,
-        repaint_frames: 0,
         full_repaint_after: None,
         palette: *initial_settings.appearance.theme.palette(),
         desktop_background: initial_settings.appearance.background.solid_color().rgba(),
         settings_tracker: SettingsTracker::new(settings_path, initial_settings),
+        settings_watcher,
         config_home,
         accessibility: None,
         control_socket,
@@ -845,37 +924,39 @@ fn run() -> Result<()> {
     };
     shell.rebuild_desktop_targets()?;
     shell.set_desktop_input_region()?;
+    // The output synchronizer can publish one resize generation immediately
+    // before the shell starts. The watch is armed before this single initial
+    // read, so no later replacement can be lost and no recurring read is
+    // needed.
+    shell.consume_repaint_request();
     shell.accessibility = Some(Accessibility::new(shell.accessibility_tree()));
-    let shell_ready = std::env::var_os("WILDBUZZARD_STATUS_DIR")
+    let shell_ready = std::env::var_os("BUZZARDOS_STATUS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/wildbuzzard-host"))
+        .unwrap_or_else(|| PathBuf::from("/run/buzzardos-host"))
         .join(SHELL_READY);
     let mut ready_published = false;
 
     while !shell.exit {
-        dispatch_with_timeout(&mut event_queue, &mut shell, Duration::from_millis(16))?;
-        shell.poll();
+        let readiness =
+            dispatch_with_timeout(&mut event_queue, &mut shell, Duration::from_millis(16))?;
+        shell.poll(readiness);
         if shell.dirty {
             shell.draw()?;
             shell.dirty = false;
-            shell.repaint_frames = shell.repaint_frames.saturating_sub(1);
-            if !ready_published && shell.desktop_configured && shell.panel_configured {
+            if !ready_published
+                && shell.desktop_configured
+                && shell.top_bar_configured
+                && shell.panel_configured
+            {
                 fs::write(&shell_ready, b"ready\n").with_context(|| {
                     format!("publishing shell readiness at {}", shell_ready.display())
                 })?;
                 ready_published = true;
                 eprintln!(
-                    "wildbuzzard-shell: ready at {}x{} logical pixels",
+                    "buzzardos-shell: ready at {}x{} logical pixels",
                     shell.desktop_size.0, shell.desktop_size.1
                 );
             }
-        } else if shell.repaint_frames > 0 && shell.panel_configured {
-            // Once the debounced full redraw establishes the new geometry,
-            // cheap panel commits keep frames flowing until the host accepts
-            // one. Repeating the full desktop render would be unnecessarily
-            // expensive at very large monitor sizes.
-            shell.draw_panel()?;
-            shell.repaint_frames -= 1;
         }
     }
     Ok(())
@@ -887,10 +968,34 @@ struct ExactToplevel {
     window: GuestWindow,
 }
 
+#[derive(Debug, Clone)]
+struct PendingApplicationLaunch {
+    application: Application,
+    destination_workspace: String,
+    baseline_toplevels: BTreeSet<u32>,
+    single_instance_after: Instant,
+    expires_at: Instant,
+}
+
+struct AuxiliaryOutput {
+    output: wl_output::WlOutput,
+    name: String,
+    desktop: LayerSurface,
+    panel: LayerSurface,
+    _fractional_scales: [WpFractionalScaleV1; 2],
+    viewports: [WpViewport; 2],
+    desktop_size: (u32, u32),
+    panel_size: (u32, u32),
+    desktop_configured: bool,
+    panel_configured: bool,
+    task_offset: usize,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum MenuKind {
     Applications,
     Window(u32),
+    Workspace(u32),
 }
 
 struct Shell {
@@ -899,30 +1004,38 @@ struct Shell {
     output_state: OutputState,
     shm: Shm,
     compositor: CompositorState,
+    layer_shell: LayerShell,
     foreign_toplevel_list: ForeignToplevelList,
     _fractional_manager: WpFractionalScaleManagerV1,
     _viewporter: WpViewporter,
-    _fractional_scales: [WpFractionalScaleV1; 4],
-    viewports: [WpViewport; 4],
+    _fractional_scales: [WpFractionalScaleV1; 5],
+    viewports: [WpViewport; 5],
     desktop: LayerSurface,
+    top_bar: LayerSurface,
     panel: LayerSurface,
     menu: LayerSurface,
     context: LayerSurface,
+    auxiliary_outputs: Vec<AuxiliaryOutput>,
     pool: SlotPool,
     font: Option<Font>,
     desktop_size: (u32, u32),
+    top_bar_size: (u32, u32),
     panel_size: (u32, u32),
     menu_size: (u32, u32),
     menu_origin: (i32, i32),
     context_size: (u32, u32),
     context_origin: (i32, i32),
     desktop_configured: bool,
+    top_bar_configured: bool,
     panel_configured: bool,
     menu_configured: bool,
     context_configured: bool,
     menu_open: bool,
     menu_kind: MenuKind,
+    window_menu_pending_pointer: bool,
+    window_menu_pointer_refresh_at: Option<Instant>,
     menu_scroll: usize,
+    application_search_focused: bool,
     context_state: ContextState,
     desktop_selection: BTreeSet<PathBuf>,
     desktop_selection_anchor: Option<PathBuf>,
@@ -934,15 +1047,22 @@ struct Shell {
     clipboard_generation: u64,
     paste_available: bool,
     scale_120: u32,
-    task_page: usize,
+    task_offset: usize,
+    workspace_tabs: Vec<WorkspaceTab>,
+    current_workspace: String,
+    visible_workspaces: BTreeMap<String, String>,
+    capped_task_buttons: bool,
+    pinned_applications: BTreeSet<String>,
+    application_search: String,
     hovered: Option<ShellAction>,
     exit: bool,
     dirty: bool,
-    pointer: Option<wl_pointer::WlPointer>,
+    pointer: Option<ThemedPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     seat: Option<wl_seat::WlSeat>,
     applications: Vec<Application>,
     application_icons: BTreeMap<String, AppIcon>,
+    desktop_theme_icons: BTreeMap<String, AppIcon>,
     desktop_icons: BTreeMap<PathBuf, AppIcon>,
     application_watch_roots: Vec<PathBuf>,
     application_watcher: DirectoryWatcher,
@@ -952,19 +1072,22 @@ struct Shell {
     desktop_accessible_targets: Vec<HitTarget>,
     desktop_watcher: DirectoryWatcher,
     desktop_rescan_after: Option<Instant>,
-    update_watch_root: PathBuf,
-    update_watcher: DirectoryWatcher,
-    update_rescan_after: Option<Instant>,
-    update_tracker: UpdateTracker,
     exact_toplevels: BTreeMap<u32, ExactToplevel>,
+    pending_window_normalization: BTreeSet<u32>,
+    window_normalization_retry_after: Option<Instant>,
+    window_reflow_after: Option<Instant>,
+    process_workspace_affinity: BTreeMap<u32, String>,
+    pending_application_launches: Vec<PendingApplicationLaunch>,
+    workspace_refresh_retry_after: Option<Instant>,
     sway_window_changes: Receiver<()>,
-    repaint_request: Option<PathBuf>,
+    repaint_request: PathBuf,
+    repaint_watcher: FileWatcher,
     repaint_generation: Option<String>,
-    repaint_frames: u8,
     full_repaint_after: Option<Instant>,
     palette: ThemePalette,
     desktop_background: [u8; 4],
     settings_tracker: SettingsTracker,
+    settings_watcher: FileWatcher,
     config_home: PathBuf,
     accessibility: Option<Accessibility>,
     control_socket: UnixDatagram,
@@ -989,6 +1112,7 @@ enum AccessibleTarget {
     },
     ToggleDesktopSelection(PathBuf),
     EditValue,
+    ApplicationSearch,
     ScrollMenu,
 }
 
@@ -1041,6 +1165,100 @@ impl Accessibility {
 }
 
 impl Shell {
+    fn ensure_auxiliary_output(&mut self, qh: &QueueHandle<Self>, output: &wl_output::WlOutput) {
+        let Some(name) = self.output_state.info(output).and_then(|info| info.name) else {
+            return;
+        };
+        let Ok(host_output) = sway_ipc::desktop_output() else {
+            return;
+        };
+        if name == host_output
+            || self
+                .auxiliary_outputs
+                .iter()
+                .any(|auxiliary| auxiliary.output == *output)
+        {
+            return;
+        }
+
+        let desktop_surface = self.compositor.create_surface(qh);
+        let desktop = self.layer_shell.create_layer_surface(
+            qh,
+            desktop_surface,
+            Layer::Background,
+            Some(format!("buzzardos-desktop-{name}")),
+            Some(output),
+        );
+        desktop.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        desktop.set_keyboard_interactivity(KeyboardInteractivity::None);
+        desktop.set_exclusive_zone(-1);
+        desktop.set_size(0, 0);
+        if let Ok(empty) = Region::new(&self.compositor) {
+            desktop.set_input_region(Some(empty.wl_region()));
+        }
+        let desktop_fractional = self._fractional_manager.get_fractional_scale(
+            desktop.wl_surface(),
+            qh,
+            ShellSurface::Auxiliary,
+        );
+        let desktop_viewport = self._viewporter.get_viewport(desktop.wl_surface(), qh, ());
+        desktop.commit();
+
+        let panel_surface = self.compositor.create_surface(qh);
+        let panel = self.layer_shell.create_layer_surface(
+            qh,
+            panel_surface,
+            Layer::Top,
+            Some(format!("buzzardos-panel-{name}")),
+            Some(output),
+        );
+        panel.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        panel.set_keyboard_interactivity(KeyboardInteractivity::None);
+        panel.set_exclusive_zone(PANEL_HEIGHT);
+        panel.set_size(0, PANEL_HEIGHT as u32);
+        if let Ok(empty) = Region::new(&self.compositor) {
+            panel.set_input_region(Some(empty.wl_region()));
+        }
+        let panel_fractional = self._fractional_manager.get_fractional_scale(
+            panel.wl_surface(),
+            qh,
+            ShellSurface::Auxiliary,
+        );
+        let panel_viewport = self._viewporter.get_viewport(panel.wl_surface(), qh, ());
+        panel.commit();
+
+        self.auxiliary_outputs.push(AuxiliaryOutput {
+            output: output.clone(),
+            name: name.clone(),
+            desktop,
+            panel,
+            _fractional_scales: [desktop_fractional, panel_fractional],
+            viewports: [desktop_viewport, panel_viewport],
+            desktop_size: self.desktop_size,
+            panel_size: self.panel_size,
+            desktop_configured: false,
+            panel_configured: false,
+            task_offset: 0,
+        });
+        eprintln!("buzzardos-shell: added workspace surfaces for {name}");
+        self.dirty = true;
+    }
+
+    fn windows_for_output(&self, output: &str) -> Vec<GuestWindow> {
+        let visible_workspace = self.visible_workspaces.get(output);
+        let mut windows = self
+            .exact_toplevels
+            .values()
+            .map(|toplevel| toplevel.window.clone())
+            .filter(|window| {
+                window.output == output
+                    && visible_workspace.is_some_and(|workspace| workspace == &window.workspace)
+            })
+            .collect::<Vec<_>>();
+        windows.sort_by_key(|window| window.id);
+        windows
+    }
+
     fn update_exact_toplevel(&mut self, handle: &ExtForeignToplevelHandleV1) {
         let Some(info) = self.foreign_toplevel_list.info(handle) else {
             return;
@@ -1050,6 +1268,9 @@ impl Shell {
             .exact_toplevels
             .get(&id)
             .map(|entry| entry.window.clone());
+        if existing.is_none() {
+            self.pending_window_normalization.insert(id);
+        }
         self.exact_toplevels.insert(
             id,
             ExactToplevel {
@@ -1061,11 +1282,35 @@ impl Shell {
                     focused: existing.as_ref().is_some_and(|window| window.focused),
                     minimized: existing.as_ref().is_some_and(|window| window.minimized),
                     maximized: existing.as_ref().is_some_and(|window| window.maximized),
+                    workspace_index: existing.as_ref().and_then(|window| window.workspace_index),
+                    workspace: existing
+                        .as_ref()
+                        .map(|window| window.workspace.clone())
+                        .unwrap_or_default(),
+                    output: existing
+                        .as_ref()
+                        .map(|window| window.output.clone())
+                        .unwrap_or_default(),
                 },
             },
         );
         self.refresh_window_states();
         self.dirty = true;
+    }
+
+    fn consume_repaint_request(&mut self) {
+        let Ok(generation) = fs::read_to_string(&self.repaint_request) else {
+            return;
+        };
+        if self.repaint_generation.as_ref() == Some(&generation) {
+            return;
+        }
+        let acknowledgement = self.repaint_request.with_file_name(REPAINT_ACKNOWLEDGEMENT);
+        let _ = fs::write(acknowledgement, generation.as_bytes());
+        self.repaint_generation = Some(generation);
+        // Redraw the complete shell once after resize events settle; later
+        // generations coalesce into this same bounded debounce.
+        self.full_repaint_after = Some(Instant::now() + OUTPUT_SETTLE_DEBOUNCE);
     }
 
     fn poll_control_socket(&mut self) {
@@ -1074,35 +1319,108 @@ impl Shell {
             let mut buffer = [0_u8; 4096];
             match self.control_socket.recv(&mut buffer) {
                 Ok(length) => {
-                    if let Some(request) = parse_window_menu_request(&buffer[..length]) {
+                    if let Some(request) = parse_shell_control_request(&buffer[..length]) {
                         requests.push(request);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: reading shell-control socket failed: {error}");
+                    eprintln!("buzzardos-shell: reading shell-control socket failed: {error}");
                     break;
                 }
             }
         }
-        for (identifier, pointer) in requests {
-            self.show_titlebar_window_menu(&identifier, pointer);
+        for request in requests {
+            match request {
+                ShellControlRequest::WindowMenu(identifier) => {
+                    self.show_titlebar_window_menu(&identifier);
+                }
+                ShellControlRequest::DesktopChanged => {
+                    self.desktop_model.show_first_page();
+                    if let Err(error) = self.refresh_desktop_items() {
+                        eprintln!(
+                            "buzzardos-shell: refreshing externally changed Desktop failed: {error:#}"
+                        );
+                    }
+                }
+            }
         }
     }
 
-    fn poll(&mut self) {
-        self.poll_control_socket();
-        if let Some(settings) = self.settings_tracker.candidate() {
+    fn poll(&mut self, readiness: GuestEventReadiness) {
+        if readiness.control_socket {
+            self.poll_control_socket();
+        }
+        if self
+            .workspace_refresh_retry_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            && self.refresh_workspace_states()
+        {
+            self.dirty = true;
+        }
+        self.resolve_single_instance_launches();
+        if self
+            .window_normalization_retry_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.window_normalization_retry_after = None;
+            self.refresh_window_states();
+        }
+        if self
+            .window_reflow_after
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.window_reflow_after = None;
+            match sway_ipc::constrain_windows_after_output_resize() {
+                Ok(()) => self.refresh_window_states(),
+                Err(error) => eprintln!(
+                    "buzzardos-shell: constraining windows after output resize failed: {error:#}"
+                ),
+            }
+        }
+        if self
+            .window_menu_pointer_refresh_at
+            .is_some_and(|deadline| self.window_menu_pending_pointer && Instant::now() >= deadline)
+        {
+            self.window_menu_pointer_refresh_at = None;
+            if let Err(error) = sway_ipc::refresh_cursor_focus() {
+                eprintln!("buzzardos-shell: refreshing titlebar menu pointer focus: {error:#}");
+                self.hide_menu();
+            }
+        }
+        let settings_changed = if readiness.settings_watch {
+            match self.settings_watcher.changed() {
+                Ok(changed) => changed,
+                Err(error) => {
+                    eprintln!("buzzardos-shell: settings watch failed: {error:#}");
+                    true
+                }
+            }
+        } else {
+            false
+        };
+        if settings_changed && let Some(settings) = self.settings_tracker.candidate() {
             match apply_runtime_theme(&self.config_home, settings.appearance.theme) {
                 Ok(()) => {
                     self.palette = *settings.appearance.theme.palette();
                     self.desktop_background = settings.appearance.background.solid_color().rgba();
+                    self.capped_task_buttons = settings.appearance.capped_task_buttons;
+                    self.pinned_applications = settings
+                        .appearance
+                        .pinned_applications
+                        .iter()
+                        .cloned()
+                        .collect();
+                    self.task_offset = self.task_offset.min(taskbar_max_offset(
+                        self.panel_size.0,
+                        self.windows().len(),
+                        self.capped_task_buttons,
+                    ));
                     let generation = settings.generation;
                     self.settings_tracker.commit(settings);
                     self.dirty = true;
-                    self.repaint_frames = OUTPUT_SETTLE_REPAINT_FRAMES;
                     eprintln!(
-                        "wildbuzzard-shell: applied appearance settings generation {generation}"
+                        "buzzardos-shell: applied appearance settings generation {generation}"
                     );
                 }
                 Err(error) => self.settings_tracker.reject(format!(
@@ -1111,27 +1429,15 @@ impl Shell {
                 )),
             }
         }
-        if let Some(generation) = self
-            .repaint_request
-            .as_ref()
-            .and_then(|path| fs::read_to_string(path).ok())
-            && self.repaint_generation.as_ref() != Some(&generation)
-        {
-            if let Some(request) = self.repaint_request.as_ref() {
-                let acknowledgement = request.with_file_name(REPAINT_ACKNOWLEDGEMENT);
-                let _ = fs::write(acknowledgement, generation.as_bytes());
+        if readiness.repaint_watch {
+            match self.repaint_watcher.changed() {
+                Ok(true) => self.consume_repaint_request(),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: repaint watch failed: {error:#}");
+                    self.consume_repaint_request();
+                }
             }
-            self.repaint_generation = Some(generation);
-            // Continue briefly after the output transaction. Host
-            // compositors are allowed to discard frames while a native
-            // toplevel is being maximized, restored, or interactively
-            // resized, so one early commit is not sufficient.
-            self.repaint_frames = OUTPUT_SETTLE_REPAINT_FRAMES;
-            // Some nested wlroots compositors do not treat damage to the panel alone as an output
-            // geometry update. Redraw the desktop once after resize events
-            // settle; during an interactive drag, later generations debounce
-            // this expensive full-surface render.
-            self.full_repaint_after = Some(Instant::now() + OUTPUT_SETTLE_DEBOUNCE);
         }
         if self
             .full_repaint_after
@@ -1140,12 +1446,16 @@ impl Shell {
             self.full_repaint_after = None;
             self.dirty = true;
         }
-        match self.application_watcher.changed() {
-            Ok(true) => self.application_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("wildbuzzard-shell: application watch failed: {error:#}");
-                self.application_rescan_after = Some(Instant::now());
+        if readiness.application_watch {
+            match self.application_watcher.changed() {
+                Ok(true) => {
+                    self.application_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE)
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: application watch failed: {error:#}");
+                    self.application_rescan_after = Some(Instant::now());
+                }
             }
         }
         if self
@@ -1167,16 +1477,18 @@ impl Shell {
             match DirectoryWatcher::new(&self.application_watch_roots) {
                 Ok(watcher) => self.application_watcher = watcher,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming application watch failed: {error:#}")
+                    eprintln!("buzzardos-shell: rearming application watch failed: {error:#}")
                 }
             }
         }
-        match self.desktop_watcher.changed() {
-            Ok(true) => self.desktop_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("wildbuzzard-shell: desktop watch failed: {error:#}");
-                self.desktop_rescan_after = Some(Instant::now());
+        if readiness.desktop_watch {
+            match self.desktop_watcher.changed() {
+                Ok(true) => self.desktop_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("buzzardos-shell: desktop watch failed: {error:#}");
+                    self.desktop_rescan_after = Some(Instant::now());
+                }
             }
         }
         if self
@@ -1188,48 +1500,18 @@ impl Shell {
                 Ok(changed) => {
                     if changed {
                         if let Err(error) = self.rebuild_desktop_targets() {
-                            eprintln!("wildbuzzard-shell: rebuilding desktop failed: {error:#}");
+                            eprintln!("buzzardos-shell: rebuilding desktop failed: {error:#}");
                         }
                         self.dirty = true;
                     }
                 }
-                Err(error) => eprintln!("wildbuzzard-shell: desktop rescan failed: {error:#}"),
+                Err(error) => eprintln!("buzzardos-shell: desktop rescan failed: {error:#}"),
             }
             match DirectoryWatcher::new(&[self.desktop_model.directory_path().to_path_buf()]) {
                 Ok(watcher) => self.desktop_watcher = watcher,
                 Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming desktop watch failed: {error:#}")
+                    eprintln!("buzzardos-shell: rearming desktop watch failed: {error:#}")
                 }
-            }
-        }
-        match self.update_watcher.changed() {
-            Ok(true) => self.update_rescan_after = Some(Instant::now() + FILE_MODEL_DEBOUNCE),
-            Ok(false) => {}
-            Err(error) => {
-                eprintln!("wildbuzzard-shell: updater-state watch failed: {error:#}");
-                self.update_rescan_after = Some(Instant::now());
-            }
-        }
-        if self
-            .update_rescan_after
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.update_rescan_after = None;
-            match self.update_tracker.reload() {
-                Ok(true) => self.dirty = true,
-                Ok(false) => {}
-                Err(error) => {
-                    eprintln!("wildbuzzard-shell: updater state was preserved: {error}")
-                }
-            }
-            match DirectoryWatcher::new(std::slice::from_ref(&self.update_watch_root)) {
-                Ok(watcher) => self.update_watcher = watcher,
-                Err(error) => {
-                    eprintln!("wildbuzzard-shell: rearming updater-state watch failed: {error:#}")
-                }
-            }
-            if !self.update_watch_root.is_dir() {
-                self.update_rescan_after = Some(Instant::now() + Duration::from_secs(5));
             }
         }
         if self.sway_window_changes.try_recv().is_ok() {
@@ -1280,6 +1562,19 @@ impl Shell {
                         self.dirty = true;
                     }
                 }
+                (
+                    Action::SetValue | Action::ReplaceSelectedText,
+                    AccessibleTarget::ApplicationSearch,
+                ) => {
+                    if let Some(ActionData::Value(value)) = request.data
+                        && !value.chars().any(char::is_control)
+                    {
+                        self.application_search = value.into();
+                        self.menu_scroll = 0;
+                        self.apply_applications_menu_geometry();
+                        self.dirty = true;
+                    }
+                }
                 (Action::ScrollDown, AccessibleTarget::ScrollMenu) => self.scroll_menu(1.0),
                 (Action::ScrollUp, AccessibleTarget::ScrollMenu) => self.scroll_menu(-1.0),
                 (
@@ -1299,6 +1594,7 @@ impl Shell {
             .exact_toplevels
             .values()
             .map(|toplevel| toplevel.window.clone())
+            .filter(|window| window.workspace == self.current_workspace)
             .collect();
         // Focus changes must only update the active-button styling. Reordering
         // the focused window to the front made task buttons jump underneath
@@ -1307,8 +1603,185 @@ impl Shell {
         windows
     }
 
+    fn refresh_workspace_states(&mut self) -> bool {
+        let Ok(workspaces) = sway_ipc::list_workspaces() else {
+            self.workspace_refresh_retry_after = Some(Instant::now() + WORKSPACE_REFRESH_RETRY);
+            return false;
+        };
+        let Ok(host_workspace) = sway_ipc::current_desktop_workspace() else {
+            self.workspace_refresh_retry_after = Some(Instant::now() + WORKSPACE_REFRESH_RETRY);
+            return false;
+        };
+        let visible_workspaces = workspaces
+            .iter()
+            .filter(|workspace| workspace.visible)
+            .map(|workspace| (workspace.output.clone(), workspace.name.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut tabs = workspaces
+            .into_iter()
+            .filter_map(|workspace| {
+                let index = workspace_index(&workspace.name)?;
+                Some(WorkspaceTab {
+                    index,
+                    label: workspace_name(index),
+                    active: workspace.name == host_workspace,
+                })
+            })
+            .collect::<Vec<_>>();
+        if !tabs.iter().any(|workspace| workspace.index == 0) {
+            tabs.push(WorkspaceTab {
+                index: 0,
+                label: "Desktop".to_owned(),
+                active: host_workspace == "Desktop",
+            });
+        }
+        tabs.sort_by_key(|workspace| workspace.index);
+        let changed = tabs != self.workspace_tabs
+            || host_workspace != self.current_workspace
+            || visible_workspaces != self.visible_workspaces;
+        self.workspace_tabs = tabs;
+        self.current_workspace = host_workspace;
+        self.visible_workspaces = visible_workspaces;
+        self.workspace_refresh_retry_after = None;
+        changed
+    }
+
+    fn pending_launch_for_toplevel(&self, id: u32, app_id: &str) -> Option<(usize, String)> {
+        self.pending_application_launches
+            .iter()
+            .enumerate()
+            .find(|(_, launch)| {
+                !launch.baseline_toplevels.contains(&id)
+                    && application_matches_window(&launch.application, app_id)
+            })
+            .or_else(|| {
+                (self.pending_application_launches.len() == 1).then(|| {
+                    self.pending_application_launches
+                        .iter()
+                        .enumerate()
+                        .find(|(_, launch)| !launch.baseline_toplevels.contains(&id))
+                })?
+            })
+            .map(|(index, launch)| (index, launch.destination_workspace.clone()))
+    }
+
+    fn launch_with_workspace_intent(
+        &mut self,
+        application: Application,
+        launch: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        self.refresh_workspace_states();
+        let destination_workspace = self.current_workspace.clone();
+        let baseline_toplevels = self.exact_toplevels.keys().copied().collect();
+        launch()?;
+        let now = Instant::now();
+        self.pending_application_launches
+            .push(PendingApplicationLaunch {
+                application,
+                destination_workspace,
+                baseline_toplevels,
+                single_instance_after: now + SINGLE_INSTANCE_FALLBACK_DELAY,
+                expires_at: now + APPLICATION_LAUNCH_DEADLINE,
+            });
+        Ok(())
+    }
+
+    fn launch_application_here(&mut self, application: Application) -> Result<()> {
+        let source = application.clone();
+        self.launch_with_workspace_intent(application, || launch_application(&source))
+    }
+
+    fn launch_program_here<I, S>(
+        &mut self,
+        application_identity: &str,
+        program: &str,
+        arguments: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| argument.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        let application = self
+            .applications
+            .iter()
+            .find(|application| application_matches_window(application, application_identity))
+            .cloned();
+        if let Some(application) = application {
+            self.launch_with_workspace_intent(application, || spawn(program, arguments))
+        } else {
+            spawn(program, arguments)
+        }
+    }
+
+    fn open_desktop_item_here(&mut self, path: &Path, kind: DesktopItemKind) -> Result<()> {
+        let application = (kind == DesktopItemKind::Launcher)
+            .then(|| path.file_name().and_then(OsStr::to_str))
+            .flatten()
+            .and_then(|id| {
+                self.applications
+                    .iter()
+                    .find(|application| application.id == id)
+                    .cloned()
+            });
+        if let Some(application) = application {
+            let path = path.to_owned();
+            self.launch_with_workspace_intent(application, || {
+                open_desktop_item(&path, DesktopItemKind::Launcher)
+            })
+        } else {
+            open_desktop_item(path, kind)
+        }
+    }
+
+    fn resolve_single_instance_launches(&mut self) {
+        if self.pending_application_launches.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut remaining = Vec::new();
+        for launch in std::mem::take(&mut self.pending_application_launches) {
+            if now < launch.single_instance_after {
+                remaining.push(launch);
+                continue;
+            }
+            let existing = self
+                .exact_toplevels
+                .iter()
+                .filter(|(id, toplevel)| {
+                    launch.baseline_toplevels.contains(id)
+                        && application_matches_window(&launch.application, &toplevel.window.app_id)
+                })
+                .map(|(_, toplevel)| toplevel)
+                .max_by_key(|toplevel| (toplevel.window.focused, toplevel.window.id));
+            if let Some(toplevel) = existing {
+                match sway_ipc::move_window_to_workspace(
+                    &toplevel.identifier,
+                    &launch.destination_workspace,
+                    true,
+                ) {
+                    Ok(()) => continue,
+                    Err(error) => eprintln!(
+                        "buzzardos-shell: could not reveal the existing {} window: {error:#}",
+                        launch.application.name
+                    ),
+                }
+            }
+            if now < launch.expires_at {
+                remaining.push(launch);
+            }
+        }
+        self.pending_application_launches = remaining;
+    }
+
     fn refresh_window_states(&mut self) {
         let Ok(states) = sway_ipc::list_windows() else {
+            if self.refresh_workspace_states() {
+                self.dirty = true;
+            }
             return;
         };
         let states = states
@@ -1316,6 +1789,78 @@ impl Shell {
             .map(|state| (state.identifier.clone(), state))
             .collect::<BTreeMap<_, _>>();
         let mut changed = false;
+        // Learn only from established windows. A pending window initially
+        // placed on Desktop must not overwrite the CUA workspace remembered
+        // from the splash/dialog it just replaced.
+        let mut established = BTreeMap::<u32, BTreeSet<String>>::new();
+        for (id, toplevel) in &self.exact_toplevels {
+            if self.pending_window_normalization.contains(id) {
+                continue;
+            }
+            let Some(state) = states.get(&toplevel.identifier) else {
+                continue;
+            };
+            if state.pid != 0
+                && !state.minimized
+                && !state.workspace.is_empty()
+                && state.workspace != "__i3_scratch"
+            {
+                established
+                    .entry(state.pid)
+                    .or_default()
+                    .insert(state.workspace.clone());
+            }
+        }
+        for (pid, workspaces) in established {
+            if workspaces.len() == 1 {
+                self.process_workspace_affinity
+                    .insert(pid, workspaces.into_iter().next().expect("one workspace"));
+            } else {
+                self.process_workspace_affinity.remove(&pid);
+            }
+        }
+        self.process_workspace_affinity
+            .retain(|pid, _| std::path::Path::new(&format!("/proc/{pid}")).exists());
+        let mut normalized = Vec::new();
+        for id in self
+            .pending_window_normalization
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let Some(toplevel) = self.exact_toplevels.get(&id) else {
+                continue;
+            };
+            let Some(state) = states.get(&toplevel.identifier) else {
+                continue;
+            };
+            let launch_destination = self.pending_launch_for_toplevel(id, &toplevel.window.app_id);
+            let process_destination = self.process_workspace_affinity.get(&state.pid).cloned();
+            let preferred_workspace = launch_destination
+                .as_ref()
+                .map(|(_, workspace)| workspace.as_str())
+                .or(process_destination.as_deref());
+            match sway_ipc::place_new_window(&toplevel.identifier, preferred_workspace) {
+                Ok(()) => {
+                    normalized.push(id);
+                    if let Some((launch_index, _)) = launch_destination {
+                        self.pending_application_launches.remove(launch_index);
+                    }
+                }
+                Err(error) => eprintln!(
+                    "buzzardos-shell: deferring initial frame constraint for {}: {error:#}",
+                    toplevel.identifier
+                ),
+            }
+        }
+        for id in normalized {
+            self.pending_window_normalization.remove(&id);
+        }
+        self.window_normalization_retry_after = if self.pending_window_normalization.is_empty() {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(100))
+        };
         for toplevel in self.exact_toplevels.values_mut() {
             let Some(state) = states.get(&toplevel.identifier) else {
                 continue;
@@ -1324,7 +1869,35 @@ impl Shell {
             toplevel.window.focused = state.focused;
             toplevel.window.minimized = state.minimized;
             toplevel.window.maximized = state.maximized;
+            toplevel.window.workspace_index = workspace_index(&state.workspace);
+            toplevel.window.workspace = state.workspace.clone();
+            toplevel.window.output = state.output.clone();
             changed |= before != toplevel.window;
+        }
+        changed |= self.refresh_workspace_states();
+        if changed {
+            self.task_offset = self.task_offset.min(taskbar_max_offset(
+                self.panel_size.0,
+                self.windows().len(),
+                self.capped_task_buttons,
+            ));
+            let counts = self
+                .auxiliary_outputs
+                .iter()
+                .map(|auxiliary| {
+                    (
+                        auxiliary.name.clone(),
+                        self.windows_for_output(&auxiliary.name).len(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            for auxiliary in &mut self.auxiliary_outputs {
+                auxiliary.task_offset = auxiliary.task_offset.min(taskbar_max_offset(
+                    auxiliary.panel_size.0,
+                    counts.get(&auxiliary.name).copied().unwrap_or_default(),
+                    self.capped_task_buttons,
+                ));
+            }
         }
         if changed {
             self.dirty = true;
@@ -1404,6 +1977,25 @@ impl Shell {
         Ok(())
     }
 
+    fn set_full_input_region(
+        &self,
+        surface: &LayerSurface,
+        size: (u32, u32),
+        description: &str,
+    ) -> Result<()> {
+        let region = Region::new(&self.compositor)
+            .with_context(|| format!("creating {description} input region"))?;
+        region.add(
+            0,
+            0,
+            i32::try_from(size.0).unwrap_or(i32::MAX),
+            i32::try_from(size.1).unwrap_or(i32::MAX),
+        );
+        surface.set_input_region(Some(region.wl_region()));
+        surface.commit();
+        Ok(())
+    }
+
     fn context_targets(&self) -> Vec<HitTarget> {
         let rows = |entries: Vec<(&str, ShellAction)>| {
             entries
@@ -1431,7 +2023,8 @@ impl Shell {
                 .map(|application| {
                     application_context_targets(
                         application,
-                        application_desktop_shortcut_exists(application),
+                        self.pinned_applications.contains(&application.id),
+                        managed_appimage_registration_id(application).is_some(),
                     )
                 })
                 .unwrap_or_default(),
@@ -1452,15 +2045,11 @@ impl Shell {
                     entries.push(("Rename", ShellAction::DesktopRename));
                 }
                 entries.push(("Delete", ShellAction::DesktopDelete));
-                if let Some(registered) = appimage_registered {
-                    entries.push(if *registered {
-                        (
-                            "Remove from Applications",
-                            ShellAction::DesktopRemoveFromApplications,
-                        )
-                    } else {
-                        ("Add to Applications", ShellAction::DesktopAddToApplications)
-                    });
+                if matches!(appimage_registered, Some(false)) {
+                    entries.push((
+                        "Add AppImage to Applications",
+                        ShellAction::DesktopAddToApplications,
+                    ));
                 }
                 rows(entries)
             }
@@ -1474,7 +2063,7 @@ impl Shell {
                     },
                     label: match dialog.operation {
                         EditOperation::NewFolder => "Create",
-                        EditOperation::Rename(_) => "Rename",
+                        EditOperation::Rename(_) | EditOperation::RenameApplication(_) => "Rename",
                     }
                     .to_owned(),
                     action: ShellAction::DesktopEditConfirm,
@@ -1574,6 +2163,18 @@ impl Shell {
     }
 
     fn show_application_context(&mut self, id: String, local_x: f64, local_y: f64) {
+        let rows = self
+            .applications
+            .iter()
+            .find(|application| application.id == id)
+            .map_or(3, |application| {
+                if managed_appimage_registration_id(application).is_some() {
+                    7
+                } else {
+                    3
+                }
+            });
+        let height = 12 + rows * MENU_ROW_HEIGHT as u32;
         let maximum_left = self
             .desktop_size
             .0
@@ -1582,12 +2183,12 @@ impl Shell {
             .desktop_size
             .1
             .saturating_sub(PANEL_HEIGHT as u32)
-            .saturating_sub(APPLICATION_CONTEXT_HEIGHT) as i32;
+            .saturating_sub(height) as i32;
         let left = (self.menu_origin.0 + local_x.floor() as i32).clamp(0, maximum_left.max(0));
         let top = (self.menu_origin.1 + local_y.floor() as i32).clamp(0, maximum_top.max(0));
         self.show_context(
             ContextState::Application(id),
-            (APPLICATION_CONTEXT_WIDTH, APPLICATION_CONTEXT_HEIGHT),
+            (APPLICATION_CONTEXT_WIDTH, height),
             (left, top),
         );
     }
@@ -1600,7 +2201,7 @@ impl Shell {
             .then(|| self.single_selected_path())
             .flatten()
             .filter(|path| self.selected_item_kind(path) == Some(DesktopItemKind::AppImage))
-            .filter(|path| wildbuzzard_shortcut_helper::validate_appimage(path).is_ok())
+            .filter(|path| buzzardos_shortcut_helper::validate_appimage(path).is_ok())
             .map(|path| {
                 RegistrationStore::discover()
                     .and_then(|store| store.find_by_target(&path))
@@ -1610,7 +2211,7 @@ impl Shell {
             });
         let rows = if item {
             4 + usize::from(self.desktop_selection.len() == 1)
-                + usize::from(appimage_registered.is_some())
+                + usize::from(matches!(appimage_registered, Some(false)))
         } else {
             3
         };
@@ -1695,7 +2296,12 @@ impl Shell {
         }
         self.menu_open = true;
         self.menu_kind = MenuKind::Applications;
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
         self.menu_scroll = 0;
+        self.application_search_focused = true;
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         // Update hit-testing before the configure round-trip. Reusing the
         // former 1x1 hidden extent makes a freshly opened menu visible but
         // temporarily unclickable, so a quick human/CUA click reaches the
@@ -1705,18 +2311,36 @@ impl Shell {
     }
 
     fn apply_applications_menu_geometry(&mut self) {
-        let requested_size = self.preferred_menu_size();
-        self.menu_size = requested_size;
+        let content_size = self.preferred_menu_size();
+        self.menu_size = self.menu_overlay_size();
         self.menu_origin = (
             0,
-            i32::try_from(self.desktop_size.1)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(PANEL_HEIGHT)
-                .saturating_sub(i32::try_from(requested_size.1).unwrap_or(i32::MAX)),
+            i32::try_from(self.menu_size.1.saturating_sub(content_size.1)).unwrap_or_default(),
         );
-        self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+        self.apply_menu_overlay_geometry();
+    }
+
+    fn menu_overlay_size(&self) -> (u32, u32) {
+        (
+            self.desktop_size.0.max(1),
+            self.desktop_size
+                .1
+                .saturating_sub(PANEL_HEIGHT as u32)
+                .max(1),
+        )
+    }
+
+    fn apply_menu_overlay_geometry(&self) {
+        // The transparent surface receives input only while a menu is open.
+        // It provides both click-away dismissal and, for titlebar menus, the
+        // normal Wayland pointer-enter position after the titlebar binding
+        // opens it. No global pointer monitor or click-history file is used.
+        // This is the reliable Wayland implementation of click-away dismissal
+        // because the shell cannot observe events delivered to another client.
+        self.menu
+            .set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
-        self.menu.set_size(requested_size.0, requested_size.1);
+        self.menu.set_size(0, 0);
         let _ = self.set_menu_input_region();
         self.menu.commit();
     }
@@ -1724,48 +2348,83 @@ impl Shell {
     fn hide_menu(&mut self) {
         self.hide_context();
         if self.menu_open {
+            if self.menu_kind == MenuKind::Applications {
+                self.application_search.clear();
+                self.application_search_focused = false;
+                self.menu_scroll = 0;
+            }
             self.menu_open = false;
+            self.window_menu_pending_pointer = false;
+            self.window_menu_pointer_refresh_at = None;
             self.menu_size = (1, 1);
+            self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+            self.menu.set_margin(0, 0, PANEL_HEIGHT, 0);
             self.menu.set_size(1, 1);
+            self.menu
+                .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
             let _ = self.set_menu_input_region();
             self.menu.commit();
             self.dirty = true;
         }
     }
 
-    fn open_window_menu(&mut self, id: u32, origin: (i32, i32), top_anchored: bool) {
+    fn open_window_menu(&mut self, id: u32, origin: (i32, i32), await_pointer: bool) {
         // Pointer-driven floating resize does not emit a stock Sway window
         // event. Refresh synchronously before choosing the context-menu label
         // so a window resized away from our classic maximized frame offers
         // Maximize, never a stale Restore action.
         self.refresh_window_states();
-        let Some((title, identifier)) = self
-            .exact_toplevels
-            .get(&id)
-            .map(|window| (window.window.title.clone(), window.identifier.clone()))
-        else {
+        if !self.exact_toplevels.contains_key(&id) {
             return;
-        };
+        }
         self.menu_open = true;
         self.menu_kind = MenuKind::Window(id);
+        self.window_menu_pending_pointer = await_pointer;
+        self.window_menu_pointer_refresh_at =
+            await_pointer.then(|| Instant::now() + WINDOW_MENU_POINTER_REFRESH_DELAY);
         self.menu_scroll = 0;
-        self.menu_size = (WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT);
+        self.menu_size = self.menu_overlay_size();
         self.menu_origin = origin;
-        if top_anchored {
-            self.menu.set_anchor(Anchor::TOP | Anchor::LEFT);
-            self.menu.set_margin(origin.1, 0, 0, origin.0);
-        } else {
-            self.menu.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
-            self.menu.set_margin(0, 0, PANEL_HEIGHT, origin.0);
-        }
-        self.menu.set_size(WINDOW_MENU_WIDTH, WINDOW_MENU_HEIGHT);
-        let _ = self.set_menu_input_region();
-        self.menu.commit();
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        self.apply_menu_overlay_geometry();
         self.dirty = true;
-        eprintln!(
-            "wildbuzzard-shell: opened controls for {} ({})",
-            title, identifier
+    }
+
+    fn position_pending_window_menu(&mut self, pointer_x: f64) {
+        if !self.window_menu_pending_pointer {
+            return;
+        }
+        let MenuKind::Window(id) = self.menu_kind else {
+            self.window_menu_pending_pointer = false;
+            self.window_menu_pointer_refresh_at = None;
+            return;
+        };
+        let Some(identifier) = self
+            .exact_toplevels
+            .get(&id)
+            .map(|toplevel| toplevel.identifier.clone())
+        else {
+            self.hide_menu();
+            return;
+        };
+        let Ok(state) = sway_ipc::window(&identifier) else {
+            self.hide_menu();
+            return;
+        };
+        self.menu_origin = titlebar_menu_origin(
+            state.rect,
+            state.decoration_height,
+            self.desktop_size,
+            pointer_x,
+            self.exact_toplevels
+                .get(&id)
+                .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+                .unwrap_or(WORKSPACE_MENU_HEIGHT),
         );
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
+        self.dirty = true;
     }
 
     fn show_taskbar_window_menu(&mut self, id: u32, pointer_x: f64) {
@@ -1776,14 +2435,37 @@ impl Shell {
             .try_into()
             .unwrap_or(i32::MAX);
         let left = (pointer_x.floor() as i32).clamp(0, maximum_left);
+        let height = self
+            .exact_toplevels
+            .get(&id)
+            .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+            .unwrap_or(WORKSPACE_MENU_HEIGHT);
         let top = i32::try_from(self.desktop_size.1)
             .unwrap_or(i32::MAX)
             .saturating_sub(PANEL_HEIGHT)
-            .saturating_sub(WINDOW_MENU_HEIGHT as i32);
+            .saturating_sub(height as i32);
         self.open_window_menu(id, (left, top), false);
     }
 
-    fn show_titlebar_window_menu(&mut self, identifier: &str, pointer: Option<(f64, f64)>) {
+    fn show_workspace_menu(&mut self, index: u32, pointer_x: f64) {
+        if index == 0 {
+            return;
+        }
+        let maximum_left = self.top_bar_size.0.saturating_sub(WORKSPACE_MENU_WIDTH) as i32;
+        let left = (pointer_x.floor() as i32).clamp(0, maximum_left.max(0));
+        self.menu_open = true;
+        self.menu_kind = MenuKind::Workspace(index);
+        self.window_menu_pending_pointer = false;
+        self.window_menu_pointer_refresh_at = None;
+        self.menu_size = self.menu_overlay_size();
+        self.menu_origin = (left, TOP_BAR_HEIGHT);
+        self.menu
+            .set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+        self.apply_menu_overlay_geometry();
+        self.dirty = true;
+    }
+
+    fn show_titlebar_window_menu(&mut self, identifier: &str) {
         self.refresh_window_states();
         let Some(id) = self
             .exact_toplevels
@@ -1792,31 +2474,95 @@ impl Shell {
         else {
             return;
         };
-        let Ok(state) = sway_ipc::window(identifier) else {
-            return;
-        };
-        let origin = titlebar_menu_origin(
-            state.rect,
-            state.decoration_height,
-            self.desktop_size,
-            pointer,
-        );
-        self.open_window_menu(id, origin, true);
+        // The full-output surface receives a standard pointer-enter event at
+        // the current titlebar click position. Keep its contents transparent
+        // until that event supplies the horizontal anchor.
+        self.open_window_menu(id, (0, 0), true);
     }
 
     fn preferred_menu_size(&self) -> (u32, u32) {
+        let applications = self.filtered_applications();
         (
-            applications_menu_width(self.font.as_ref(), &self.applications, self.desktop_size.0),
-            applications_menu_height(self.applications.len(), self.desktop_size.1),
+            applications_menu_width(self.font.as_ref(), &applications, self.desktop_size.0),
+            applications_menu_height(applications.len(), self.desktop_size.1),
         )
     }
 
+    fn filtered_applications(&self) -> Vec<Application> {
+        let query = self.application_search.trim().to_lowercase();
+        let (mut regular, pinned): (Vec<_>, Vec<_>) = self
+            .applications
+            .iter()
+            .filter(|application| {
+                query.is_empty()
+                    || application.name.to_lowercase().contains(&query)
+                    || application
+                        .generic_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_lowercase().contains(&query))
+                    || application
+                        .categories
+                        .iter()
+                        .any(|category| category.to_lowercase().contains(&query))
+            })
+            .cloned()
+            .partition(|application| !self.pinned_applications.contains(&application.id));
+        regular.extend(pinned);
+        regular
+    }
+
+    fn set_application_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
+        anyhow::ensure!(
+            self.applications
+                .iter()
+                .any(|application| application.id == id),
+            "application no longer exists"
+        );
+        let mut settings = load_settings(&self.settings_tracker.path)?;
+        let already_pinned = settings
+            .appearance
+            .pinned_applications
+            .iter()
+            .any(|candidate| candidate == id);
+        if already_pinned == pinned {
+            return Ok(());
+        }
+        if pinned {
+            settings.appearance.pinned_applications.push(id.to_owned());
+        } else {
+            settings
+                .appearance
+                .pinned_applications
+                .retain(|candidate| candidate != id);
+        }
+        settings.generation = settings
+            .generation
+            .checked_add(1)
+            .context("settings generation overflow")?;
+        settings
+            .save(&self.settings_tracker.path)
+            .context("saving pinned Applications entries")?;
+        if pinned {
+            self.pinned_applications.insert(id.to_owned());
+        } else {
+            self.pinned_applications.remove(id);
+        }
+        self.menu_scroll = 0;
+        self.dirty = true;
+        Ok(())
+    }
+
     fn visible_menu_rows(&self) -> usize {
+        let menu_height = if self.menu_open && self.menu_kind == MenuKind::Applications {
+            self.preferred_menu_size().1
+        } else {
+            self.menu_size.1
+        };
         let used = APPLICATIONS_MENU_HEADER_HEIGHT
             + APPLICATIONS_MENU_SECTION_HEIGHT
             + APPLICATIONS_MENU_FOOTER_HEIGHT;
         usize::try_from(
-            (i32::try_from(self.menu_size.1)
+            (i32::try_from(menu_height)
                 .unwrap_or(i32::MAX)
                 .saturating_sub(used)
                 / MENU_ROW_HEIGHT)
@@ -1826,11 +2572,10 @@ impl Shell {
     }
 
     fn clamp_menu_scroll(&mut self) {
-        self.menu_scroll = self.menu_scroll.min(
-            self.applications
-                .len()
-                .saturating_sub(self.visible_menu_rows()),
-        );
+        let application_count = self.filtered_applications().len();
+        self.menu_scroll = self
+            .menu_scroll
+            .min(application_count.saturating_sub(self.visible_menu_rows()));
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -1908,7 +2653,7 @@ impl Shell {
     fn open_selection(&mut self) {
         for path in self.selected_paths() {
             if let Some(kind) = self.selected_item_kind(&path)
-                && let Err(error) = open_desktop_item(&path, kind)
+                && let Err(error) = self.open_desktop_item_here(&path, kind)
             {
                 self.show_operation_error("Could not open item", error);
                 return;
@@ -2102,7 +2847,7 @@ impl Shell {
                 clipboard_copy::ClipboardType::Regular,
                 clipboard_copy::Seat::All,
             ) {
-                eprintln!("wildbuzzard-shell: clearing completed cut clipboard failed: {error}");
+                eprintln!("buzzardos-shell: clearing completed cut clipboard failed: {error}");
             }
         }
         let _ = self.refresh_desktop_items();
@@ -2134,6 +2879,26 @@ impl Shell {
         }));
     }
 
+    fn begin_application_rename(&mut self, application_id: &str) {
+        let Some(application) = self
+            .applications
+            .iter()
+            .find(|application| application.id == application_id)
+        else {
+            return;
+        };
+        let Some(registration_id) = managed_appimage_registration_id(application) else {
+            return;
+        };
+        let input = application.name.clone();
+        self.show_dialog(ContextState::Edit(EditDialog {
+            operation: EditOperation::RenameApplication(registration_id),
+            input,
+            replace_on_type: true,
+            error: None,
+        }));
+    }
+
     fn commit_edit(&mut self) {
         let ContextState::Edit(dialog) = self.context_state.clone() else {
             return;
@@ -2143,6 +2908,7 @@ impl Shell {
         // Desktop operations provide the authoritative empty/dot/slash/NUL
         // validation.
         let name = dialog.input.as_str();
+        let renaming_application = matches!(&dialog.operation, EditOperation::RenameApplication(_));
         let result = (|| -> Result<Option<PathBuf>> {
             match dialog.operation {
                 EditOperation::NewFolder => {
@@ -2161,10 +2927,17 @@ impl Shell {
                         .rename_desktop_item(old, OsStr::new(name))?;
                     Ok(Some(renamed))
                 }
+                EditOperation::RenameApplication(id) => {
+                    RegistrationStore::discover()?.rename_application(id, name)?;
+                    Ok(None)
+                }
             }
         })();
         match result {
             Ok(selected) => {
+                if renaming_application {
+                    self.refresh_applications_now();
+                }
                 let _ = self.refresh_desktop_items();
                 if let Some(selected) = selected {
                     self.select_only(selected);
@@ -2250,19 +3023,15 @@ impl Shell {
         }
     }
 
-    fn set_appimage_application_registration(&mut self, enabled: bool) {
+    fn add_selected_appimage_to_applications(&mut self) {
         let Some(path) = self.single_selected_path() else {
             return;
         };
         let result = (|| -> Result<()> {
             let store = RegistrationStore::discover()?;
             if let Some(registration) = store.find_by_target(&path)? {
-                if enabled {
-                    store.add_applications(registration.id)?;
-                } else {
-                    store.remove_applications(registration.id)?;
-                }
-            } else if enabled {
+                store.add_applications(registration.id)?;
+            } else {
                 store.register(&path, RegistrationFlags::APPLICATIONS)?;
             }
             Ok(())
@@ -2270,6 +3039,63 @@ impl Shell {
         match result {
             Ok(()) => self.hide_context(),
             Err(error) => self.show_operation_error("Could not update Applications", error),
+        }
+    }
+
+    fn extract_registered_application(&mut self, application_id: &str, no_sandbox: bool) {
+        let result = (|| -> Result<()> {
+            let application = self
+                .applications
+                .iter()
+                .find(|application| application.id == application_id)
+                .context("application no longer exists")?;
+            let id = managed_appimage_registration_id(application)
+                .context("application is not a managed AppImage")?;
+            let registration = RegistrationStore::discover()?.load(id)?;
+            extract_and_launch(&registration.target_path, no_sandbox)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.hide_context(),
+            Err(error) => self.show_operation_error("Could not extract and run AppImage", error),
+        }
+    }
+
+    fn delete_application_registration(&mut self, application_id: &str) {
+        let result = (|| -> Result<()> {
+            let application = self
+                .applications
+                .iter()
+                .find(|application| application.id == application_id)
+                .context("application no longer exists")?;
+            let id = managed_appimage_registration_id(application)
+                .context("application is not a managed AppImage")?;
+            RegistrationStore::discover()?.remove_applications(id)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(error) = self.set_application_pinned(application_id, false) {
+                    eprintln!(
+                        "buzzardos-shell: clearing removed application pin failed: {error:#}"
+                    );
+                }
+                self.refresh_applications_now();
+                self.hide_context();
+            }
+            Err(error) => self.show_operation_error("Could not delete from Applications", error),
+        }
+    }
+
+    fn refresh_applications_now(&mut self) {
+        if let Ok(applications) = scan_applications() {
+            self.application_icons = load_application_icons(&applications);
+            self.applications = applications;
+            self.clamp_menu_scroll();
+            if self.menu_open && self.menu_kind == MenuKind::Applications {
+                self.apply_applications_menu_geometry();
+            }
+            self.dirty = true;
         }
     }
 
@@ -2346,6 +3172,42 @@ impl Shell {
             }
             return;
         }
+        if self.menu_open
+            && self.menu_kind == MenuKind::Applications
+            && !self.context_state.is_visible()
+        {
+            match event.keysym {
+                Keysym::BackSpace | Keysym::Delete => {
+                    self.application_search.pop();
+                    self.menu_scroll = 0;
+                    self.apply_applications_menu_geometry();
+                    self.dirty = true;
+                }
+                Keysym::Return | Keysym::KP_Enter => {
+                    if let Some(application) = self.filtered_applications().first().cloned() {
+                        let result = self.launch_application_here(application);
+                        self.hide_menu();
+                        if let Err(error) = result {
+                            self.show_operation_error("Could not open application", error);
+                        }
+                    }
+                }
+                _ => {
+                    if !self.modifiers.ctrl
+                        && !self.modifiers.alt
+                        && !self.modifiers.logo
+                        && let Some(text) = event.utf8
+                        && !text.chars().any(char::is_control)
+                    {
+                        self.application_search.push_str(&text);
+                        self.menu_scroll = 0;
+                        self.apply_applications_menu_geometry();
+                        self.dirty = true;
+                    }
+                }
+            }
+            return;
+        }
         if self.keyboard_focus != Some(ShellSurface::Desktop) {
             return;
         }
@@ -2369,22 +3231,35 @@ impl Shell {
     fn activate(&mut self, action: ShellAction) {
         match action {
             ShellAction::ToggleApplications => self.toggle_menu(),
+            ShellAction::FocusApplicationSearch => {
+                self.application_search_focused = true;
+                self.menu
+                    .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+                self.menu.commit();
+                self.dirty = true;
+            }
             ShellAction::OpenFiles => {
-                if let Some(home) = std::env::var_os("HOME") {
-                    spawn("thunar", [home]);
+                let result = if let Some(home) = std::env::var_os("HOME") {
+                    self.launch_program_here("thunar", "thunar", [home])
                 } else {
-                    eprintln!("wildbuzzard-shell: HOME is unavailable; Files was not opened");
-                }
+                    Err(anyhow::anyhow!("HOME is unavailable"))
+                };
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not open Files", error);
+                }
             }
             ShellAction::OpenShared => {
-                spawn("thunar", ["/shared"]);
+                let result = self.launch_program_here("thunar", "thunar", ["/shared"]);
                 self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not open Shared", error);
+                }
             }
             ShellAction::OpenDesktopItem(path, kind) => {
-                if let Err(error) = open_desktop_item(&path, kind) {
+                if let Err(error) = self.open_desktop_item_here(&path, kind) {
                     eprintln!(
-                        "wildbuzzard-shell: opening desktop item {} failed: {error:#}",
+                        "buzzardos-shell: opening desktop item {} failed: {error:#}",
                         path.display()
                     );
                 }
@@ -2395,8 +3270,14 @@ impl Shell {
                     .applications
                     .iter()
                     .find(|application| application.id == id)
+                    .cloned()
                 {
-                    launch_application(application);
+                    let result = self.launch_application_here(application);
+                    self.hide_menu();
+                    if let Err(error) = result {
+                        self.show_operation_error("Could not open application", error);
+                    }
+                    return;
                 }
                 self.hide_menu();
             }
@@ -2408,27 +3289,33 @@ impl Shell {
                     .cloned()
                     && let Err(error) = add_application_desktop_shortcut(&application)
                 {
-                    eprintln!("wildbuzzard-shell: add desktop shortcut failed: {error:#}");
+                    eprintln!("buzzardos-shell: add desktop shortcut failed: {error:#}");
                 }
                 let _ = self.desktop_model.rescan();
                 self.desktop_model.show_first_page();
                 let _ = self.rebuild_desktop_targets();
                 self.hide_context();
             }
-            ShellAction::RemoveApplicationDesktopShortcut(id) => {
-                if let Some(application) = self
-                    .applications
-                    .iter()
-                    .find(|application| application.id == id)
-                    .cloned()
-                    && let Err(error) = remove_application_desktop_shortcut(&application)
-                {
-                    eprintln!("wildbuzzard-shell: remove desktop shortcut failed: {error:#}");
-                }
-                let _ = self.desktop_model.rescan();
-                let _ = self.rebuild_desktop_targets();
-                self.hide_context();
+            ShellAction::ExtractApplication(id) => self.extract_registered_application(&id, false),
+            ShellAction::ExtractApplicationNoSandbox(id) => {
+                self.extract_registered_application(&id, true)
             }
+            ShellAction::PinApplication(id) => {
+                if let Err(error) = self.set_application_pinned(&id, true) {
+                    self.show_operation_error("Could not pin application", error);
+                } else {
+                    self.hide_context();
+                }
+            }
+            ShellAction::UnpinApplication(id) => {
+                if let Err(error) = self.set_application_pinned(&id, false) {
+                    self.show_operation_error("Could not unpin application", error);
+                } else {
+                    self.hide_context();
+                }
+            }
+            ShellAction::RenameApplication(id) => self.begin_application_rename(&id),
+            ShellAction::DeleteApplication(id) => self.delete_application_registration(&id),
             ShellAction::DesktopOpenSelection => self.open_selection(),
             ShellAction::DesktopCut => self.copy_selection_to_clipboard(ClipboardOperation::Cut),
             ShellAction::DesktopCopy => self.copy_selection_to_clipboard(ClipboardOperation::Copy),
@@ -2448,12 +3335,7 @@ impl Shell {
                     self.dirty = true;
                 }
             }
-            ShellAction::DesktopAddToApplications => {
-                self.set_appimage_application_registration(true)
-            }
-            ShellAction::DesktopRemoveFromApplications => {
-                self.set_appimage_application_registration(false)
-            }
+            ShellAction::DesktopAddToApplications => self.add_selected_appimage_to_applications(),
             ShellAction::DesktopEditConfirm => self.commit_edit(),
             ShellAction::DesktopDeleteConfirm => self.confirm_delete(),
             ShellAction::DesktopCollisionReplace => {
@@ -2473,7 +3355,7 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::focus(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: focus failed: {error:#}");
+                    eprintln!("buzzardos-shell: focus failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2481,7 +3363,7 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::bring_into_view(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: bring into view failed: {error:#}");
+                    eprintln!("buzzardos-shell: bring into view failed: {error:#}");
                 }
                 self.hide_menu();
             }
@@ -2489,14 +3371,14 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::minimize(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: minimize failed: {error:#}");
+                    eprintln!("buzzardos-shell: minimize failed: {error:#}");
                 }
                 self.hide_menu();
             }
             ShellAction::ToggleMaximizeWindow(id) => {
                 if let Some(toplevel) = self.exact_toplevels.get(&id) {
                     if let Err(error) = sway_ipc::toggle_maximize(&toplevel.identifier) {
-                        eprintln!("wildbuzzard-shell: maximize/restore failed: {error:#}");
+                        eprintln!("buzzardos-shell: maximize/restore failed: {error:#}");
                     }
                 }
                 self.hide_menu();
@@ -2505,29 +3387,89 @@ impl Shell {
                 if let Some(toplevel) = self.exact_toplevels.get(&id)
                     && let Err(error) = sway_ipc::close(&toplevel.identifier)
                 {
-                    eprintln!("wildbuzzard-shell: close failed: {error:#}");
+                    eprintln!("buzzardos-shell: close failed: {error:#}");
                 }
                 self.hide_menu();
             }
+            ShellAction::MoveWindowToWorkspace {
+                window_id,
+                workspace_index,
+            } => {
+                let target = workspace_name(workspace_index);
+                if workspace_index > 0
+                    && let Err(error) = sway_ipc::ensure_workspace(workspace_index)
+                {
+                    eprintln!("buzzardos-shell: creating {target} failed: {error:#}");
+                } else if let Some(toplevel) = self.exact_toplevels.get(&window_id)
+                    && let Err(error) =
+                        sway_ipc::move_window_to_workspace(&toplevel.identifier, &target, false)
+                {
+                    eprintln!("buzzardos-shell: moving window to {target} failed: {error:#}");
+                }
+                self.hide_menu();
+                self.refresh_window_states();
+            }
+            ShellAction::SwitchWorkspace(index) => {
+                let name = workspace_name(index);
+                let result = if index == 0 {
+                    sway_ipc::ensure_desktop_workspace()
+                } else {
+                    sway_ipc::ensure_workspace(index).map(|_| ())
+                }
+                .and_then(|()| sway_ipc::switch_workspace(&name));
+                self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error(&format!("Could not open {name}"), error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
+                self.refresh_window_states();
+            }
+            ShellAction::CreateWorkspace => {
+                let index = next_manual_workspace(&self.workspace_tabs);
+                let name = workspace_name(index);
+                let result = sway_ipc::ensure_workspace(index)
+                    .and_then(|_| sway_ipc::switch_workspace(&name))
+                    .with_context(|| format!("creating and presenting {name}"));
+                self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not create workspace", error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
+                self.refresh_window_states();
+            }
+            ShellAction::CloseWorkspace(index) => {
+                let name = workspace_name(index);
+                let result = sway_ipc::close_workspace(index)
+                    .with_context(|| format!("closing {name} and moving its windows to Desktop"));
+                self.hide_menu();
+                if let Err(error) = result {
+                    self.show_operation_error("Could not close workspace", error);
+                }
+                self.workspace_refresh_retry_after = Some(Instant::now());
+                self.refresh_window_states();
+            }
             ShellAction::TaskbarPrevious => {
-                self.task_page = self.task_page.saturating_sub(1);
+                self.task_offset = self.task_offset.saturating_sub(TASK_PAGE_STEP);
                 self.dirty = true;
             }
             ShellAction::TaskbarNext => {
-                self.task_page = self.task_page.saturating_add(1);
+                self.task_offset =
+                    self.task_offset
+                        .saturating_add(TASK_PAGE_STEP)
+                        .min(taskbar_max_offset(
+                            self.panel_size.0,
+                            self.windows().len(),
+                            self.capped_task_buttons,
+                        ));
                 self.dirty = true;
             }
             ShellAction::ShowDesktop => {
                 if let Err(error) = sway_ipc::minimize_all_visible() {
-                    eprintln!("wildbuzzard-shell: show desktop failed: {error:#}");
+                    eprintln!("buzzardos-shell: show desktop failed: {error:#}");
                 }
                 self.hide_menu();
             }
             ShellAction::CloseApplicationsMenu => self.hide_menu(),
-            ShellAction::ShutdownMachine => {
-                spawn("sudo", ["-n", "systemctl", "poweroff"]);
-                self.hide_menu();
-            }
         }
     }
 
@@ -2538,27 +3480,80 @@ impl Shell {
         y: f64,
     ) -> Option<HitTarget> {
         if surface == self.panel.wl_surface() {
-            panel_targets(self.panel_size.0, &self.windows(), self.task_page)
-                .into_iter()
-                .find(|target| target.rect.contains(x, y))
+            panel_targets(
+                self.panel_size.0,
+                &self.windows(),
+                self.task_offset,
+                self.capped_task_buttons,
+            )
+            .into_iter()
+            .find(|target| target.rect.contains(x, y))
         } else if surface == self.menu.wl_surface() && self.menu_open {
             match self.menu_kind {
                 MenuKind::Applications => {
-                    std::iter::once(applications_menu_close_target(self.menu_size.0))
+                    let applications = self.filtered_applications();
+                    let content_size = self.preferred_menu_size();
+                    let content_y = f64::from(
+                        i32::try_from(self.menu_size.1.saturating_sub(content_size.1))
+                            .unwrap_or_default(),
+                    );
+                    if x < 0.0
+                        || y < content_y
+                        || x >= f64::from(content_size.0)
+                        || y >= content_y + f64::from(content_size.1)
+                    {
+                        return None;
+                    }
+                    let local_y = y - content_y;
+                    std::iter::once(applications_menu_close_target(content_size.0))
+                        .chain(std::iter::once(applications_menu_search_target(
+                            content_size.0,
+                            content_size.1,
+                        )))
                         .chain(menu_targets(
-                            self.menu_size.0,
-                            self.menu_size.1,
-                            &self.applications,
+                            content_size.0,
+                            content_size.1,
+                            &applications,
                             self.menu_scroll,
                         ))
-                        .find(|target| target.rect.contains(x, y))
+                        .find(|target| target.rect.contains(x, local_y))
                 }
-                MenuKind::Window(id) => self.exact_toplevels.get(&id).and_then(|window| {
-                    window_menu_targets(&window.window)
+                MenuKind::Window(id) => {
+                    if self.window_menu_pending_pointer {
+                        return None;
+                    }
+                    let local_x = x - f64::from(self.menu_origin.0);
+                    let local_y = y - f64::from(self.menu_origin.1);
+                    let menu_height = self
+                        .exact_toplevels
+                        .get(&id)
+                        .map(|window| window_menu_height(&window.window, &self.workspace_tabs))
+                        .unwrap_or(WORKSPACE_MENU_HEIGHT);
+                    if local_x < 0.0
+                        || local_y < 0.0
+                        || local_x >= f64::from(WINDOW_MENU_WIDTH)
+                        || local_y >= f64::from(menu_height)
+                    {
+                        return None;
+                    }
+                    self.exact_toplevels.get(&id).and_then(|window| {
+                        window_menu_targets(&window.window, &self.workspace_tabs)
+                            .into_iter()
+                            .find(|target| target.rect.contains(local_x, local_y))
+                    })
+                }
+                MenuKind::Workspace(index) => {
+                    let local_x = x - f64::from(self.menu_origin.0);
+                    let local_y = y - f64::from(self.menu_origin.1);
+                    workspace_menu_targets(index)
                         .into_iter()
-                        .find(|target| target.rect.contains(x, y))
-                }),
+                        .find(|target| target.rect.contains(local_x, local_y))
+                }
             }
+        } else if surface == self.top_bar.wl_surface() {
+            top_bar_targets(self.top_bar_size.0, &self.workspace_tabs)
+                .into_iter()
+                .find(|target| target.rect.contains(x, y))
         } else if surface == self.desktop.wl_surface() {
             self.desktop_hit_targets
                 .iter()
@@ -2581,6 +3576,8 @@ impl Shell {
         let target = self.target_at_surface(surface, x, y);
         if let Some(target) = target {
             self.activate(target.action);
+        } else if surface == self.menu.wl_surface() && self.menu_open {
+            self.hide_menu();
         }
     }
 
@@ -2690,7 +3687,7 @@ impl Shell {
                 if double_click {
                     self.last_desktop_click = None;
                     if let Some(kind) = self.selected_item_kind(&path)
-                        && let Err(error) = open_desktop_item(&path, kind)
+                        && let Err(error) = self.open_desktop_item_here(&path, kind)
                     {
                         self.show_operation_error("Could not open item", error);
                     }
@@ -2726,9 +3723,14 @@ impl Shell {
     }
 
     fn secondary_click_panel(&mut self, x: f64, y: f64) {
-        let target = panel_targets(self.panel_size.0, &self.windows(), self.task_page)
-            .into_iter()
-            .find(|target| target.rect.contains(x, y));
+        let target = panel_targets(
+            self.panel_size.0,
+            &self.windows(),
+            self.task_offset,
+            self.capped_task_buttons,
+        )
+        .into_iter()
+        .find(|target| target.rect.contains(x, y));
         if let Some(HitTarget {
             action: ShellAction::ActivateWindow(id),
             ..
@@ -2747,9 +3749,21 @@ impl Shell {
             ..
         }) = target
         {
-            self.show_application_context(id, x, y);
+            self.show_application_context(id, x, y - f64::from(self.menu_origin.1));
         } else {
-            self.hide_context();
+            self.hide_menu();
+        }
+    }
+
+    fn secondary_click_top_bar(&mut self, x: f64, y: f64) {
+        if let Some(HitTarget {
+            action: ShellAction::SwitchWorkspace(index),
+            ..
+        }) = self.target_at_surface(self.top_bar.wl_surface(), x, y)
+        {
+            self.show_workspace_menu(index, x);
+        } else {
+            self.hide_menu();
         }
     }
 
@@ -2769,7 +3783,7 @@ impl Shell {
     fn scroll_desktop(&mut self, amount: f64) {
         if self.desktop_model.scroll_page(amount) {
             if let Err(error) = self.rebuild_desktop_targets() {
-                eprintln!("wildbuzzard-shell: changing desktop page failed: {error:#}");
+                eprintln!("buzzardos-shell: changing desktop page failed: {error:#}");
             }
             self.dirty = true;
         }
@@ -2796,9 +3810,13 @@ impl Shell {
         if self.desktop_configured {
             self.draw_desktop()?;
         }
+        if self.top_bar_configured {
+            self.draw_top_bar()?;
+        }
         if self.panel_configured {
             self.draw_panel()?;
         }
+        self.draw_auxiliary_outputs()?;
         if self.menu_configured {
             self.draw_menu()?;
         }
@@ -2854,6 +3872,11 @@ impl Shell {
                 self.scale_120,
                 theme,
                 match &target.action {
+                    ShellAction::OpenFiles => self.desktop_theme_icons.get("user-home"),
+                    ShellAction::OpenShared => self.desktop_theme_icons.get("folder-publicshare"),
+                    ShellAction::OpenDesktopItem(_, DesktopItemKind::Directory) => {
+                        self.desktop_theme_icons.get("folder")
+                    }
                     ShellAction::OpenDesktopItem(path, DesktopItemKind::Launcher) => {
                         self.desktop_icons.get(path)
                     }
@@ -2886,10 +3909,104 @@ impl Shell {
     }
 
     fn draw_panel(&mut self) -> Result<()> {
-        let theme = self.palette;
-        let (logical_width, logical_height) = nonzero_size(self.panel_size);
-        let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let windows = self.windows();
+        draw_panel_frame(
+            &mut self.pool,
+            &self.panel,
+            &self.viewports[2],
+            self.font.as_ref(),
+            self.palette,
+            self.scale_120,
+            self.panel_size,
+            &windows,
+            self.task_offset,
+            self.capped_task_buttons,
+            self.hovered.as_ref(),
+            self.menu_open && self.menu_kind == MenuKind::Applications,
+        )
+    }
+
+    fn draw_auxiliary_outputs(&mut self) -> Result<()> {
+        let render_state = self
+            .auxiliary_outputs
+            .iter()
+            .map(|auxiliary| {
+                (
+                    auxiliary.name.clone(),
+                    auxiliary.desktop.clone(),
+                    auxiliary.panel.clone(),
+                    auxiliary.viewports[0].clone(),
+                    auxiliary.viewports[1].clone(),
+                    auxiliary.desktop_size,
+                    auxiliary.panel_size,
+                    auxiliary.desktop_configured,
+                    auxiliary.panel_configured,
+                    auxiliary.task_offset,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (
+            name,
+            desktop,
+            panel,
+            desktop_viewport,
+            panel_viewport,
+            desktop_size,
+            panel_size,
+            desktop_configured,
+            panel_configured,
+            task_offset,
+        ) in render_state
+        {
+            if desktop_configured {
+                let (logical_width, logical_height) = nonzero_size(desktop_size);
+                let (width, height) =
+                    physical_size((logical_width, logical_height), self.scale_120);
+                let (buffer, canvas) = self
+                    .pool
+                    .create_buffer(
+                        width as i32,
+                        height as i32,
+                        width as i32 * 4,
+                        wl_shm::Format::Argb8888,
+                    )
+                    .context("allocating auxiliary desktop frame")?;
+                clear(canvas, self.desktop_background);
+                attach(
+                    &desktop,
+                    &desktop_viewport,
+                    buffer,
+                    width,
+                    height,
+                    logical_width,
+                    logical_height,
+                )?;
+            }
+            if panel_configured {
+                let windows = self.windows_for_output(&name);
+                draw_panel_frame(
+                    &mut self.pool,
+                    &panel,
+                    &panel_viewport,
+                    self.font.as_ref(),
+                    self.palette,
+                    self.scale_120,
+                    panel_size,
+                    &windows,
+                    task_offset,
+                    self.capped_task_buttons,
+                    None,
+                    false,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_top_bar(&mut self) -> Result<()> {
+        let theme = self.palette;
+        let (logical_width, logical_height) = nonzero_size(self.top_bar_size);
+        let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let (buffer, canvas) = self
             .pool
             .create_buffer(
@@ -2898,143 +4015,68 @@ impl Shell {
                 width as i32 * 4,
                 wl_shm::Format::Argb8888,
             )
-            .context("allocating panel frame")?;
-        clear(canvas, theme.canvas.rgba());
-        fill_rect(
-            canvas,
-            width,
-            height,
-            scale_rect(
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: logical_width as i32,
-                    height: 1,
-                },
-                self.scale_120,
-            ),
-            theme.border.rgba(),
-        );
-        for target in panel_targets(logical_width, &windows, self.task_page) {
+            .context("allocating workspace bar frame")?;
+        // The workspace selector is one continuous bar. Keep the unused
+        // portion on the same panel/menu colour as its tabs instead of
+        // exposing the darker desktop canvas after the final `+` button.
+        clear(canvas, theme.menu.rgba());
+        for target in top_bar_targets(logical_width, &self.workspace_tabs) {
             let hovered = self.hovered.as_ref() == Some(&target.action);
-            let (color, label, active) = match target.action {
-                ShellAction::ToggleApplications => {
-                    let active = self.menu_open && self.menu_kind == MenuKind::Applications;
-                    (
-                        if active {
-                            theme.selection.rgba()
-                        } else if hovered {
-                            theme.hover.rgba()
-                        } else {
-                            theme.surface.rgba()
-                        },
-                        "Applications".to_owned(),
-                        active,
-                    )
-                }
-                ShellAction::OpenFiles => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "Files".to_owned(),
-                    false,
-                ),
-                ShellAction::OpenShared => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "Share".to_owned(),
-                    false,
-                ),
-                ShellAction::ActivateWindow(id) => {
-                    let window = windows.iter().find(|window| window.id == id);
-                    let focused = window.is_some_and(|window| window.focused);
-                    let title = window
-                        .map(|window| elide(&window.title, 25))
-                        .unwrap_or_else(|| target.label.clone());
-                    (
-                        if focused {
-                            theme.raised.rgba()
-                        } else {
-                            if hovered {
-                                theme.hover.rgba()
-                            } else {
-                                theme.surface.rgba()
-                            }
-                        },
-                        title,
-                        focused,
-                    )
-                }
-                ShellAction::TaskbarPrevious => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "‹".to_owned(),
-                    false,
-                ),
-                ShellAction::TaskbarNext => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    "›".to_owned(),
-                    false,
-                ),
-                ShellAction::ShowDesktop => (
-                    if hovered {
-                        theme.hover.rgba()
-                    } else {
-                        theme.surface.rgba()
-                    },
-                    String::new(),
-                    false,
-                ),
-                _ => continue,
+            let active = match target.action {
+                ShellAction::SwitchWorkspace(index) => self
+                    .workspace_tabs
+                    .iter()
+                    .any(|workspace| workspace.index == index && workspace.active),
+                _ => false,
             };
-            let button_rect = scale_rect(inset(target.rect, 2), self.scale_120);
-            fill_rect(canvas, width, height, button_rect, color);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(target.rect, self.scale_120),
+                if active {
+                    theme.raised.rgba()
+                } else if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+            );
             if active {
+                let rect = scale_rect(target.rect, self.scale_120);
                 fill_rect(
                     canvas,
                     width,
                     height,
                     Rect {
-                        x: button_rect.x,
-                        y: button_rect.y
-                            + button_rect
-                                .height
-                                .saturating_sub(scale_coord(2, self.scale_120)),
-                        width: button_rect.width,
-                        height: scale_coord(2, self.scale_120),
+                        x: rect.x,
+                        y: rect.y.saturating_add(
+                            rect.height.saturating_sub(scale_coord(2, self.scale_120)),
+                        ),
+                        width: rect.width,
+                        height: scale_coord(2, self.scale_120).max(1),
                     },
                     theme.focus.rgba(),
                 );
             }
+            let label = if matches!(target.action, ShellAction::CreateWorkspace) {
+                "+"
+            } else {
+                target.label.as_str()
+            };
             draw_text_centered(
                 canvas,
                 width,
                 height,
                 self.font.as_ref(),
-                &label,
+                label,
                 scale_rect(target.rect, self.scale_120),
-                scale_font(13.0, self.scale_120),
-                if color == theme.selection.rgba() {
-                    theme.selected_text.rgba()
-                } else {
-                    theme.text.rgba()
-                },
+                scale_font(12.0, self.scale_120),
+                theme.text.rgba(),
             );
         }
         attach(
-            &self.panel,
+            &self.top_bar,
             &self.viewports[1],
             buffer,
             width,
@@ -3047,21 +4089,48 @@ impl Shell {
 
     fn draw_menu(&mut self) -> Result<()> {
         let theme = self.palette;
-        let (logical_width, logical_height) = nonzero_size(self.menu_size);
+        let (surface_logical_width, surface_logical_height) = nonzero_size(self.menu_size);
+        let (logical_width, logical_height) = if self.menu_open {
+            match self.menu_kind {
+                MenuKind::Applications => nonzero_size(self.preferred_menu_size()),
+                MenuKind::Window(id) => (
+                    WINDOW_MENU_WIDTH,
+                    self.exact_toplevels
+                        .get(&id)
+                        .map(|toplevel| window_menu_height(&toplevel.window, &self.workspace_tabs))
+                        .unwrap_or(WORKSPACE_MENU_HEIGHT),
+                ),
+                MenuKind::Workspace(_) => (WORKSPACE_MENU_WIDTH, WORKSPACE_MENU_HEIGHT),
+            }
+        } else {
+            (surface_logical_width, surface_logical_height)
+        };
+        let (surface_width, surface_height) = physical_size(
+            (surface_logical_width, surface_logical_height),
+            self.scale_120,
+        );
         let (width, height) = physical_size((logical_width, logical_height), self.scale_120);
         let visible_menu_rows = self.visible_menu_rows();
-        let (buffer, canvas) = self
+        let filtered_applications = self.filtered_applications();
+        let (buffer, surface_canvas) = self
             .pool
             .create_buffer(
-                width as i32,
-                height as i32,
-                width as i32 * 4,
+                surface_width as i32,
+                surface_height as i32,
+                surface_width as i32 * 4,
                 wl_shm::Format::Argb8888,
             )
             .context("allocating applications menu frame")?;
+        clear(surface_canvas, [0, 0, 0, 0]);
+        let content_len = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        let mut content_canvas = vec![0_u8; content_len];
+        let canvas = content_canvas.as_mut_slice();
         clear(
             canvas,
-            if self.menu_open {
+            if self.menu_open && !self.window_menu_pending_pointer {
                 theme.menu.rgba()
             } else {
                 [0, 0, 0, 0]
@@ -3151,13 +4220,83 @@ impl Shell {
                 scale_font(10.0, self.scale_120),
                 theme.text_muted.rgba(),
             );
+            let search_rect = applications_menu_search_target(logical_width, logical_height).rect;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(search_rect, self.scale_120),
+                theme.raised.rgba(),
+            );
+            draw_outline(
+                canvas,
+                width,
+                height,
+                scale_rect(search_rect, self.scale_120),
+                scale_coord(1, self.scale_120),
+                if self.application_search_focused {
+                    theme.focus.rgba()
+                } else {
+                    theme.border.rgba()
+                },
+            );
+            draw_text(
+                canvas,
+                width,
+                height,
+                self.font.as_ref(),
+                if self.application_search.is_empty() {
+                    "Search applications"
+                } else {
+                    &self.application_search
+                },
+                scale_coord(search_rect.x + 10, self.scale_120),
+                scale_coord(search_rect.y + 10, self.scale_120),
+                scale_font(13.0, self.scale_120),
+                if self.application_search.is_empty() {
+                    theme.text_muted.rgba()
+                } else {
+                    theme.text.rgba()
+                },
+            );
+            if self.application_search_focused {
+                let shown = if self.application_search.is_empty() {
+                    ""
+                } else {
+                    &self.application_search
+                };
+                let caret_x = search_rect
+                    .x
+                    .saturating_add(10)
+                    .saturating_add(text_width(self.font.as_ref(), shown, 13.0).round() as i32)
+                    .min(
+                        search_rect
+                            .x
+                            .saturating_add(search_rect.width)
+                            .saturating_sub(8),
+                    );
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(
+                        Rect {
+                            x: caret_x,
+                            y: search_rect.y + 8,
+                            width: 1,
+                            height: search_rect.height.saturating_sub(16),
+                        },
+                        self.scale_120,
+                    ),
+                    theme.text.rgba(),
+                );
+            }
             for target in menu_targets(
                 logical_width,
                 logical_height,
-                &self.applications,
+                &filtered_applications,
                 self.menu_scroll,
             ) {
-                let footer = matches!(target.action, ShellAction::ShutdownMachine);
                 let hovered = self.hovered.as_ref() == Some(&target.action);
                 fill_rect(
                     canvas,
@@ -3165,11 +4304,7 @@ impl Shell {
                     height,
                     scale_rect(inset(target.rect, 2), self.scale_120),
                     if hovered {
-                        if footer {
-                            theme.destructive.rgba()
-                        } else {
-                            theme.hover.rgba()
-                        }
+                        theme.hover.rgba()
                     } else {
                         theme.menu.rgba()
                     },
@@ -3197,11 +4332,12 @@ impl Shell {
                 } else {
                     draw_menu_icon(canvas, width, height, icon_rect, &target.action, theme);
                 }
-                let update_badge = match &target.action {
-                    ShellAction::LaunchApplication(id) if id == SETTINGS_DESKTOP_ENTRY_ID => {
-                        self.update_tracker.badge_count()
+                let update_badge: Option<usize> = None;
+                let display_label = match &target.action {
+                    ShellAction::LaunchApplication(id) if self.pinned_applications.contains(id) => {
+                        format!("★ {}", target.label)
                     }
-                    _ => None,
+                    _ => target.label.clone(),
                 };
                 draw_text(
                     canvas,
@@ -3210,7 +4346,7 @@ impl Shell {
                     self.font.as_ref(),
                     &elide_to_width(
                         self.font.as_ref(),
-                        &target.label,
+                        &display_label,
                         13.0,
                         target.rect.width.saturating_sub(if update_badge.is_some() {
                             96
@@ -3266,7 +4402,7 @@ impl Shell {
                     theme.text_secondary.rgba(),
                 );
             }
-            if self.menu_scroll + visible_menu_rows < self.applications.len() {
+            if self.menu_scroll + visible_menu_rows < filtered_applications.len() {
                 draw_text(
                     canvas,
                     width,
@@ -3280,6 +4416,7 @@ impl Shell {
                 );
             }
         } else if self.menu_open
+            && !self.window_menu_pending_pointer
             && let MenuKind::Window(id) = self.menu_kind
             && let Some(toplevel) = self.exact_toplevels.get(&id)
         {
@@ -3324,7 +4461,7 @@ impl Shell {
                 scale_font(14.0, self.scale_120),
                 theme.text.rgba(),
             );
-            for target in window_menu_targets(&toplevel.window) {
+            for target in window_menu_targets(&toplevel.window, &self.workspace_tabs) {
                 let hovered = self.hovered.as_ref() == Some(&target.action);
                 fill_rect(
                     canvas,
@@ -3353,15 +4490,115 @@ impl Shell {
                     theme.text.rgba(),
                 );
             }
+        } else if self.menu_open
+            && let MenuKind::Workspace(index) = self.menu_kind
+        {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: logical_width as i32,
+                        height: 44,
+                    },
+                    self.scale_120,
+                ),
+                theme.raised.rgba(),
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                scale_rect(
+                    Rect {
+                        x: 0,
+                        y: 42,
+                        width: logical_width as i32,
+                        height: 2,
+                    },
+                    self.scale_120,
+                ),
+                theme.selection.rgba(),
+            );
+            draw_text(
+                canvas,
+                width,
+                height,
+                self.font.as_ref(),
+                &workspace_name(index),
+                scale_coord(14, self.scale_120),
+                scale_coord(13, self.scale_120),
+                scale_font(14.0, self.scale_120),
+                theme.text.rgba(),
+            );
+            for target in workspace_menu_targets(index) {
+                let hovered = self.hovered.as_ref() == Some(&target.action);
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(inset(target.rect, 2), self.scale_120),
+                    if hovered {
+                        theme.destructive.rgba()
+                    } else {
+                        theme.menu.rgba()
+                    },
+                );
+                draw_text(
+                    canvas,
+                    width,
+                    height,
+                    self.font.as_ref(),
+                    &target.label,
+                    scale_coord(target.rect.x + 12, self.scale_120),
+                    scale_coord(target.rect.y + 10, self.scale_120),
+                    scale_font(13.0, self.scale_120),
+                    theme.text.rgba(),
+                );
+            }
+        }
+        let destination_x = usize::try_from(
+            scale_coord(self.menu_origin.0, self.scale_120)
+                .max(0)
+                .min(i32::try_from(surface_width.saturating_sub(width)).unwrap_or(i32::MAX)),
+        )
+        .unwrap_or_default();
+        let destination_y = usize::try_from(
+            scale_coord(self.menu_origin.1, self.scale_120)
+                .max(0)
+                .min(i32::try_from(surface_height.saturating_sub(height)).unwrap_or(i32::MAX)),
+        )
+        .unwrap_or_default();
+        let row_bytes = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        let surface_stride = usize::try_from(surface_width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4);
+        for row in 0..usize::try_from(height).unwrap_or_default() {
+            let source_start = row.saturating_mul(row_bytes);
+            let source_end = source_start.saturating_add(row_bytes);
+            let destination_start = destination_y
+                .saturating_add(row)
+                .saturating_mul(surface_stride)
+                .saturating_add(destination_x.saturating_mul(4));
+            let destination_end = destination_start.saturating_add(row_bytes);
+            if source_end <= content_canvas.len() && destination_end <= surface_canvas.len() {
+                surface_canvas[destination_start..destination_end]
+                    .copy_from_slice(&content_canvas[source_start..source_end]);
+            }
         }
         attach(
             &self.menu,
-            &self.viewports[2],
+            &self.viewports[3],
             buffer,
-            width,
-            height,
-            logical_width,
-            logical_height,
+            surface_width,
+            surface_height,
+            surface_logical_width,
+            surface_logical_height,
         )?;
         Ok(())
     }
@@ -3393,6 +4630,7 @@ impl Shell {
                 let title = match dialog.operation {
                     EditOperation::NewFolder => "New Folder",
                     EditOperation::Rename(_) => "Rename Item",
+                    EditOperation::RenameApplication(_) => "Rename Application",
                 };
                 draw_text(
                     canvas,
@@ -3532,7 +4770,7 @@ impl Shell {
         }
         attach(
             &self.context,
-            &self.viewports[3],
+            &self.viewports[4],
             buffer,
             width,
             height,
@@ -3612,14 +4850,12 @@ impl Shell {
                         .ok()
                         .flatten()
                         .is_some_and(|registration| registration.applications_launcher);
-                    operations.push(if registered {
-                        (
-                            "Remove from Applications",
-                            ShellAction::DesktopRemoveFromApplications,
-                        )
-                    } else {
-                        ("Add to Applications", ShellAction::DesktopAddToApplications)
-                    });
+                    if !registered {
+                        operations.push((
+                            "Add AppImage to Applications",
+                            ShellAction::DesktopAddToApplications,
+                        ));
+                    }
                 }
                 for (operation_index, (label, action)) in operations.into_iter().enumerate() {
                     let operation_id = NodeId(
@@ -3719,7 +4955,53 @@ impl Shell {
                 focus = id;
             }
         }
-        let panel_targets = panel_targets(self.panel_size.0, &windows, self.task_page);
+        for (index, target) in top_bar_targets(self.top_bar_size.0, &self.workspace_tabs)
+            .into_iter()
+            .enumerate()
+        {
+            add_accessible_target(
+                &mut nodes,
+                &mut children,
+                &mut targets,
+                NodeId(3_000 + u64::try_from(index).unwrap_or_default()),
+                target,
+                0,
+                0,
+            );
+        }
+        for (index, workspace) in self.workspace_tabs.iter().enumerate() {
+            for (action_index, target) in workspace_menu_targets(workspace.index)
+                .into_iter()
+                .enumerate()
+            {
+                let id = NodeId(
+                    3_500
+                        + u64::try_from(index).unwrap_or_default() * 10
+                        + u64::try_from(action_index).unwrap_or_default(),
+                );
+                let mut node = A11yNode::new(Role::Button);
+                node.set_label(target.label);
+                if self.menu_open && self.menu_kind == MenuKind::Workspace(workspace.index) {
+                    node.set_bounds(a11y_rect(target.rect, menu_x, menu_y));
+                }
+                node.add_action(Action::Click);
+                children.push(id);
+                targets.insert(
+                    id,
+                    AccessibleTarget::Activate {
+                        action: target.action,
+                        menu_index: None,
+                    },
+                );
+                nodes.push((id, node));
+            }
+        }
+        let panel_targets = panel_targets(
+            self.panel_size.0,
+            &windows,
+            self.task_offset,
+            self.capped_task_buttons,
+        );
         if let Some(target) = panel_targets
             .iter()
             .find(|target| matches!(target.action, ShellAction::ToggleApplications))
@@ -3769,7 +5051,10 @@ impl Shell {
                 0,
                 panel_y,
             );
-            for (control_index, target) in window_menu_targets(window).into_iter().enumerate() {
+            for (control_index, target) in window_menu_targets(window, &self.workspace_tabs)
+                .into_iter()
+                .enumerate()
+            {
                 let id = NodeId(
                     30_000
                         + u64::try_from(index).unwrap_or_default() * 10
@@ -3798,30 +5083,53 @@ impl Shell {
         // paging the visible menu.
         let visible_rows = self.visible_menu_rows();
         let mut menu_children = Vec::new();
+        let filtered_applications = self.filtered_applications();
+        let content_size = self.preferred_menu_size();
+        let search_id = NodeId(20_002);
+        let mut search = A11yNode::new(Role::TextInput);
+        search.set_label("Search applications");
+        search.set_value(self.application_search.clone());
+        if applications_menu_open {
+            search.set_bounds(a11y_rect(
+                Rect {
+                    x: 8,
+                    y: i32::try_from(content_size.1)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(APPLICATIONS_MENU_FOOTER_HEIGHT)
+                        .saturating_add(6),
+                    width: i32::try_from(content_size.0)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(16),
+                    height: MENU_ROW_HEIGHT,
+                },
+                menu_x,
+                menu_y,
+            ));
+        }
+        search.add_action(Action::SetValue);
+        search.add_action(Action::ReplaceSelectedText);
+        nodes.push((search_id, search));
+        menu_children.push(search_id);
+        targets.insert(search_id, AccessibleTarget::ApplicationSearch);
         for (index, application) in self.applications.iter().enumerate() {
             let id = NodeId(10_000 + index as u64);
-            let relative_row = i32::try_from(index)
-                .unwrap_or(i32::MAX)
-                .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX));
+            let filtered_index = filtered_applications
+                .iter()
+                .position(|candidate| candidate.id == application.id);
+            let relative_row = filtered_index
+                .map(|index| {
+                    i32::try_from(index)
+                        .unwrap_or(i32::MAX)
+                        .saturating_sub(i32::try_from(self.menu_scroll).unwrap_or(i32::MAX))
+                })
+                .unwrap_or(i32::MAX);
             let mut node = A11yNode::new(Role::MenuItem);
-            node.set_label(if application.id == SETTINGS_DESKTOP_ENTRY_ID {
-                self.update_tracker.badge_count().map_or_else(
-                    || application.name.clone(),
-                    |count| {
-                        format!(
-                            "{}, {} {} available",
-                            application.name,
-                            count,
-                            if count == 1 { "update" } else { "updates" }
-                        )
-                    },
-                )
-            } else {
-                application.name.clone()
-            });
+            node.set_label(application.name.clone());
             if applications_menu_open
-                && index >= self.menu_scroll
-                && index < self.menu_scroll.saturating_add(visible_rows)
+                && filtered_index.is_some_and(|index| {
+                    index >= self.menu_scroll
+                        && index < self.menu_scroll.saturating_add(visible_rows)
+                })
             {
                 node.set_bounds(a11y_rect(
                     Rect {
@@ -3838,7 +5146,7 @@ impl Shell {
                     menu_y,
                 ));
             }
-            node.set_position_in_set(index + 1);
+            node.set_position_in_set(filtered_index.map_or(index + 1, |position| position + 1));
             node.add_action(Action::Click);
             if applications_menu_open {
                 node.add_action(Action::ScrollIntoView);
@@ -3849,66 +5157,27 @@ impl Shell {
                 id,
                 AccessibleTarget::Activate {
                     action: ShellAction::LaunchApplication(application.id.clone()),
-                    menu_index: Some(index),
+                    menu_index: filtered_index,
                 },
             );
 
-            // Expose shortcut management as a direct AT-SPI action for every
+            // Expose shortcut creation as a direct AT-SPI action for every
             // installed application. Agents do not have to open the visual
             // context menu, find a row, or scroll it into view first.
-            let shortcut_exists = application_desktop_shortcut_exists(application);
             let shortcut_id = NodeId(40_000 + index as u64);
-            let shortcut_action = if shortcut_exists {
-                ShellAction::RemoveApplicationDesktopShortcut(application.id.clone())
-            } else {
-                ShellAction::AddApplicationDesktopShortcut(application.id.clone())
-            };
             let mut shortcut = A11yNode::new(Role::Button);
-            shortcut.set_label(format!(
-                "{} Desktop Shortcut for {}",
-                if shortcut_exists { "Remove" } else { "Add" },
-                application.name
-            ));
+            shortcut.set_label(format!("Add {} to Desktop", application.name));
             shortcut.add_action(Action::Click);
             nodes.push((shortcut_id, shortcut));
             menu_children.push(shortcut_id);
             targets.insert(
                 shortcut_id,
                 AccessibleTarget::Activate {
-                    action: shortcut_action,
+                    action: ShellAction::AddApplicationDesktopShortcut(application.id.clone()),
                     menu_index: None,
                 },
             );
         }
-        let shutdown_id = NodeId(20_000);
-        let mut shutdown = A11yNode::new(Role::MenuItem);
-        shutdown.set_label("Shut Down Machine");
-        if applications_menu_open {
-            shutdown.set_bounds(a11y_rect(
-                Rect {
-                    x: 8,
-                    y: i32::try_from(self.menu_size.1)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(44),
-                    width: i32::try_from(self.menu_size.0)
-                        .unwrap_or(i32::MAX)
-                        .saturating_sub(16),
-                    height: MENU_ROW_HEIGHT,
-                },
-                menu_x,
-                menu_y,
-            ));
-        }
-        shutdown.add_action(Action::Click);
-        nodes.push((shutdown_id, shutdown));
-        menu_children.push(shutdown_id);
-        targets.insert(
-            shutdown_id,
-            AccessibleTarget::Activate {
-                action: ShellAction::ShutdownMachine,
-                menu_index: None,
-            },
-        );
         let close_id = NodeId(20_001);
         let close_target = applications_menu_close_target(self.menu_size.0);
         let mut close = A11yNode::new(Role::Button);
@@ -3941,16 +5210,16 @@ impl Shell {
             menu.set_bounds(A11yRect::new(
                 f64::from(menu_x),
                 f64::from(menu_y),
-                f64::from(menu_x) + f64::from(self.menu_size.0),
-                f64::from(menu_y) + f64::from(self.menu_size.1),
+                f64::from(menu_x) + f64::from(content_size.0),
+                f64::from(menu_y) + f64::from(content_size.1),
             ));
         }
         menu.set_children(menu_children);
-        menu.set_size_of_set(self.applications.len());
+        menu.set_size_of_set(filtered_applications.len());
         if applications_menu_open {
             menu.set_scroll_y(self.menu_scroll as f64);
             menu.set_scroll_y_min(0.0);
-            menu.set_scroll_y_max(self.applications.len().saturating_sub(visible_rows) as f64);
+            menu.set_scroll_y_max(filtered_applications.len().saturating_sub(visible_rows) as f64);
             menu.add_action(Action::ScrollDown);
             menu.add_action(Action::ScrollUp);
         }
@@ -4034,6 +5303,7 @@ impl ForeignToplevelListHandler for Shell {
     ) {
         let id = handle.id().protocol_id();
         self.exact_toplevels.remove(&id);
+        self.pending_window_normalization.remove(&id);
         if self.menu_kind == MenuKind::Window(id) {
             self.hide_menu();
         }
@@ -4103,8 +5373,28 @@ impl CompositorHandler for Shell {
 }
 
 impl LayerShellHandler for Shell {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        if layer == &self.desktop
+            || layer == &self.top_bar
+            || layer == &self.panel
+            || layer == &self.menu
+            || layer == &self.context
+        {
+            self.exit = true;
+            return;
+        }
+        if let Some(index) = self
+            .auxiliary_outputs
+            .iter()
+            .position(|auxiliary| layer == &auxiliary.desktop || layer == &auxiliary.panel)
+        {
+            let removed = self.auxiliary_outputs.remove(index);
+            eprintln!(
+                "buzzardos-shell: removed workspace surfaces for {}",
+                removed.name
+            );
+            self.dirty = true;
+        }
     }
 
     fn configure(
@@ -4120,10 +5410,7 @@ impl LayerShellHandler for Shell {
             let desktop_size_changed = self.desktop_size != size;
             self.desktop_size = size;
             self.desktop_configured = true;
-            eprintln!(
-                "wildbuzzard-shell: desktop configured {}x{}",
-                size.0, size.1
-            );
+            eprintln!("buzzardos-shell: desktop configured {}x{}", size.0, size.1);
             if self.menu_open && desktop_size_changed {
                 match self.menu_kind {
                     MenuKind::Applications => {
@@ -4132,16 +5419,32 @@ impl LayerShellHandler for Shell {
                     // A context menu is transient state tied to the old output
                     // geometry. Dismiss it rather than leave it detached from
                     // its titlebar or task button after an output resize.
-                    MenuKind::Window(_) => self.hide_menu(),
+                    MenuKind::Window(_) | MenuKind::Workspace(_) => self.hide_menu(),
                 }
             }
             if desktop_size_changed && let Err(error) = self.rebuild_desktop_targets() {
-                eprintln!("wildbuzzard-shell: desktop reflow failed: {error:#}");
+                eprintln!("buzzardos-shell: desktop reflow failed: {error:#}");
             }
+            if desktop_size_changed {
+                self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
+            }
+        } else if layer == &self.top_bar {
+            self.top_bar_size = size;
+            self.top_bar_configured = true;
+            if let Err(error) = self.set_full_input_region(&self.top_bar, size, "workspace bar") {
+                eprintln!("buzzardos-shell: workspace bar hit region failed: {error:#}");
+            }
+            eprintln!(
+                "buzzardos-shell: workspace bar configured {}x{}",
+                size.0, size.1
+            );
         } else if layer == &self.panel {
             self.panel_size = size;
             self.panel_configured = true;
-            eprintln!("wildbuzzard-shell: panel configured {}x{}", size.0, size.1);
+            if let Err(error) = self.set_full_input_region(&self.panel, size, "taskbar") {
+                eprintln!("buzzardos-shell: taskbar hit region failed: {error:#}");
+            }
+            eprintln!("buzzardos-shell: panel configured {}x{}", size.0, size.1);
         } else if layer == &self.menu {
             self.menu_size = size;
             self.menu_configured = true;
@@ -4151,6 +5454,42 @@ impl LayerShellHandler for Shell {
             self.context_size = size;
             self.context_configured = true;
             let _ = self.set_context_input_region();
+        } else if let Some(auxiliary) = self
+            .auxiliary_outputs
+            .iter_mut()
+            .find(|auxiliary| layer == &auxiliary.desktop || layer == &auxiliary.panel)
+        {
+            let size_changed = if layer == &auxiliary.desktop {
+                auxiliary.desktop_size != size
+            } else {
+                auxiliary.panel_size != size
+            };
+            if layer == &auxiliary.desktop {
+                auxiliary.desktop_size = size;
+                auxiliary.desktop_configured = true;
+            } else {
+                auxiliary.panel_size = size;
+                auxiliary.panel_configured = true;
+                let region = Region::new(&self.compositor);
+                match region {
+                    Ok(region) => {
+                        region.add(
+                            0,
+                            0,
+                            i32::try_from(size.0).unwrap_or(i32::MAX),
+                            i32::try_from(size.1).unwrap_or(i32::MAX),
+                        );
+                        auxiliary.panel.set_input_region(Some(region.wl_region()));
+                        auxiliary.panel.commit();
+                    }
+                    Err(error) => {
+                        eprintln!("buzzardos-shell: auxiliary taskbar hit region failed: {error:#}")
+                    }
+                }
+            }
+            if size_changed {
+                self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
+            }
         }
         self.dirty = true;
     }
@@ -4176,7 +5515,17 @@ impl SeatHandler for Shell {
     ) {
         self.seat.get_or_insert_with(|| seat.clone());
         if capability == Capability::Pointer && self.pointer.is_none() {
-            self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+            let cursor_surface = self.compositor.create_surface(qh);
+            self.pointer = self
+                .seat_state
+                .get_pointer_with_theme(
+                    qh,
+                    &seat,
+                    self.shm.wl_shm(),
+                    cursor_surface,
+                    ThemeSpec::default(),
+                )
+                .ok();
         }
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
@@ -4190,10 +5539,8 @@ impl SeatHandler for Shell {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer
-            && let Some(pointer) = self.pointer.take()
-        {
-            pointer.release();
+        if capability == Capability::Pointer && self.pointer.is_some() {
+            self.pointer.take();
         }
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
@@ -4212,7 +5559,7 @@ impl SeatHandler for Shell {
 impl PointerHandler for Shell {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        connection: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -4220,6 +5567,14 @@ impl PointerHandler for Shell {
         for event in events {
             match event.kind {
                 PointerEventKind::Enter { .. } => {
+                    if let Some(pointer) = self.pointer.as_ref()
+                        && let Err(error) = pointer.set_cursor(connection, CursorIcon::Default)
+                    {
+                        eprintln!("buzzardos-shell: restoring the default pointer: {error}");
+                    }
+                    if event.surface == *self.menu.wl_surface() {
+                        self.position_pending_window_menu(event.position.0);
+                    }
                     self.update_hover(&event.surface, event.position.0, event.position.1);
                 }
                 PointerEventKind::Motion { .. } => {
@@ -4255,6 +5610,11 @@ impl PointerHandler for Shell {
                     if button == BTN_RIGHT && event.surface == *self.panel.wl_surface() =>
                 {
                     self.secondary_click_panel(event.position.0, event.position.1);
+                }
+                PointerEventKind::Press { button, .. }
+                    if button == BTN_RIGHT && event.surface == *self.top_bar.wl_surface() =>
+                {
+                    self.secondary_click_top_bar(event.position.0, event.position.1);
                 }
                 PointerEventKind::Press { button, .. }
                     if button == BTN_RIGHT && event.surface == *self.menu.wl_surface() =>
@@ -4304,6 +5664,8 @@ impl KeyboardHandler for Shell {
     ) {
         self.keyboard_focus = if surface == self.desktop.wl_surface() {
             Some(ShellSurface::Desktop)
+        } else if surface == self.top_bar.wl_surface() {
+            Some(ShellSurface::TopBar)
         } else if surface == self.panel.wl_surface() {
             Some(ShellSurface::Panel)
         } else if surface == self.menu.wl_surface() {
@@ -4328,9 +5690,11 @@ impl KeyboardHandler for Shell {
     ) {
         if self.keyboard_focus.is_some_and(|focused| match focused {
             ShellSurface::Desktop => surface == self.desktop.wl_surface(),
+            ShellSurface::TopBar => surface == self.top_bar.wl_surface(),
             ShellSurface::Panel => surface == self.panel.wl_surface(),
             ShellSurface::Menu => surface == self.menu.wl_surface(),
             ShellSurface::Context => surface == self.context.wl_surface(),
+            ShellSurface::Auxiliary => false,
         }) {
             self.keyboard_focus = None;
         }
@@ -4359,7 +5723,8 @@ impl KeyboardHandler for Shell {
         event: KeyEvent,
     ) {
         if matches!(event.keysym, Keysym::BackSpace | Keysym::Delete)
-            && matches!(self.context_state, ContextState::Edit(_))
+            && (matches!(self.context_state, ContextState::Edit(_))
+                || (self.menu_open && self.menu_kind == MenuKind::Applications))
         {
             self.handle_key(event);
         }
@@ -4394,11 +5759,31 @@ impl OutputHandler for Shell {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.ensure_auxiliary_output(qh, &output);
+        self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
+    }
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        self.ensure_auxiliary_output(qh, &output);
+        self.window_reflow_after = Some(Instant::now() + WINDOW_REFLOW_DEBOUNCE);
+    }
 
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        self.auxiliary_outputs
+            .retain(|auxiliary| auxiliary.output != output);
+        self.dirty = true;
+    }
 }
 
 impl ShmHandler for Shell {
@@ -4428,57 +5813,62 @@ wayland_client::delegate_noop!(Shell: ignore WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(Shell: ignore WpViewporter);
 wayland_client::delegate_noop!(Shell: ignore WpViewport);
 
-fn spawn<I, S>(program: &str, arguments: I)
+fn spawn<I, S>(program: &str, arguments: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    if let Err(error) = Command::new(program)
+    Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-    {
-        eprintln!("wildbuzzard-shell: launching {program} failed: {error}");
-    }
+        .with_context(|| format!("launching {program}"))?;
+    Ok(())
 }
 
-fn launch_application(application: &Application) {
-    let result = gio::DesktopAppInfo::from_filename(&application.source)
+fn launch_application(application: &Application) -> Result<()> {
+    gio::DesktopAppInfo::from_filename(&application.source)
         .context("desktop entry disappeared")
         .and_then(|info| {
             info.launch(&[], gio::AppLaunchContext::NONE)
                 .context("GIO launch failed")
-        });
-    if let Err(error) = result {
-        eprintln!(
-            "wildbuzzard-shell: launching {} from {} failed: {error:#}",
-            application.name,
-            application.source.display()
-        );
+        })
+        .with_context(|| {
+            format!(
+                "launching {} from {}",
+                application.name,
+                application.source.display()
+            )
+        })
+}
+
+fn normalized_application_identity(value: &str) -> String {
+    value
+        .trim()
+        .strip_suffix(".desktop")
+        .unwrap_or(value.trim())
+        .to_lowercase()
+}
+
+fn application_matches_window(application: &Application, app_id: &str) -> bool {
+    let app_id = normalized_application_identity(app_id);
+    if app_id.is_empty() {
+        return false;
     }
+    std::iter::once(application.id.as_str())
+        .chain(application.startup_wm_class.as_deref())
+        .map(normalized_application_identity)
+        .any(|candidate| candidate == app_id)
 }
 
 fn managed_appimage_registration_id(application: &Application) -> Option<RegistrationId> {
     let value = application
         .id
-        .strip_prefix("wildbuzzard-appimage-")?
+        .strip_prefix("buzzardos-appimage-")?
         .strip_suffix(".desktop")?;
     RegistrationId::from_str(value).ok()
-}
-
-fn application_desktop_shortcut_exists(application: &Application) -> bool {
-    if let Some(id) = managed_appimage_registration_id(application) {
-        return RegistrationStore::discover()
-            .and_then(|store| store.load(id))
-            .is_ok_and(|registration| registration.desktop_shortcut);
-    }
-    XdgPaths::discover()
-        .ok()
-        .map(|paths| paths.desktop_dir.join(&application.id))
-        .and_then(|path| fs::symlink_metadata(path).ok())
-        .is_some_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
 }
 
 fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
@@ -4490,7 +5880,7 @@ fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
     // prevents an application path changed after the menu scan from being
     // projected without passing the same FreeDesktop validation again.
     let paths = XdgPaths::discover()?;
-    let current = wildbuzzard_desktop_core::discover_applications(&paths)
+    let current = buzzardos_desktop_core::discover_applications(&paths)
         .applications
         .into_iter()
         .find(|candidate| {
@@ -4499,16 +5889,6 @@ fn add_application_desktop_shortcut(application: &Application) -> Result<()> {
         .context("application changed before shortcut creation")?;
     let bytes = read_bounded(&current.source, 1024 * 1024)?;
     atomic_write(&paths.desktop_dir.join(&application.id), &bytes, 0o755)?;
-    Ok(())
-}
-
-fn remove_application_desktop_shortcut(application: &Application) -> Result<()> {
-    if let Some(id) = managed_appimage_registration_id(application) {
-        RegistrationStore::discover()?.remove_desktop(id)?;
-        return Ok(());
-    }
-    let paths = XdgPaths::discover()?;
-    DesktopDirectory::open(&paths.desktop_dir)?.delete_confirmed(OsStr::new(&application.id))?;
     Ok(())
 }
 
@@ -4523,11 +5903,9 @@ fn open_desktop_item(path: &std::path::Path, kind: DesktopItemKind) -> Result<()
                 // implementation while still giving desktop activation the
                 // required native missing-target flow.
                 let id = registration.id.to_string();
-                spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)]);
+                spawn(HELPER_EXECUTABLE, [OsStr::new("launch"), OsStr::new(&id)])?;
             } else {
-                let validated = wildbuzzard_shortcut_helper::validate_appimage(path)?;
-                validated.authorize_owner_execute()?;
-                let _ = validated.spawn_exact()?;
+                let _ = launch_path(path)?;
             }
             Ok(())
         }
@@ -4720,6 +6098,156 @@ fn rects_intersect(left: Rect, right: Rect) -> bool {
         && left.y.saturating_add(left.height) > right.y
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_panel_frame(
+    pool: &mut SlotPool,
+    panel: &LayerSurface,
+    viewport: &WpViewport,
+    font: Option<&Font>,
+    theme: ThemePalette,
+    scale_120: u32,
+    panel_size: (u32, u32),
+    windows: &[GuestWindow],
+    task_offset: usize,
+    capped_task_buttons: bool,
+    hovered_action: Option<&ShellAction>,
+    applications_active: bool,
+) -> Result<()> {
+    let (logical_width, logical_height) = nonzero_size(panel_size);
+    let (width, height) = physical_size((logical_width, logical_height), scale_120);
+    let (buffer, canvas) = pool
+        .create_buffer(
+            width as i32,
+            height as i32,
+            width as i32 * 4,
+            wl_shm::Format::Argb8888,
+        )
+        .context("allocating panel frame")?;
+    // Empty taskbar space is still part of the panel, not desktop canvas.
+    // Painting it with the panel/menu colour keeps the bar visually
+    // continuous when capped task buttons do not consume the full width.
+    clear(canvas, theme.menu.rgba());
+    for target in panel_targets(logical_width, windows, task_offset, capped_task_buttons) {
+        let hovered = hovered_action == Some(&target.action);
+        let (color, label, active) = match target.action {
+            ShellAction::ToggleApplications => (
+                if applications_active {
+                    theme.selection.rgba()
+                } else if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                "Applications".to_owned(),
+                applications_active,
+            ),
+            ShellAction::OpenFiles => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                "Files".to_owned(),
+                false,
+            ),
+            ShellAction::OpenShared => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                "Share".to_owned(),
+                false,
+            ),
+            ShellAction::ActivateWindow(id) => {
+                let window = windows.iter().find(|window| window.id == id);
+                let focused = window.is_some_and(|window| window.focused);
+                let title = window
+                    .map(|window| elide(&window.title, 25))
+                    .unwrap_or_else(|| target.label.clone());
+                (
+                    if focused {
+                        theme.raised.rgba()
+                    } else if hovered {
+                        theme.hover.rgba()
+                    } else {
+                        theme.menu.rgba()
+                    },
+                    title,
+                    focused,
+                )
+            }
+            ShellAction::TaskbarPrevious => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                "<".to_owned(),
+                false,
+            ),
+            ShellAction::TaskbarNext => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                ">".to_owned(),
+                false,
+            ),
+            ShellAction::ShowDesktop => (
+                if hovered {
+                    theme.hover.rgba()
+                } else {
+                    theme.menu.rgba()
+                },
+                String::new(),
+                false,
+            ),
+            _ => continue,
+        };
+        let button_rect = scale_rect(target.rect, scale_120);
+        fill_rect(canvas, width, height, button_rect, color);
+        if active {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: button_rect.x,
+                    y: button_rect.y + button_rect.height.saturating_sub(scale_coord(3, scale_120)),
+                    width: button_rect.width,
+                    height: scale_coord(3, scale_120),
+                },
+                theme.focus.rgba(),
+            );
+        }
+        draw_text_centered(
+            canvas,
+            width,
+            height,
+            font,
+            &label,
+            scale_rect(target.rect, scale_120),
+            scale_font(13.0, scale_120),
+            if color == theme.selection.rgba() {
+                theme.selected_text.rgba()
+            } else {
+                theme.text.rgba()
+            },
+        );
+    }
+    attach(
+        panel,
+        viewport,
+        buffer,
+        width,
+        height,
+        logical_width,
+        logical_height,
+    )
+}
+
 fn attach(
     layer: &LayerSurface,
     viewport: &WpViewport,
@@ -4831,7 +6359,7 @@ fn applications_menu_width(
         .fold(0.0_f32, f32::max);
     // The measured row width includes the menu inset, icon, icon/text gap,
     // and enough trailing space to keep glyph antialiasing out of the edge.
-    let row_width = longest_application.max(text_width(font, "Shut Down Machine", 13.0)) + 64.0;
+    let row_width = longest_application.max(text_width(font, "Search applications", 13.0)) + 64.0;
     let header_width = text_width(font, "Applications", 17.0) + 82.0;
     let measured = row_width.max(header_width).ceil().max(1.0) as u32;
 
@@ -5140,7 +6668,7 @@ fn draw_desktop_shortcut(
     target: &HitTarget,
     scale_120: u32,
     theme: ThemePalette,
-    application_icon: Option<&AppIcon>,
+    icon: Option<&AppIcon>,
 ) {
     let (width, height) = canvas_size;
     let rect = target.rect;
@@ -5152,7 +6680,23 @@ fn draw_desktop_shortcut(
         target.action,
         ShellAction::OpenFiles | ShellAction::OpenShared
     ) || item_kind == Some(DesktopItemKind::Directory);
-    if is_folder {
+    if let Some(icon) = icon {
+        draw_app_icon(
+            canvas,
+            width,
+            height,
+            scale_rect(
+                Rect {
+                    x: rect.x + 18,
+                    y: rect.y + 4,
+                    width: 52,
+                    height: 52,
+                },
+                scale_120,
+            ),
+            icon,
+        );
+    } else if is_folder {
         let folder = Rect {
             x: rect.x + 18,
             y: rect.y + 8,
@@ -5198,22 +6742,6 @@ fn draw_desktop_shortcut(
                 theme.surface.rgba(),
             );
         }
-    } else if let Some(icon) = application_icon {
-        draw_app_icon(
-            canvas,
-            width,
-            height,
-            scale_rect(
-                Rect {
-                    x: rect.x + 18,
-                    y: rect.y + 4,
-                    width: 52,
-                    height: 52,
-                },
-                scale_120,
-            ),
-            icon,
-        );
     } else {
         let document = Rect {
             x: rect.x + 24,
@@ -5253,24 +6781,43 @@ fn draw_desktop_shortcut(
             );
         }
     }
-    draw_text_centered(
-        canvas,
-        width,
-        height,
+    let label_rect = scale_rect(
+        Rect {
+            x: rect.x,
+            y: rect.y + 56,
+            width: rect.width,
+            height: 34,
+        },
+        scale_120,
+    );
+    let label_size = scale_font(13.0, scale_120);
+    let lines = desktop_label_lines(
         font,
         &target.label,
-        scale_rect(
-            Rect {
-                x: rect.x,
-                y: rect.y + 57,
-                width: rect.width,
-                height: 26,
-            },
-            scale_120,
-        ),
-        scale_font(13.0, scale_120),
-        theme.text.rgba(),
+        label_size,
+        label_rect.width.max(0) as f32,
     );
+    let line_height = label_rect.height / i32::try_from(lines.len()).unwrap_or(1).max(1);
+    for (index, line) in lines.iter().enumerate() {
+        draw_text_centered(
+            canvas,
+            width,
+            height,
+            font,
+            line,
+            Rect {
+                x: label_rect.x,
+                y: label_rect.y
+                    + i32::try_from(index)
+                        .unwrap_or(i32::MAX)
+                        .saturating_mul(line_height),
+                width: label_rect.width,
+                height: line_height,
+            },
+            label_size,
+            theme.text.rgba(),
+        );
+    }
 }
 
 fn draw_menu_icon(
@@ -5283,7 +6830,6 @@ fn draw_menu_icon(
 ) {
     let color = match action {
         ShellAction::OpenFiles | ShellAction::OpenShared => theme.folder.rgba(),
-        ShellAction::ShutdownMachine => theme.destructive_icon.rgba(),
         ShellAction::LaunchApplication(_) => theme.selection.rgba(),
         _ => theme.text_secondary.rgba(),
     };
@@ -5324,24 +6870,69 @@ fn elide_to_width(font: Option<&Font>, text: &str, size: f32, maximum_width: f32
     output
 }
 
+/// Return at most two bounded desktop-label lines. Prefer a word boundary for
+/// the first line, split a single overlong word only when necessary, and
+/// ellipsize the final line so glyphs never escape their icon cell.
+fn desktop_label_lines(
+    font: Option<&Font>,
+    text: &str,
+    size: f32,
+    maximum_width: f32,
+) -> Vec<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() || maximum_width <= 0.0 {
+        return vec![String::new()];
+    }
+    if text_width(font, &normalized, size) <= maximum_width {
+        return vec![normalized];
+    }
+
+    let mut fitting_end = 0;
+    let mut last_word_break = None;
+    for (index, character) in normalized.char_indices() {
+        let end = index + character.len_utf8();
+        if text_width(font, &normalized[..end], size) > maximum_width {
+            break;
+        }
+        fitting_end = end;
+        if character.is_whitespace() {
+            last_word_break = Some(index);
+        }
+    }
+    if fitting_end == 0 {
+        return vec![elide_to_width(font, &normalized, size, maximum_width)];
+    }
+
+    let split = last_word_break
+        .filter(|index| *index > 0)
+        .unwrap_or(fitting_end);
+    let first = normalized[..split].trim_end().to_owned();
+    let remainder = normalized[split..].trim_start();
+    if remainder.is_empty() {
+        return vec![first];
+    }
+    vec![first, elide_to_width(font, remainder, size, maximum_width)]
+}
+
 #[cfg(test)]
 mod scale_tests {
     use super::{
-        ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT,
-        SETTINGS_POLL_INTERVAL, SettingsTracker, WINDOW_MENU_HEIGHT, WINDOW_MENU_WIDTH,
+        ClipboardOperation, ClipboardToken, GSettingsAvailability, PANEL_HEIGHT, SettingsTracker,
+        ShellControlRequest, WINDOW_MENU_WIDTH, application_matches_window,
         applications_menu_height, applications_menu_width, delete_dialog_detail,
-        gsettings_availability, load_settings, parse_uri_list, parse_window_menu_request,
-        physical_size, rect_between, rects_intersect,
+        desktop_label_lines, gsettings_availability, load_settings, parse_shell_control_request,
+        parse_uri_list, physical_size, rect_between, rects_intersect, text_width,
     };
     use crate::model::Application;
     use crate::model::Rect as ShellRect;
     use crate::sway_ipc::Rect;
+    use buzzardos_desktop_core::{BackgroundChoice, Settings, ThemeMode};
     use gio::prelude::FileExt;
     use std::ffi::OsStr;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::Instant;
-    use wildbuzzard_desktop_core::{BackgroundChoice, Settings, ThemeMode};
+
+    const TEST_WINDOW_MENU_HEIGHT: u32 = 44 + 5 * 36;
 
     #[test]
     fn fractional_client_buffers_use_protocol_round_half_away() {
@@ -5363,7 +6954,8 @@ mod scale_tests {
                 },
                 31,
                 (1280, 800),
-                None,
+                -50.0,
+                TEST_WINDOW_MENU_HEIGHT,
             ),
             (0, 51)
         );
@@ -5377,11 +6969,12 @@ mod scale_tests {
                 },
                 31,
                 (1280, 800),
-                None,
+                1_200.0,
+                TEST_WINDOW_MENU_HEIGHT,
             ),
             (
                 1_280 - WINDOW_MENU_WIDTH as i32,
-                800 - PANEL_HEIGHT - WINDOW_MENU_HEIGHT as i32,
+                800 - PANEL_HEIGHT - TEST_WINDOW_MENU_HEIGHT as i32,
             )
         );
     }
@@ -5395,11 +6988,11 @@ mod scale_tests {
             height: 600,
         };
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (1280, 800), Some((640.75, 95.0))),
+            super::titlebar_menu_origin(frame, 31, (1280, 800), 640.75, TEST_WINDOW_MENU_HEIGHT),
             (640, 111)
         );
         assert_eq!(
-            super::titlebar_menu_origin(frame, 31, (800, 600), Some((790.0, 95.0))).0,
+            super::titlebar_menu_origin(frame, 31, (800, 600), 790.0, TEST_WINDOW_MENU_HEIGHT).0,
             800 - WINDOW_MENU_WIDTH as i32
         );
     }
@@ -5420,6 +7013,7 @@ mod scale_tests {
             name: name.to_owned(),
             generic_name: None,
             icon: None,
+            startup_wm_class: None,
             categories: Vec::new(),
             source: PathBuf::from("test.desktop"),
         };
@@ -5436,22 +7030,75 @@ mod scale_tests {
     }
 
     #[test]
-    fn shell_control_request_preserves_optional_pointer_coordinates() {
-        let request = parse_window_menu_request(
+    fn application_window_matching_uses_desktop_id_and_startup_class() {
+        let application = Application {
+            id: "org.xfce.Thunar.desktop".to_owned(),
+            name: "Files".to_owned(),
+            generic_name: None,
+            icon: None,
+            startup_wm_class: Some("Thunar".to_owned()),
+            categories: Vec::new(),
+            source: PathBuf::from("thunar.desktop"),
+        };
+        assert!(application_matches_window(&application, "org.xfce.Thunar"));
+        assert!(application_matches_window(&application, "thunar"));
+        assert!(!application_matches_window(&application, "foot"));
+    }
+
+    #[test]
+    fn desktop_labels_are_bounded_to_two_lines() {
+        let maximum_width = 64.0;
+        let lines = desktop_label_lines(
+            None,
+            "Live Refresh Proof With A Very Long Name",
+            13.0,
+            maximum_width,
+        );
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| text_width(None, line, 13.0) <= maximum_width)
+        );
+        assert!(lines[1].ends_with('…'));
+    }
+
+    #[test]
+    fn desktop_labels_split_a_single_overlong_word_safely() {
+        let maximum_width = 40.0;
+        let lines = desktop_label_lines(None, "ExtraordinarilyLongFolderName", 13.0, maximum_width);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| text_width(None, line, 13.0) <= maximum_width)
+        );
+    }
+
+    #[test]
+    fn shell_control_request_carries_only_the_window_identity() {
+        let request = parse_shell_control_request(
             br#"{"schema":1,"identifier":"window-id","x":712.5,"y":91.0}"#,
         )
         .unwrap();
-        assert_eq!(request, ("window-id".to_owned(), Some((712.5, 91.0))));
         assert_eq!(
-            parse_window_menu_request(b"legacy-window-id").unwrap(),
-            ("legacy-window-id".to_owned(), None)
+            request,
+            ShellControlRequest::WindowMenu("window-id".to_owned())
+        );
+        assert_eq!(
+            parse_shell_control_request(b"legacy-window-id").unwrap(),
+            ShellControlRequest::WindowMenu("legacy-window-id".to_owned())
+        );
+        assert_eq!(
+            parse_shell_control_request(br#"{"schema":1,"desktop_changed":true}"#),
+            Some(ShellControlRequest::DesktopChanged)
         );
     }
 
     #[test]
     fn startup_reads_persisted_theme_without_rewriting_it() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("wildbuzzard");
+        let directory = temp.path().join("buzzardos");
         fs::create_dir(&directory).unwrap();
         let path = directory.join("settings.json");
         let mut settings = Settings {
@@ -5480,7 +7127,7 @@ mod scale_tests {
         assert_eq!(
             gsettings_availability(
                 &schema,
-                OsStr::new("/definitely/missing/wildbuzzard-gsettings")
+                OsStr::new("/definitely/missing/buzzardos-gsettings")
             )
             .unwrap(),
             GSettingsAvailability::MissingTool
@@ -5491,7 +7138,7 @@ mod scale_tests {
     #[test]
     fn settings_tracker_accepts_only_new_generations_and_preserves_last_confirmed() {
         let temp = tempfile::tempdir().unwrap();
-        let directory = temp.path().join("wildbuzzard");
+        let directory = temp.path().join("buzzardos");
         fs::create_dir(&directory).unwrap();
         let path = directory.join("settings.json");
         let mut tracker = SettingsTracker::new(path.clone(), Settings::default());
@@ -5501,14 +7148,12 @@ mod scale_tests {
         };
         light.appearance.theme = ThemeMode::Light;
         light.save(&path).unwrap();
-        tracker.last_check = Instant::now() - SETTINGS_POLL_INTERVAL;
         assert_eq!(tracker.candidate(), Some(light.clone()));
         tracker.commit(light.clone());
 
         let mut invalid_same_generation = light.clone();
         invalid_same_generation.appearance.theme = ThemeMode::Dark;
         invalid_same_generation.save(&path).unwrap();
-        tracker.last_check = Instant::now() - SETTINGS_POLL_INTERVAL;
         assert_eq!(tracker.candidate(), None);
         assert_eq!(tracker.applied, light);
         assert!(

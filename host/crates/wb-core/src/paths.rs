@@ -6,57 +6,51 @@ use std::env;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+/// Paths for one exact machine directory selected by the user.
 #[derive(Debug, Clone)]
 pub struct WbPaths {
-    base: PathBuf,
+    machine_dir: PathBuf,
 }
 
 impl WbPaths {
-    pub fn discover(override_base: Option<&Path>) -> Result<Self> {
-        let base = match override_base {
-            Some(path) => path.to_path_buf(),
-            None => portable_base()?,
-        };
-        // Runtime-only paths such as the host control socket must have one
-        // stable identity regardless of whether the CLI was given `./dist`,
-        // `dist`, or an absolute spelling. Portable machine metadata remains
-        // relative; this normalization is never persisted into machine.json.
-        let base = physical_absolute(&base)?;
-        Ok(Self { base })
+    pub fn for_machine(machine_dir: &Path) -> Result<Self> {
+        let machine_dir = physical_absolute(machine_dir)?;
+        if machine_dir.parent().is_none() {
+            bail!("machine directory cannot be the filesystem root");
+        }
+        Ok(Self { machine_dir })
     }
 
-    pub fn base(&self) -> &Path {
-        &self.base
-    }
-
+    /// Parent used only for atomic staging next to the selected final path.
     pub fn machines(&self) -> PathBuf {
-        self.base.join("Machines")
+        self.machine_dir
+            .parent()
+            .expect("validated machine directory has a parent")
+            .to_path_buf()
     }
 
+    /// Cache belongs to this machine, not to an application-global store.
     pub fn cache(&self) -> PathBuf {
-        self.machines().join(".cache")
+        self.machine_dir.join("cache")
     }
 
-    pub fn shared(&self) -> PathBuf {
-        self.base.join("shared")
+    pub fn machine(&self, _name: &str) -> PathBuf {
+        self.machine_dir.clone()
     }
 
-    pub fn machine(&self, name: &str) -> PathBuf {
-        self.machines().join(name)
-    }
-
+    /// Ensure only the selected path's parent. The final machine path stays
+    /// absent until create/import commits its fully prepared staging tree.
     pub fn ensure(&self) -> Result<()> {
-        for directory in [self.machines(), self.cache(), self.shared()] {
-            std::fs::create_dir_all(&directory)
-                .with_context(|| format!("creating {}", directory.display()))?;
-            let metadata = std::fs::symlink_metadata(&directory)
-                .with_context(|| format!("inspecting {}", directory.display()))?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                bail!(
-                    "portable directory {} must be a real directory, not a symlink",
-                    directory.display()
-                );
-            }
+        let parent = self.machines();
+        std::fs::create_dir_all(&parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        let metadata = std::fs::symlink_metadata(&parent)
+            .with_context(|| format!("inspecting {}", parent.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!(
+                "machine parent {} must be a real directory, not a symlink",
+                parent.display()
+            );
         }
         Ok(())
     }
@@ -64,7 +58,7 @@ impl WbPaths {
 
 fn physical_absolute(path: &Path) -> Result<PathBuf> {
     let absolute = std::path::absolute(path)
-        .with_context(|| format!("resolving portable folder {}", path.display()))?;
+        .with_context(|| format!("resolving machine directory {}", path.display()))?;
     let mut cursor = absolute.as_path();
     let mut missing = Vec::new();
     loop {
@@ -83,40 +77,20 @@ fn physical_absolute(path: &Path) -> Result<PathBuf> {
                 let component = cursor
                     .components()
                     .next_back()
-                    .context("portable folder has no existing ancestor")?
+                    .context("machine directory has no existing ancestor")?
                     .as_os_str()
                     .to_owned();
                 missing.push(component);
                 cursor = cursor
                     .parent()
-                    .context("portable folder has no existing ancestor")?;
+                    .context("machine directory has no existing ancestor")?;
             }
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("resolving portable folder {}", path.display()));
+                    .with_context(|| format!("resolving machine directory {}", path.display()));
             }
         }
     }
-}
-
-fn portable_base() -> Result<PathBuf> {
-    // The top-level BuzzardOS executable pins the portable root explicitly.
-    // This avoids deriving durable state from the caller's current directory
-    // or from the dependency payload under app/.
-    if let Some(portable) = env::var_os("BUZZARDOS_PORTABLE_DIR") {
-        let path = PathBuf::from(portable);
-        if !path.is_absolute() {
-            bail!(
-                "BUZZARDOS_PORTABLE_DIR must be absolute: {}",
-                path.display()
-            );
-        }
-        return Ok(path);
-    }
-
-    // Development builds behave predictably from the directory in which they
-    // are launched. Packaged builds always take the explicit branch above.
-    env::current_dir().context("determining portable storage directory")
 }
 
 pub fn host_control_socket(machine_dir: &Path) -> Result<PathBuf> {
@@ -132,7 +106,6 @@ pub fn host_control_socket(machine_dir: &Path) -> Result<PathBuf> {
     if !runtime.is_absolute() {
         bail!("XDG_RUNTIME_DIR must be absolute: {}", runtime.display());
     }
-
     host_control_socket_in(&runtime, machine_dir)
 }
 
@@ -143,7 +116,7 @@ fn host_control_socket_in(runtime: &Path, machine_dir: &Path) -> Result<PathBuf>
     let digest = Sha256::digest(machine_dir.as_os_str().as_bytes());
     let key = format!("{digest:x}");
     Ok(runtime
-        .join("wildbuzzard")
+        .join("buzzardos")
         .join(format!("window-{}.sock", &key[..24])))
 }
 
@@ -153,102 +126,52 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn portable_directories_cannot_be_symlinked_elsewhere() {
+    fn machine_parent_cannot_be_symlinked_elsewhere() {
         let temp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        symlink(outside.path(), temp.path().join("Machines")).unwrap();
+        symlink(outside.path(), temp.path().join("machines")).unwrap();
         let paths = WbPaths {
-            base: temp.path().to_path_buf(),
+            machine_dir: temp.path().join("machines/demo"),
         };
         assert!(paths.ensure().is_err());
     }
 
     #[test]
-    fn portable_layout_relocates_without_rewriting_paths() {
+    fn selected_machine_path_is_exact() {
         let temp = tempfile::tempdir().unwrap();
-        let original = temp.path().join("original");
-        let relocated = temp.path().join("relocated");
-        let paths = WbPaths::discover(Some(&original)).unwrap();
+        let selected = temp.path().join("disk-a/custom-folder");
+        let paths = WbPaths::for_machine(&selected).unwrap();
         paths.ensure().unwrap();
-        std::fs::create_dir_all(paths.machine("demo").join("rootfs")).unwrap();
-        std::fs::write(paths.machine("demo").join("rootfs/marker"), b"persistent").unwrap();
-        std::fs::write(paths.shared().join("marker"), b"portable").unwrap();
-
-        std::fs::rename(&original, &relocated).unwrap();
-        let moved = WbPaths::discover(Some(&relocated)).unwrap();
-
-        assert_eq!(moved.base(), relocated);
-        assert_eq!(
-            std::fs::read(moved.machine("demo").join("rootfs/marker")).unwrap(),
-            b"persistent"
-        );
-        assert_eq!(
-            std::fs::read(moved.shared().join("marker")).unwrap(),
-            b"portable"
-        );
-        assert!(!original.exists());
+        assert_eq!(paths.machine("different-logical-name"), selected);
+        assert_eq!(paths.cache(), selected.join("cache"));
+        assert_eq!(paths.machines(), selected.parent().unwrap());
     }
 
     #[test]
-    fn host_control_socket_stays_short_for_long_portable_paths() {
+    fn host_control_socket_stays_short_for_long_machine_paths() {
         let runtime = Path::new("/tmp/buzzardos-test-runtime");
-        let machine = PathBuf::from("/tmp")
-            .join("very-long-portable-folder-name".repeat(12))
-            .join("Machines/demo");
+        let machine = PathBuf::from("/tmp").join("very-long-name".repeat(24));
         let socket = host_control_socket_in(runtime, &machine).unwrap();
-
         assert!(socket.as_os_str().as_bytes().len() < 108);
         assert!(socket.starts_with(runtime));
-        assert_ne!(
-            socket,
-            host_control_socket_in(runtime, &PathBuf::from("/tmp/elsewhere/Machines/demo"))
-                .unwrap()
-        );
     }
 
     #[test]
-    fn relative_storage_override_has_one_absolute_runtime_identity() {
-        let relative = WbPaths::discover(Some(Path::new("./portable"))).unwrap();
-        let absolute =
-            WbPaths::discover(Some(&std::env::current_dir().unwrap().join("portable"))).unwrap();
-
-        assert!(relative.base().is_absolute());
-        assert_eq!(relative.base(), absolute.base());
-        let runtime = Path::new("/tmp/buzzardos-test-runtime");
-        assert_eq!(
-            host_control_socket_in(runtime, &relative.machine("demo")).unwrap(),
-            host_control_socket_in(runtime, &absolute.machine("demo")).unwrap()
-        );
+    fn relative_and_absolute_paths_have_one_runtime_identity() {
+        let relative = WbPaths::for_machine(Path::new("./machine")).unwrap();
+        let absolute = WbPaths::for_machine(&env::current_dir().unwrap().join("machine")).unwrap();
+        assert_eq!(relative.machine("demo"), absolute.machine("demo"));
     }
 
     #[test]
-    fn symlinked_storage_override_has_the_physical_runtime_identity() {
+    fn symlinked_parent_uses_physical_machine_identity() {
         let temp = tempfile::tempdir().unwrap();
         let physical = temp.path().join("physical");
-        let alias = temp.path().join("portable-alias");
+        let alias = temp.path().join("alias");
         std::fs::create_dir(&physical).unwrap();
         symlink(&physical, &alias).unwrap();
-
-        let direct = WbPaths::discover(Some(&physical)).unwrap();
-        let linked = WbPaths::discover(Some(&alias)).unwrap();
-
-        assert_eq!(linked.base(), direct.base());
-        let runtime = Path::new("/tmp/buzzardos-test-runtime");
-        assert_eq!(
-            host_control_socket_in(runtime, &linked.machine("demo")).unwrap(),
-            host_control_socket_in(runtime, &direct.machine("demo")).unwrap()
-        );
-    }
-
-    #[test]
-    fn missing_storage_override_normalizes_lexical_parent_components() {
-        let temp = tempfile::tempdir().unwrap();
-        let direct = temp.path().join("portable");
-        let lexical = temp.path().join("not-created/../portable");
-
-        assert_eq!(
-            WbPaths::discover(Some(&lexical)).unwrap().base(),
-            WbPaths::discover(Some(&direct)).unwrap().base()
-        );
+        let direct = WbPaths::for_machine(&physical.join("demo")).unwrap();
+        let linked = WbPaths::for_machine(&alias.join("demo")).unwrap();
+        assert_eq!(linked.machine("demo"), direct.machine("demo"));
     }
 }

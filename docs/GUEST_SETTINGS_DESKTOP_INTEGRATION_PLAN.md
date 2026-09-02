@@ -12,12 +12,14 @@ guest Settings application.
 
 ## 1. Settings application
 
-`wildbuzzard-settings` is a standalone, adaptive Rust/GTK4 application. It is
-an ordinary Sway-managed window and exposes native GTK accessibility objects
+`buzzardos-settings` is a standalone, adaptive Rust/GTK4 application. It is
+an ordinary Sway-managed window, paints an explicit opaque root and page stack
+over a palette-derived solid drawing layer in focused and backdrop states, and
+exposes native GTK accessibility objects
 to the private guest AT-SPI bus. It uses no libadwaita, Electron, browser UI,
 GNOME Control Center, or permanent GUI process.
 
-The navigation contains exactly these six pages in this order:
+The navigation contains exactly these seven pages in this order:
 
 ```text
 Settings
@@ -45,11 +47,14 @@ Settings
 │   │   ├── Light
 │   │   └── Dark
 │   └── Background colour
+│   └── Capped task buttons [on by default]
+│
+├── Security
+│   ├── Change machine password
+│   └── Passwordless sudo [off by default]
 │
 └── Updates
-    ├── Check for updates
-    ├── Available updates
-    └── Install now
+    └── Standard APT/unattended-upgrades status and manual-control guidance
 ```
 
 There is no About page, Applications/Desktop page, host-integration page,
@@ -69,8 +74,14 @@ The Display page presents one row labelled `Scaling`; it does not repeat a
 second `Scaling` section heading above that row.
 
 The setting is sent through the owner-only typed scale endpoint and persisted
-only after the active Sway output confirms it. A rejected change restores the
-last confirmed selection and shows a short user-facing error.
+only after every active Sway output confirms the physical mode, UI scale, and
+non-overlapping layout. Native window resize uses that same convergence path,
+so the fixed host-facing output and all active guest-only workspace outputs
+remain the same size and are repacked without overlap. A rejected change
+restores the last confirmed selection and shows a short user-facing error.
+After that layout settles, the official desktop re-clamps existing floating
+windows into their own resized workspace without focusing them, so stale
+absolute frames cannot leak across an adjacent output boundary.
 
 ## 3. Sound
 
@@ -103,7 +114,26 @@ second NTP client or expose a clock-setting action.
 Time zone is guest-local persistent configuration. Its searchable dropdown is
 generated from the installed IANA `zone.tab`; it has no free-form path field.
 Selecting a validated location applies that exact zone through systemd
-`timedatectl`. The guest timezone can change without changing the host clock.
+`timedatectl`. Settings asks for the machine-local password and invokes the
+real distro `sudo`; it does not use Polkit or a privileged Settings service.
+The guest timezone can change without changing the host clock.
+
+## 4.2. Security
+
+The official reference image creates the canonical interactive account
+`user` at UID/GID 1000 with the documented initial password `buzzard`. This is
+a one-time image-construction preset. The host never receives a guest password
+and never edits `/etc/passwd`, `/etc/shadow`, PAM, or sudoers during create,
+pull, import, clone, export, start, or stop. Imported and cloned root filesystems
+therefore keep their existing credential and keyring state unchanged.
+
+Security changes are guest-local. **Change password** presents current, new,
+and confirmation password fields and runs the distro `chpasswd` through the
+authenticated real-sudo bridge. **Passwordless sudo** is off by default.
+Enabling it requires the current machine password and creates only the exact
+root-owned `/etc/sudoers.d/91-buzzardos-passwordless` policy for `user` after
+`visudo` validation. Disabling it removes only that exact verified policy. No
+Polkit rule, host helper, host socket, or host filesystem path participates.
 
 ## 5. Appearance
 
@@ -118,34 +148,54 @@ Qt applications, and compatible Electron/Chromium applications. Selection,
 focus, sliders, switches, checks, radio buttons, folders, and unfocused views
 use the accessible Cinnamon-orange accent and warm graphite/light neutrals;
 no default blue selection is allowed. Unfocused Thunar content and menu bars
-must retain the selected theme rather than reverting to white.
+must retain the selected theme rather than reverting to white. The Thunar
+status bar has explicit active and `:backdrop` palette states and must never
+become a white strip when the window loses focus.
 
-Theme and background colour persist in `~/.config/wildbuzzard/settings.json`.
+The Light Thunar hierarchy is explicit in focused and backdrop states:
+titlebar and Places navigation use the panel tone, menu/toolbar/status use the
+window tone, the file view uses the field tone, and borders remain neutral.
+Home, Desktop, and every conventional XDG user directory use Buzzard's orange
+place icons rather than inherited blue artwork. One-time reference-image
+provisioning initializes the standard FreeDesktop user directories and seeds
+Thunar's Places sidebar with Documents and Downloads alongside the
+Buzzard-specific `/shared` bookmark. Machine start and desktop login perform
+no folder or bookmark setup. Existing `user-dirs.dirs` and GTK bookmarks are
+therefore preserved, and a place removed later by the user stays removed.
+
+Light mode must preserve visible depth rather than flattening the desktop into
+white-on-white planes. Its desktop, top and bottom panels, navigation rails,
+window canvas, raised Settings groups, fields, controls, hover states, borders,
+and backdrops use distinct neutral tokens. Settings presents grouped controls
+as bordered raised cards on a quieter page canvas, with the orange accent
+reserved for the selected navigation row and interaction state.
+The reference Light palette uses `#ebebeb` for both shell panels and the
+Settings navigation rail, and `#fafafa` for both the solid desktop background
+and the non-sidebar Settings window canvas. Active shell segments remain
+`#ebebeb` with the existing Cinnamon focus underline; Light hover states use
+the darker neutral tone `#dadada`. Accent orange remains reserved for selected
+and focused state. These exact values do not alter the independent Dark
+palette.
+
+Theme and background colour persist in `~/.config/buzzardos/settings.json`.
 Switching Light/Dark selects its recommended solid background; choosing a
 custom colour then persists that explicit colour.
 
 ## 6. Debian updates
 
-The Updates page manages packages inside the persistent Debian rootfs only.
-It never checks, downloads, or replaces the extracted host application.
+Package updates inside the persistent guest use the distribution's standard
+APT and unattended-upgrades mechanisms. This includes `buzzardos-guest`,
+`buzzardos-desktop`, and `buzzardoscua` through the signed Open Research Tools
+APT source installed by the reference recipe. The host `buzzardos` package is updated by the host's own APT
+transaction and is never replaced from inside a guest.
 
-`Check for updates` starts one fixed fresh updater worker. The worker refreshes
-APT metadata and creates an exact candidate plan. The scrollable list shows
-the package name, installed version, candidate version, and download size.
-`Install now` installs only that opaque plan generation after revalidation.
-There is no arbitrary command, package, path, repository, environment, or APT
-argument surface.
-
-`Check for updates` and `Install now` are visually complete Cinnamon-orange
-buttons with dark high-contrast text, not label-like highlights. Active work
-shows a native progress bar and a textual phase: repository refresh, plan
-resolution, the current Debian archive with percentage/bytes and measured
-download speed, the current package/install count, completion, or the bounded
-failure reason.
-
-The system-bus service is guest-root-owned and callable only by guest root or
-the interactive UID 1000 user. It protects Buzzard OS's managed runtime
-payload from package replacement. Updates are never installed automatically.
+Buzzard OS installs no custom updater daemon, timer, D-Bus API, privileged APT
+broker, candidate-plan format, or package transaction UI. The Updates page is
+informational: it identifies standard APT as the owner of guest updates and
+directs a user who wants manual control to `apt` in Foot. One-time image
+provisioning enables the distro's normal periodic APT and unattended-upgrades
+units; later package upgrades do not re-run provisioning or rewrite user
+policy.
 
 ## 7. Desktop and application discovery
 
@@ -154,11 +204,49 @@ directories. Newly installed Debian applications appear without rebuilding
 the image. The visual Applications list may scroll, but its complete model
 and AT-SPI tree always expose every installed application.
 
+Task buttons are contiguous and borderless without gaps. `Capped task buttons`
+defaults on; when enabled each button is at most 260 logical pixels and never
+shrinks below 96 logical pixels. `<` and `>` appear together directly after
+`Applications`, in that order, only when all running windows cannot fit at that
+minimum; each moves the visible window range by exactly five per click. They do
+not bracket the task list. When disabled all task buttons share the available
+width.
+
+Applications provides case-insensitive search across application name,
+generic name, and categories. Search is immediately keyboard-active and is
+cleared each time the menu closes. The menu owns a transparent click-away
+surface while open, so a click anywhere outside its visible bounds closes it
+and is not forwarded into the covered guest application. Context actions pin
+or unpin an application persistently; pinned applications remain searchable
+and are visibly identified in the menu.
+
+The shell restores the normal pointer whenever it receives pointer entry on
+the desktop, taskbar, menu, or transparent click-away surface. A resize or move
+cursor selected by an application must not persist over shell-owned empty
+space.
+
+An application-titlebar secondary click sends only the target window identity
+to the shell. The transient full-output menu surface obtains the current
+horizontal position from its normal Wayland pointer-enter event after one
+stock-Sway zero-distance cursor-focus refresh, anchors the window controls
+there, and consumes the first outside click before closing. The refresh moves
+neither axis and returns no coordinates. Neither host input nor Buzzard CUA
+writes a last-click coordinate file, so guest processes cannot poll human
+input through desktop integration state.
+
 The desktop always starts with Files and Shared. A newly created shortcut is
 placed in the first available cell on the first visible desktop page, below
 those built-ins when they occupy the leading cells. It immediately appears in
 the current viewport. The shell uses the launcher's real FreeDesktop icon,
 with a generic fallback only when no safe icon exists.
+
+The shell watches the actual XDG Desktop directory with inotify and rebuilds
+only its in-memory desktop model when that directory changes. Successful
+Buzzard helper mutations also send the shell one typed `desktop_changed`
+notification, so Thunar actions and helper-created folders, renames,
+shortcuts, and deletions appear immediately without login, machine restart,
+or a periodic directory scan. Files uses the themed `user-home` icon, Shared
+uses `folder-publicshare`, and ordinary directories use `folder`.
 
 Owner-owned regular `.desktop` files in the guest Desktop directory are
 automatically owner-executable after validation, so activating a shortcut
@@ -178,21 +266,53 @@ AT-SPI as well as pointer/keyboard interaction.
 
 ## 8. AppImage integration
 
-Add to Applications and Add Desktop Shortcut link to the original guest-
-visible Type-2 AppImage. They do not copy it. If the target later moves, the
+Add AppImage to Applications and Add AppImage to Desktop link to the original
+guest-visible Type-2 AppImage. They do not copy it. If the target later moves, the
 fixed launcher opens a native guest file chooser and atomically relinks the
 registration after validating the replacement.
 
-Thunar supplies exactly two fixed helper actions for an AppImage candidate:
-Add to Applications and Add Desktop Shortcut. The helper validates the file;
-the XML filter is not a security boundary. Generated launchers invoke only
-the fixed helper with an opaque registration ID and never use `sh -c`.
+Thunar supplies exactly five fixed helper actions for one AppImage candidate:
+Run AppImage, Extract and Run AppImage (Persistent), Extract and Run
+`--no-sandbox`, Add AppImage to Applications, and Add AppImage to Desktop.
+Remove from Applications and Remove Desktop Shortcut are not Thunar actions.
+The helper validates the file; the XML filter is not a security boundary.
+Generated launchers invoke only the fixed helper with an opaque registration
+ID and never use `sh -c`.
+
+A managed AppImage's Applications secondary-click menu contains, in order:
+Open, Extract and Run, Extract and Run `--no-sandbox`, Pin/Unpin, Add to
+Desktop, Rename, and Delete from Applications. Ordinary distribution
+applications contain Open, Pin/Unpin, and Add to Desktop, without AppImage-only
+operations. Rename updates the managed Applications and Desktop projections,
+not the original AppImage filename. Delete from Applications unpins and removes
+only the Applications projection. It does not delete the original AppImage,
+its extraction, or an explicitly requested Desktop shortcut.
+
+Persistent extraction is atomic and source-adjacent at
+`<AppImage>.extracted`. A validated `AppRun` must resolve inside that real,
+guest-user-owned directory. The explicit no-sandbox action creates a private
+zero-byte, mode-0600 `.no-sandbox` marker inside the extraction. Every normal
+launch route checks for the extraction first; when it is absent the original
+AppImage runs normally. When present, the helper runs the validated `AppRun`,
+retains literal fixed arguments from the first safe top-level desktop entry,
+discards arguments containing FreeDesktop field codes, and suppresses any
+embedded `--no-sandbox` unless the marker is valid. Applications, generated
+Desktop shortcuts, raw Desktop AppImages, Thunar, AT-SPI, and CUA therefore
+inherit the same selected persistent mode. The original AppImage remains the
+registered identity and is never replaced or deleted by extraction.
 
 Renaming a registered AppImage on the Desktop is one crash-recoverable helper
 transaction. Its durable journal, descriptor-bound identity checks,
 same-directory no-replace rename, registration update, fsync ordering, and
 startup recovery preserve the stable registration, launchers, icon, bytes,
 ownership, and mode.
+
+Type-2 FUSE mounting uses one private guest systemd socket whose root half
+accepts only the pinned runtime's exact mount/unmount argument shapes, UID/GID
+1000 peers, allowed `.mount_*` paths, and the caller's validated libfuse
+communication descriptor. It exposes neither a generic root command nor a
+Polkit authorization. The mounted filesystem is always read-only, `nosuid`,
+and `nodev`; extraction remains the non-FUSE fallback.
 
 ## 9. Explicit clipboard snapshots
 
@@ -217,19 +337,22 @@ setting gains access to host D-Bus, host files outside explicit shares, host
 clipboard, host window policy, or another machine. Every managed read/write
 rejects unsafe types and symlink escapes and uses bounded data.
 
-Acceptance must rebuild the managed guest binaries/assets and the extracted
-portable application, launch an actual persistent machine, and then verify at
-minimum:
+Acceptance must rebuild all four Debian packages, install `buzzardos` on the
+host, install `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` in a reference image,
+launch an actual persistent machine, and then verify at minimum:
 
-- all five Settings pages at normal and small window sizes;
+- all seven Settings pages at normal and small window sizes;
+- the documented `user` / `buzzard` initial credential, authenticated sudo,
+  password change, and passwordless-sudo enable/disable round trip;
 - scaling persistence and pixel-aligned input;
 - output and microphone volume/mute;
 - at least US and one non-US physical layout while CUA remains usable;
 - Light and Dark screenshots of Settings, desktop, Thunar focused/unfocused,
   taskbar, menus, selection, and installed application windows;
-- APT check, scrollable plan, and fixed-plan installation against a signed
-  local fixture before any real update is accepted;
-- AppImage registration, desktop icon/placement/trust, move/relink, and launch;
+- standard APT/unattended-upgrades configuration with no Buzzard-owned updater
+  service, timer, or D-Bus policy;
+- AppImage direct launch, persistent extraction, remembered no-sandbox launch,
+  registration, add/remove menu and desktop entries, placement, move/relink;
 - text and screenshot clipboard snapshots in both directions; and
 - AT-SPI names/actions plus CUA pointer, keyboard, screenshots, and windows.
 

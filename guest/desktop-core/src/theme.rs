@@ -69,20 +69,24 @@ pub const DARK_PALETTE: ThemePalette = ThemePalette {
 };
 
 pub const LIGHT_PALETTE: ThemePalette = ThemePalette {
-    canvas: SolidColor::new(0xe8, 0xe4, 0xde),
-    desktop: SolidColor::new(0xf4, 0xf1, 0xec),
-    field: SolidColor::new(0xff, 0xfd, 0xf9),
-    menu: SolidColor::new(0xee, 0xea, 0xe4),
-    surface: SolidColor::new(0xf4, 0xf1, 0xec),
-    raised: SolidColor::new(0xe3, 0xde, 0xd6),
-    hover: SolidColor::new(0xd5, 0xce, 0xc5),
-    border: SolidColor::new(0xa5, 0x9c, 0x90),
-    control_border: SolidColor::new(0x76, 0x6d, 0x63),
-    text: SolidColor::new(0x28, 0x23, 0x1f),
+    canvas: SolidColor::new(0xfa, 0xfa, 0xfa),
+    desktop: SolidColor::new(0xfa, 0xfa, 0xfa),
+    field: SolidColor::new(0xff, 0xff, 0xff),
+    menu: SolidColor::new(0xeb, 0xeb, 0xeb),
+    surface: SolidColor::new(0xfa, 0xfa, 0xfa),
+    // Active shell segments stay continuous with the Light panel. Their
+    // orange underline communicates focus without introducing another grey.
+    raised: SolidColor::new(0xeb, 0xeb, 0xeb),
+    // Hover is a darker tone of the neutral Light surface. Accent colour is
+    // reserved for selection and focus, not ordinary pointer movement.
+    hover: SolidColor::new(0xda, 0xda, 0xda),
+    border: SolidColor::new(0xd5, 0xd5, 0xd5),
+    control_border: SolidColor::new(0x8a, 0x8a, 0x8a),
+    text: SolidColor::new(0x22, 0x26, 0x2a),
     selected_text: SolidColor::new(0x18, 0x18, 0x18),
-    text_secondary: SolidColor::new(0x5f, 0x57, 0x4f),
-    text_muted: SolidColor::new(0x70, 0x67, 0x5e),
-    disabled: SolidColor::new(0x7c, 0x74, 0x6c),
+    text_secondary: SolidColor::new(0x56, 0x5e, 0x66),
+    text_muted: SolidColor::new(0x6a, 0x73, 0x7c),
+    disabled: SolidColor::new(0x7c, 0x84, 0x8c),
     selection: SolidColor::new(0xff, 0x71, 0x39),
     focus: SolidColor::new(0xb5, 0x3b, 0x12),
     folder: SolidColor::new(0xff, 0x71, 0x39),
@@ -104,8 +108,8 @@ impl ThemeMode {
 
     pub const fn gtk_theme_name(self) -> &'static str {
         match self {
-            Self::Dark => "WildBuzzard-Dark",
-            Self::Light => "WildBuzzard-Light",
+            Self::Dark => "BuzzardOS-Dark",
+            Self::Light => "BuzzardOS-Light",
         }
     }
 
@@ -217,7 +221,7 @@ fn rgb(color: SolidColor) -> String {
 fn render_gtk_settings(mode: ThemeMode, major: u8) -> String {
     // Dark and Light are complete, separately named themes.  GTK's
     // prefer-dark flag asks for a dark variant of the selected theme; because
-    // WildBuzzard-Dark has no second "-dark" variant, that request can fall
+    // BuzzardOS-Dark has no second "-dark" variant, that request can fall
     // back to Adwaita-dark and its blue accent.
     let prefer_dark = 0;
     let button_images = if major == 3 {
@@ -228,7 +232,7 @@ fn render_gtk_settings(mode: ThemeMode, major: u8) -> String {
     format!(
         "[Settings]\n\
          gtk-theme-name={}\n\
-         gtk-icon-theme-name=WildBuzzard\n\
+         gtk-icon-theme-name=BuzzardOS\n\
          gtk-cursor-theme-name=Adwaita\n\
          gtk-application-prefer-dark-theme={prefer_dark}\n\
          gtk-enable-animations=1\n\
@@ -247,7 +251,7 @@ fn render_kde_globals(mode: ThemeMode) -> String {
     format!(
         "[General]\nColorScheme={}\nName={}\nshadeSortColumn=true\n\n\
          [KDE]\ncontrast=4\n\n\
-         [Icons]\nTheme=WildBuzzard\n\n\
+         [Icons]\nTheme=BuzzardOS\n\n\
          [Colors:Button]\nBackgroundAlternate={}\nBackgroundNormal={}\nDecorationFocus={}\nDecorationHover={}\nForegroundActive={}\nForegroundInactive={}\nForegroundLink={}\nForegroundNegative={}\nForegroundNeutral={}\nForegroundNormal={}\nForegroundPositive={}\nForegroundVisited={}\n\n\
          [Colors:Selection]\nBackgroundAlternate={}\nBackgroundNormal={}\nDecorationFocus={}\nDecorationHover={}\nForegroundActive={}\nForegroundInactive={}\nForegroundLink={}\nForegroundNegative={}\nForegroundNeutral={}\nForegroundNormal={}\nForegroundPositive={}\nForegroundVisited={}\n\n\
          [Colors:Tooltip]\nBackgroundAlternate={}\nBackgroundNormal={}\nDecorationFocus={}\nDecorationHover={}\nForegroundActive={}\nForegroundInactive={}\nForegroundLink={}\nForegroundNegative={}\nForegroundNeutral={}\nForegroundNormal={}\nForegroundPositive={}\nForegroundVisited={}\n\n\
@@ -424,13 +428,23 @@ mod tests {
     }
 
     #[test]
+    fn light_shell_uses_neutral_tonal_states_and_reserves_accent_for_focus() {
+        assert_eq!(LIGHT_PALETTE.surface, SolidColor::new(0xfa, 0xfa, 0xfa));
+        assert_eq!(LIGHT_PALETTE.menu, SolidColor::new(0xeb, 0xeb, 0xeb));
+        assert_eq!(LIGHT_PALETTE.raised, LIGHT_PALETTE.menu);
+        assert_eq!(LIGHT_PALETTE.hover, SolidColor::new(0xda, 0xda, 0xda));
+        assert_ne!(LIGHT_PALETTE.hover, LIGHT_PALETTE.selection);
+        assert_ne!(LIGHT_PALETTE.hover, LIGHT_PALETTE.focus);
+    }
+
+    #[test]
     fn mode_projection_is_deterministic_and_palette_only() {
         let dark = ThemeConfigSet::for_mode(ThemeMode::Dark);
         let light = ThemeConfigSet::for_mode(ThemeMode::Light);
         assert_eq!(dark, ThemeConfigSet::for_mode(ThemeMode::Dark));
         assert_eq!(light, ThemeConfigSet::for_mode(ThemeMode::Light));
-        assert!(dark.gtk3_settings.contains("WildBuzzard-Dark"));
-        assert!(light.gtk3_settings.contains("WildBuzzard-Light"));
+        assert!(dark.gtk3_settings.contains("BuzzardOS-Dark"));
+        assert!(light.gtk3_settings.contains("BuzzardOS-Light"));
         assert!(dark.gtk3_settings.contains("prefer-dark-theme=0"));
         assert!(light.gtk3_settings.contains("prefer-dark-theme=0"));
         assert!(dark.kde_globals.contains("ForegroundNormal=24,24,24"));
@@ -486,19 +500,19 @@ mod tests {
 
     #[test]
     fn checked_in_themes_share_geometry_and_match_typed_palette_tokens() {
-        let dark3 = include_str!("../../assets/themes/WildBuzzard-Dark/gtk-3.0/gtk.css");
-        let light3 = include_str!("../../assets/themes/WildBuzzard-Light/gtk-3.0/gtk.css");
-        let dark4 = include_str!("../../assets/themes/WildBuzzard-Dark/gtk-4.0/gtk.css");
-        let light4 = include_str!("../../assets/themes/WildBuzzard-Light/gtk-4.0/gtk.css");
+        let dark3 = include_str!("../../assets/themes/BuzzardOS-Dark/gtk-3.0/gtk.css");
+        let light3 = include_str!("../../assets/themes/BuzzardOS-Light/gtk-3.0/gtk.css");
+        let dark4 = include_str!("../../assets/themes/BuzzardOS-Dark/gtk-4.0/gtk.css");
+        let light4 = include_str!("../../assets/themes/BuzzardOS-Light/gtk-4.0/gtk.css");
         assert_eq!(dark3, light3);
         assert_eq!(dark4, light4);
         for stylesheet in [dark3, dark4] {
-            assert!(stylesheet.contains("WildBuzzard-Shared"));
+            assert!(stylesheet.contains("BuzzardOS-Shared"));
             assert!(!stylesheet.contains('{'));
         }
         for geometry in [
-            include_str!("../../assets/themes/WildBuzzard-Shared/gtk-3.0/geometry.css"),
-            include_str!("../../assets/themes/WildBuzzard-Shared/gtk-4.0/geometry.css"),
+            include_str!("../../assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css"),
+            include_str!("../../assets/themes/BuzzardOS-Shared/gtk-4.0/geometry.css"),
         ] {
             assert!(
                 !geometry.contains('#'),
@@ -511,18 +525,39 @@ mod tests {
             assert!(geometry.contains("scale slider {\n  min-width: 18px;\n  min-height: 18px;"));
         }
         let gtk4_geometry =
-            include_str!("../../assets/themes/WildBuzzard-Shared/gtk-4.0/geometry.css");
+            include_str!("../../assets/themes/BuzzardOS-Shared/gtk-4.0/geometry.css");
         assert!(gtk4_geometry.contains("button.wb-primary-action label,"));
         assert!(gtk4_geometry.contains("color: @wb_selected_text;"));
+        assert!(gtk4_geometry.contains(".wb-settings-root"));
+        assert!(gtk4_geometry.contains(".wb-settings-pages"));
+        assert!(gtk4_geometry.contains(".wb-settings-section"));
+        assert!(gtk4_geometry.contains("background-color: @wb_card;"));
+        assert!(gtk4_geometry.contains("background-color: @wb_backdrop_surface;"));
+        for palette in [
+            include_str!("../../assets/themes/BuzzardOS-Dark/gtk-4.0/palette.css"),
+            include_str!("../../assets/themes/BuzzardOS-Light/gtk-4.0/palette.css"),
+        ] {
+            assert!(palette.contains("@define-color wb_card "));
+            assert!(palette.contains("@define-color wb_backdrop_surface "));
+        }
+        let gtk3_geometry =
+            include_str!("../../assets/themes/BuzzardOS-Shared/gtk-3.0/geometry.css");
+        assert!(gtk3_geometry.contains("statusbar > box"));
+        assert!(gtk3_geometry.contains("statusbar:backdrop"));
+        assert!(gtk3_geometry.contains("statusbar:backdrop *"));
+        assert!(gtk3_geometry.contains("junction:backdrop"));
+        assert!(gtk3_geometry.contains("scrollbar button:backdrop"));
+        assert!(gtk3_geometry.contains("scrollbar slider:backdrop"));
+        assert!(gtk3_geometry.contains("background-color: @wb_backdrop_surface;"));
 
         for (mode, palette_css) in [
             (
                 ThemeMode::Dark,
-                include_str!("../../assets/themes/WildBuzzard-Dark/gtk-3.0/palette.css"),
+                include_str!("../../assets/themes/BuzzardOS-Dark/gtk-3.0/palette.css"),
             ),
             (
                 ThemeMode::Light,
-                include_str!("../../assets/themes/WildBuzzard-Light/gtk-3.0/palette.css"),
+                include_str!("../../assets/themes/BuzzardOS-Light/gtk-3.0/palette.css"),
             ),
         ] {
             let p = mode.palette();

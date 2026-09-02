@@ -1,6 +1,6 @@
 [package]
-name = "wildbuzzard-shell"
-version.workspace = true
+name = "buzzardos-desktop"
+version = "0.1.3"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -22,8 +22,8 @@ wayland-client.workspace = true
 wayland-protocols.workspace = true
 wayland-protocols-wlr.workspace = true
 wl-clipboard-rs.workspace = true
-wildbuzzard-desktop-core = { path = "../desktop-core" }
-wildbuzzard-shortcut-helper = { path = "../shortcut-helper", default-features = false }
+buzzardos-desktop-core = { path = "../desktop-core" }
+buzzardos-shortcut-helper = { path = "../shortcut-helper", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

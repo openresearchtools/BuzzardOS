@@ -1,352 +1,9 @@
 # syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720
-# These are the verified linux/amd64 child manifests, not mutable tags or the
-# multi-platform indexes.  oci/base-images.lock.toml records the corresponding
-# index, config, and layer digests.
-FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS shell-builder
-
-COPY oci/desktop/apt/debian-trixie-snapshot.sources \
-    /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99wildbuzzard-snapshot \
-    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
-
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        libglib2.0-dev \
-        libxkbcommon-dev \
-        pkg-config && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /source
-COPY clipboard-protocol ./clipboard-protocol
-COPY guest/Cargo.toml guest/Cargo.lock ./guest/
-COPY guest/clipboard-agent ./guest/clipboard-agent
-COPY guest/desktop-core ./guest/desktop-core
-COPY guest/settings ./guest/settings
-COPY guest/shell ./guest/shell
-COPY guest/shortcut-helper ./guest/shortcut-helper
-RUN cargo build \
-        --locked \
-        --release \
-        --manifest-path guest/Cargo.toml \
-        --package wildbuzzard-shell \
-        --package wildbuzzard-clipboard-agent && \
-    install -D -m 0644 \
-        "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" \
-        /rust-notices/COPYRIGHT-library.html
-
-FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS settings-builder
-
-COPY oci/desktop/apt/debian-trixie-snapshot.sources \
-    /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99wildbuzzard-snapshot \
-    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
-
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        libgtk-4-dev \
-        libpulse-dev \
-        pkg-config && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN rustup component add clippy
-
-WORKDIR /source
-COPY clipboard-protocol ./clipboard-protocol
-COPY guest/Cargo.toml guest/Cargo.lock ./guest/
-COPY guest/clipboard-agent ./guest/clipboard-agent
-COPY guest/desktop-core ./guest/desktop-core
-COPY guest/settings ./guest/settings
-COPY guest/shell ./guest/shell
-COPY guest/shortcut-helper ./guest/shortcut-helper
-RUN cargo clippy \
-        --locked \
-        --release \
-        --manifest-path guest/Cargo.toml \
-        --package wildbuzzard-settings \
-        --package wildbuzzard-shortcut-helper \
-        --all-targets \
-        -- -D warnings && \
-    cargo test \
-        --locked \
-        --release \
-        --manifest-path guest/Cargo.toml \
-        --package wildbuzzard-settings \
-        --package wildbuzzard-shortcut-helper && \
-    cargo build \
-        --locked \
-        --release \
-        --manifest-path guest/Cargo.toml \
-        --package wildbuzzard-settings \
-        --package wildbuzzard-shortcut-helper
-
-FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS cua-builder
-
-COPY oci/desktop/apt/debian-trixie-snapshot.sources \
-    /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99wildbuzzard-snapshot \
-    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
-
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        libx11-dev \
-        libxfixes-dev \
-        libxi-dev \
-        libxkbcommon-dev \
-        libxrandr-dev \
-        libxtst-dev \
-        pkg-config && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /source
-COPY guest/third_party/trycua-cua/cua-driver/rust ./cua-driver/rust
-RUN cargo build \
-        --locked \
-        --release \
-        --manifest-path cua-driver/rust/Cargo.toml \
-        --package cua-driver
-
-FROM scratch AS cua-artifact
-COPY --from=cua-builder \
-    /source/cua-driver/rust/target/release/cua-driver \
-    /cua-driver
-
-FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b AS sway-builder
-
-COPY oci/desktop/apt/debian-sid-snapshot.sources \
-    /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99wildbuzzard-snapshot \
-    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
-
-ARG SWAY_COMMIT=88869399f421d9180dd8b6ed0b5a1f4a3585d252
-ARG WLROOTS_COMMIT=d783533489e1f75d6886c2ab5c5960090ef268f8
-
-RUN apt-get -o Acquire::ForceIPv4=true update && \
-    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        git \
-        glslang-tools \
-        hwdata \
-        libcairo2-dev \
-        libdisplay-info-dev \
-        libdrm-dev \
-        libegl-dev \
-        libevdev-dev \
-        libgles-dev \
-        libinput-dev \
-        libjson-c-dev \
-        liblcms2-dev \
-        libpango1.0-dev \
-        libpcre2-dev \
-        libpixman-1-dev \
-        libseat-dev \
-        libsystemd-dev \
-        libudev-dev \
-        libvulkan-dev \
-        libwayland-dev \
-        libwlroots-0.20-dev \
-        libxcb-errors-dev \
-        libxcb-icccm4-dev \
-        libxcb1-dev \
-        libxkbcommon0 \
-        libxkbcommon-dev \
-        meson \
-        ninja-build \
-        pkg-config \
-        wayland-protocols \
-        xkb-data \
-        xwayland && \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /source
-
-COPY oci/verify-stock-sway-contract.sh \
-    /usr/local/libexec/verify-stock-sway-contract
-
-# Fetch the exact source commits behind the pinned upstream releases. The
-# release image receives only installed artifacts and licenses, never these
-# source trees or the builder toolchain.
-RUN git init wlroots && \
-    git -C wlroots remote add origin https://gitlab.freedesktop.org/wlroots/wlroots.git && \
-    git -C wlroots fetch --depth 1 origin "$WLROOTS_COMMIT" && \
-    git -C wlroots checkout --detach FETCH_HEAD && \
-    test "$(git -C wlroots rev-parse HEAD)" = "$WLROOTS_COMMIT" && \
-    git init sway && \
-    git -C sway remote add origin https://github.com/swaywm/sway.git && \
-    git -C sway fetch --depth 1 origin "$SWAY_COMMIT" && \
-    git -C sway checkout --detach FETCH_HEAD && \
-    test "$(git -C sway rev-parse HEAD)" = "$SWAY_COMMIT" && \
-    /usr/local/libexec/verify-stock-sway-contract /source/sway
-
-RUN runtime_prefix=/opt/wildbuzzard/runtime/payload && \
-    meson setup wlroots/build wlroots \
-        --buildtype=release \
-        --prefix="$runtime_prefix" \
-        --libdir=lib \
-        -Dexamples=false \
-        -Dxwayland=enabled \
-        -Drenderers=gles2,vulkan \
-        -Dallocators=gbm,udmabuf \
-        -Dcolor-management=enabled && \
-    ninja -C wlroots/build && \
-    DESTDIR=/sway-root ninja -C wlroots/build install && \
-    ninja -C wlroots/build install && \
-    PKG_CONFIG_PATH="$runtime_prefix/lib/pkgconfig" \
-    LD_LIBRARY_PATH="$runtime_prefix/lib" \
-    meson setup sway/build sway \
-        --buildtype=release \
-        --prefix="$runtime_prefix" \
-        --libdir=lib \
-        -Dc_link_args='-Wl,-rpath,$ORIGIN/../lib' \
-        -Ddefault-wallpaper=false \
-        -Dzsh-completions=false \
-        -Dbash-completions=false \
-        -Dfish-completions=false \
-        -Dswaybar=false \
-        -Dswaynag=false \
-        -Dtray=disabled \
-        -Dgdk-pixbuf=disabled \
-        -Dman-pages=disabled && \
-    ninja -C sway/build && \
-    DESTDIR=/sway-root ninja -C sway/build install && \
-    install -d /sway-licenses && \
-    install -m 0644 sway/LICENSE \
-        /sway-licenses/LICENSE.sway && \
-    install -m 0644 wlroots/LICENSE \
-        /sway-licenses/LICENSE.wlroots && \
-    rm -rf \
-        "/sway-root$runtime_prefix/include" \
-        "/sway-root$runtime_prefix/lib/pkgconfig" \
-        "/sway-root$runtime_prefix/share" && \
-    find "/sway-root$runtime_prefix" -type f \
-        \( -name '*.a' -o -name '*.la' \) -delete && \
-    find "/sway-root$runtime_prefix" -type l -print | while IFS= read -r link; do \
-        resolved=$(readlink -f -- "$link") && \
-        test -f "$resolved" && \
-        replacement="$link.wildbuzzard-real" && \
-        cp -pL -- "$link" "$replacement" && \
-        mv -f -- "$replacement" "$link"; \
-    done && \
-    ! find "/sway-root$runtime_prefix" -type l -print -quit | grep -q . && \
-    readelf -d "/sway-root$runtime_prefix/bin/sway" | \
-        grep -Fq '$ORIGIN/../lib' && \
-    readelf -d "/sway-root$runtime_prefix/bin/swaymsg" | \
-        grep -Fq '$ORIGIN/../lib' && \
-    install -d /runtime-payload && \
-    cp -a "/sway-root$runtime_prefix/." /runtime-payload/ && \
-    xkb_library=$(readlink -f /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0) && \
-    test -f "$xkb_library" && \
-    test ! -L "$xkb_library" && \
-    readelf -d "$xkb_library" | grep -Fq 'Library soname: [libxkbcommon.so.0]' && \
-    install -D -m 0755 "$xkb_library" \
-        /runtime-payload/lib/libxkbcommon.so.0 && \
-    xkb_entry=/usr/share/X11/xkb && \
-    xkb_source=$(readlink -f -- "$xkb_entry") && \
-    case "$xkb_source" in \
-        /usr/share/X11/xkb|/usr/share/xkeyboard-config-[0-9]*) ;; \
-        *) echo "xkb-data package root resolves outside its expected location: $xkb_source" >&2; exit 1 ;; \
-    esac && \
-    xkb_destination=/runtime-payload/share/X11/xkb && \
-    test -d "$xkb_source" && \
-    test ! -L "$xkb_source" && \
-    find "$xkb_source" -type l -print | while IFS= read -r link; do \
-        resolved=$(readlink -f -- "$link") && \
-        case "$resolved" in \
-            "$xkb_source"/*) ;; \
-            *) echo "xkb-data symlink escapes its package tree: $link" >&2; exit 1 ;; \
-        esac && \
-        test -f "$resolved"; \
-    done && \
-    install -d "$(dirname -- "$xkb_destination")" && \
-    cp -aL "$xkb_source" "$xkb_destination" && \
-    ! find "$xkb_destination" -type l -print -quit | grep -q . && \
-    ! find "$xkb_destination" -mindepth 1 ! -type d ! -type f -print -quit | grep -q . && \
-    install -d \
-        /runtime-payload/share/doc/libxkbcommon0 \
-        /runtime-payload/share/doc/xkb-data \
-        /runtime-payload/share/wildbuzzard && \
-    install -m 0644 /usr/share/doc/libxkbcommon0/copyright \
-        /runtime-payload/share/doc/libxkbcommon0/copyright && \
-    install -m 0644 /usr/share/doc/xkb-data/copyright \
-        /runtime-payload/share/doc/xkb-data/copyright && \
-    xkb_library_version=$(dpkg-query -W -f='${Version}' libxkbcommon0) && \
-    xkb_version=$(dpkg-query -W -f='${Version}' xkb-data) && \
-    case "$xkb_library_version" in \
-        ''|*[!A-Za-z0-9.+:~_-]*) echo "invalid libxkbcommon0 version: $xkb_library_version" >&2; exit 1 ;; \
-    esac && \
-    case "$xkb_version" in \
-        ''|*[!A-Za-z0-9.+:~_-]*) echo "invalid xkb-data version: $xkb_version" >&2; exit 1 ;; \
-    esac && \
-    printf '%s\n' "$xkb_library_version" \
-        >/runtime-payload/share/wildbuzzard/libxkbcommon0.version && \
-    sha256sum /runtime-payload/lib/libxkbcommon.so.0 | \
-        sed 's#  /runtime-payload/#  #' \
-        >/runtime-payload/share/wildbuzzard/libxkbcommon0.manifest.sha256 && \
-    printf '%s\n' "$xkb_version" \
-        >/runtime-payload/share/wildbuzzard/xkb-data.version && \
-    ( \
-        cd "$xkb_destination" && \
-        LC_ALL=C find . -type f -printf '%P\n' | LC_ALL=C sort | \
-            while IFS= read -r relative; do \
-                case "$relative" in \
-                    ''|/*|*..*|*[!A-Za-z0-9._+/@~-]*) \
-                        echo "unsafe xkb-data path: $relative" >&2; exit 1 ;; \
-                esac && \
-                digest=$(sha256sum -- "$relative" | cut -d' ' -f1) && \
-                printf '%s  %s\n' "$digest" "$relative"; \
-            done \
-    ) >/runtime-payload/share/wildbuzzard/xkb-data.manifest.sha256 && \
-    test -s /runtime-payload/share/wildbuzzard/xkb-data.manifest.sha256 && \
-    test -s /runtime-payload/share/wildbuzzard/libxkbcommon0.manifest.sha256 && \
-    (cd /runtime-payload && \
-        sha256sum --check share/wildbuzzard/libxkbcommon0.manifest.sha256)
-
-COPY oci/desktop/SWAY_UPSTREAM.toml \
-    /sway-licenses/UPSTREAM.toml
-
-FROM scratch AS sway-runtime-artifact
-COPY --from=sway-builder /runtime-payload/ /
-
-FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b AS guest-assets-builder
-
-WORKDIR /source/guest
-COPY guest/ASSET_REVISION guest/asset-manifest.tsv guest/install-rootfs-assets.sh ./
-COPY guest/assets ./assets
-COPY guest/updater ./updater
-COPY guest/third_party/trycua-cua/LICENSE.md \
-    guest/third_party/trycua-cua/UPSTREAM.toml \
-    guest/third_party/trycua-cua/CHANGES.WILDBUZZARD.md \
-    ./third_party/trycua-cua/
-COPY --from=shell-builder \
-    /source/guest/target/release/wildbuzzard-shell \
-    /source/wildbuzzard-shell
-COPY --from=shell-builder \
-    /source/guest/target/release/wildbuzzard-clipboard-agent \
-    /source/wildbuzzard-clipboard-agent
-COPY --from=settings-builder \
-    /source/guest/target/release/wildbuzzard-settings \
-    /source/wildbuzzard-settings
-COPY --from=settings-builder \
-    /source/guest/target/release/wildbuzzard-shortcut-helper \
-    /source/wildbuzzard-shortcut-helper
-COPY --from=cua-builder \
-    /source/cua-driver/rust/target/release/cua-driver \
-    /source/cua-driver
-COPY --from=sway-builder /runtime-payload /source/runtime-payload
-RUN install -d /guest-root && \
-    ./install-rootfs-assets.sh \
-        /guest-root \
-        /source/wildbuzzard-shell \
-        /source/wildbuzzard-settings \
-        /source/wildbuzzard-shortcut-helper \
-        /source/wildbuzzard-clipboard-agent \
-        /source/cua-driver \
-        /source/runtime-payload
-
+# This recipe bootstraps the signed Open Research Tools APT archive and installs
+# the three independently versioned Buzzard OS guest packages from it. No
+# source tree, compiler, language toolchain, or local package artifact enters
+# the reference image build.
 FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b
-
-ARG CUDA_CUDART_VERSION=13.1.80-1
-ARG CUDA_CUBLAS_VERSION=13.2.2.2-1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -354,101 +11,37 @@ ENV DEBIAN_FRONTEND=noninteractive
 # the pinned sid base.  The normal live sid source is restored after the image
 # is assembled so persistent guest machines continue to receive user-requested
 # package updates.
-COPY oci/desktop/apt/debian-sid-snapshot.sources \
+COPY apt/debian-sid-snapshot.sources \
     /etc/apt/sources.list.d/debian.sources
-COPY oci/desktop/apt/99wildbuzzard-snapshot \
-    /etc/apt/apt.conf.d/99wildbuzzard-snapshot
+COPY apt/99buzzardos-snapshot \
+    /etc/apt/apt.conf.d/99buzzardos-snapshot
 
-# Stock Sway/wlroots desktop with a private D-Bus/AT-SPI session. The image
-# intentionally contains no KWin, Plasma shell, compositor source
-# tree, compiler toolchain, or Blender.
+ARG BUZZARDOS_GUEST_VERSION=0.1.1
+ARG BUZZARDOS_DESKTOP_VERSION=0.1.3
+ARG BUZZARDOS_CUA_VERSION=0.1.0
+ARG OPENRESEARCHTOOLS_KEYRING_SHA256=e46f7b021b56748c749f49afa3ef97974e96fceeedeb0f2ac7ecbef8b676c441
+
+# Bootstrap only the public archive key/source package over HTTPS. APT then
+# authenticates the signed catalogue and verifies every Buzzard package hash.
+# Keeping the keyring and source installed makes persistent machines ordinary
+# APT-updatable systems after image construction.
 RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
-        at-spi2-core \
         ca-certificates \
-        curl \
-        dbus \
-        dbus-user-session \
-        dbus-x11 \
-        dconf-gsettings-backend \
-        ffmpeg \
-        firefox-esr \
-        fonts-dejavu-core \
-        fonts-noto-color-emoji \
-        fonts-noto-core \
-        fonts-noto-cjk \
-        foot \
-        fuse3 \
-        gsettings-desktop-schemas \
-        gstreamer1.0-pipewire \
-        gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-bad \
-        gstreamer1.0-plugins-good \
-        gstreamer1.0-tools \
-        grim \
-        libgl1 \
-        libgl1-mesa-dri \
-        libasound2t64 \
-        libatk-bridge2.0-0t64 \
-        libatk1.0-0t64 \
-        libcairo2 \
-        libcups2t64 \
-        libdbus-1-3 \
-        libdrm2 \
-        libexpat1 \
-        libfuse2t64 \
-        libgbm1 \
-        libglib2.0-0t64 \
-        libglib2.0-bin \
-        libgtk-3-0t64 \
-        libgtk-4-1 \
-        libnotify-bin \
-        libnspr4 \
-        libnss3 \
-        libpango-1.0-0 \
-        libpulse0 \
-        libx11-6 \
-        libxcb1 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxext6 \
-        libxfixes3 \
-        libxi6 \
-        libxkbcommon0 \
-        libxrandr2 \
-        mako-notifier \
-        mesa-vulkan-drivers \
-        mousepad \
-        openssh-client \
-        pipewire \
-        pipewire-alsa \
-        pipewire-pulse \
-        pkexec \
-        polkitd \
-        python3 \
-        python3-apt \
-        python3-gi \
-        python3-pyatspi \
-        qt6-wayland \
-        qt6-gtk-platformtheme \
-        qt6-svg-plugins \
-        slurp \
-        squashfs-tools \
-        sudo \
-        libwlroots-0.20 \
-        wlr-randr \
-        systemd \
-        systemd-sysv \
-        thunar \
-        util-linux \
-        wireplumber \
-        wtype \
-        xdg-desktop-portal \
-        xdg-desktop-portal-gtk \
-        xdg-desktop-portal-wlr \
-        xdg-utils \
-        xkb-data \
-        xwayland && \
+        wget && \
+    wget --quiet --output-document=/tmp/openresearchtools-archive-keyring.deb \
+        https://keyring.openresearchtools.com && \
+    printf '%s  %s\n' "$OPENRESEARCHTOOLS_KEYRING_SHA256" \
+        /tmp/openresearchtools-archive-keyring.deb \
+        | sha256sum --check --strict - && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        /tmp/openresearchtools-archive-keyring.deb && \
+    rm -f /tmp/openresearchtools-archive-keyring.deb && \
+    apt-get -o Acquire::ForceIPv4=true update && \
+    apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends \
+        "buzzardoscua=${BUZZARDOS_CUA_VERSION}" \
+        "buzzardos-guest=${BUZZARDOS_GUEST_VERSION}" \
+        "buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}" && \
     rm -f \
         /usr/share/applications/org.kde.ksecretd.desktop \
         /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.kwallet.service \
@@ -459,113 +52,19 @@ RUN apt-get -o Acquire::ForceIPv4=true update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-ARG CUDA_CUDART_SHA256=b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84
-ARG CUDA_CUBLAS_SHA256=0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7
-ARG CUDA_TOOLKIT_CONFIG_VERSION=13.3.29-1
-ARG CUDA_TOOLKIT_CONFIG_SHA256=282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc
-ARG CUDA_TOOLKIT_13_CONFIG_VERSION=13.3.29-1
-ARG CUDA_TOOLKIT_13_CONFIG_SHA256=5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8
-ARG CUDA_TOOLKIT_13_1_CONFIG_VERSION=13.1.80-1
-ARG CUDA_TOOLKIT_13_1_CONFIG_SHA256=f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a
-
-# The reference machine carries only the CUDA runtime needed by normal guest
-# applications. Driver libraries and devices still come from the selected host
-# GPU through the launcher's bundled, pinned NVIDIA CDI integration. Download
-# exact package filenames and verify their payload hashes rather than resolving
-# a mutable NVIDIA repository index. Do not add nvcc or a compiler toolchain.
-RUN curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-config-common_${CUDA_TOOLKIT_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-13-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-13-config-common_${CUDA_TOOLKIT_13_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-toolkit-13-1-config-common.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-toolkit-13-1-config-common_${CUDA_TOOLKIT_13_1_CONFIG_VERSION}_all.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/cuda-cudart.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/cuda-cudart-13-1_${CUDA_CUDART_VERSION}_amd64.deb" && \
-    curl --fail --location --retry 3 \
-        --output /tmp/libcublas.deb \
-        "https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/libcublas-13-1_${CUDA_CUBLAS_VERSION}_amd64.deb" && \
-    printf '%s  %s\n' \
-        "$CUDA_TOOLKIT_CONFIG_SHA256" /tmp/cuda-toolkit-config-common.deb \
-        "$CUDA_TOOLKIT_13_CONFIG_SHA256" /tmp/cuda-toolkit-13-config-common.deb \
-        "$CUDA_TOOLKIT_13_1_CONFIG_SHA256" /tmp/cuda-toolkit-13-1-config-common.deb \
-        "$CUDA_CUDART_SHA256" /tmp/cuda-cudart.deb \
-        "$CUDA_CUBLAS_SHA256" /tmp/libcublas.deb \
-        | sha256sum --check - && \
-    dpkg --install \
-        /tmp/cuda-toolkit-config-common.deb \
-        /tmp/cuda-toolkit-13-config-common.deb \
-        /tmp/cuda-toolkit-13-1-config-common.deb \
-        /tmp/cuda-cudart.deb \
-        /tmp/libcublas.deb && \
-    rm -f \
-        /tmp/cuda-toolkit-config-common.deb \
-        /tmp/cuda-toolkit-13-config-common.deb \
-        /tmp/cuda-toolkit-13-1-config-common.deb \
-        /tmp/cuda-cudart.deb \
-        /tmp/libcublas.deb
-
-COPY --from=guest-assets-builder /guest-root/ /
-COPY --from=sway-builder /sway-licenses/ /usr/share/doc/wildbuzzard-sway/
-
-COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md \
-    /usr/share/doc/wildbuzzard/
-COPY LICENSES /usr/share/doc/wildbuzzard/licenses
-RUN install -m 0644 \
-        /usr/share/doc/wildbuzzard/licenses/generated/RUST_DEPENDENCY_LICENSES.txt \
-        /usr/share/doc/wildbuzzard/RUST_DEPENDENCY_LICENSES.txt && \
-    install -m 0644 \
-        /usr/share/doc/wildbuzzard/licenses/generated/cargo-guest.tsv \
-        /usr/share/doc/wildbuzzard/cargo-guest.tsv && \
-    install -m 0644 \
-        /usr/share/doc/wildbuzzard/licenses/generated/cargo-cua.tsv \
-        /usr/share/doc/wildbuzzard/cargo-cua.tsv
-COPY tools/fetch-mpl-sources.sh /usr/libexec/wildbuzzard-fetch-mpl-sources
-RUN chmod 0755 /usr/libexec/wildbuzzard-fetch-mpl-sources && \
-    WILDBUZZARD_MPL_SOURCE_MANIFEST=/usr/share/doc/wildbuzzard/licenses/mpl-sources.tsv \
-        /usr/libexec/wildbuzzard-fetch-mpl-sources \
-        /usr/share/doc/wildbuzzard/sources/mpl
-COPY --from=shell-builder /rust-notices/COPYRIGHT-library.html \
-    /usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html
-COPY guest/third_party/trycua-cua/CITATION.cff \
-    /usr/share/doc/wildbuzzard-cua/CITATION.cff
-COPY guest/third_party/trycua-cua/cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt \
-    /usr/share/doc/wildbuzzard-cua/Inter-OFL.txt
-COPY guest/third_party/trycua-cua/cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml \
-    /usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml
-
-COPY oci/desktop/apt/debian-sid-live.sources \
+COPY apt/debian-sid-live.sources \
     /etc/apt/sources.list.d/debian.sources
-RUN rm -f /etc/apt/apt.conf.d/99wildbuzzard-snapshot
+# The finished machine is a persistent desktop, not a disposable container.
+# Replace the immutable build snapshot with the live signed archive and retain
+# its package catalogue so package installation works immediately on first
+# boot. Distro APT timers keep this catalogue current afterwards.
+RUN rm -f /etc/apt/apt.conf.d/99buzzardos-snapshot && \
+    apt-get -o Acquire::ForceIPv4=true update
 
-RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash wildbuzzard && \
-    install -d -o wildbuzzard -g wildbuzzard -m 0700 \
-        /home/wildbuzzard \
-        /home/wildbuzzard/.cache \
-        /home/wildbuzzard/.config \
-        /home/wildbuzzard/.config/sway \
-        /home/wildbuzzard/.config/sway/config.d \
-        /home/wildbuzzard/.local \
-        /home/wildbuzzard/.local/share \
-        /home/wildbuzzard/.local/state && \
-    systemctl mask \
-        console-getty.service \
-        dev-hugepages.mount \
-        getty@.service \
-        systemd-logind.service \
-        systemd-modules-load.service \
-        systemd-remount-fs.service \
-        systemd-udevd.service \
-        systemd-udevd-control.socket \
-        systemd-udevd-kernel.socket
-
-RUN systemctl mask \
-        sys-kernel-config.mount \
-        sys-kernel-debug.mount \
-        sys-kernel-tracing.mount
+COPY provision-image.sh /tmp/buzzardos-provision-image
+RUN chmod 0755 /tmp/buzzardos-provision-image && \
+    /tmp/buzzardos-provision-image && \
+    rm -f /tmp/buzzardos-provision-image
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd", "--system"]

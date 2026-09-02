@@ -7,16 +7,20 @@
 //! controls never have to guess by title, app-id, PID, or focus.
 
 use anyhow::{Context, Result};
+use buzzardos_desktop_core::{SolidColor, ThemePalette};
 use serde_json::Value;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
-use wildbuzzard_desktop_core::{SolidColor, ThemePalette};
 
 const SCRATCHPAD_WORKSPACE: &str = "__i3_scratch";
-const RESTORE_MARK_PREFIX: &str = "__wildbuzzard_restore_v1_";
+const RESTORE_MARK_PREFIX: &str = "__buzzardos_restore_v1_";
 const IPC_MAGIC: &[u8; 6] = b"i3-ipc";
 const IPC_SUBSCRIBE: u32 = 2;
 const IPC_EVENT_MASK: u32 = 1 << 31;
@@ -61,8 +65,11 @@ impl Rect {
 pub struct WindowState {
     pub identifier: String,
     pub container_id: u64,
+    pub pid: u32,
     pub rect: Rect,
     pub workspace_rect: Option<Rect>,
+    pub workspace: String,
+    pub output: String,
     pub focused: bool,
     pub scratchpad: bool,
     pub minimized: bool,
@@ -71,6 +78,27 @@ pub struct WindowState {
     pub decoration_height: i32,
     restore_frame: Option<Rect>,
     restore_marks: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceState {
+    pub name: String,
+    pub output: String,
+    pub focused: bool,
+    pub visible: bool,
+    pub rect: Rect,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct OutputState {
+    id: u64,
+    name: String,
+    active: bool,
+    rect: Rect,
+    physical_width: u32,
+    physical_height: u32,
+    refresh_millihz: u32,
+    scale_milli: u32,
 }
 
 fn restore_mark(container_id: u64, rect: Rect) -> String {
@@ -125,16 +153,27 @@ fn collect(
     node: &Value,
     parent_origin: (i32, i32),
     workspace_rect: Option<Rect>,
+    workspace_name: Option<&str>,
+    output_name: Option<&str>,
     scratchpad_workspace: bool,
     windows: &mut Vec<WindowState>,
 ) {
     let node_type = node.get("type").and_then(Value::as_str).unwrap_or_default();
     let node_name = node.get("name").and_then(Value::as_str).unwrap_or_default();
     let node_rect = json_rect(node.get("rect"));
-    let (workspace_rect, scratchpad_workspace) = if node_type == "workspace" {
-        (Some(node_rect), node_name == SCRATCHPAD_WORKSPACE)
+    let output_name = if node_type == "output" {
+        Some(node_name)
     } else {
-        (workspace_rect, scratchpad_workspace)
+        output_name
+    };
+    let (workspace_rect, workspace_name, scratchpad_workspace) = if node_type == "workspace" {
+        (
+            Some(node_rect),
+            Some(node_name),
+            node_name == SCRATCHPAD_WORKSPACE,
+        )
+    } else {
+        (workspace_rect, workspace_name, scratchpad_workspace)
     };
 
     if let Some(identifier) = node
@@ -175,8 +214,15 @@ fn collect(
         windows.push(WindowState {
             identifier: identifier.to_owned(),
             container_id,
+            pid: node
+                .get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+                .unwrap_or_default(),
             rect,
             workspace_rect,
+            workspace: workspace_name.unwrap_or_default().to_owned(),
+            output: output_name.unwrap_or_default().to_owned(),
             focused: node
                 .get("focused")
                 .and_then(Value::as_bool)
@@ -205,6 +251,8 @@ fn collect(
                     child,
                     child_origin,
                     workspace_rect,
+                    workspace_name,
+                    output_name,
                     scratchpad_workspace,
                     windows,
                 );
@@ -217,8 +265,469 @@ fn parse_tree(bytes: &[u8]) -> Result<Vec<WindowState>> {
     let root: Value = serde_json::from_slice(bytes).context("parsing Sway IPC tree")?;
     let mut windows = Vec::new();
     let root_rect = json_rect(root.get("rect"));
-    collect(&root, (root_rect.x, root_rect.y), None, false, &mut windows);
+    collect(
+        &root,
+        (root_rect.x, root_rect.y),
+        None,
+        None,
+        None,
+        false,
+        &mut windows,
+    );
     Ok(windows)
+}
+
+fn swaymsg_json(message_type: &str) -> Result<Value> {
+    anyhow::ensure!(
+        std::env::var_os("SWAYSOCK").is_some(),
+        "SWAYSOCK is unavailable"
+    );
+    let output = Command::new("swaymsg")
+        .args(["-r", "-t", message_type])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("executing swaymsg {message_type}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "swaymsg {message_type} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    serde_json::from_slice(&output.stdout).with_context(|| format!("parsing Sway {message_type}"))
+}
+
+pub fn list_workspaces() -> Result<Vec<WorkspaceState>> {
+    let value = swaymsg_json("get_workspaces")?;
+    let mut workspaces = value
+        .as_array()
+        .context("Sway get_workspaces did not return an array")?
+        .iter()
+        .filter_map(|value| {
+            let name = value.get("name")?.as_str()?.to_owned();
+            (name != SCRATCHPAD_WORKSPACE).then(|| WorkspaceState {
+                name,
+                output: value
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                focused: value
+                    .get("focused")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                visible: value
+                    .get("visible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                rect: json_rect(value.get("rect")),
+            })
+        })
+        .collect::<Vec<_>>();
+    workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(workspaces)
+}
+
+fn list_outputs() -> Result<Vec<OutputState>> {
+    let value = swaymsg_json("get_outputs")?;
+    Ok(value
+        .as_array()
+        .context("Sway get_outputs did not return an array")?
+        .iter()
+        .filter_map(|value| {
+            let name = value.get("name")?.as_str()?.to_owned();
+            let mode = value.get("current_mode").unwrap_or(&Value::Null);
+            let scale = value.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
+            Some(OutputState {
+                id: value.get("id").and_then(Value::as_u64)?,
+                name,
+                active: value
+                    .get("active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                rect: json_rect(value.get("rect")),
+                physical_width: mode
+                    .get("width")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or_default(),
+                physical_height: mode
+                    .get("height")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or_default(),
+                refresh_millihz: mode
+                    .get("refresh")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(60_000),
+                scale_milli: (scale * 1000.0).round().clamp(1.0, f64::from(u32::MAX)) as u32,
+            })
+        })
+        .collect())
+}
+
+fn quote_sway(value: &str) -> Result<String> {
+    anyhow::ensure!(
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric()
+                    || matches!(character, ' ' | '_' | '-')),
+        "unsafe Sway identifier"
+    );
+    Ok(format!("\"{value}\""))
+}
+
+fn normalized_output_position_commands(outputs: &[OutputState]) -> Result<Vec<String>> {
+    let mut active = outputs
+        .iter()
+        .filter(|output| output.active)
+        .collect::<Vec<_>>();
+    active.sort_by_key(|output| output.id);
+    anyhow::ensure!(!active.is_empty(), "Sway has no active output to position");
+
+    let mut x = 0_i32;
+    let mut commands = Vec::with_capacity(active.len());
+    for output in active {
+        commands.push(format!("output {} pos {x} 0", quote_sway(&output.name)?));
+        x = x.saturating_add(output.rect.width.max(1));
+    }
+    Ok(commands)
+}
+
+pub fn desktop_output() -> Result<String> {
+    let outputs = list_outputs()?;
+    outputs
+        .iter()
+        .filter(|output| output.active)
+        .min_by_key(|output| output.id)
+        .map(|output| output.name.clone())
+        .context("Sway has no active host-facing output")
+}
+
+pub fn current_desktop_workspace() -> Result<String> {
+    let output = desktop_output()?;
+    list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.visible && workspace.output == output)
+        .map(|workspace| workspace.name)
+        .context("host-facing Sway output has no visible workspace")
+}
+
+pub fn ensure_desktop_workspace() -> Result<()> {
+    if list_workspaces()?
+        .iter()
+        .any(|workspace| workspace.name == "Desktop")
+    {
+        return Ok(());
+    }
+    run_global_command("workspace \"Desktop\"")
+}
+
+pub fn ensure_workspace(index: u32) -> Result<WorkspaceState> {
+    anyhow::ensure!(index > 0, "Desktop does not need a virtual output");
+    ensure_numbered_workspace(index, crate::model::is_cua_workspace(index))
+}
+
+fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceState> {
+    let name = crate::model::workspace_name(index);
+    if let Some(workspace) = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+    {
+        if cua_seat {
+            run_global_command(&format!("seat \"seat{index}\" fallback false"))?;
+        }
+        return Ok(workspace);
+    }
+    ensure_desktop_workspace()?;
+    let before = list_outputs()?;
+    let primary_name = before
+        .iter()
+        .filter(|output| output.active)
+        .min_by_key(|output| output.id)
+        .map(|output| output.name.clone())
+        .context("Sway has no host-facing output to mirror")?;
+    let before_names = before
+        .iter()
+        .map(|output| output.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    run_global_command("create_output")?;
+    let outputs = list_outputs()?;
+    let created = outputs
+        .iter()
+        .find(|output| !before_names.contains(output.name.as_str()))
+        .context("Sway accepted create_output but exposed no new output")?;
+    let primary = outputs
+        .iter()
+        .find(|output| output.active && output.name == primary_name)
+        .context("Sway has no host-facing output to mirror")?;
+    let refresh_hz = f64::from(primary.refresh_millihz) / 1000.0;
+    let scale = f64::from(primary.scale_milli) / 1000.0;
+    let current = current_desktop_workspace()?;
+    let mut commands = vec![format!(
+        "output {} mode {}x{}@{refresh_hz:.3}Hz scale {scale:.3}",
+        quote_sway(&created.name)?,
+        primary.physical_width.max(1),
+        primary.physical_height.max(1),
+    )];
+    // The parent gateway translates human input in the first output's local
+    // coordinate space. Pin that host-facing output at (0,0) and pack every
+    // guest-only headless output to its right in one atomic command.
+    commands.extend(normalized_output_position_commands(&outputs)?);
+    if cua_seat {
+        commands.push(format!("seat \"seat{index}\" fallback false"));
+    }
+    commands.extend([
+        format!("focus output {}", quote_sway(&created.name)?),
+        format!("workspace {}", quote_sway(&name)?),
+        format!("focus output {}", quote_sway(&primary_name)?),
+        format!("workspace {}", quote_sway(&current)?),
+    ]);
+    run_global_command(&commands.join("; "))?;
+    let workspaces = list_workspaces()?;
+    let workspace = workspaces
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("Sway did not create workspace {name}"))?;
+    anyhow::ensure!(
+        workspace.output == created.name,
+        "Sway created workspace {name} on {} instead of {}",
+        workspace.output,
+        created.name
+    );
+    Ok(workspace)
+}
+
+fn runtime_lock_root() -> Result<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is unavailable")?;
+    let root = PathBuf::from(runtime).join("buzzardoscua");
+    match fs::create_dir(&root) {
+        Ok(()) => fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).context("creating Buzzard CUA runtime directory"),
+    }
+    let metadata = fs::symlink_metadata(&root)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o077 == 0,
+        "Buzzard CUA runtime directory is not private to the guest user"
+    );
+    Ok(root)
+}
+
+fn lock_cua_workspaces(names: &[&str]) -> Result<Vec<File>> {
+    let mut indices = names
+        .iter()
+        .filter_map(|name| crate::model::workspace_index(name))
+        .filter(|index| crate::model::is_cua_workspace(*index))
+        .collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices.dedup();
+    if indices.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = runtime_lock_root()?;
+    let mut locks = Vec::with_capacity(indices.len());
+    for index in indices {
+        let path = root.join(format!("seat{index}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.permissions().mode() & 0o077 == 0,
+            "Buzzard CUA seat lock is not private to the guest user"
+        );
+        // Never freeze the shell behind a long-running agent operation.
+        // The user can retry the selector after that one bounded CLI call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            anyhow::bail!(
+                "{} is busy with an active CUA operation: {error}",
+                crate::model::workspace_name(index)
+            );
+        }
+        locks.push(file);
+    }
+    Ok(locks)
+}
+
+pub fn switch_workspace(name: &str) -> Result<()> {
+    ensure_desktop_workspace()?;
+    let host_output = desktop_output()?;
+    let current = current_desktop_workspace()?;
+    if current == name {
+        return Ok(());
+    }
+    let _locks = lock_cua_workspaces(&[&current, name])?;
+    switch_workspace_unlocked(name, &host_output, &current)
+}
+
+fn switch_workspace_unlocked(name: &str, host_output: &str, current: &str) -> Result<()> {
+    let target = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("unknown workspace {name}"))?;
+    let mut events = EventSubscription::connect(&["workspace", "output"])?;
+    if target.output == host_output {
+        run_global_command(&format!("workspace {}", quote_sway(name)?))?;
+        return confirm_visible_workspace(&mut events, name, host_output);
+    }
+    // Stock Sway destroys an empty workspace as soon as it is no longer
+    // visible. A direct A/B swap therefore loses an empty target halfway
+    // through and leaves Sway's automatic numeric placeholder on the human
+    // output. Move the current workspace away first, then move (or recreate)
+    // the target onto the human output, and finally recreate either empty
+    // side explicitly on its intended output.
+    let commands = [
+        format!("workspace {}", quote_sway(current)?),
+        format!("move workspace to output {}", quote_sway(&target.output)?),
+        format!("workspace {}", quote_sway(name)?),
+        format!("move workspace to output {}", quote_sway(host_output)?),
+        format!("focus output {}", quote_sway(&target.output)?),
+        format!("workspace {}", quote_sway(current)?),
+        format!("focus output {}", quote_sway(host_output)?),
+        format!("workspace {}", quote_sway(name)?),
+    ];
+    run_global_command(&commands.join("; "))?;
+    confirm_visible_workspace(&mut events, name, host_output)?;
+    anyhow::ensure!(
+        list_workspaces()?.iter().any(|workspace| {
+            workspace.name == current && workspace.output == target.output && workspace.visible
+        }),
+        "Sway did not preserve workspace {current} on {} while presenting {name}",
+        target.output
+    );
+
+    // Moving a workspace between the off-screen agent output and the fixed
+    // human output changes its usable rectangle: only the human output owns
+    // the 28px navigation bar. Re-clamp every normal mapped window after the
+    // atomic swap so an off-screen frame at y=14 cannot appear underneath the
+    // human bar, and so the workspace moved away may use its full height.
+    let affected = list_windows()?
+        .into_iter()
+        .filter(|window| window.workspace == name || window.workspace == current)
+        .map(|window| window.identifier)
+        .collect::<Vec<_>>();
+    for identifier in affected {
+        constrain_new_window(&identifier)
+            .with_context(|| format!("constraining {identifier} after workspace swap"))?;
+    }
+    Ok(())
+}
+
+fn confirm_visible_workspace(
+    events: &mut EventSubscription,
+    name: &str,
+    host_output: &str,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if list_workspaces()?.iter().any(|workspace| {
+            workspace.name == name && workspace.output == host_output && workspace.visible
+        }) {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "Sway did not present workspace {name} on the host-facing output"
+        );
+        if let Err(error) = events.next_event(remaining) {
+            if Instant::now() >= deadline {
+                continue;
+            }
+            return Err(error).with_context(|| format!("waiting to present workspace {name}"));
+        }
+    }
+}
+
+pub fn move_window_to_workspace(identifier: &str, workspace: &str, focus: bool) -> Result<()> {
+    let state = window(identifier)?;
+    let _locks = lock_cua_workspaces(&[&state.workspace, workspace])?;
+    let workspace = quote_sway(workspace)?;
+    let mut commands = vec![format!("move container to workspace {workspace}")];
+    if focus {
+        commands.push(format!("workspace {workspace}"));
+        commands.push("focus".to_owned());
+    }
+    run_commands(state.container_id, commands)?;
+    let after = window(identifier)?;
+    anyhow::ensure!(
+        after.workspace == workspace.trim_matches('"'),
+        "Sway did not move the window to the requested workspace"
+    );
+    Ok(())
+}
+
+pub fn close_workspace(index: u32) -> Result<()> {
+    anyhow::ensure!(index > 0, "Desktop cannot be closed");
+    let name = crate::model::workspace_name(index);
+    let _locks = lock_cua_workspaces(&[&name])?;
+    let workspace = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .with_context(|| format!("unknown workspace {name}"))?;
+    let host_output = desktop_output()?;
+    if workspace.output == host_output {
+        switch_workspace_unlocked("Desktop", &host_output, &name)?;
+    }
+    let output = list_workspaces()?
+        .into_iter()
+        .find(|workspace| workspace.name == name)
+        .map(|workspace| workspace.output)
+        .with_context(|| format!("workspace {name} disappeared before close"))?;
+    let windows = list_windows()?
+        .into_iter()
+        .filter(|window| window.workspace == name)
+        .collect::<Vec<_>>();
+    for window in windows {
+        run_confirmed(
+            &window.identifier,
+            window.container_id,
+            "move to Desktop before workspace close",
+            vec!["move container to workspace \"Desktop\"".to_owned()],
+            |state| state.workspace == "Desktop",
+        )?;
+    }
+    anyhow::ensure!(
+        list_windows()?
+            .iter()
+            .all(|window| window.workspace != name),
+        "workspace {name} still owns windows; leaving its output intact"
+    );
+    if output != host_output {
+        run_global_command(&format!("output {} unplug", quote_sway(&output)?))?;
+    } else {
+        // A previous output failure may already have folded this workspace
+        // onto the fixed host output. Never unplug that output. Selecting
+        // Desktop after the final window move lets stock Sway discard the now
+        // empty workspace normally.
+        run_global_command("workspace \"Desktop\"")?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let workspace_gone = list_workspaces()?
+            .iter()
+            .all(|workspace| workspace.name != name);
+        if workspace_gone {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "Sway kept empty workspace {name} after its output was removed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 pub fn list_windows() -> Result<Vec<WindowState>> {
@@ -294,6 +803,16 @@ fn run_global_command(command: &str) -> Result<()> {
     });
     anyhow::ensure!(accepted, "Sway rejected batched command: {replies}");
     Ok(())
+}
+
+/// Ask stock Sway to recompute pointer focus without moving the cursor.
+///
+/// A newly mapped layer surface does not receive `wl_pointer.enter` until the
+/// seat processes a cursor update. Zero leaves both documented coordinates
+/// unchanged while causing that normal focus transition; no pointer position
+/// is returned through IPC or persisted anywhere.
+pub fn refresh_cursor_focus() -> Result<()> {
+    run_global_command("seat - cursor move 0 0")
 }
 
 fn css(color: SolidColor) -> String {
@@ -480,6 +999,97 @@ pub fn bring_into_view(identifier: &str) -> Result<()> {
         |state| state.rect == visible_frame && state.focused && !state.minimized,
     )?;
     Ok(())
+}
+
+/// Clamp one newly mapped floating toplevel into its current usable workspace.
+///
+/// This is intentionally separate from `bring_into_view`: initial placement
+/// must respect layer-shell exclusive zones without focusing the window or
+/// changing the active workspace/seat. The shell calls it only for a new
+/// foreign-toplevel identity, so later user-directed off-edge placement is not
+/// continuously overridden.
+pub fn constrain_new_window(identifier: &str) -> Result<()> {
+    let state = window(identifier)?;
+    if state.minimized || state.fullscreen {
+        return Ok(());
+    }
+    let workspace = state
+        .workspace_rect
+        .context("new window is not attached to a usable workspace")?;
+    let visible_frame = clamp_to_workspace(state.rect, workspace);
+    if visible_frame == state.rect {
+        return Ok(());
+    }
+    let mut commands = Vec::new();
+    remove_restore_mark_commands(&state, &mut commands);
+    frame_commands(visible_frame, &mut commands);
+    run_confirmed(
+        identifier,
+        state.container_id,
+        "constrain new window to usable workspace",
+        commands,
+        |state| state.rect == visible_frame && !state.minimized && !state.fullscreen,
+    )?;
+    Ok(())
+}
+
+/// Re-clamp every mapped floating window after Sway changes output geometry.
+///
+/// Output positions and workspace rectangles are global Sway coordinates. A
+/// window that was fully inside an auxiliary output before a native host
+/// resize can otherwise cross into the resized host-facing output even after
+/// the outputs themselves have been repacked. Tiled windows already follow
+/// their workspace; this is deliberately the same non-focusing frame
+/// constraint used for a newly mapped floating window.
+pub fn constrain_windows_after_output_resize() -> Result<()> {
+    let identifiers = list_windows()?
+        .into_iter()
+        .filter(|window| !window.minimized && !window.fullscreen)
+        .map(|window| window.identifier)
+        .collect::<Vec<_>>();
+    for identifier in identifiers {
+        constrain_new_window(&identifier)
+            .with_context(|| format!("constraining {identifier} after output resize"))?;
+    }
+    Ok(())
+}
+
+/// Keep a new secondary window with the one unambiguous workspace already
+/// owned by its application process, then constrain its outer frame there.
+/// Modal dialogs from Thunar/Firefox/Blender otherwise land on Sway's globally
+/// focused workspace even when the application itself belongs to a numbered
+/// CUA output. Multiple existing workspaces are deliberately ambiguous and
+/// are not guessed.
+pub fn place_new_window(identifier: &str, preferred_workspace: Option<&str>) -> Result<()> {
+    let windows = list_windows()?;
+    let state = windows
+        .iter()
+        .find(|window| window.identifier == identifier)
+        .with_context(|| format!("Sway has no mapped toplevel identifier {identifier}"))?;
+    let destination = preferred_workspace.map(str::to_owned).or_else(|| {
+        if state.pid == 0 {
+            return None;
+        }
+        let workspaces = windows
+            .iter()
+            .filter(|window| {
+                window.identifier != identifier
+                    && window.pid == state.pid
+                    && !window.minimized
+                    && !window.workspace.is_empty()
+                    && window.workspace != SCRATCHPAD_WORKSPACE
+            })
+            .map(|window| window.workspace.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        (workspaces.len() == 1)
+            .then(|| (*workspaces.iter().next().expect("one workspace")).to_owned())
+    });
+    if let Some(workspace) = destination
+        && workspace != state.workspace
+    {
+        move_window_to_workspace(identifier, &workspace, false)?;
+    }
+    constrain_new_window(identifier)
 }
 
 pub fn minimize(identifier: &str) -> Result<()> {
@@ -751,14 +1361,14 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
     let mut subscription = EventSubscription::connect(&["window", "workspace", "output"])?;
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
-        .name("wildbuzzard-sway-events".to_owned())
+        .name("buzzardos-sway-events".to_owned())
         .spawn(move || {
             loop {
                 match subscription.next_event(Duration::from_secs(24 * 60 * 60)) {
                     Ok(()) if sender.send(()).is_err() => break,
                     Ok(()) => {}
                     Err(error) => {
-                        eprintln!("wildbuzzard-shell: Sway event subscription ended: {error:#}");
+                        eprintln!("buzzardos-shell: Sway event subscription ended: {error:#}");
                         break;
                     }
                 }
@@ -771,7 +1381,57 @@ pub fn subscribe_window_changes() -> Result<Receiver<()>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wildbuzzard_desktop_core::ThemeMode;
+    use buzzardos_desktop_core::ThemeMode;
+
+    #[test]
+    fn output_layout_keeps_the_host_input_origin_fixed() {
+        let outputs = [
+            OutputState {
+                id: 9,
+                name: "WL-3".into(),
+                active: true,
+                rect: Rect {
+                    x: 6400,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+            OutputState {
+                id: 3,
+                name: "WL-1".into(),
+                active: true,
+                rect: Rect {
+                    x: 7680,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+            OutputState {
+                id: 6,
+                name: "WL-2".into(),
+                active: true,
+                rect: Rect {
+                    x: 2560,
+                    width: 1280,
+                    height: 681,
+                    ..Rect::default()
+                },
+                ..OutputState::default()
+            },
+        ];
+        assert_eq!(
+            normalized_output_position_commands(&outputs).unwrap(),
+            [
+                "output \"WL-1\" pos 0 0",
+                "output \"WL-2\" pos 1280 0",
+                "output \"WL-3\" pos 2560 0",
+            ]
+        );
+    }
 
     #[test]
     fn decoration_commands_change_only_typed_palette_values() {
@@ -807,7 +1467,7 @@ mod tests {
                 "foreign_toplevel_identifier":"visible-id",
                 "rect":{"x":0,"y":25,"width":1707,"height":1000},
                 "deco_rect":{"x":0,"y":0,"width":1707,"height":25},
-                "marks":["__wildbuzzard_restore_v1_7_200_100_900_700"],
+                "marks":["__buzzardos_restore_v1_7_200_100_900_700"],
                 "scratchpad_state":"none",
                 "focused":true,
                 "visible":true
@@ -860,7 +1520,7 @@ mod tests {
                 "id":19,"foreign_toplevel_identifier":"xwayland-id",
                 "rect":{"x":1600,"y":25,"width":1280,"height":833},
                 "deco_rect":{"x":0,"y":0,"width":1280,"height":25},
-                "marks":["__wildbuzzard_restore_v1_19_1720_90_800_600"],
+                "marks":["__buzzardos_restore_v1_19_1720_90_800_600"],
                 "scratchpad_state":"none","fullscreen_mode":0
               }]
             }]

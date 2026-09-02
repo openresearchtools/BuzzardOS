@@ -1,23 +1,21 @@
-# Hosted portable artifact assembly
+# Hosted Debian package assembly
 
-`build-release-assets.yml` is a manually dispatched, read-only workflow on a
-disposable GitHub-hosted x86-64 runner. It builds the OCI image only inside the
-runner's local Docker daemon, converts it into the verified OCI install seed,
-then deletes all image and builder state.
+`build-release-assets.yml` runs manually or for a pushed `v*` tag. On a
+disposable Ubuntu 24.04 x86-64 runner it:
 
-The workflow uploads exactly one seven-day Actions artifact containing:
+1. validates source, packaging, OCI, and licensing contracts;
+2. builds `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` `.deb` files;
+3. install-smokes the host package;
+4. on manual runs, builds and verifies the published-APT reference OCI with
+   distro Sway/wlroots;
+5. uploads the four packages and their SHA-256 files as one seven-day Actions
+   artifact named `BuzzardOS-debian-packages-amd64`.
+6. on version tags, publishes each newly versioned package and checksum to the
+   matching stable GitHub Release. All four are rebuilt and audited, but an
+   unchanged component already present on an earlier stable release is not
+   duplicated, preserving independent package versions for the APT indexer.
 
-`BuzzardOS-portable-linux-x86_64.tar.xz`
-
-`BuzzardOS-portable-linux-x86_64.tar.xz.sha256`
-
-Its archive root is exactly `BuzzardOS/`, containing the executable launcher,
-`Install-Dependencies`, the dependency-complete `app/` directory, empty
-`Machines/` and `shared/` directories, the compressed OCI seed, checksums,
-notices, corresponding source, and provenance.
-
-There is no automatic trigger, publisher job, release/prerelease input, write
-permission, registry login, or OCI push. The workflow cannot create or modify
-a GitHub Release, tag, environment, Package, GHCR image, or other registry
-object. The uploaded Actions artifact is an engineering build for inspection,
-not publication.
+The OCI image exists only in the runner's local Buildah store and is removed
+after verification. The workflow never publishes an OCI image or writes APT
+metadata. The separate `openresearchtools/apt` workflow indexes stable package
+release assets and signs the central catalogue in its protected environment.

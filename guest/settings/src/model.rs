@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use buzzardos_desktop_core::{
+    BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
+    ThemeConfigSet, ThemeMode, XdgPaths, apply_theme_files, effective_user_id,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -8,19 +12,14 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
-use wildbuzzard_desktop_core::{
-    BackgroundChoice, DisplayGeometry, GuestScalePreset, KeyboardSettings, Settings,
-    ThemeConfigSet, ThemeMode, UpdateState, XdgPaths, apply_theme_files, effective_user_id,
-};
 
-pub const OUTPUT_STATE_PATH: &str = "/run/wildbuzzard-display-state/output-state.json";
-pub const UPDATE_STATE_PATH: &str = "/var/lib/wildbuzzard-updater/state.json";
+pub const OUTPUT_STATE_PATH: &str = "/run/buzzardos-display-state/output-state.json";
 const MAX_RUNTIME_STATE_BYTES: usize = 1024 * 1024;
 const MAX_SCALE_MESSAGE_BYTES: usize = 4096;
 const MAX_KEYBOARD_MESSAGE_BYTES: usize = 4096;
 const MAX_ACTIVE_LAYOUT_NAME_BYTES: usize = 256;
-const SCALE_SOCKET_NAME: &str = "wildbuzzard-display-scale.sock";
-const KEYBOARD_SOCKET_NAME: &str = "wildbuzzard-keyboard-settings.sock";
+const SCALE_SOCKET_NAME: &str = "buzzardos-display-scale.sock";
+const KEYBOARD_SOCKET_NAME: &str = "buzzardos-keyboard-settings.sock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageId {
@@ -29,16 +28,18 @@ pub enum PageId {
     Keyboard,
     TimeLocation,
     Appearance,
+    Security,
     Updates,
 }
 
 impl PageId {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Display,
         Self::Sound,
         Self::Keyboard,
         Self::TimeLocation,
         Self::Appearance,
+        Self::Security,
         Self::Updates,
     ];
 
@@ -49,6 +50,7 @@ impl PageId {
             Self::Keyboard => "keyboard",
             Self::TimeLocation => "time-location",
             Self::Appearance => "appearance",
+            Self::Security => "security",
             Self::Updates => "updates",
         }
     }
@@ -60,6 +62,7 @@ impl PageId {
             Self::Keyboard => "Keyboard",
             Self::TimeLocation => "Time & Location",
             Self::Appearance => "Appearance",
+            Self::Security => "Security",
             Self::Updates => "Updates",
         }
     }
@@ -71,6 +74,7 @@ impl PageId {
             Self::Keyboard => "input-keyboard-symbolic",
             Self::TimeLocation => "preferences-system-time-symbolic",
             Self::Appearance => "preferences-desktop-theme-symbolic",
+            Self::Security => "security-high-symbolic",
             Self::Updates => "software-update-available-symbolic",
         }
     }
@@ -189,6 +193,24 @@ impl SettingsStore {
         }
         let mut candidate = self.settings.clone();
         candidate.appearance.background = choice;
+        candidate.generation = candidate
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Settings("settings generation overflow".into()))?;
+        candidate
+            .save(&self.paths.settings_path())
+            .map_err(|error| StoreError::Settings(error.to_string()))?;
+        self.settings = candidate;
+        Ok(self.settings.generation)
+    }
+
+    pub fn set_capped_task_buttons(&mut self, enabled: bool) -> Result<u64, StoreError> {
+        self.ensure_writable()?;
+        if self.settings.appearance.capped_task_buttons == enabled {
+            return Ok(self.settings.generation);
+        }
+        let mut candidate = self.settings.clone();
+        candidate.appearance.capped_task_buttons = enabled;
         candidate.generation = candidate
             .generation
             .checked_add(1)
@@ -752,25 +774,11 @@ pub fn set_guest_keyboard(
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UpdateView {
-    pub state: UpdateState,
-}
-
-pub fn load_update_view(path: &Path) -> UpdateView {
-    let state = if path.exists() {
-        UpdateState::load(path).unwrap_or_default()
-    } else {
-        UpdateState::default()
-    };
-    UpdateView { state }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzzardos_desktop_core::SolidColor;
     use std::os::unix::fs::symlink;
-    use wildbuzzard_desktop_core::{SolidColor, UpdateStatus};
 
     fn xdg(root: &Path) -> XdgPaths {
         XdgPaths::from_bases(
@@ -786,11 +794,12 @@ mod tests {
 
     #[test]
     fn page_contract_is_complete_and_stable() {
-        assert_eq!(PageId::ALL.len(), 6);
+        assert_eq!(PageId::ALL.len(), 7);
         assert_eq!(PageId::ALL[0].stack_name(), "display");
         assert_eq!(PageId::ALL[2].title(), "Keyboard");
         assert_eq!(PageId::ALL[3].title(), "Time & Location");
-        assert_eq!(PageId::ALL[5].title(), "Updates");
+        assert_eq!(PageId::ALL[5].title(), "Security");
+        assert_eq!(PageId::ALL[6].title(), "Updates");
         assert!(PageId::ALL.iter().all(|page| !page.icon_name().is_empty()));
     }
 
@@ -835,7 +844,7 @@ mod tests {
         assert!(
             fs::read_to_string(store.paths.config_home.join("gtk-4.0/settings.ini"))
                 .unwrap()
-                .contains("gtk-theme-name=WildBuzzard-Light")
+                .contains("gtk-theme-name=BuzzardOS-Light")
         );
     }
 
@@ -1005,13 +1014,5 @@ mod tests {
         assert_eq!(geometry.geometry_generation, 8);
         assert_eq!(geometry.physical_width, 1600);
         server.join().unwrap();
-    }
-
-    #[test]
-    fn absent_updater_is_not_reported_as_ready() {
-        let temp = tempfile::tempdir().unwrap();
-        let view = load_update_view(&temp.path().join("missing.json"));
-        assert_eq!(view.state.status, UpdateStatus::NeverChecked);
-        assert!(!view.state.runtime_ready);
     }
 }

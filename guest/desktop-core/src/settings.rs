@@ -10,19 +10,23 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use thiserror::Error;
 
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 const MAX_PLAN_GENERATION_BYTES: usize = 512;
 const MAX_XKB_MODEL_BYTES: usize = 64;
 const MAX_XKB_LAYOUT_BYTES: usize = 256;
 const MAX_XKB_VARIANT_BYTES: usize = 256;
 const MAX_XKB_OPTIONS_BYTES: usize = 512;
 const MAX_XKB_LAYOUT_GROUPS: usize = 4;
+const MAX_PINNED_APPLICATIONS: usize = 256;
+const MAX_APPLICATION_ID_BYTES: usize = 255;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppearanceSettings {
     pub theme: ThemeMode,
     pub background: BackgroundChoice,
+    pub capped_task_buttons: bool,
+    pub pinned_applications: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +116,8 @@ impl Default for Settings {
             appearance: AppearanceSettings {
                 theme: ThemeMode::Dark,
                 background: BackgroundChoice::DarkPlain,
+                capped_task_buttons: true,
+                pinned_applications: Vec::new(),
             },
             display: DisplaySettings {
                 guest_ui_scale: GuestScalePreset::Automatic,
@@ -137,9 +143,27 @@ struct SettingsV0 {
 struct SettingsV1 {
     schema_version: u32,
     generation: u64,
-    appearance: AppearanceSettings,
+    appearance: AppearanceSettingsV2,
     display: DisplaySettings,
     updates: UpdatePreferences,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsV2 {
+    schema_version: u32,
+    generation: u64,
+    appearance: AppearanceSettingsV2,
+    display: DisplaySettings,
+    keyboard: KeyboardSettings,
+    updates: UpdatePreferences,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppearanceSettingsV2 {
+    theme: ThemeMode,
+    background: BackgroundChoice,
 }
 
 #[derive(Debug, Error)]
@@ -192,6 +216,24 @@ impl Settings {
             }
         }
         self.keyboard.validate()?;
+        if self.appearance.pinned_applications.len() > MAX_PINNED_APPLICATIONS {
+            return Err(SettingsError::Validation(format!(
+                "appearance.pinned_applications may contain at most {MAX_PINNED_APPLICATIONS} entries"
+            )));
+        }
+        let mut pinned = BTreeSet::new();
+        for id in &self.appearance.pinned_applications {
+            if id.is_empty()
+                || id.len() > MAX_APPLICATION_ID_BYTES
+                || id.chars().any(char::is_control)
+                || !pinned.insert(id)
+            {
+                return Err(SettingsError::Validation(
+                    "appearance.pinned_applications contains an invalid or duplicate desktop ID"
+                        .into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -213,7 +255,16 @@ impl Settings {
                         "updates",
                     ],
                 )?;
-                exact_nested_keys(&value, "appearance", &["theme", "background"])?;
+                exact_nested_keys(
+                    &value,
+                    "appearance",
+                    &[
+                        "theme",
+                        "background",
+                        "capped_task_buttons",
+                        "pinned_applications",
+                    ],
+                )?;
                 exact_background_keys(&value)?;
                 exact_nested_keys(&value, "display", &["guest_ui_scale"])?;
                 exact_nested_keys(
@@ -225,6 +276,51 @@ impl Settings {
                 LoadOutcome {
                     value: serde_json::from_value(value)?,
                     migrated_from: None,
+                }
+            }
+            2 => {
+                exact_keys(
+                    object,
+                    &[
+                        "schema_version",
+                        "generation",
+                        "appearance",
+                        "display",
+                        "keyboard",
+                        "updates",
+                    ],
+                )?;
+                exact_nested_keys(&value, "appearance", &["theme", "background"])?;
+                exact_background_keys(&value)?;
+                exact_nested_keys(&value, "display", &["guest_ui_scale"])?;
+                exact_nested_keys(
+                    &value,
+                    "keyboard",
+                    &["model", "layout", "variant", "options"],
+                )?;
+                exact_nested_keys(&value, "updates", &["last_notified_plan_generation"])?;
+                let old: SettingsV2 = serde_json::from_value(value)?;
+                if old.schema_version != 2 {
+                    return Err(SettingsError::UnsupportedOlderSchema {
+                        found: old.schema_version,
+                        current: SETTINGS_SCHEMA_VERSION,
+                    });
+                }
+                LoadOutcome {
+                    value: Self {
+                        schema_version: SETTINGS_SCHEMA_VERSION,
+                        generation: old.generation,
+                        appearance: AppearanceSettings {
+                            theme: old.appearance.theme,
+                            background: old.appearance.background,
+                            capped_task_buttons: true,
+                            pinned_applications: Vec::new(),
+                        },
+                        display: old.display,
+                        keyboard: old.keyboard,
+                        updates: old.updates,
+                    },
+                    migrated_from: Some(2),
                 }
             }
             1 => {
@@ -253,7 +349,12 @@ impl Settings {
                     value: Self {
                         schema_version: SETTINGS_SCHEMA_VERSION,
                         generation: old.generation,
-                        appearance: old.appearance,
+                        appearance: AppearanceSettings {
+                            theme: old.appearance.theme,
+                            background: old.appearance.background,
+                            capped_task_buttons: true,
+                            pinned_applications: Vec::new(),
+                        },
                         display: old.display,
                         keyboard: KeyboardSettings::default(),
                         updates: old.updates,
@@ -291,6 +392,8 @@ impl Settings {
                             } else {
                                 BackgroundChoice::LightPlain
                             },
+                            capped_task_buttons: true,
+                            pinned_applications: Vec::new(),
                         },
                         display: DisplaySettings { guest_ui_scale },
                         ..Self::default()
@@ -467,7 +570,7 @@ mod tests {
         assert_eq!(outcome.value.generation, 7);
         assert_eq!(outcome.value.keyboard, KeyboardSettings::default());
         let persisted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(persisted["schema_version"], 2);
+        assert_eq!(persisted["schema_version"], SETTINGS_SCHEMA_VERSION);
         assert_eq!(persisted["keyboard"]["layout"], "us");
     }
 
@@ -649,6 +752,28 @@ mod tests {
         assert!(matches!(
             Settings::load(&path),
             Err(SettingsError::Schema(_))
+        ));
+    }
+
+    #[test]
+    fn pinned_application_ids_round_trip_and_reject_duplicates() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let mut settings = Settings::default();
+        settings.appearance.pinned_applications = vec![
+            "firefox-esr.desktop".into(),
+            "org.xfce.Thunar.desktop".into(),
+        ];
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().value, settings);
+
+        settings
+            .appearance
+            .pinned_applications
+            .push("firefox-esr.desktop".into());
+        assert!(matches!(
+            settings.validate(),
+            Err(SettingsError::Validation(_))
         ));
     }
 }

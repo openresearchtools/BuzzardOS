@@ -87,11 +87,11 @@ impl XdgPaths {
     }
 
     pub fn settings_path(&self) -> PathBuf {
-        self.config_home.join("wildbuzzard/settings.json")
+        self.config_home.join("buzzardos/settings.json")
     }
 
     pub fn appimage_registration_dir(&self) -> PathBuf {
-        self.data_home.join("wildbuzzard/appimages")
+        self.data_home.join("buzzardos/appimages")
     }
 
     pub fn appimage_registration_path(&self, id: RegistrationId) -> PathBuf {
@@ -124,10 +124,10 @@ impl XdgPaths {
     }
 
     pub fn managed_state_dir(&self) -> PathBuf {
-        self.state_home.join("wildbuzzard")
+        self.state_home.join("buzzardos")
     }
 
-    /// Create only Wild Buzzard-owned private state directories. General XDG
+    /// Create only Buzzard OS-owned private state directories. General XDG
     /// application, icon, and Desktop directories are left to their owners.
     pub fn ensure_private_directories(&self) -> Result<(), XdgPathError> {
         for path in [
@@ -206,12 +206,12 @@ mod tests {
         assert!(
             paths
                 .settings_path()
-                .ends_with("config/wildbuzzard/settings.json")
+                .ends_with("config/buzzardos/settings.json")
         );
         assert!(
             paths
                 .appimage_registration_dir()
-                .ends_with("data/wildbuzzard/appimages")
+                .ends_with("data/buzzardos/appimages")
         );
         assert_eq!(paths.desktop_dir, temp.path().join("Elsewhere/Desktop"));
         assert_eq!(paths.application_dirs().len(), 3);
@@ -268,8 +268,8 @@ mod tests {
         use std::os::unix::fs::symlink;
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
-        fs::create_dir_all(paths.config_home.join("wildbuzzard")).unwrap();
-        fs::create_dir_all(paths.data_home.join("wildbuzzard")).unwrap();
+        fs::create_dir_all(paths.config_home.join("buzzardos")).unwrap();
+        fs::create_dir_all(paths.data_home.join("buzzardos")).unwrap();
         fs::create_dir_all(paths.state_home.clone()).unwrap();
         let victim = temp.path().join("victim");
         fs::create_dir(&victim).unwrap();

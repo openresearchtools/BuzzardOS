@@ -4,7 +4,7 @@ package_version = "1.19.1-1"
 source_commit = "09ceee5dde66ba9ce25c7cc69b1ebd5e6e3266fa"
 source_archive_manifest = "LICENSES/go-source-archives.tsv"
 source_archive_fetcher = "tools/fetch-go-source-archives.sh"
-bundle_path = "/usr/share/doc/wildbuzzard/sources/go"
+bundle_path = "/usr/share/doc/buzzardos/sources/go"
 notes = "The exact module sets below were extracted from the Go build information in the checksum-pinned nvidia-ctk and nvidia-cdi-hook binaries. Every unique module has a checksum-pinned canonical proxy.golang.org source archive and an explicit license expression in go-source-archives.tsv. Every AppImage bundles those archives and all LICENSE, COPYING, NOTICE, and PATENTS files discovered in them, including filepath-securejoin's MPL-2.0 Source Code Form and nested sigs.k8s.io/yaml notices."
 status = "exact-module-sources-expressions-and-notices-shipped"
 

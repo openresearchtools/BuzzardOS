@@ -495,11 +495,11 @@ fn is_helper_or_service(key_file: &KeyFile) -> Result<bool, DesktopEntryError> {
     {
         return Ok(true);
     }
-    match optional_string(key_file, "X-WildBuzzard-Role")?.as_deref() {
+    match optional_string(key_file, "X-BuzzardOS-Role")?.as_deref() {
         None | Some("application") => Ok(false),
         Some("helper" | "service") => Ok(true),
         Some(_) => Err(DesktopEntryError::InvalidField {
-            field: "X-WildBuzzard-Role",
+            field: "X-BuzzardOS-Role",
             message: "must be application, helper, or service".into(),
         }),
     }
@@ -848,7 +848,7 @@ impl GeneratedAppImageDesktopEntry {
         }
         let name = self.display_name.replace('\\', "\\\\");
         Ok(format!(
-            "[Desktop Entry]\nVersion=1.0\nType=Application\nName={name}\nExec={helper} launch {}\nTryExec={helper}\nIcon={}\nTerminal=false\nCategories=Utility;\nX-WildBuzzard-AppImage-ID={}\n",
+            "[Desktop Entry]\nVersion=1.0\nType=Application\nName={name}\nExec={helper} launch {}\nTryExec={helper}\nIcon={}\nTerminal=false\nCategories=Utility;\nX-BuzzardOS-AppImage-ID={}\n",
             self.id,
             self.id.icon_name(),
             self.id,
@@ -919,7 +919,7 @@ mod tests {
         write_entry(
             &temp.path().join("visible.desktop"),
             "Visible",
-            "OnlyShowIn=WildBuzzard;\n",
+            "OnlyShowIn=BuzzardOS;\n",
         );
         write_entry(
             &temp.path().join("other.desktop"),
@@ -929,10 +929,10 @@ mod tests {
         write_entry(
             &temp.path().join("helper.desktop"),
             "Helper",
-            "X-WildBuzzard-Role=helper\n",
+            "X-BuzzardOS-Role=helper\n",
         );
         let catalog =
-            discover_application_directories(&[temp.path().to_path_buf()], &["WildBuzzard".into()]);
+            discover_application_directories(&[temp.path().to_path_buf()], &["BuzzardOS".into()]);
         assert_eq!(catalog.applications.len(), 1, "{:?}", catalog.diagnostics);
         assert_eq!(catalog.applications[0].name, "Visible");
     }
@@ -1102,11 +1102,11 @@ mod tests {
         let generated = GeneratedAppImageDesktopEntry {
             id,
             display_name: "Odd % Name 日本語".into(),
-            helper: PathBuf::from("/usr/libexec/wildbuzzard-shortcut-helper"),
+            helper: PathBuf::from("/usr/libexec/buzzardos-shortcut-helper"),
         };
         let rendered = generated.render().unwrap();
         assert!(rendered.contains(&format!(
-            "Exec=/usr/libexec/wildbuzzard-shortcut-helper launch {id}"
+            "Exec=/usr/libexec/buzzardos-shortcut-helper launch {id}"
         )));
         assert!(!rendered.contains("/shared"));
         assert!(!rendered.contains("sh -c"));

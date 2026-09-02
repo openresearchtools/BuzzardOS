@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # id	archive	url	sha256	license-expression
 go-1.26.3	go1.26.3.src.tar.gz	https://go.dev/dl/go1.26.3.src.tar.gz	1c646875d0aa8799133184ed57cf79ff24bdefe8c8820470602a9d3d6d9192b8	BSD-3-Clause AND LicenseRef-Go-Bundled-Third-Party
-go-1.26.5	go1.26.5.src.tar.gz	https://go.dev/dl/go1.26.5.src.tar.gz	495be4bc87176ac567392e5b4116abd98466d33d7b49d41e764ccc6976b2dc42	BSD-3-Clause AND LicenseRef-Go-Bundled-Third-Party
 module-github.com_NVIDIA_go-nvlib@v0.9.1-0.20251202135446-d0f42ba016dd	github.com_NVIDIA_go-nvlib@v0.9.1-0.20251202135446-d0f42ba016dd.zip	https://proxy.golang.org/github.com/!n!v!i!d!i!a/go-nvlib/@v/v0.9.1-0.20251202135446-d0f42ba016dd.zip	7fc3d1ac180f4f4e95a0074a5a5b844367620b037b05738d4f3618bb10277e65	Apache-2.0
 module-github.com_NVIDIA_go-nvml@v0.13.0-1.0.20260212130905-92cf8c963449	github.com_NVIDIA_go-nvml@v0.13.0-1.0.20260212130905-92cf8c963449.zip	https://proxy.golang.org/github.com/!n!v!i!d!i!a/go-nvml/@v/v0.13.0-1.0.20260212130905-92cf8c963449.zip	d005aadd27497cab64c04a18a603f88b7b8c002bd2d5b80bde4b6a7a393295a0	Apache-2.0
 module-github.com_cyphar_filepath-securejoin@v0.6.1	github.com_cyphar_filepath-securejoin@v0.6.1.zip	https://proxy.golang.org/github.com/cyphar/filepath-securejoin/@v/v0.6.1.zip	bb04848c968a45eb74ca7e9236d10579c4612b40cf5cd78203ee3f604b05f9e9	BSD-3-Clause AND MPL-2.0

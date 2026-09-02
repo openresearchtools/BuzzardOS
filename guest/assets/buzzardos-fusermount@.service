@@ -1,0 +1,15 @@
+[Unit]
+Description=Buzzard OS validated AppImage mount handoff
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/buzzardos/runtime/current/libexec/buzzardos-fusermount-exec --serve
+User=root
+Group=root
+UMask=0077
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+KillMode=mixed
+TimeoutStartSec=infinity
+TimeoutStopSec=30s

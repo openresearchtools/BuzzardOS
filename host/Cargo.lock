@@ -101,6 +101,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "buzzardos"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "flate2",
+ "fs2",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "uuid",
+ "wb-core",
+ "zstd",
+]
+
+[[package]]
+name = "buzzardos-broker"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs2",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "wb-core",
+]
+
+[[package]]
+name = "buzzardos-clipboard-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "buzzardos-display"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "buzzardos-clipboard-protocol",
+ "clap",
+ "futures-util",
+ "gtk4",
+ "image",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tiff",
+ "uuid",
+ "wayland-protocols",
+ "wayland-server",
+ "wb-core",
+ "xkbcommon",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1432,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "wb-core"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1450,71 +1515,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "wildbuzzard"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "flate2",
- "fs2",
- "libc",
- "nix",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "uuid",
- "wb-core",
- "zstd",
-]
-
-[[package]]
-name = "wildbuzzard-broker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fs2",
- "libc",
- "nix",
- "serde",
- "serde_json",
- "tempfile",
- "uuid",
- "wb-core",
-]
-
-[[package]]
-name = "wildbuzzard-clipboard-protocol"
-version = "0.1.0"
-
-[[package]]
-name = "wildbuzzard-display"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-util",
- "gtk4",
- "image",
- "libc",
- "nix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tiff",
- "uuid",
- "wayland-protocols",
- "wayland-server",
- "wb-core",
- "wildbuzzard-clipboard-protocol",
- "xkbcommon",
-]
 
 [[package]]
 name = "winapi"

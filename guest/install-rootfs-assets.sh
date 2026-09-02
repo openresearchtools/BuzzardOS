@@ -2,27 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -eu
 
-usage='usage: install-rootfs-assets.sh ROOTFS SHELL_BINARY SETTINGS_BINARY SHORTCUT_HELPER_BINARY CLIPBOARD_AGENT_BINARY CUA_BINARY RUNTIME_PAYLOAD'
+usage='usage: install-rootfs-assets.sh ROOTFS CLIPBOARD_AGENT_BINARY SUDO_BRIDGE_BINARY'
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 target_root=${1:?$usage}
-shell_binary=${2:?$usage}
-settings_binary=${3:?$usage}
-shortcut_helper_binary=${4:?$usage}
-clipboard_agent_binary=${5:?$usage}
-cua_binary=${6:?$usage}
-runtime_payload=${7:?$usage}
-asset_manifest="$script_dir/asset-manifest.tsv"
+clipboard_agent_binary=${2:?$usage}
+sudo_bridge_binary=${3:?$usage}
+asset_manifest="$script_dir/runtime-asset-manifest.tsv"
 revision=$(tr -d '\n' <"$script_dir/ASSET_REVISION")
 
 test -d "$target_root"
 test ! -L "$target_root"
-test -x "$shell_binary"
-test -x "$settings_binary"
-test -x "$shortcut_helper_binary"
 test -x "$clipboard_agent_binary"
-test -x "$cua_binary"
-test -d "$runtime_payload"
-test ! -L "$runtime_payload"
+test -x "$sudo_bridge_binary"
 
 case "$revision" in
     ''|*[!A-Za-z0-9._+~-]*|.*|*/*)
@@ -36,11 +27,12 @@ if [ "${#revision}" -gt 128 ]; then
 fi
 
 tab=$(printf '\t')
-runtime_root="$target_root/opt/wildbuzzard/runtime"
+runtime_root="$target_root/usr/lib/buzzardos/runtime"
 revision_dir="$runtime_root/$revision"
 for protected_dir in \
-    "$target_root/opt" \
-    "$target_root/opt/wildbuzzard" \
+    "$target_root/usr" \
+    "$target_root/usr/lib" \
+    "$target_root/usr/lib/buzzardos" \
     "$runtime_root"; do
     if [ -L "$protected_dir" ] || { [ -e "$protected_dir" ] && [ ! -d "$protected_dir" ]; }; then
         echo "protected runtime parent is not a real directory: $protected_dir" >&2
@@ -52,7 +44,7 @@ for protected_dir in \
     chmod 0755 "$protected_dir"
 done
 if [ "$(id -u)" -eq 0 ]; then
-    chown 0:0 "$target_root/opt" "$target_root/opt/wildbuzzard" "$runtime_root"
+    chown 0:0 "$target_root/usr/lib/buzzardos" "$runtime_root"
 fi
 stage=$(mktemp -d "$runtime_root/.$revision.staging.XXXXXX")
 cleanup_stage() {
@@ -62,19 +54,6 @@ cleanup_stage() {
 }
 trap cleanup_stage EXIT HUP INT TERM
 chmod 0755 "$stage"
-
-# The compositor payload is built from the pinned Sway/wlroots sources.  It is
-# pre-normalized to real directories and regular files: runtime revisions do
-# not permit internal symlinks, devices, sockets, or FIFOs.
-if find "$runtime_payload" -mindepth 1 -type l -print -quit | grep -q .; then
-    echo "protected compositor payload contains a symbolic link" >&2
-    exit 1
-fi
-if find "$runtime_payload" -mindepth 1 ! -type d ! -type f -print -quit | grep -q .; then
-    echo "protected compositor payload contains a special file" >&2
-    exit 1
-fi
-cp -a -- "$runtime_payload/." "$stage/"
 
 while IFS="$tab" read -r mode source destination; do
     case "$mode" in
@@ -103,23 +82,23 @@ while IFS="$tab" read -r mode source destination; do
     esac
 done <"$asset_manifest"
 
-install -D -m 0755 "$shell_binary" "$stage/libexec/wildbuzzard-shell"
-install -D -m 0755 "$settings_binary" "$stage/libexec/wildbuzzard-settings"
-install -D -m 0755 "$shortcut_helper_binary" \
-    "$stage/libexec/wildbuzzard-shortcut-helper"
 install -D -m 0755 "$clipboard_agent_binary" \
-    "$stage/libexec/wildbuzzard-clipboard-agent"
-install -D -m 0755 "$cua_binary" "$stage/bin/cua-driver"
-
+    "$stage/libexec/buzzardos-clipboard-agent"
+install -D -m 0755 "$sudo_bridge_binary" \
+    "$stage/libexec/buzzardos-sudo-exec"
+install -D -m 0755 "$sudo_bridge_binary" \
+    "$target_root/usr/libexec/buzzardos-guest/sudo"
+install -D -m 0755 "$sudo_bridge_binary" \
+    "$target_root/usr/libexec/buzzardos-guest/sudo-policy"
 for required in \
-    bin/sway \
-    bin/swaymsg \
-    bin/cua-driver \
-    libexec/wildbuzzard-shell \
-    libexec/wildbuzzard-settings \
-    libexec/wildbuzzard-shortcut-helper \
-    libexec/wildbuzzard-clipboard-agent \
-    libexec/wildbuzzard-updater; do
+    libexec/buzzardos-clipboard-agent \
+    libexec/buzzardos-sudo-exec \
+    libexec/buzzardos-init \
+    libexec/buzzardos-session \
+    libexec/buzzardos-sway-session \
+    libexec/buzzardos-output-sync \
+    libexec/buzzardos-desktop-services \
+    libexec/buzzardos-integration-agent; do
     test -f "$stage/$required"
     test ! -L "$stage/$required"
 done
@@ -137,7 +116,7 @@ if [ "$(id -u)" -eq 0 ]; then
     chown -R 0:0 "$stage" "$runtime_root"
 fi
 
-# Emit the exact canonical JSON representation hashed by updater_core.py.
+# Emit the canonical manifest used by the package and startup integrity gates.
 # Trusted runtime names are restricted to an ASCII subset, avoiding a second
 # JSON escaping implementation in this bootstrap shell.
 runtime_manifest="$stage/runtime.manifest.json"
@@ -278,8 +257,8 @@ done
 
 # This manifest covers non-versioned managed integration.  The independently
 # canonical runtime.manifest.json owns every private runtime byte.
-install -d -m 0755 "$target_root/usr/lib/wildbuzzard"
-json="$target_root/usr/lib/wildbuzzard/guest-assets.manifest.json"
+install -d -m 0755 "$target_root/usr/lib/buzzardos"
+json="$target_root/usr/lib/buzzardos/guest-assets.manifest.json"
 tmp="$json.tmp"
 printf '{\n  "schema": 1,\n  "assets": {\n' >"$tmp"
 first=1
@@ -309,7 +288,7 @@ printf '\n  }\n}\n' >>"$tmp"
 chmod 0644 "$tmp"
 mv -f -- "$tmp" "$json"
 install -m 0644 "$script_dir/ASSET_REVISION" \
-    "$target_root/usr/lib/wildbuzzard/guest-assets.version"
+    "$target_root/usr/lib/buzzardos/guest-assets.version"
 
 rm -f -- "$file_list"
 trap - EXIT HUP INT TERM

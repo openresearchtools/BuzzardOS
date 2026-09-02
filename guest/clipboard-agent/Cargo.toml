@@ -1,5 +1,5 @@
 [package]
-name = "wildbuzzard-clipboard-agent"
+name = "buzzardos-clipboard-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ image.workspace = true
 libc.workspace = true
 rustix.workspace = true
 tiff.workspace = true
-wildbuzzard-clipboard-protocol = { path = "../../clipboard-protocol" }
+buzzardos-clipboard-protocol = { path = "../../clipboard-protocol" }
 wl-clipboard-rs.workspace = true
 zeroize.workspace = true
 
@@ -19,5 +19,5 @@ zeroize.workspace = true
 crc32fast = "1.5"
 
 [[bin]]
-name = "wildbuzzard-clipboard-agent"
+name = "buzzardos-clipboard-agent"
 path = "src/main.rs"

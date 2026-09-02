@@ -19,14 +19,3 @@ manifest_digest = "sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cf
 config_digest = "sha256:15dd6807acddbf899c8e143476abd25e83b23d928a44608690bf1ec4e73347a5"
 layer_digests = ["sha256:15e2aa5eaf636a71504bd52ce7c8344290aaa10d75e6a3774b131afd96ad5ed6"]
 apt_snapshot = "20260803T000000Z"
-
-[[image]]
-reference = "docker.io/library/rust:1.96-slim"
-index_digest = "sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523"
-manifest_digest = "sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4"
-config_digest = "sha256:ef7774afa8fa5ea5aedfbfdfd3684d130a9c824508cfc0d373e7c3eaa8b546af"
-layer_digests = [
-    "sha256:e95a6c7ea7d49b37920899b023ecd0e32796c976c1748491f76cae53ba86d13a",
-    "sha256:5169cf74e23b4eb5efada4feddccfe1372ad72000179e789555e16a4739b3cfa",
-]
-apt_snapshot = "20260623T000000Z"

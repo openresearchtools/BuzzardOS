@@ -1,10 +1,10 @@
-.PHONY: test portable-app oci
+.PHONY: test debs oci
 
 test:
 	./tools/test-local.sh
 
-portable-app:
-	./host/build-portable-app.sh
+debs:
+	./packaging/build-debs.sh all
 
 oci:
 	./oci/build-local.sh

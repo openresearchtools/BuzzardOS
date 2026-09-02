@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Idempotent projection of Wild Buzzard's fixed AppImage actions into
+//! Idempotent projection of Buzzard OS's fixed AppImage actions into
 //! Thunar's user-owned custom-action file.
 //!
 //! Thunar resolves one `Thunar/uca.xml` through the XDG configuration search
 //! path rather than merging system and user files.  Once a user edits any
 //! custom action, their user file shadows the system file.  This module
-//! therefore replaces only actions identified by Wild Buzzard's two fixed
+//! therefore replaces only actions identified by Buzzard OS's fixed
 //! IDs while preserving every other byte in a valid user document.
 
+use buzzardos_desktop_core::{atomic_write, read_bounded};
 use roxmltree::{Document, Node};
 use serde::Serialize;
 use std::fs;
@@ -16,16 +17,40 @@ use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
-use wildbuzzard_desktop_core::{atomic_write, read_bounded};
 
 const MAX_UCA_BYTES: usize = 1024 * 1024;
-const TEMPLATE_PATH: &str = "/etc/wildbuzzard/xdg/Thunar/uca.xml";
-const APPLICATIONS_ID: &str = "wildbuzzard-appimage-add-applications-v1";
-const DESKTOP_ID: &str = "wildbuzzard-appimage-add-desktop-v1";
-const MANAGED_IDS: [&str; 2] = [APPLICATIONS_ID, DESKTOP_ID];
-const APPLICATIONS_COMMAND: &str =
-    "/usr/libexec/wildbuzzard-shortcut-helper register-applications %f";
-const DESKTOP_COMMAND: &str = "/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f";
+const TEMPLATE_PATH: &str = "/etc/buzzardos/xdg/Thunar/uca.xml";
+const MANAGED_ACTIONS: [(&str, &str, &str); 5] = [
+    (
+        "buzzardos-appimage-run-v1",
+        "/usr/libexec/buzzardos-shortcut-helper run-path %f",
+        "Run AppImage",
+    ),
+    (
+        "buzzardos-appimage-extract-run-v1",
+        "/usr/libexec/buzzardos-shortcut-helper extract-and-run %f",
+        "Extract and Run AppImage (Persistent)",
+    ),
+    (
+        "buzzardos-appimage-extract-run-no-sandbox-v1",
+        "/usr/libexec/buzzardos-shortcut-helper extract-and-run-no-sandbox %f",
+        "Extract and Run --no-sandbox",
+    ),
+    (
+        "buzzardos-appimage-add-applications-v1",
+        "/usr/libexec/buzzardos-shortcut-helper register-applications %f",
+        "Add AppImage to Applications",
+    ),
+    (
+        "buzzardos-appimage-add-desktop-v1",
+        "/usr/libexec/buzzardos-shortcut-helper register-desktop %f",
+        "Add AppImage to Desktop",
+    ),
+];
+const RETIRED_MANAGED_ACTION_IDS: [&str; 2] = [
+    "buzzardos-appimage-remove-applications-v1",
+    "buzzardos-appimage-remove-desktop-v1",
+];
 const PATTERNS: &str = "*.AppImage;*.appimage";
 const RANGE: &str = "1-1";
 
@@ -56,7 +81,7 @@ pub enum ThunarActionInstallError {
         source: std::io::Error,
     },
     #[error(transparent)]
-    Persistence(#[from] wildbuzzard_desktop_core::persistence::PersistenceError),
+    Persistence(#[from] buzzardos_desktop_core::persistence::PersistenceError),
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> ThunarActionInstallError {
@@ -66,7 +91,7 @@ fn io_error(path: &Path, source: std::io::Error) -> ThunarActionInstallError {
     }
 }
 
-/// Install or refresh the two managed actions for the current guest user.
+/// Install or refresh the managed actions for the current guest user.
 pub fn install_thunar_actions() -> Result<ThunarActionInstall, ThunarActionInstallError> {
     install_thunar_actions_at(&glib::user_config_dir(), Path::new(TEMPLATE_PATH))
 }
@@ -143,7 +168,7 @@ fn install_thunar_actions_at(
     Ok(ThunarActionInstall {
         changed,
         preserved_custom_actions: parsed.custom_action_count,
-        managed_actions: MANAGED_IDS.len(),
+        managed_actions: MANAGED_ACTIONS.len(),
         path: target,
     })
 }
@@ -157,26 +182,19 @@ impl ManagedTemplate {
     fn parse(xml: &str) -> Result<Self, ThunarActionInstallError> {
         let parsed =
             ParsedActions::parse(xml).map_err(ThunarActionInstallError::InvalidTemplate)?;
-        if parsed.actions.len() != MANAGED_IDS.len()
+        if parsed.actions.len() != MANAGED_ACTIONS.len()
             || parsed
                 .actions
                 .iter()
-                .any(|action| !MANAGED_IDS.contains(&action.id.as_str()))
+                .any(|action| !MANAGED_ACTIONS.iter().any(|managed| managed.0 == action.id))
         {
             return Err(ThunarActionInstallError::InvalidTemplate(
-                "template must contain exactly the two fixed Wild Buzzard actions".into(),
+                "template must contain exactly the fixed Buzzard OS actions".into(),
             ));
         }
-        validate_template_action(
-            parsed.action_by_id(APPLICATIONS_ID),
-            APPLICATIONS_COMMAND,
-            "Add to Applications",
-        )?;
-        validate_template_action(
-            parsed.action_by_id(DESKTOP_ID),
-            DESKTOP_COMMAND,
-            "Add Desktop Shortcut",
-        )?;
+        for (id, command, name) in MANAGED_ACTIONS {
+            validate_template_action(parsed.action_by_id(id), command, name)?;
+        }
 
         let mut fragment = String::new();
         for action in &parsed.actions {
@@ -282,7 +300,7 @@ impl ParsedActions {
                     .children()
                     .any(|child| child.is_element() && child.has_tag_name("other-files")),
             };
-            if MANAGED_IDS.contains(&id.as_str()) {
+            if is_buzzard_managed_action_id(&id) {
                 managed_ranges.push(whole_line_range(xml, action.range.clone()));
             } else {
                 custom_action_count += 1;
@@ -346,6 +364,11 @@ impl ParsedActions {
     }
 }
 
+fn is_buzzard_managed_action_id(id: &str) -> bool {
+    MANAGED_ACTIONS.iter().any(|managed| managed.0 == id)
+        || RETIRED_MANAGED_ACTION_IDS.contains(&id)
+}
+
 fn child_text(node: Node<'_, '_>, name: &str) -> Option<String> {
     let child = node
         .children()
@@ -383,30 +406,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    const TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<actions>
-  <action>
-    <icon>application-x-executable</icon>
-    <name>Add to Applications</name>
-    <unique-id>wildbuzzard-appimage-add-applications-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-applications %f</command>
-    <description>Register this AppImage in the Applications menu</description>
-    <range>1-1</range>
-    <patterns>*.AppImage;*.appimage</patterns>
-    <other-files/>
-  </action>
-  <action>
-    <icon>user-desktop</icon>
-    <name>Add Desktop Shortcut</name>
-    <unique-id>wildbuzzard-appimage-add-desktop-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f</command>
-    <description>Create a desktop shortcut linked to this AppImage</description>
-    <range>1-1</range>
-    <patterns>*.AppImage;*.appimage</patterns>
-    <other-files/>
-  </action>
-</actions>
-"#;
+    const TEMPLATE: &str = include_str!("../../assets/thunar-uca.xml");
 
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temporary = tempfile::tempdir().unwrap();
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn installs_two_fixed_actions_and_is_byte_idempotent() {
+    fn installs_fixed_actions_and_is_byte_idempotent() {
         let (_temporary, config, template) = setup();
         let first = install_thunar_actions_at(&config, &template).unwrap();
         assert!(first.changed);
@@ -434,7 +434,7 @@ mod tests {
         assert!(!second.changed);
         assert_eq!(fs::read(&second.path).unwrap(), first_bytes);
         let text = String::from_utf8(first_bytes).unwrap();
-        for id in MANAGED_IDS {
+        for (id, _, _) in MANAGED_ACTIONS {
             assert_eq!(text.matches(id).count(), 1);
         }
         assert!(!text.contains("sh -c"));
@@ -474,8 +474,33 @@ mod tests {
         install_thunar_actions_at(&config, &template).unwrap();
         let result = fs::read_to_string(thunar.join("uca.xml")).unwrap();
         assert!(!result.contains("--obsolete"));
-        assert_eq!(result.matches(APPLICATIONS_ID).count(), 1);
-        assert_eq!(result.matches(DESKTOP_ID).count(), 1);
+        for (id, _, _) in MANAGED_ACTIONS {
+            assert_eq!(result.matches(id).count(), 1);
+        }
+    }
+
+    #[test]
+    fn removes_retired_buzzard_actions_without_treating_them_as_user_actions() {
+        let (_temporary, config, template) = setup();
+        let thunar = config.join("Thunar");
+        fs::create_dir(&thunar).unwrap();
+        let retired = r#"  <action><name>Remove from Applications</name><unique-id>buzzardos-appimage-remove-applications-v1</unique-id><command>obsolete</command></action>
+  <action><name>Remove Desktop Shortcut</name><unique-id>buzzardos-appimage-remove-desktop-v1</unique-id><command>obsolete</command></action>
+"#;
+        fs::write(
+            thunar.join("uca.xml"),
+            TEMPLATE.replace("</actions>", &format!("{retired}</actions>")),
+        )
+        .unwrap();
+        let installed = install_thunar_actions_at(&config, &template).unwrap();
+        assert_eq!(installed.preserved_custom_actions, 0);
+        let result = fs::read_to_string(installed.path).unwrap();
+        for id in RETIRED_MANAGED_ACTION_IDS {
+            assert!(!result.contains(id));
+        }
+        for (id, _, _) in MANAGED_ACTIONS {
+            assert_eq!(result.matches(id).count(), 1);
+        }
     }
 
     #[test]
@@ -528,7 +553,7 @@ mod tests {
         let (_temporary, config, template) = setup();
         fs::write(
             &template,
-            TEMPLATE.replace(APPLICATIONS_COMMAND, "sh -c 'unsafe' %f"),
+            TEMPLATE.replace(MANAGED_ACTIONS[3].1, "sh -c 'unsafe' %f"),
         )
         .unwrap();
         assert!(matches!(
@@ -552,7 +577,8 @@ mod tests {
         install_thunar_actions_at(&config, &template).unwrap();
         let result = fs::read_to_string(target).unwrap();
         assert!(result.contains("</actions>\n<!-- tail -->"));
-        assert_eq!(result.matches(APPLICATIONS_ID).count(), 1);
-        assert_eq!(result.matches(DESKTOP_ID).count(), 1);
+        for (id, _, _) in MANAGED_ACTIONS {
+            assert_eq!(result.matches(id).count(), 1);
+        }
     }
 }

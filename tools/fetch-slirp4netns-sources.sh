@@ -3,9 +3,9 @@
 set -Eeuo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-manifest=${WILDBUZZARD_SLIRP_SOURCE_MANIFEST:-"$project_dir/LICENSES/slirp4netns-sources.tsv"}
+manifest=${BUZZARDOS_SLIRP_SOURCE_MANIFEST:-"$project_dir/LICENSES/slirp4netns-sources.tsv"}
 destination=${1:?usage: fetch-slirp4netns-sources.sh DESTINATION}
-cache=${WILDBUZZARD_SLIRP_SOURCE_CACHE:-"${TMPDIR:-/tmp}/wildbuzzard-slirp-source-cache-$(id -u)"}
+cache=${BUZZARDOS_SLIRP_SOURCE_CACHE:-"${TMPDIR:-/tmp}/buzzardos-slirp-source-cache-$(id -u)"}
 
 for command_name in curl install mkdir mktemp mv realpath sha256sum tar; do
     command -v "$command_name" >/dev/null 2>&1 || {

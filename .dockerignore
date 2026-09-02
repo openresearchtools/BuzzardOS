@@ -3,6 +3,9 @@
 !LICENSE
 !NOTICE
 !THIRD_PARTY_NOTICES.md
+!VERSION
+!packaging/
+!packaging/**
 !LICENSES/
 !LICENSES/**
 !guest/
@@ -13,8 +16,15 @@
 clipboard-protocol/target/
 clipboard-protocol/target/**
 !guest/ASSET_REVISION
-!guest/asset-manifest.tsv
+!guest/GUEST_VERSION
+!guest/DESKTOP_VERSION
+!guest/BUZZARDOSCUA_VERSION
+!guest/runtime-asset-manifest.tsv
+!guest/desktop-asset-manifest.tsv
 !guest/install-rootfs-assets.sh
+!guest/install-desktop-assets.sh
+!guest/packages/
+!guest/packages/**
 !guest/desktop-core/
 !guest/desktop-core/**
 !guest/settings/
@@ -25,8 +35,6 @@ clipboard-protocol/target/**
 !guest/shortcut-helper/**
 !guest/clipboard-agent/
 !guest/clipboard-agent/**
-!guest/updater/
-!guest/updater/**
 !guest/assets/
 !guest/assets/**
 !guest/third_party/

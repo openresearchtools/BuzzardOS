@@ -219,7 +219,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Persiste
 
     let mut last_collision = None;
     for _ in 0..16 {
-        let temporary_name = format!(".wildbuzzard-{}.tmp", Uuid::new_v4());
+        let temporary_name = format!(".buzzardos-{}.tmp", Uuid::new_v4());
         let temporary_c = CString::new(temporary_name.as_bytes()).expect("UUID has no NUL");
         // SAFETY: all pointers and the directory descriptor are valid. The
         // returned descriptor is uniquely owned and immediately wrapped.

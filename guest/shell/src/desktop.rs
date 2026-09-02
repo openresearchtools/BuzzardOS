@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use buzzardos_desktop_core::{
+    DesktopDirectory, DesktopItem, DesktopLayout, DesktopPosition, XdgPaths,
+};
 use gio::prelude::AppInfoExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use wildbuzzard_desktop_core::{
-    DesktopDirectory, DesktopItem, DesktopLayout, DesktopPosition, XdgPaths,
-};
 
-use crate::model::Rect;
+use crate::model::{PANEL_HEIGHT, Rect, TOP_BAR_HEIGHT};
 
 pub const ICON_CELL_WIDTH: i32 = 96;
 pub const ICON_CELL_HEIGHT: i32 = 100;
 pub const ICON_LEFT: i32 = 14;
-pub const ICON_TOP: i32 = 16;
+const ICON_MARGIN: i32 = 16;
+pub const ICON_TOP: i32 = TOP_BAR_HEIGHT + ICON_MARGIN;
 
 #[derive(Debug, Clone)]
 pub struct PositionedDesktopItem {
@@ -50,7 +51,7 @@ impl DesktopModel {
                     // shell can still lay items out in memory, but must not
                     // replace a document it cannot interpret.
                     eprintln!(
-                        "wildbuzzard-shell: desktop layout at {} was preserved and is read-only: {error}",
+                        "buzzardos-shell: desktop layout at {} was preserved and is read-only: {error}",
                         layout_path.display()
                     );
                     (DesktopLayout::default(), false)
@@ -107,7 +108,7 @@ impl DesktopModel {
     pub fn rescan(&mut self) -> Result<bool> {
         let mut items = self.directory.list().context("listing XDG Desktop")?;
         for item in &mut items {
-            if item.kind == wildbuzzard_desktop_core::DesktopItemKind::Launcher {
+            if item.kind == buzzardos_desktop_core::DesktopItemKind::Launcher {
                 item.display_name = launcher_display_name(item);
             }
         }
@@ -269,7 +270,10 @@ impl DesktopModel {
 /// launcher still never leaks the implementation suffix into the visual label.
 fn launcher_display_name(item: &DesktopItem) -> String {
     gio::DesktopAppInfo::from_filename(&item.path)
-        .map(|info| info.display_name().to_string())
+        // AppInfo::display_name may combine Name and GenericName (for
+        // example, "Firefox ESR Web Browser"). Desktop shortcuts use the
+        // application's actual localized Name, matching Applications.
+        .map(|info| info.name().to_string())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| {
             item.display_name
@@ -286,8 +290,9 @@ fn grid_extent(desktop_size: (u32, u32)) -> (u32, u32) {
         .max(ICON_CELL_WIDTH);
     let usable_height = i32::try_from(desktop_size.1)
         .unwrap_or(i32::MAX)
-        .saturating_sub(crate::model::PANEL_HEIGHT)
-        .saturating_sub(ICON_TOP * 2)
+        .saturating_sub(TOP_BAR_HEIGHT)
+        .saturating_sub(PANEL_HEIGHT)
+        .saturating_sub(ICON_MARGIN * 2)
         .max(ICON_CELL_HEIGHT);
     (
         u32::try_from(usable_width / ICON_CELL_WIDTH)
@@ -328,7 +333,8 @@ mod tests {
 
     #[test]
     fn grid_is_adaptive_and_pages_instead_of_dropping_items() {
-        assert_eq!(grid_extent((300, 300)), (2, 2));
+        assert_eq!(grid_extent((300, 300)), (2, 1));
+        assert_eq!(grid_extent((300, 400)), (2, 2));
         let occupied = (0..4)
             .map(|slot| (0, slot / 2, slot % 2))
             .collect::<BTreeSet<_>>();
@@ -411,7 +417,7 @@ mod tests {
         let shortcut = paths.desktop_dir.join("firefox-esr.desktop");
         fs::write(
             &shortcut,
-            b"[Desktop Entry]\nType=Application\nName=Firefox ESR\nExec=/bin/true\n",
+            b"[Desktop Entry]\nType=Application\nName=Firefox ESR\nGenericName=Web Browser\nExec=/bin/true\n",
         )
         .unwrap();
 

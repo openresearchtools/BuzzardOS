@@ -1,0 +1,329 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Make genuine AppImages executable as they arrive in guest-owned folders."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import errno
+import os
+import select
+import stat
+import struct
+import sys
+import time
+from pathlib import Path
+
+
+APPIMAGE_MAGICS = (b"AI\x01", b"AI\x02")
+DEFAULT_ROOTS = (Path("/home/user"), Path("/shared"))
+
+IN_ATTRIB = 0x00000004
+IN_CLOSE_WRITE = 0x00000008
+IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
+IN_DELETE_SELF = 0x00000400
+IN_MOVE_SELF = 0x00000800
+IN_Q_OVERFLOW = 0x00004000
+IN_ONLYDIR = 0x01000000
+IN_ISDIR = 0x40000000
+IN_CLOEXEC = 0x00080000
+IN_NONBLOCK = 0x00000800
+WATCH_MASK = (
+    IN_ATTRIB
+    | IN_CLOSE_WRITE
+    | IN_MOVED_TO
+    | IN_CREATE
+    | IN_DELETE_SELF
+    | IN_MOVE_SELF
+    | IN_ONLYDIR
+)
+EVENT = struct.Struct("iIII")
+FALLBACK_SCAN_MIN_SECONDS = 1.0
+FALLBACK_SCAN_MAX_SECONDS = 5.0
+
+
+class InotifyCapacityExhausted(OSError):
+    """The per-user inotify budget cannot hold this recursive watch set."""
+
+
+def make_executable(path: Path) -> bool:
+    """Add only the owner's execute bit to a regular, genuine AppImage."""
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ELOOP, errno.EACCES, errno.ENXIO):
+            print(f"buzzardos-appimage-ready: cannot inspect {path}: {error}", file=sys.stderr)
+        return False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return False
+        header = os.read(descriptor, 11)
+        if len(header) != 11 or header[:4] != b"\x7fELF" or header[8:11] not in APPIMAGE_MAGICS:
+            return False
+        if metadata.st_mode & stat.S_IXUSR:
+            return True
+        os.fchmod(descriptor, stat.S_IMODE(metadata.st_mode) | stat.S_IXUSR)
+        return True
+    except OSError as error:
+        print(f"buzzardos-appimage-ready: cannot authorize {path}: {error}", file=sys.stderr)
+        return False
+    finally:
+        os.close(descriptor)
+
+
+def scan(root: Path) -> None:
+    try:
+        iterator = os.walk(root, followlinks=False)
+        for directory, subdirectories, files in iterator:
+            # Never descend through a directory symlink even on Python/platform
+            # combinations whose walk implementation returns it in dirnames.
+            subdirectories[:] = [
+                name
+                for name in subdirectories
+                if not Path(directory, name).is_symlink()
+            ]
+            for name in files:
+                make_executable(Path(directory, name))
+    except OSError as error:
+        if error.errno != errno.ENOENT:
+            print(f"buzzardos-appimage-ready: cannot scan {root}: {error}", file=sys.stderr)
+
+
+class Inotify:
+    def __init__(self) -> None:
+        library = ctypes.CDLL(None, use_errno=True)
+        self._add_watch = library.inotify_add_watch
+        self._add_watch.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
+        self._add_watch.restype = ctypes.c_int
+        descriptor = library.inotify_init1(IN_CLOEXEC | IN_NONBLOCK)
+        if descriptor < 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+        self.descriptor = descriptor
+        self.paths: dict[int, Path] = {}
+        self.roots: set[Path] = set()
+        self.fallback_paths: set[Path] = set()
+
+    def close(self) -> None:
+        descriptor = self.descriptor
+        self.descriptor = -1
+        self.paths.clear()
+        self.roots.clear()
+        self.fallback_paths.clear()
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    def remember_fallback(self, directory: Path) -> bool:
+        if any(
+            existing == directory or existing in directory.parents
+            for existing in self.fallback_paths
+        ):
+            return False
+        self.fallback_paths = {
+            existing
+            for existing in self.fallback_paths
+            if directory not in existing.parents
+        }
+        self.fallback_paths.add(directory)
+        return True
+
+    def add(self, directory: Path) -> bool:
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            return False
+        watch = self._add_watch(
+            self.descriptor,
+            os.fsencode(directory),
+            WATCH_MASK,
+        )
+        if watch < 0:
+            code = ctypes.get_errno()
+            if code == errno.ENOSPC:
+                # ENOSPC is a shared per-host-user capacity failure. Keeping
+                # the directories added before this one watched would retain
+                # scarce kernel watches while providing only partial event
+                # coverage. Drop the complete recursive set immediately; the
+                # service switches all configured roots to periodic scans.
+                self.close()
+                raise InotifyCapacityExhausted(
+                    code,
+                    f"cannot watch {directory}: {os.strerror(code)}",
+                )
+            elif code not in (errno.ENOENT, errno.EACCES):
+                print(
+                    f"buzzardos-appimage-ready: cannot watch {directory}: "
+                    f"{os.strerror(code)}",
+                    file=sys.stderr,
+                )
+            return False
+        self.paths[watch] = directory
+        self.fallback_paths.discard(directory)
+        return True
+
+    def add_root(self, root: Path) -> None:
+        self.roots.add(root)
+        if not self.add_tree(root):
+            self.remember_fallback(root)
+
+    def add_tree(self, root: Path) -> bool:
+        if not self.add(root):
+            return False
+        try:
+            for directory, subdirectories, _files in os.walk(root, followlinks=False):
+                subdirectories[:] = [
+                    name
+                    for name in subdirectories
+                    if not Path(directory, name).is_symlink()
+                ]
+                watched = []
+                for name in subdirectories:
+                    if self.add(Path(directory, name)):
+                        watched.append(name)
+                subdirectories[:] = watched
+        except InotifyCapacityExhausted:
+            raise
+        except OSError:
+            return False
+        return True
+
+    def process_events(self, payload: bytes) -> None:
+        offset = 0
+        while offset + EVENT.size <= len(payload):
+            watch, mask, _cookie, length = EVENT.unpack_from(payload, offset)
+            offset += EVENT.size
+            raw_name = payload[offset : offset + length]
+            offset += length
+            if mask & IN_Q_OVERFLOW:
+                for root in self.roots:
+                    scan(root)
+                continue
+            base = self.paths.get(watch)
+            if base is None:
+                continue
+            name = os.fsdecode(raw_name.split(b"\0", 1)[0])
+            path = base / name if name else base
+            if mask & (IN_DELETE_SELF | IN_MOVE_SELF):
+                self.paths.pop(watch, None)
+                if base in self.roots:
+                    self.remember_fallback(base)
+                continue
+            if mask & IN_ISDIR:
+                if mask & (IN_CREATE | IN_MOVED_TO):
+                    if not self.add_tree(path):
+                        self.remember_fallback(path)
+                    # A download manager may atomically move an already
+                    # populated directory into a watched root. Watches cover
+                    # later writes, while this scan covers every file that
+                    # arrived with the directory itself.
+                    scan(path)
+                continue
+            if mask & (IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE):
+                make_executable(path)
+
+    def run(self) -> None:
+        poller = select.poll()
+        poller.register(self.descriptor, select.POLLIN)
+        next_fallback_scan = time.monotonic()
+        while True:
+            timeout = -1
+            if self.fallback_paths:
+                timeout = max(
+                    0,
+                    int((next_fallback_scan - time.monotonic()) * 1000),
+                )
+            events = poller.poll(timeout)
+            for _descriptor, flags in events:
+                if flags & (select.POLLERR | select.POLLHUP | select.POLLNVAL):
+                    raise OSError("inotify descriptor stopped unexpectedly")
+                if not flags & select.POLLIN:
+                    continue
+                while True:
+                    try:
+                        payload = os.read(self.descriptor, 1024 * 1024)
+                    except BlockingIOError:
+                        break
+                    self.process_events(payload)
+            now = time.monotonic()
+            if self.fallback_paths and now >= next_fallback_scan:
+                for root in tuple(self.fallback_paths):
+                    scan(root)
+                    self.add_tree(root)
+                next_fallback_scan = now + FALLBACK_SCAN_MIN_SECONDS
+
+
+def fallback_scan_delay(elapsed: float) -> float:
+    """Keep fallback responsive without continuously walking large trees."""
+    return min(
+        FALLBACK_SCAN_MAX_SECONDS,
+        max(FALLBACK_SCAN_MIN_SECONDS, elapsed),
+    )
+
+
+def run_periodic_scans(roots: tuple[Path, ...]) -> None:
+    """Keep authorization available without retaining any inotify watches."""
+    while True:
+        started = time.monotonic()
+        for root in roots:
+            scan(root)
+        time.sleep(fallback_scan_delay(time.monotonic() - started))
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="scan once and exit")
+    parser.add_argument(
+        "--root",
+        action="append",
+        type=Path,
+        dest="roots",
+        help="guest-owned directory to scan/watch (repeatable)",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    roots = tuple(arguments.roots or DEFAULT_ROOTS)
+    for root in roots:
+        scan(root)
+    if arguments.once:
+        return 0
+    try:
+        watcher = Inotify()
+    except OSError as error:
+        if error.errno != errno.ENOSPC:
+            raise
+        print(
+            "buzzardos-appimage-ready: cannot allocate an inotify instance: "
+            f"{error}; using periodic scan",
+            file=sys.stderr,
+        )
+        run_periodic_scans(roots)
+        return 0
+    try:
+        for root in roots:
+            watcher.add_root(root)
+        watcher.run()
+    except InotifyCapacityExhausted as error:
+        print(
+            "buzzardos-appimage-ready: inotify watch capacity exhausted: "
+            f"{error}; released all inotify watches and using periodic scans",
+            file=sys.stderr,
+        )
+        run_periodic_scans(roots)
+    finally:
+        watcher.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use anyhow::{Context, Result, bail};
+use buzzardos_desktop_core::{DesktopDirectory, RegistrationId, XdgPaths};
+use buzzardos_shortcut_helper::{
+    LaunchStatus, RegistrationFlags, RegistrationStore, extract_and_launch, install_thunar_actions,
+    launch_path, validate_appimage,
+};
 use gio::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 use std::ffi::{OsStr, OsString};
+use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use wildbuzzard_desktop_core::{DesktopDirectory, RegistrationId, XdgPaths};
-use wildbuzzard_shortcut_helper::{
-    LaunchStatus, RegistrationFlags, RegistrationStore, install_thunar_actions, validate_appimage,
-};
 
 #[cfg(feature = "chooser")]
-use wildbuzzard_shortcut_helper::{RelinkOutcome, choose_relink, launch_with_relink};
+use buzzardos_shortcut_helper::{RelinkOutcome, choose_relink, launch_with_relink};
 
 fn main() {
     match run(std::env::args_os().skip(1).collect()) {
@@ -40,14 +42,15 @@ fn main() {
 fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
     let (command, rest) = arguments
         .split_first()
-        .context("usage: wildbuzzard-shortcut-helper COMMAND [ARGUMENTS]")?;
+        .context("usage: buzzardos-shortcut-helper COMMAND [ARGUMENTS]")?;
     let command = command
         .to_str()
         .context("command name must be valid UTF-8")?;
     // Store construction is also the deterministic recovery boundary for an
-    // interrupted registered-AppImage Desktop rename. The session invokes
-    // `install-thunar-actions` at every login, so construct the store before
-    // even that otherwise-independent startup command.
+    // interrupted registered-AppImage Desktop rename. Reference-image
+    // provisioning invokes `install-thunar-actions` exactly once; normal
+    // helper operations still construct the store first so interrupted
+    // durable mutations recover before another mutation starts.
     let store = RegistrationStore::discover().context("initialize AppImage registrations")?;
     if command == "install-thunar-actions" {
         if !rest.is_empty() {
@@ -72,20 +75,31 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
                 })),
             }))
         }
+        "run-path" => process_json(launch_path(exactly_one_path(rest)?)?),
+        "extract-and-run" => process_json(extract_and_launch(exactly_one_path(rest)?, false)?),
+        "extract-and-run-no-sandbox" => {
+            process_json(extract_and_launch(exactly_one_path(rest)?, true)?)
+        }
         "register-applications" => registration_json(
             store.register(exactly_one_path(rest)?, RegistrationFlags::APPLICATIONS)?,
         ),
-        "register-desktop" => {
-            registration_json(store.register(exactly_one_path(rest)?, RegistrationFlags::DESKTOP)?)
-        }
+        "register-desktop" => notify_after_desktop_change(registration_json(
+            store.register(exactly_one_path(rest)?, RegistrationFlags::DESKTOP)?,
+        )),
         "add-applications" => registration_json(store.add_applications(one_id(rest)?)?),
-        "add-desktop" => registration_json(store.add_desktop(one_id(rest)?)?),
+        "add-desktop" => {
+            notify_after_desktop_change(registration_json(store.add_desktop(one_id(rest)?)?))
+        }
         "remove-applications" => {
             optional_registration_json(store.remove_applications(one_id(rest)?)?)
         }
-        "remove-desktop" => optional_registration_json(store.remove_desktop(one_id(rest)?)?),
+        "remove-desktop" => notify_after_desktop_change(optional_registration_json(
+            store.remove_desktop(one_id(rest)?)?,
+        )),
         "remove-applications-for" => remove_for_target(&store, exactly_one_path(rest)?, true),
-        "remove-desktop-for" => remove_for_target(&store, exactly_one_path(rest)?, false),
+        "remove-desktop-for" => {
+            notify_after_desktop_change(remove_for_target(&store, exactly_one_path(rest)?, false))
+        }
         "status-for" => optional_registration_json(store.find_by_target(exactly_one_path(rest)?)?),
         "list" => Ok(json!({ "ok": true, "registrations": store.list()? })),
         "launch" => launch_json(&store, one_id(rest)?),
@@ -100,11 +114,25 @@ fn run(arguments: Vec<OsString>) -> Result<serde_json::Value> {
             Ok(json!({ "ok": true }))
         }
         "desktop-list" => desktop_list(rest),
-        "desktop-new-folder" => desktop_new_folder(rest),
-        "desktop-rename" => desktop_rename(&store, rest),
-        "desktop-delete-after-confirmation" => desktop_delete(rest),
+        "desktop-new-folder" => notify_after_desktop_change(desktop_new_folder(rest)),
+        "desktop-rename" => notify_after_desktop_change(desktop_rename(&store, rest)),
+        "desktop-delete-after-confirmation" => notify_after_desktop_change(desktop_delete(rest)),
         _ => bail!("unknown command: {command}"),
     }
+}
+
+fn notify_after_desktop_change(result: Result<serde_json::Value>) -> Result<serde_json::Value> {
+    let value = result?;
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return Ok(value);
+    };
+    if let Ok(socket) = UnixDatagram::unbound() {
+        let _ = socket.send_to(
+            br#"{"schema":1,"desktop_changed":true}"#,
+            PathBuf::from(runtime).join("buzzardos-shell-control.sock"),
+        );
+    }
+    Ok(value)
 }
 
 #[cfg(feature = "chooser")]
@@ -131,6 +159,10 @@ fn choose_relink_json(store: &RegistrationStore, id: RegistrationId) -> Result<s
 
 fn registration_json<T: Serialize>(registration: T) -> Result<serde_json::Value> {
     Ok(json!({ "ok": true, "registration": registration }))
+}
+
+fn process_json(child: std::process::Child) -> Result<serde_json::Value> {
+    Ok(json!({ "ok": true, "process_id": child.id() }))
 }
 
 fn optional_registration_json<T: Serialize>(registration: Option<T>) -> Result<serde_json::Value> {
@@ -211,8 +243,8 @@ struct DesktopItemJson {
     name: String,
     display_name: String,
     path: PathBuf,
-    identity: wildbuzzard_desktop_core::FileIdentity,
-    kind: wildbuzzard_desktop_core::DesktopItemKind,
+    identity: buzzardos_desktop_core::FileIdentity,
+    kind: buzzardos_desktop_core::DesktopItemKind,
     size: u64,
 }
 

@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Unprivileged client for the fixed Buzzard OS AppImage mount service."""
+
+from __future__ import annotations
+
+import os
+import socket
+import struct
+import sys
+
+
+SOCKET_PATH = "/run/buzzardos/fusermount.sock"
+MAGIC = b"BZFM0001"
+MAX_ARGUMENTS = 64
+MAX_ARGUMENT_BYTES = 4096
+MAX_RESPONSE_BYTES = 65536
+
+
+def encode_request(arguments: list[str], communication_fd: int) -> bytes:
+    if len(arguments) > MAX_ARGUMENTS:
+        raise ValueError("too many fusermount arguments")
+    encoded = [os.fsencode(argument) for argument in arguments]
+    if any(len(argument) > MAX_ARGUMENT_BYTES for argument in encoded):
+        raise ValueError("fusermount argument is too long")
+    request = bytearray(MAGIC)
+    request.extend(struct.pack("!iI", communication_fd, len(encoded)))
+    for argument in encoded:
+        request.extend(struct.pack("!I", len(argument)))
+        request.extend(argument)
+    return bytes(request)
+
+
+def receive_exact(connection: socket.socket, size: int) -> bytes:
+    result = bytearray()
+    while len(result) < size:
+        chunk = connection.recv(size - len(result))
+        if not chunk:
+            raise RuntimeError("AppImage mount service closed without a response")
+        result.extend(chunk)
+    return bytes(result)
+
+
+def main() -> int:
+    try:
+        communication_fd = int(os.environ.get("_FUSE_COMMFD", "-1"), 10)
+        request = encode_request(sys.argv[1:], communication_fd)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC) as connection:
+            connection.connect(SOCKET_PATH)
+            connection.sendall(request)
+            connection.shutdown(socket.SHUT_WR)
+            status, message_length = struct.unpack("!iI", receive_exact(connection, 8))
+            if message_length > MAX_RESPONSE_BYTES:
+                raise RuntimeError("AppImage mount service response is too large")
+            message = receive_exact(connection, message_length)
+            if connection.recv(1):
+                raise RuntimeError("AppImage mount service sent trailing data")
+        if message:
+            stream = sys.stdout.buffer if status == 0 else sys.stderr.buffer
+            stream.write(message)
+            stream.flush()
+        if status < 0 or status > 255:
+            return 1
+        return status
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"buzzardos-fusermount: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

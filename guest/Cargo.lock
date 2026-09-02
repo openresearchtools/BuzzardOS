@@ -310,6 +310,106 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "buzzardos-clipboard-agent"
+version = "0.1.1"
+dependencies = [
+ "buzzardos-clipboard-protocol",
+ "crc32fast",
+ "image",
+ "libc",
+ "rustix",
+ "tiff",
+ "wl-clipboard-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "buzzardos-clipboard-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "buzzardos-desktop"
+version = "0.1.3"
+dependencies = [
+ "accesskit",
+ "accesskit_unix",
+ "anyhow",
+ "buzzardos-desktop-core",
+ "buzzardos-shortcut-helper",
+ "fontdue",
+ "gio",
+ "image",
+ "libc",
+ "resvg",
+ "serde",
+ "serde_json",
+ "smithay-client-toolkit",
+ "tempfile",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wl-clipboard-rs",
+]
+
+[[package]]
+name = "buzzardos-desktop-core"
+version = "0.1.3"
+dependencies = [
+ "gio",
+ "glib",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "buzzardos-settings"
+version = "0.1.3"
+dependencies = [
+ "buzzardos-desktop-core",
+ "gio",
+ "glib",
+ "gtk4",
+ "libc",
+ "libpulse-binding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "buzzardos-shortcut-helper"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "buzzardos-desktop-core",
+ "gio",
+ "glib",
+ "gtk4",
+ "image",
+ "libc",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "buzzardos-sudo-bridge"
+version = "0.1.1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2184,97 +2284,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "wildbuzzard-clipboard-agent"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "image",
- "libc",
- "rustix",
- "tiff",
- "wildbuzzard-clipboard-protocol",
- "wl-clipboard-rs",
- "zeroize",
-]
-
-[[package]]
-name = "wildbuzzard-clipboard-protocol"
-version = "0.1.0"
-
-[[package]]
-name = "wildbuzzard-desktop-core"
-version = "0.1.0"
-dependencies = [
- "gio",
- "glib",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "wildbuzzard-settings"
-version = "0.1.0"
-dependencies = [
- "gio",
- "glib",
- "gtk4",
- "libc",
- "libpulse-binding",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "wildbuzzard-desktop-core",
-]
-
-[[package]]
-name = "wildbuzzard-shell"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "accesskit_unix",
- "anyhow",
- "fontdue",
- "gio",
- "image",
- "libc",
- "resvg",
- "serde",
- "serde_json",
- "smithay-client-toolkit",
- "tempfile",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
- "wildbuzzard-desktop-core",
- "wildbuzzard-shortcut-helper",
- "wl-clipboard-rs",
-]
-
-[[package]]
-name = "wildbuzzard-shortcut-helper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gio",
- "glib",
- "gtk4",
- "image",
- "libc",
- "roxmltree",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "wildbuzzard-desktop-core",
-]
 
 [[package]]
 name = "winapi"

@@ -1,10 +1,10 @@
 # Stock Sway window-decoration contract
 
-The reference image builds unmodified Sway 1.12 at
-`88869399f421d9180dd8b6ed0b5a1f4a3585d252`. Wild Buzzard does not carry a
-compositor patch or private fork.
+The current pinned Debian snapshot resolves the distro's stock Sway package
+and its matching wlroots ABI package. Buzzard OS does not build or
+carry a compositor patch, source fork, or private compositor package.
 
-At that commit, Sway's normal border is a compositor-owned scene containing
+In that package, Sway's normal border is a compositor-owned scene containing
 the title background, border, title text, and marks text. Its default input
 seat:
 
@@ -27,8 +27,8 @@ managed views and do not match this rule.
 
 ## Stock limitation
 
-Sway 1.12 does **not** draw or hit-test minimize, maximize/restore, or close
-buttons in its server-side titlebar. The titlebar scene at the pinned commit
+The currently resolved Sway package does **not** draw or hit-test minimize,
+maximize/restore, or close buttons in its server-side titlebar. The distro titlebar scene
 has no control nodes, and the default titlebar input path only focuses and
 moves the container.
 
@@ -40,25 +40,25 @@ Sway still owns the authoritative operations:
 - `fullscreen` is available, but is not a classic maximize operation because
   it intentionally occupies the output outside the normal decorated workspace.
 
-Wild Buzzard integrations must use those private in-guest IPC/input routes and
+Buzzard OS integrations must use those private in-guest IPC/input routes and
 confirm the resulting Sway tree state. They must not claim that stock Sway
 provides titlebar buttons, draw detached layer-shell decorations, or patch the
 reference compositor.
 
 Stock Sway scopes an unqualified mouse binding to the titlebar. The reference
 session binds titlebar button 3 to focus the exact container under the pointer
-and ask the native Wild Buzzard shell to open the same accessible window menu
+and ask the native Buzzard OS shell to open the same accessible window menu
 used by a taskbar secondary click. Application content retains its normal
 button-3 behavior. The menu exposes Focus, Bring Into View, Minimize,
 Maximize/Restore, and Close. Bring Into View focuses the exact Sway identifier
 and clamps its complete compositor-reported frame into the current usable
 workspace, which recovers a window moved beyond a resized output.
 
-Wild Buzzard's classic maximize is deliberately not Sway fullscreen. It sizes
+Buzzard OS's classic maximize is deliberately not Sway fullscreen. It sizes
 the complete floating container to the workspace rectangle reported by Sway,
 which is the virtual output's usable area after the bottom taskbar's exclusive
 zone. The normal restore rectangle is stored as a container-scoped
-`__wildbuzzard_restore_v1_*` Sway mark so the shell and in-guest CUA driver
+`__buzzardos_restore_v1_*` Sway mark so the shell and in-guest CUA driver
 share the same mapped-lifetime state. Restore removes that mark and clamps the
 saved frame into the current workspace after an output resize. Minimize uses
 the exact container's scratchpad state and retains the mark only when the

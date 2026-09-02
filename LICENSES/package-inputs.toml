@@ -1,70 +1,41 @@
 schema = 1
-audited_at = "2026-08-11"
+audited_at = "2026-08-30"
 containerfile = "oci/desktop/Containerfile"
-notes = "Ordered direct package inputs are mirrored exactly from the Containerfile. They do not describe the transitive dpkg closure; only an audit of the built rootfs can do that. Debian package resolution is frozen by the dated snapshot sources recorded below. CUDA runtime packages use exact filenames and verified payload hashes. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
-
-[[base_image]]
-reference = "docker.io/library/rust:1.96-slim"
-used_by = ["shell-builder", "settings-builder", "cua-builder"]
-digest = "sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4"
-index_digest = "sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523"
-apt_snapshot = "20260623T000000Z"
+notes = "The standard Containerfile bootstraps the signed Open Research Tools APT repository with a checksum-pinned archive-keyring package and installs exact versions of the three independently published Buzzard OS guest packages. Their Debian control metadata declares the distro dependency closure. Debian package resolution is frozen by the dated snapshot source during construction, while the installed live Debian and Open Research Tools sources keep the persistent machine APT-updatable. The optional CUDA variant adds exact-version NVIDIA repository packages after the complete standard definition. Base-image index, amd64 manifest, config, and layer identities are recorded in oci/base-images.lock.toml."
 
 [[base_image]]
 reference = "docker.io/library/debian:sid"
-used_by = ["sway-builder", "guest-assets-builder", "runtime"]
+used_by = ["runtime"]
 digest = "sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b"
 index_digest = "sha256:24c766c06ebdbda66a026e92361ede7d9212819701b2fca82e347ef0c240cb2c"
 apt_snapshot = "20260803T000000Z"
 
 [[apt_block]]
 order = 1
-stage = "shell-builder"
-surface = "build-only"
-packages = ["libglib2.0-dev", "libxkbcommon-dev", "pkg-config"]
-notes = "This stage builds both the desktop shell and the guest-private clipboard agent. GLib/GIO development metadata is required by the clipboard agent; its Rust dependencies remain recorded by the locked guest Cargo graph."
-
-[[apt_block]]
-order = 2
-stage = "settings-builder"
-surface = "build-only"
-packages = ["libgtk-4-dev", "libpulse-dev", "pkg-config"]
-
-[[apt_block]]
-order = 3
-stage = "cua-builder"
-surface = "build-only"
-packages = ["libx11-dev", "libxfixes-dev", "libxi-dev", "libxkbcommon-dev", "libxrandr-dev", "libxtst-dev", "pkg-config"]
-
-[[apt_block]]
-order = 4
-stage = "sway-builder"
-surface = "build-only-and-linked-output"
-packages = ["build-essential", "ca-certificates", "git", "glslang-tools", "hwdata", "libcairo2-dev", "libdisplay-info-dev", "libdrm-dev", "libegl-dev", "libevdev-dev", "libgles-dev", "libinput-dev", "libjson-c-dev", "liblcms2-dev", "libpango1.0-dev", "libpcre2-dev", "libpixman-1-dev", "libseat-dev", "libsystemd-dev", "libudev-dev", "libvulkan-dev", "libwayland-dev", "libwlroots-0.20-dev", "libxcb-errors-dev", "libxcb-icccm4-dev", "libxcb1-dev", "libxkbcommon0", "libxkbcommon-dev", "meson", "ninja-build", "pkg-config", "wayland-protocols", "xkb-data", "xwayland"]
-
-[[apt_block]]
-order = 5
 stage = "runtime"
 surface = "oci"
-packages = ["at-spi2-core", "ca-certificates", "curl", "dbus", "dbus-user-session", "dbus-x11", "dconf-gsettings-backend", "ffmpeg", "firefox-esr", "fonts-dejavu-core", "fonts-noto-color-emoji", "fonts-noto-core", "fonts-noto-cjk", "foot", "fuse3", "gsettings-desktop-schemas", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-bad", "gstreamer1.0-plugins-good", "gstreamer1.0-tools", "grim", "libgl1", "libgl1-mesa-dri", "libasound2t64", "libatk-bridge2.0-0t64", "libatk1.0-0t64", "libcairo2", "libcups2t64", "libdbus-1-3", "libdrm2", "libexpat1", "libfuse2t64", "libgbm1", "libglib2.0-0t64", "libglib2.0-bin", "libgtk-3-0t64", "libgtk-4-1", "libnotify-bin", "libnspr4", "libnss3", "libpango-1.0-0", "libpulse0", "libx11-6", "libxcb1", "libxcomposite1", "libxdamage1", "libxext6", "libxfixes3", "libxi6", "libxkbcommon0", "libxrandr2", "mako-notifier", "mesa-vulkan-drivers", "mousepad", "openssh-client", "pipewire", "pipewire-alsa", "pipewire-pulse", "pkexec", "polkitd", "python3", "python3-apt", "python3-gi", "python3-pyatspi", "qt6-wayland", "qt6-gtk-platformtheme", "qt6-svg-plugins", "slurp", "squashfs-tools", "sudo", "libwlroots-0.20", "wlr-randr", "systemd", "systemd-sysv", "thunar", "util-linux", "wireplumber", "wtype", "xdg-desktop-portal", "xdg-desktop-portal-gtk", "xdg-desktop-portal-wlr", "xdg-utils", "xkb-data", "xwayland"]
+packages = ["ca-certificates", "wget"]
+notes = "Bootstrap tools are resolved from the immutable Debian snapshot. The downloaded keyring package is independently checksum-pinned below."
 
-[[direct_package_block]]
-order = 6
+[[repository_package_block]]
+order = 2
+stage = "runtime"
+surface = "oci"
+containerfile = "oci/desktop/Containerfile"
+resolution = "exact Buzzard package versions from the signed Open Research Tools APT repository authenticated by the checksum-pinned archive-keyring package"
+repository_key_sha256 = "e46f7b021b56748c749f49afa3ef97974e96fceeedeb0f2ac7ecbef8b676c441"
+packages = ["buzzardoscua=${BUZZARDOS_CUA_VERSION}", "buzzardos-guest=${BUZZARDOS_GUEST_VERSION}", "buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"]
+
+[[repository_package_block]]
+order = 3
 stage = "runtime-cuda"
 surface = "oci"
-resolution = "direct NVIDIA repository filenames with sha256 verification; no repository-index resolution"
-packages = ["cuda-toolkit-config-common=${CUDA_TOOLKIT_CONFIG_VERSION}", "cuda-toolkit-13-config-common=${CUDA_TOOLKIT_13_CONFIG_VERSION}", "cuda-toolkit-13-1-config-common=${CUDA_TOOLKIT_13_1_CONFIG_VERSION}", "cuda-cudart-13-1=${CUDA_CUDART_VERSION}", "libcublas-13-1=${CUDA_CUBLAS_VERSION}"]
-sha256 = ["282d46cada9eea16e4c61147d8fffb8d2197491d9c86fa7afc6b00746bd433cc", "5ba60863efe4334deefd9af6f45bdbce0805438cc16a23b0f120fd838323c8b8", "f52bd03da5b0445eb1fce5e9aa141d28ef7530285b3f4f18a9190d8f90d5a78a", "b17bfbf57e2eebb5c893355cf15d64de23dbc2ccc227a250323bd2d533b71e84", "0a19b72fb4ab5657343407f21afa88764359f06c9c1b9890df03fc89912b53f7"]
-
-[portable_host_pinned_export]
-stage = "portable-host-export"
-surface = "host-app"
-resolution = "exact Debian bullseye package filenames with sha256 verification; private dynamic closure"
-packages = ["tar=1.34+dfsg-1+deb11u1", "libacl1=2.2.53-10", "libselinux1=3.1-3", "libpcre2-8-0=10.36-2+deb11u1"]
-sha256 = ["41c9c31f67a76b3532036f09ceac1f40a9224f1680395d120a8b24eae60dd54a", "aa18d721be8aea50fbdb32cd9a319cb18a3f111ea6ad17399aa4ba9324c8e26a", "339f5ede10500c16dd7192d73169c31c4b27ab12130347275f23044ec8c7d897", "ee192c8d22624eb9d0a2ae95056bad7fb371e5abc17e23e16b1de3ddb17a1064"]
-
-[portable_host_payload]
-source = "host/build-portable-app.sh plus the build-host dpkg database"
-notice_loop_packages = ["bubblewrap", "util-linux", "gstreamer1.0-tools", "gstreamer1.0-pipewire", "gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "libpulse0", "libpipewire-0.3-0t64", "libspa-0.2-modules", "pipewire-bin"]
-additional_payload_owners = []
-notes = "Every direct build-host payload owner is included in the mandatory notice loop, which hard-fails on a missing copyright file. The export tar and its private library closure are separately pinned above, carry exact notices and corresponding source, and are excluded from the build-host dpkg closure. linuxdeploy adds a build-host-dependent transitive ELF closure that is inspected after every build."
+containerfile = "oci/desktop/Containerfile.cuda"
+resolution = "exact package versions from NVIDIA's Debian 13 repository authenticated by the pinned cuda-keyring package"
+repository_key_sha256 = "d0d4ef986a44400f9db33c600ef33a985175e7cc63d805a10e1839c7a1e78f5f"
+keyring_source = "https://github.com/NVIDIA/apt-packaging-cuda-keyring"
+keyring_source_tag = "v1.1"
+keyring_source_commit = "c63770f25b9ece2006956c9be86a72b20c2e67ba"
+keyring_license = "MIT"
+keyring_license_sha256 = "be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d"
+packages = ["cuda-cudart-13-3=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-3-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-13-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-toolkit-config-common=${NV_CUDA_CUDART_VERSION}", "cuda-compat-13-3=${NV_CUDA_COMPAT_VERSION}", "cuda-libraries-13-3=${NV_CUDA_LIB_VERSION}", "libnpp-13-3=${NV_LIBNPP_VERSION}", "cuda-nvtx-13-3=${NV_NVTX_VERSION}", "libcusparse-13-3=${NV_LIBCUSPARSE_VERSION}", "libcublas-13-3=${NV_LIBCUBLAS_VERSION}", "libnccl2=${NV_LIBNCCL_PACKAGE_VERSION}"]

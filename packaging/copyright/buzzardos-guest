@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Buzzard OS guest mechanics
+Source: https://github.com/openresearchtools/BuzzardOS
+Comment:
+ This record covers only files delivered by the buzzardos-guest binary
+ package. Sway, PipeWire, portals, Python, GTK, and other APT dependencies are
+ installed as separate packages and are not bundled here. Exact notices for
+ Rust crates linked into buzzardos-clipboard-agent are shipped in
+ RUST_DEPENDENCY_LICENSES.txt.
+
+Files: guest/assets/* guest/clipboard-agent/* guest/install-rootfs-assets.sh clipboard-protocol/*
+Copyright: 2026 Open Research Tools contributors
+License: AGPL-3.0-or-later
+ On Debian-family systems, the complete GNU Affero General Public License
+ version 3 is available at /usr/share/common-licenses/AGPL-3.

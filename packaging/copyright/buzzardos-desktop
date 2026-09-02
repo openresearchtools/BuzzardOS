@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Buzzard OS Desktop
+Source: https://github.com/openresearchtools/BuzzardOS
+Comment:
+ This record covers only files delivered by the buzzardos-desktop binary
+ package. Thunar, GTK, Firefox, fonts, and other APT dependencies are separate
+ packages and are not bundled here. Exact notices for Rust crates linked into
+ the desktop, Settings, and shortcut-helper executables are shipped in
+ RUST_DEPENDENCY_LICENSES.txt.
+
+Files: guest/desktop-core/* guest/settings/* guest/shell/* guest/shortcut-helper/* guest/install-desktop-assets.sh guest/assets/*
+Copyright: 2026 Open Research Tools contributors
+License: AGPL-3.0-or-later
+ On Debian-family systems, the complete GNU Affero General Public License
+ version 3 is available at /usr/share/common-licenses/AGPL-3.

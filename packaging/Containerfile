@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+FROM docker.io/library/rust:1.96.0-trixie
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      binutils \
+      build-essential \
+      buildah \
+      curl \
+      dpkg-dev \
+      fuse3 \
+      libdrm-dev \
+      libglib2.0-dev \
+      libgtk-4-dev \
+      libpulse-dev \
+      libx11-dev \
+      libxfixes-dev \
+      libxi-dev \
+      libxkbcommon-dev \
+      libxrandr-dev \
+      libxtst-dev \
+      pkg-config \
+      python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Settings
+GenericName=System Settings
+Comment=Configure the persistent Buzzard OS guest desktop
+Exec=/usr/bin/buzzardos-settings
+TryExec=/usr/bin/buzzardos-settings
+Icon=buzzardos-settings
+Terminal=false
+Categories=Settings;System;
+Keywords=appearance;display;sound;applications;desktop;
+StartupNotify=true
+StartupWMClass=org.openresearchtools.BuzzardOS.Settings1

@@ -52,24 +52,24 @@ impl IdMap {
     }
 
     /// util-linux unshare delegates subordinate-ID authorization to the
-    /// host's trusted newuidmap/newgidmap gates. The portable application
-    /// cannot safely manufacture setuid privilege, so use a validated system
-    /// directory rather than inheriting a user-controlled PATH.
+    /// host's trusted newuidmap/newgidmap gates. Buzzard OS never manufactures
+    /// setuid privilege, so use a validated system directory rather than
+    /// inheriting a user-controlled PATH.
     pub fn configure_command<'a>(&self, command: &'a mut Command) -> &'a mut Command {
         command.env("PATH", self.mapping_helper_path)
     }
 
-    /// Use the bundled namespace implementation on every supported host.
+    /// Use the validated distribution-provided namespace executable.
     /// Subordinate-ID authorization still goes through the host's trusted
     /// newuidmap/newgidmap gates selected above.
-    pub fn namespace_program<'a>(&self, bundled_unshare: &'a Path) -> Result<&'a Path> {
-        Ok(bundled_unshare)
+    pub fn namespace_program<'a>(&self, unshare: &'a Path) -> Result<&'a Path> {
+        Ok(unshare)
     }
 
     /// Guest UID/GID 1000 maps to the host
     /// desktop user, while every other guest identity maps into subordinate
-    /// ranges. The interactive guest can therefore access the portable data
-    /// directory without giving guest root the host user's identity. Host
+    /// ranges. The interactive guest can therefore access explicitly shared
+    /// host paths without giving guest root the host user's identity. Host
     /// Wayland access is separately scoped to the display gateway's private
     /// socket; the real host compositor socket never enters this namespace.
     pub fn namespace_args(&self) -> Vec<OsString> {
@@ -83,6 +83,57 @@ impl IdMap {
             format!("0:{}:{GUEST_ID_COUNT}", self.subgid_start).into(),
             "--map-group".into(),
             GUEST_USER_ID.to_string().into(),
+            "--mount".into(),
+            "--setuid".into(),
+            "0".into(),
+            "--setgid".into(),
+            "0".into(),
+            "--".into(),
+        ]
+    }
+
+    /// Build the first of Bubblewrap's two user namespaces.
+    ///
+    /// Namespace root maps to the invoking desktop user so Bubblewrap can
+    /// resolve and mount a machine selected below a private host directory.
+    /// The complete subordinate ranges are also made visible so the final
+    /// guest namespace can be created as this namespace's child.
+    pub fn mount_setup_namespace_args(&self) -> Vec<OsString> {
+        vec![
+            "--user".into(),
+            "--map-users".into(),
+            format!("1:{}:{GUEST_ID_COUNT}", self.subuid_start).into(),
+            "--map-user".into(),
+            "0".into(),
+            "--map-groups".into(),
+            format!("1:{}:{GUEST_ID_COUNT}", self.subgid_start).into(),
+            "--map-group".into(),
+            "0".into(),
+            "--mount".into(),
+            "--setuid".into(),
+            "0".into(),
+            "--setgid".into(),
+            "0".into(),
+            "--".into(),
+        ]
+    }
+
+    /// Build the durable guest identity namespace below the mount-setup
+    /// namespace. Setup ID 0 is the host desktop user and setup IDs 1 onward
+    /// are the authorized subordinate range, so the usual guest keep-id map
+    /// is expressed relative to those parent IDs.
+    pub fn guest_namespace_args_from_mount_setup(&self) -> Vec<OsString> {
+        vec![
+            "--user".into(),
+            "--map-users".into(),
+            format!("0:1:{GUEST_ID_COUNT}").into(),
+            "--map-user".into(),
+            GUEST_USER_ID.to_string().into(),
+            "--map-groups".into(),
+            format!("0:1:{GUEST_ID_COUNT}").into(),
+            "--map-group".into(),
+            GUEST_USER_ID.to_string().into(),
+            "--mount".into(),
             "--setuid".into(),
             "0".into(),
             "--setgid".into(),
@@ -185,6 +236,44 @@ mod tests {
                 .windows(2)
                 .any(|pair| { pair == ["--map-group", "1000"] })
         );
+        assert!(arguments.iter().any(|argument| argument == "--mount"));
+    }
+
+    #[test]
+    fn two_level_map_mounts_as_host_user_then_enters_guest_ids() {
+        let map = IdMap {
+            subuid_start: 100_000,
+            subgid_start: 200_000,
+            mapping_helper_path: "/usr/bin",
+        };
+        let setup = map
+            .mount_setup_namespace_args()
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let guest = map
+            .guest_namespace_args_from_mount_setup()
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            setup
+                .windows(2)
+                .any(|pair| pair == ["--map-users", "1:100000:65536"])
+        );
+        assert!(setup.windows(2).any(|pair| pair == ["--map-user", "0"]));
+        assert!(
+            setup
+                .windows(2)
+                .any(|pair| pair == ["--map-groups", "1:200000:65536"])
+        );
+        assert!(
+            guest
+                .windows(2)
+                .any(|pair| pair == ["--map-users", "0:1:65536"])
+        );
+        assert!(guest.windows(2).any(|pair| pair == ["--map-user", "1000"]));
     }
 
     #[test]

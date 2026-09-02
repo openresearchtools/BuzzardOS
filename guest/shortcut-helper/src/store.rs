@@ -2,6 +2,12 @@
 
 use crate::HELPER_EXECUTABLE;
 use crate::inspector::{InspectedAppImage, InspectionError, validate_appimage};
+use buzzardos_desktop_core::persistence::PersistenceError;
+use buzzardos_desktop_core::{
+    APPIMAGE_REGISTRATION_SCHEMA_VERSION, AppImageIcon, AppImageRegistration, DesktopDirectory,
+    DesktopFileError, FileObservation, GeneratedAppImageDesktopEntry, RegistrationId, XdgPaths,
+    atomic_write, atomic_write_json, read_bounded,
+};
 use gio::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CString, OsStr, OsString};
@@ -14,12 +20,6 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use wildbuzzard_desktop_core::persistence::PersistenceError;
-use wildbuzzard_desktop_core::{
-    APPIMAGE_REGISTRATION_SCHEMA_VERSION, AppImageIcon, AppImageRegistration, DesktopDirectory,
-    DesktopFileError, FileObservation, GeneratedAppImageDesktopEntry, RegistrationId, XdgPaths,
-    atomic_write, atomic_write_json, read_bounded,
-};
 
 const MAX_REGISTRATIONS: usize = 4096;
 const MAX_PROJECTION_BACKUP_BYTES: usize = 8 * 1024 * 1024;
@@ -107,11 +107,11 @@ pub enum StoreError {
     #[error(transparent)]
     Inspection(#[from] InspectionError),
     #[error(transparent)]
-    Registration(#[from] wildbuzzard_desktop_core::appimage::RegistrationError),
+    Registration(#[from] buzzardos_desktop_core::appimage::RegistrationError),
     #[error(transparent)]
-    DesktopEntry(#[from] wildbuzzard_desktop_core::desktop_entry::DesktopEntryError),
+    DesktopEntry(#[from] buzzardos_desktop_core::desktop_entry::DesktopEntryError),
     #[error(transparent)]
-    Xdg(#[from] wildbuzzard_desktop_core::xdg::XdgPathError),
+    Xdg(#[from] buzzardos_desktop_core::xdg::XdgPathError),
     #[error("AppImage registration does not exist: {0}")]
     MissingRegistration(RegistrationId),
     #[error("registration directory contains too many records")]
@@ -722,6 +722,20 @@ impl RegistrationStore {
         )
     }
 
+    pub fn rename_application(
+        &self,
+        id: RegistrationId,
+        display_name: &str,
+    ) -> Result<AppImageRegistration, StoreError> {
+        let _lock = self.acquire_desktop_rename_lock()?;
+        self.recover_pending_desktop_rename_locked()?;
+        let mut registration = self.load_locked(id)?;
+        registration.display_name = display_name.to_owned();
+        registration.validate()?;
+        self.save_projected(&registration)?;
+        Ok(registration)
+    }
+
     pub fn launch(&self, id: RegistrationId) -> Result<LaunchResult, StoreError> {
         let _lock = self.acquire_desktop_rename_lock()?;
         self.recover_pending_desktop_rename_locked()?;
@@ -750,8 +764,9 @@ impl RegistrationStore {
         let inspected = validated.inspect_metadata()?;
         apply_inspection(&mut registration, &inspected, validated.path());
         self.save_projected_with_icon(&registration, inspected.icon.as_ref())?;
-        validated.authorize_owner_execute()?;
-        let child = validated.spawn_exact()?;
+        let child = crate::launch_validated(&validated).map_err(|error| {
+            StoreError::UnsafeManagedPath(format!("launching validated AppImage failed: {error:#}"))
+        })?;
         registration.last_successful_launch_unix_seconds = Some(unix_time());
         registration.save(&self.paths.appimage_registration_path(id))?;
         Ok(LaunchResult {
@@ -940,11 +955,11 @@ impl RegistrationStore {
         let png_path = png.join(format!("{}.png", registration.id.icon_name()));
         if let Some(icon) = inspected {
             atomic_write(&png_path, &icon.png_256, 0o600)
-                .map_err(wildbuzzard_desktop_core::desktop_entry::DesktopEntryError::from)?;
+                .map_err(buzzardos_desktop_core::desktop_entry::DesktopEntryError::from)?;
             remove_managed_file_if_exists(&svg_path)?;
         } else if matches!(registration.icon, AppImageIcon::BuiltIn) {
             atomic_write(&svg_path, FALLBACK_ICON, 0o600)
-                .map_err(wildbuzzard_desktop_core::desktop_entry::DesktopEntryError::from)?;
+                .map_err(buzzardos_desktop_core::desktop_entry::DesktopEntryError::from)?;
             remove_managed_file_if_exists(&png_path)?;
         }
         Ok(())
@@ -1097,7 +1112,7 @@ impl DesktopRenameLock {
             .map_err(|source| io_error(state_directory.join(DESKTOP_RENAME_LOCK), source))?;
         loop {
             // SAFETY: file owns a live descriptor. LOCK_EX blocks only other
-            // Wild Buzzard helper/store transactions on this private file.
+            // Buzzard OS helper/store transactions on this private file.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
                 break;
             }
@@ -1132,7 +1147,7 @@ impl ManagedFileSnapshot {
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                 let bytes = read_bounded(path, MAX_PROJECTION_BACKUP_BYTES)
-                    .map_err(wildbuzzard_desktop_core::desktop_entry::DesktopEntryError::from)?;
+                    .map_err(buzzardos_desktop_core::desktop_entry::DesktopEntryError::from)?;
                 Ok(Self::Regular {
                     bytes,
                     mode: metadata.permissions().mode() & 0o777,
@@ -1148,7 +1163,7 @@ impl ManagedFileSnapshot {
         match self {
             Self::Missing => remove_managed_file_if_exists(path),
             Self::Regular { bytes, mode } => atomic_write(path, bytes, *mode)
-                .map_err(wildbuzzard_desktop_core::desktop_entry::DesktopEntryError::from)
+                .map_err(buzzardos_desktop_core::desktop_entry::DesktopEntryError::from)
                 .map_err(StoreError::from),
         }
     }
@@ -1160,9 +1175,6 @@ fn apply_inspection(
     target: &Path,
 ) {
     registration.target_path = target.to_path_buf();
-    registration
-        .display_name
-        .clone_from(&inspected.display_name);
     registration.icon = icon_metadata(inspected);
     registration.last_observed = Some(inspected.observation.clone());
 }
@@ -1362,6 +1374,31 @@ mod tests {
     }
 
     #[test]
+    fn application_rename_updates_both_projections_without_touching_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        let id = RegistrationId::generate();
+        let target = temp.path().join("original.AppImage");
+        fs::write(&target, b"original bytes").unwrap();
+        let record = registration(id, target.clone());
+        store.save_projected(&record).unwrap();
+
+        let renamed = store.rename_application(id, "Renamed Application").unwrap();
+        assert_eq!(renamed.display_name, "Renamed Application");
+        assert_eq!(fs::read(&target).unwrap(), b"original bytes");
+        for path in [
+            store.paths.managed_appimage_desktop_path(id),
+            store.paths.desktop_dir.join(id.desktop_file_id()),
+        ] {
+            assert!(
+                fs::read_to_string(path)
+                    .unwrap()
+                    .contains("Name=Renamed Application")
+            );
+        }
+    }
+
+    #[test]
     fn failed_projection_restores_every_preexisting_managed_artifact() {
         let temp = tempfile::tempdir().unwrap();
         let store = store(temp.path());
@@ -1397,7 +1434,7 @@ mod tests {
             candidate: InspectedAppImage {
                 display_name: "Different".into(),
                 identity_key: "different".into(),
-                observation: wildbuzzard_desktop_core::FileObservation {
+                observation: buzzardos_desktop_core::FileObservation {
                     device: 1,
                     inode: 2,
                     size: 3,
@@ -1757,7 +1794,7 @@ mod tests {
         assert!(matches!(
             store.rename_desktop_item(OsStr::new("Old.AppImage"), invalid),
             Err(StoreError::Registration(
-                wildbuzzard_desktop_core::appimage::RegistrationError::InvalidTargetPath(_)
+                buzzardos_desktop_core::appimage::RegistrationError::InvalidTargetPath(_)
             ))
         ));
         assert_eq!(fs::read(&old).unwrap(), b"registered target");
@@ -1811,7 +1848,7 @@ mod tests {
         assert!(matches!(
             store.rename_desktop_item(OsStr::new("Old.AppImage"), &long_name),
             Err(StoreError::Registration(
-                wildbuzzard_desktop_core::appimage::RegistrationError::InvalidTargetPath(_)
+                buzzardos_desktop_core::appimage::RegistrationError::InvalidTargetPath(_)
             ))
         ));
         assert_eq!(fs::read(&old).unwrap(), b"registered target");

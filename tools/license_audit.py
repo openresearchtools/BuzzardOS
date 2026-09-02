@@ -32,12 +32,28 @@ HOST_MANIFEST = ROOT / "host/Cargo.toml"
 HOST_LOCK = ROOT / "host/Cargo.lock"
 GUEST_MANIFEST = ROOT / "guest/Cargo.toml"
 GUEST_LOCK = ROOT / "guest/Cargo.lock"
-CUA_ROOT = ROOT / "guest/third_party/trycua-cua"
-CUA_MANIFEST = CUA_ROOT / "cua-driver/rust/Cargo.toml"
-CUA_LOCK = CUA_ROOT / "cua-driver/rust/Cargo.lock"
+CUA_ROOT = ROOT / "cua"
+CUA_MANIFEST = CUA_ROOT / "Cargo.toml"
+CUA_LOCK = CUA_ROOT / "Cargo.lock"
 TARGET = "x86_64-unknown-linux-gnu"
-OCI_PACKAGE_INVENTORY = GENERATED / "oci-packages.tsv"
-HOST_CLOSURE_MANIFEST = "usr/share/doc/wildbuzzard/host-package-closure.tsv"
+NVIDIA_HOST_PAYLOAD_HASHES = {
+    "usr/libexec/buzzardos/nvidia-ctk": "891cc1c4055da8e98892d6e3ade5aae87c11b0b1e17115e74c2861d86e2f6eb9",
+    "usr/libexec/buzzardos/nvidia-cdi-hook": "cca9969335a8d84d59611ee3da0de9c7942ad2202e927c75ec0735df79052a75",
+    "usr/libexec/buzzardos/nvidia-container-cli.real": "22d5783180436c507ea879ba138ce0b0b9d82e03bb9ef565a898121ebffc1cb7",
+    "usr/libexec/buzzardos/nvidia-libs/libnvidia-container.so.1.19.1": "f4133c0114803f58c9040718b350895feec986b9640ad58c777a44279c338456",
+    "usr/libexec/buzzardos/nvidia-libs/libnvidia-container-go.so.1.19.1": "6c7e224966cd438384004bb19388953c18dad8530459b8a2ee871f9177dc19a1",
+    "usr/share/doc/buzzardos/licenses/nvidia/nvidia-container-toolkit-base.copyright": "e90d51b76aafb2daf45916998c1c803f8295b488e4bf940450828a7ec7a13623",
+    "usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container-tools.copyright": "c44943edebbb69663b2c48e75730fa43e22445a30621d8b86a9088d28653aef6",
+    "usr/share/doc/buzzardos/licenses/nvidia/libnvidia-container1.copyright": "c44943edebbb69663b2c48e75730fa43e22445a30621d8b86a9088d28653aef6",
+}
+OCI_PACKAGE_INVENTORIES = {
+    "standard": GENERATED / "oci-packages.tsv",
+    "cuda": GENERATED / "oci-packages.cuda.tsv",
+}
+CUDA_KEYRING_LICENSE_SHA256 = (
+    "be0f15ae130d46adb2c2aed7229518da353f28f1471d80b4dce62d909c6ceb2d"
+)
+HOST_CLOSURE_MANIFEST = "usr/share/doc/buzzardos/host-package-closure.tsv"
 HOST_CLOSURE_HEADER = (
     "# Buzzard OS portable host package copyright closure v3",
     "# appdir_path\tpayload_sha256\tpackage\tversion\tcopyright_sha256",
@@ -48,34 +64,32 @@ DEBIAN_BINARY_PACKAGE_PATTERN = re.compile(
 )
 
 NON_DPKG_APPDIR_ELFS = {
-    "usr/bin/wildbuzzard",
-    "usr/bin/wildbuzzard-broker",
-    "usr/bin/wildbuzzard-cua-driver",
-    "usr/bin/wildbuzzard-display",
-    "usr/bin/wildbuzzard-settings",
-    "usr/bin/wildbuzzard-shortcut-helper",
-    "usr/bin/wildbuzzard-shell",
+    "usr/bin/buzzardos",
+    "usr/bin/buzzardos-broker",
+    "usr/bin/buzzardos-display",
+    "usr/bin/buzzardos-settings",
+    "usr/bin/buzzardos-shortcut-helper",
+    "usr/bin/buzzardos-shell",
     "usr/lib/libxkbcommon.so.0",
     "usr/lib/libnvidia-container-go.so.1.19.1",
     "usr/lib/libnvidia-container.so.1.19.1",
-    "usr/libexec/wildbuzzard/crane",
-    "usr/libexec/wildbuzzard/nvidia-cdi-hook",
-    "usr/libexec/wildbuzzard/nvidia-container-cli",
-    "usr/libexec/wildbuzzard/nvidia-ctk",
-    "usr/libexec/wildbuzzard/slirp4netns",
-    "usr/libexec/wildbuzzard/tar.real",
-    "usr/libexec/wildbuzzard/tar-libs/libacl.so.1",
-    "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1",
-    "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0",
+    "usr/libexec/buzzardos/nvidia-cdi-hook",
+    "usr/libexec/buzzardos/nvidia-container-cli",
+    "usr/libexec/buzzardos/nvidia-ctk",
+    "usr/libexec/buzzardos/slirp4netns",
+    "usr/libexec/buzzardos/tar.real",
+    "usr/libexec/buzzardos/tar-libs/libacl.so.1",
+    "usr/libexec/buzzardos/tar-libs/libselinux.so.1",
+    "usr/libexec/buzzardos/tar-libs/libpcre2-8.so.0",
 }
 NON_DPKG_APPDIR_MIRRORS = {
-    "usr/bin/nvidia-cdi-hook": "usr/libexec/wildbuzzard/nvidia-cdi-hook",
-    "usr/bin/nvidia-container-cli": "usr/libexec/wildbuzzard/nvidia-container-cli",
-    "usr/bin/nvidia-ctk": "usr/libexec/wildbuzzard/nvidia-ctk",
-    "usr/bin/slirp4netns": "usr/libexec/wildbuzzard/slirp4netns",
+    "usr/bin/nvidia-cdi-hook": "usr/libexec/buzzardos/nvidia-cdi-hook",
+    "usr/bin/nvidia-container-cli": "usr/libexec/buzzardos/nvidia-container-cli",
+    "usr/bin/nvidia-ctk": "usr/libexec/buzzardos/nvidia-ctk",
+    "usr/bin/slirp4netns": "usr/libexec/buzzardos/slirp4netns",
 }
 NON_DPKG_APPDIR_ELFS.update(NON_DPKG_APPDIR_MIRRORS)
-GUEST_RUNTIME_APPDIR_PREFIX = "usr/bin/wildbuzzard-guest-runtime/"
+GUEST_RUNTIME_APPDIR_PREFIX = "usr/bin/buzzardos-guest-runtime/"
 
 
 def is_non_dpkg_appdir_elf(relative: str) -> bool:
@@ -187,8 +201,10 @@ def cargo_metadata(manifest: Path) -> dict:
     return json.loads(output)
 
 
-def cargo_release_keys(manifest: Path, package: str | None) -> set[tuple[str, str]]:
-    command = [
+def cargo_release_keys(
+    manifest: Path, packages: tuple[str, ...] | None
+) -> set[tuple[str, str]]:
+    base_command = [
         "cargo",
         "tree",
         "--locked",
@@ -203,20 +219,22 @@ def cargo_release_keys(manifest: Path, package: str | None) -> set[tuple[str, st
         "--format",
         "{p}",
     ]
-    if package is None:
-        command.append("--workspace")
-    else:
-        command.extend(["--package", package])
+    commands = (
+        [base_command + ["--workspace"]]
+        if packages is None
+        else [base_command + ["--package", package] for package in packages]
+    )
     keys: set[tuple[str, str]] = set()
-    for line in run(command).splitlines():
-        line = line.strip()
-        while re.search(r" \([^)]*\)$", line):
-            line = re.sub(r" \([^)]*\)$", "", line)
-        if " v" not in line:
-            continue
-        name, version = line.rsplit(" v", 1)
-        if name and version and " " not in version:
-            keys.add((name, version))
+    for command in commands:
+        for line in run(command).splitlines():
+            line = line.strip()
+            while re.search(r" \([^)]*\)$", line):
+                line = re.sub(r" \([^)]*\)$", "", line)
+            if " v" not in line:
+                continue
+            name, version = line.rsplit(" v", 1)
+            if name and version and " " not in version:
+                keys.add((name, version))
     return keys
 
 
@@ -305,11 +323,11 @@ def build_cargo_graph(
     graph: str,
     manifest: Path,
     lock_path: Path,
-    package: str | None,
+    packages: tuple[str, ...] | None,
     fallbacks: dict[str, dict],
 ) -> tuple[str, list[dict], dict[str, dict]]:
     metadata = cargo_metadata(manifest)
-    release_keys = cargo_release_keys(manifest, package)
+    release_keys = cargo_release_keys(manifest, packages)
     checksums = lock_checksums(lock_path)
     selected = [
         item
@@ -390,7 +408,7 @@ def merged_notice_bundle(graph_contents: Iterable[dict[str, dict]]) -> str:
                 raise AuditError(f"SHA-256 collision while merging license text {digest}")
             target["users"].extend(entry["users"])
     output = [
-        "Wild Buzzard locked Rust dependency license and notice files\n",
+        "Buzzard OS locked Rust dependency license and notice files\n",
         "Generated from the x86_64 Linux normal/build release graphs.\n",
         "Package versions and crates.io checksums are in the adjacent TSV files.\n",
     ]
@@ -419,22 +437,51 @@ def cargo_outputs() -> tuple[dict[Path, str], list[str]]:
         "host-workspace", HOST_MANIFEST, HOST_LOCK, None, fallbacks
     )
     guest_tsv, guest_local, guest_contents = build_cargo_graph(
-        "guest-workspace", GUEST_MANIFEST, GUEST_LOCK, None, fallbacks
+        "buzzardos-guest",
+        GUEST_MANIFEST,
+        GUEST_LOCK,
+        ("buzzardos-clipboard-agent",),
+        fallbacks,
+    )
+    desktop_tsv, desktop_local, desktop_contents = build_cargo_graph(
+        "buzzardos-desktop",
+        GUEST_MANIFEST,
+        GUEST_LOCK,
+        (
+            "buzzardos-desktop",
+            "buzzardos-settings",
+            "buzzardos-shortcut-helper",
+        ),
+        fallbacks,
     )
     cua_tsv, cua_local, cua_contents = build_cargo_graph(
-        "cua-driver", CUA_MANIFEST, CUA_LOCK, "cua-driver", fallbacks
+        "buzzardoscua",
+        CUA_MANIFEST,
+        CUA_LOCK,
+        ("buzzardoscua",),
+        fallbacks,
     )
     issues = [
         f"local Cargo package lacks license metadata: {item['package']}"
-        for item in host_local + guest_local + cua_local
+        for item in host_local + guest_local + desktop_local + cua_local
     ]
     return (
         {
             GENERATED / "cargo-host.tsv": host_tsv,
-            GENERATED / "cargo-guest.tsv": guest_tsv,
+            GENERATED / "cargo-buzzardos-guest.tsv": guest_tsv,
+            GENERATED / "cargo-buzzardos-desktop.tsv": desktop_tsv,
             GENERATED / "cargo-cua.tsv": cua_tsv,
-            GENERATED / "RUST_DEPENDENCY_LICENSES.txt": merged_notice_bundle(
-                [host_contents, guest_contents, cua_contents]
+            GENERATED / "RUST_DEPENDENCY_LICENSES.buzzardos.txt": (
+                merged_notice_bundle([host_contents])
+            ),
+            GENERATED / "RUST_DEPENDENCY_LICENSES.buzzardos-guest.txt": (
+                merged_notice_bundle([guest_contents])
+            ),
+            GENERATED / "RUST_DEPENDENCY_LICENSES.buzzardos-desktop.txt": (
+                merged_notice_bundle([desktop_contents])
+            ),
+            GENERATED / "RUST_DEPENDENCY_LICENSES.buzzardoscua.txt": (
+                merged_notice_bundle([cua_contents])
             ),
         },
         issues,
@@ -488,17 +535,23 @@ def validate_provenance() -> None:
         LICENSES / "release-components.toml",
         LICENSES / "guest-assets.toml",
         LICENSES / "package-inputs.toml",
-        LICENSES / "crane-dependencies.toml",
         LICENSES / "nvidia-go-dependencies.toml",
         LICENSES / "go-runtime.toml",
         LICENSES / "go-source-archives.tsv",
         LICENSES / "slirp4netns-sources.tsv",
         LICENSES / "rust-runtime.toml",
-        CUA_ROOT / "LICENSE.md",
+        LICENSES / "package-notices/buzzardos.md",
+        LICENSES / "package-notices/buzzardos-guest.md",
+        LICENSES / "package-notices/buzzardos-desktop.md",
+        LICENSES / "package-notices/buzzardoscua.md",
+        ROOT / "packaging/copyright/buzzardos",
+        ROOT / "packaging/copyright/buzzardos-guest",
+        ROOT / "packaging/copyright/buzzardos-desktop",
+        ROOT / "packaging/copyright/buzzardoscua",
+        CUA_ROOT / "LICENSE.trycua.md",
         CUA_ROOT / "CITATION.cff",
         CUA_ROOT / "UPSTREAM.toml",
-        CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        ROOT / "oci/desktop/SWAY_UPSTREAM.toml",
+        CUA_ROOT / "CHANGES.BUZZARDOS.md",
     ]
     for path in required:
         if not path.is_file() or path.stat().st_size == 0:
@@ -507,11 +560,6 @@ def validate_provenance() -> None:
     expected_commit = "10279552e2bbe479e367a082f78b1b98ee85a697"
     if upstream.get("upstream_commit") != expected_commit or upstream.get("license") != "MIT":
         raise AuditError("TryCua upstream commit/license record changed unexpectedly")
-    sway = read_toml(ROOT / "oci/desktop/SWAY_UPSTREAM.toml")
-    if sway.get("sway", {}).get("commit") != "88869399f421d9180dd8b6ed0b5a1f4a3585d252":
-        raise AuditError("Sway source pin changed without a license record update")
-    if sway.get("wlroots", {}).get("commit") != "d783533489e1f75d6886c2ab5c5960090ef268f8":
-        raise AuditError("wlroots source pin changed without a license record update")
     validate_upstream_sources()
     validate_build_pins()
     validate_package_inputs()
@@ -532,6 +580,31 @@ def mpl_source_records() -> list[tuple[str, str, str, str]]:
                 raise AuditError("invalid MPL source manifest row")
             records.append((row[0], row[1], row[2], row[3]))
     return records
+
+
+def mpl_source_records_for_inventory(
+    inventory: Path,
+) -> list[tuple[str, str, str, str]]:
+    available = {
+        (name, version): (name, version, checksum, url)
+        for name, version, checksum, url in mpl_source_records()
+    }
+    selected: list[tuple[str, str, str, str]] = []
+    with inventory.open(encoding="utf-8", newline="") as source:
+        rows = csv.DictReader(
+            (line for line in source if not line.startswith("#")), delimiter="\t"
+        )
+        for row in rows:
+            if "MPL-2.0" not in row.get("normalized_license", ""):
+                continue
+            key = (row["name"], row["version"])
+            record = available.get(key)
+            if record is None:
+                raise AuditError(
+                    f"MPL source manifest has no entry for {key[0]} {key[1]}"
+                )
+            selected.append(record)
+    return sorted(selected)
 
 
 def validate_mpl_sources() -> None:
@@ -676,36 +749,24 @@ def require_literals(path: Path, literals: Iterable[str]) -> None:
 
 def validate_build_pins() -> None:
     require_literals(
-        ROOT / "host/build-portable-app.sh",
-        [
-            "crane_version=v0.21.8",
-            "crane_sha256=59b59f68ee37aba51f5523d69ec779ee925d9be4e279f9220eca357267f2ee67",
-            "slirp_package_version=1.3.3-1",
-            "slirp_deb_sha256=dda3ca5101c58e9585bfd6e7b9d26831090327120cfb5092172ead355f968dd4",
-            "slirp_binary_sha256=20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
-            "linuxdeploy_version=1-alpha-20251107-1",
-            "linuxdeploy_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d",
-            "zig_version=0.14.1",
-            "zig_sha256=24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c",
-            "cargo_zigbuild_version=0.21.8",
-            "nvidia_toolkit_version=1.19.1-1",
-            "nvidia_toolkit_base_sha256=b6c5b4e77a28cde0197cc0e64edf75538604775d9f8aea502cef667e7e5b2132",
-            "nvidia_container_tools_sha256=5642763d51961a2295dff09990048a5dcee81edbea2a8c5084e47b09ccf17268",
-            "nvidia_container_library_sha256=d73bb582af893135198ef81cb22135c790a75d2ad72910446477c6c4430f3e6b",
-        ],
-    )
-    require_literals(
         ROOT / "oci/desktop/Containerfile",
         [
             "# syntax=docker/dockerfile:1.7@sha256:b5f3b260a9678e1d83d2fce86eeddf79420b79147eaba2a25986f47133d73720",
-            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS shell-builder",
-            "FROM docker.io/library/rust:1.96-slim@sha256:d8f0d5c09580253ecdd6d6894ff112b2b760683ff2a74585e5189f2578728ce4 AS cua-builder",
-            "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b AS sway-builder",
             "FROM docker.io/library/debian:sid@sha256:900a6f89c05e3f3323f274eb9ce3bb2d35695fac097360dfc6f1cfe2e921996b",
-            "ARG SWAY_COMMIT=88869399f421d9180dd8b6ed0b5a1f4a3585d252",
-            "ARG WLROOTS_COMMIT=d783533489e1f75d6886c2ab5c5960090ef268f8",
-            "ARG CUDA_CUDART_VERSION=13.1.80-1",
-            "ARG CUDA_CUBLAS_VERSION=13.2.2.2-1",
+            "https://keyring.openresearchtools.com",
+            '"buzzardoscua=${BUZZARDOS_CUA_VERSION}"',
+            '"buzzardos-guest=${BUZZARDOS_GUEST_VERSION}"',
+            '"buzzardos-desktop=${BUZZARDOS_DESKTOP_VERSION}"',
+        ],
+    )
+    require_literals(
+        ROOT / "oci/desktop/Containerfile.cuda",
+        [
+            "ARG NV_CUDA_CUDART_VERSION=13.3.29-1",
+            "ARG NV_CUDA_LIB_VERSION=13.3.1-1",
+            "ARG NV_CUDA_COMPAT_VERSION=610.43.02-1",
+            "ARG NV_LIBCUBLAS_VERSION=13.6.0.2-1",
+            "ARG NV_LIBNCCL_PACKAGE_VERSION=2.30.7-1+cuda13.3",
         ],
     )
 
@@ -717,21 +778,13 @@ def containerfile_apt_blocks() -> list[list[str]]:
         r"apt-get\s+-o\s+\S+\s+install\s+--yes\s+--no-install-recommends\s+"
         r"(.*?)\s+&&"
     )
-    return [shlex.split(match) for match in pattern.findall(normalized)]
-
-
-def portable_app_notice_loop_packages() -> list[str]:
-    contents = (ROOT / "host/build-portable-app.sh").read_text(encoding="utf-8")
-    normalized = re.sub(r"\\\r?\n", " ", contents)
-    match = re.search(
-        r"for package in\s+(.*?)\s*;\s*do\s+"
-        r'copyright="/usr/share/doc/\$package/copyright"',
-        normalized,
-        re.DOTALL,
-    )
-    if match is None:
-        raise AuditError("cannot locate the portable-app host-package notice loop")
-    return shlex.split(match.group(1))
+    blocks = [shlex.split(match) for match in pattern.findall(normalized)]
+    return [
+        block
+        for block in blocks
+        if not all(item.startswith("/tmp/") for item in block)
+        and not any("=" in item for item in block)
+    ]
 
 
 def validate_package_inputs() -> None:
@@ -786,6 +839,38 @@ def validate_package_inputs() -> None:
                     "LICENSES/package-inputs.toml"
                 )
 
+    repository_records = sorted(
+        data.get("repository_package_block", []), key=lambda item: item.get("order", 0)
+    )
+    repository_orders = [record.get("order") for record in repository_records]
+    expected_start = len(records) + len(direct_records) + 1
+    if repository_orders != list(
+        range(expected_start, expected_start + len(repository_records))
+    ):
+        raise AuditError("package-inputs repository package blocks have invalid ordering")
+    for record in repository_records:
+        relative = record.get("containerfile", "")
+        path = (ROOT / relative).resolve()
+        if not relative or not path.is_relative_to(ROOT) or not path.is_file():
+            raise AuditError("repository package block has an invalid Containerfile")
+        contents = path.read_text(encoding="utf-8")
+        key_checksum = record.get("repository_key_sha256", "")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", key_checksum) is None
+            or key_checksum not in contents
+        ):
+            raise AuditError("repository package block has no pinned repository key evidence")
+        packages = record.get("packages", [])
+        if not packages:
+            raise AuditError("repository package block has no packages")
+        for package in packages:
+            name, separator, version = package.partition("=")
+            variable = re.fullmatch(r"\$\{([A-Z0-9_]+)\}", version)
+            if not separator or not name or variable is None or name not in contents:
+                raise AuditError("repository package block has an invalid package pin")
+            if f"ARG {variable.group(1)}=" not in contents:
+                raise AuditError("repository package version pin is missing from Containerfile")
+
     actual_images = [
         value
         for value in re.findall(r"^FROM(?:\s+--platform=\S+)?\s+(\S+)", containerfile, re.MULTILINE)
@@ -800,12 +885,6 @@ def validate_package_inputs() -> None:
             "Containerfile base images changed without updating LICENSES/package-inputs.toml"
         )
 
-    configured = data.get("portable_host_payload", {}).get("notice_loop_packages", [])
-    if portable_app_notice_loop_packages() != configured:
-        raise AuditError(
-            "host/build-portable-app.sh notice packages changed without updating "
-            "LICENSES/package-inputs.toml"
-        )
 
 
 def source_notice_hashes() -> set[str]:
@@ -833,33 +912,13 @@ def validate_go_module_records(path: Path) -> dict[str, set[tuple[str, str]]]:
 
 
 def validate_embedded_dependency_records() -> None:
-    crane = read_toml(LICENSES / "crane-dependencies.toml")
-    modules = crane.get("module", [])
-    pairs = {(item.get("path", ""), item.get("version", "")) for item in modules}
-    if len(pairs) != 11 or len(pairs) != len(modules):
-        raise AuditError("crane dependency inventory is incomplete or contains duplicates")
     recorded_hashes = source_notice_hashes()
-    for module in modules:
-        if not module.get("module_sum", "").startswith("h1:"):
-            raise AuditError(f"crane module has no Go sum: {module.get('path', '?')}")
-        if not re.fullmatch(r"[0-9a-f]{64}", module.get("archive_sha256", "")):
-            raise AuditError(f"crane module has no archive checksum: {module.get('path', '?')}")
-        if not module.get("license") or not module.get("license_files"):
-            raise AuditError(f"crane module has no license evidence: {module.get('path', '?')}")
-        for notice in module["license_files"]:
-            _, separator, digest = notice.rpartition("@sha256:")
-            if not separator or digest not in recorded_hashes:
-                raise AuditError(
-                    f"crane module notice is not preserved: {module.get('path', '?')} {notice}"
-                )
-
     nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     if set(nvidia) != {"nvidia-ctk", "nvidia-cdi-hook"}:
         raise AuditError("NVIDIA Go dependency inventory has an unexpected binary set")
 
     go_runtime = read_toml(LICENSES / "go-runtime.toml")
     expected_go_binaries = {
-        "crane": ("go1.26.5", "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7"),
         "nvidia-ctk": ("go1.26.3", "891cc1c4055da8e98892d6e3ade5aae87c11b0b1e17115e74c2861d86e2f6eb9"),
         "nvidia-cdi-hook": ("go1.26.3", "cca9969335a8d84d59611ee3da0de9c7942ad2202e927c75ec0735df79052a75"),
     }
@@ -982,12 +1041,12 @@ def component_blockers() -> list[str]:
     return issues
 
 
-def load_oci_package_inventory() -> tuple[list[tuple[str, str]], str]:
+def load_oci_package_inventory(path: Path) -> tuple[list[tuple[str, str]], str]:
     try:
-        raw = OCI_PACKAGE_INVENTORY.read_bytes()
+        raw = path.read_bytes()
     except OSError as error:
         raise AuditError(
-            f"missing generated OCI inventory {OCI_PACKAGE_INVENTORY.relative_to(ROOT)}"
+            f"missing generated OCI inventory {path.relative_to(ROOT)}"
         ) from error
     if not raw or not raw.endswith(b"\n") or b"\r" in raw:
         raise AuditError("OCI package inventory must be non-empty LF-terminated UTF-8")
@@ -1016,28 +1075,51 @@ def load_oci_package_inventory() -> tuple[list[tuple[str, str]], str]:
 
 
 def validate_oci_package_inventory_record() -> None:
-    rows, digest = load_oci_package_inventory()
     data = read_toml(LICENSES / "release-components.toml")
-    matches = [
-        component
-        for component in data.get("component", [])
-        if component.get("id") == "oci-debian-package-closure"
-    ]
-    if len(matches) != 1:
-        raise AuditError("OCI package closure release component is missing or duplicated")
-    component = matches[0]
-    expected_evidence = str(OCI_PACKAGE_INVENTORY.relative_to(ROOT))
-    if expected_evidence not in component.get("evidence", []):
-        raise AuditError("OCI package closure does not cite its generated inventory")
-    if component.get("package_count") != len(rows):
-        raise AuditError("OCI package closure count differs from generated inventory")
-    if component.get("package_inventory_sha256") != digest:
-        raise AuditError("OCI package closure checksum differs from generated inventory")
-    for key in ["image_manifest_digest", "image_config_digest", "archive_sha256"]:
-        if re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", str(component.get(key, ""))) is None:
-            raise AuditError(f"OCI package closure has invalid {key}")
-    if component.get("status") != "current-built-image-package-inventory-recorded-and-audited":
-        raise AuditError("OCI package closure status does not describe the recorded build")
+    component_ids = {
+        "standard": "local-machine-build-evidence",
+        "cuda": "local-cuda-machine-build-evidence",
+    }
+    for variant, inventory in OCI_PACKAGE_INVENTORIES.items():
+        rows, digest = load_oci_package_inventory(inventory)
+        identifier = component_ids[variant]
+        matches = [
+            component
+            for component in data.get("component", [])
+            if component.get("id") == identifier
+        ]
+        if len(matches) != 1:
+            raise AuditError(
+                f"{variant} machine-build evidence component is missing or duplicated"
+            )
+        component = matches[0]
+        expected_evidence = str(inventory.relative_to(ROOT))
+        if expected_evidence not in component.get("evidence", []):
+            raise AuditError(
+                f"{variant} machine-build evidence does not cite its inventory"
+            )
+        if component.get("package_count") != len(rows):
+            raise AuditError(
+                f"{variant} machine-build count differs from generated inventory"
+            )
+        if component.get("package_inventory_sha256") != digest:
+            raise AuditError(
+                f"{variant} machine-build checksum differs from generated inventory"
+            )
+        if (
+            re.fullmatch(
+                r"sha256:[0-9a-f]{64}", str(component.get("image_id", ""))
+            )
+            is None
+        ):
+            raise AuditError(f"{variant} machine-build evidence has invalid image_id")
+        if (
+            component.get("status")
+            != "local-verification-evidence-not-a-distributed-buzzard-artifact"
+        ):
+            raise AuditError(
+                f"{variant} machine-build status must exclude release distribution"
+            )
 
 
 def elf_files(root: Path) -> Iterable[Path]:
@@ -1500,13 +1582,13 @@ def inspect_pinned_libxkbcommon(
 
 def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     issues: list[str] = []
-    host_root = appdir / "usr/share/wildbuzzard/xkb"
-    host_manifest = appdir / "usr/share/wildbuzzard/xkb-data.manifest.sha256"
+    host_root = appdir / "usr/share/buzzardos/xkb"
+    host_manifest = appdir / "usr/share/buzzardos/xkb-data.manifest.sha256"
     host_inventory, host_issues = inspect_xkb_payload(
         host_root, host_manifest, "AppDir host"
     )
     issues.extend(host_issues)
-    host_version = appdir / "usr/share/wildbuzzard/xkb-data.version"
+    host_version = appdir / "usr/share/buzzardos/xkb-data.version"
     host_notice = appdir / "usr/share/doc/xkb-data/copyright"
     if (
         not host_version.is_file()
@@ -1521,7 +1603,7 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     if not host_notice.is_file() or host_notice.is_symlink():
         issues.append("AppDir xkb-data copyright is missing or is a symlink")
 
-    guest_runtime_root = appdir / "usr/bin/wildbuzzard-guest-runtime"
+    guest_runtime_root = appdir / "usr/bin/buzzardos-guest-runtime"
     revisions = (
         sorted(
             path
@@ -1537,7 +1619,7 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     guest_revision = revisions[0]
     guest_inventory, guest_issues = inspect_xkb_payload(
         guest_revision / "share/X11/xkb",
-        guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+        guest_revision / "share/buzzardos/xkb-data.manifest.sha256",
         "AppDir guest",
     )
     issues.extend(guest_issues)
@@ -1546,12 +1628,12 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
     for host_path, guest_path, description in [
         (
             host_manifest,
-            guest_revision / "share/wildbuzzard/xkb-data.manifest.sha256",
+            guest_revision / "share/buzzardos/xkb-data.manifest.sha256",
             "manifest",
         ),
         (
             host_version,
-            guest_revision / "share/wildbuzzard/xkb-data.version",
+            guest_revision / "share/buzzardos/xkb-data.version",
             "version",
         ),
         (
@@ -1571,15 +1653,15 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
 
     host_library_digest, host_library_issues = inspect_pinned_libxkbcommon(
         appdir / "usr/lib/libxkbcommon.so.0",
-        appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
-        appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
+        appdir / "usr/share/buzzardos/libxkbcommon0.manifest.sha256",
+        appdir / "usr/share/buzzardos/libxkbcommon0.version",
         appdir / "usr/share/doc/libxkbcommon0/copyright",
         "AppDir host",
     )
     guest_library_digest, guest_library_issues = inspect_pinned_libxkbcommon(
         guest_revision / "lib/libxkbcommon.so.0",
-        guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
-        guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+        guest_revision / "share/buzzardos/libxkbcommon0.manifest.sha256",
+        guest_revision / "share/buzzardos/libxkbcommon0.version",
         guest_revision / "share/doc/libxkbcommon0/copyright",
         "AppDir guest",
     )
@@ -1589,13 +1671,13 @@ def audit_appdir_xkb_payload(appdir: Path) -> list[str]:
         issues.append("AppDir host and guest libxkbcommon payloads differ")
     for host_path, guest_path, description in [
         (
-            appdir / "usr/share/wildbuzzard/libxkbcommon0.manifest.sha256",
-            guest_revision / "share/wildbuzzard/libxkbcommon0.manifest.sha256",
+            appdir / "usr/share/buzzardos/libxkbcommon0.manifest.sha256",
+            guest_revision / "share/buzzardos/libxkbcommon0.manifest.sha256",
             "manifest",
         ),
         (
-            appdir / "usr/share/wildbuzzard/libxkbcommon0.version",
-            guest_revision / "share/wildbuzzard/libxkbcommon0.version",
+            appdir / "usr/share/buzzardos/libxkbcommon0.version",
+            guest_revision / "share/buzzardos/libxkbcommon0.version",
             "version",
         ),
         (
@@ -1667,9 +1749,9 @@ def archive_notice_members(path: Path) -> dict[str, bytes]:
     return notices
 
 
-def audit_appdir_go_sources(appdir: Path) -> list[str]:
+def audit_appdir_go_sources(appdir: Path, label: str = "AppDir") -> list[str]:
     issues: list[str] = []
-    root = appdir / "usr/share/doc/wildbuzzard/sources/go"
+    root = appdir / "usr/share/doc/buzzardos/sources/go"
     records = go_source_archive_records()
     expected_archives = {record[1] for record in records}
     archive_directory = root / "archives"
@@ -1679,16 +1761,16 @@ def audit_appdir_go_sources(appdir: Path) -> list[str]:
         else set()
     )
     if actual_archives != expected_archives:
-        issues.append("AppDir Go source archive set differs from the audited manifest")
+        issues.append(f"{label} Go source archive set differs from the audited manifest")
 
     expected_notices: dict[str, bytes] = {}
     for identifier, archive_name, _url, checksum, _license in records:
         archive_path = archive_directory / archive_name
         if not archive_path.is_file():
-            issues.append(f"AppDir Go source archive missing: {archive_name}")
+            issues.append(f"{label} Go source archive missing: {archive_name}")
             continue
         if sha256_file(archive_path) != checksum:
-            issues.append(f"AppDir Go source archive checksum mismatch: {archive_name}")
+            issues.append(f"{label} Go source archive checksum mismatch: {archive_name}")
             continue
         for member, contents in archive_notice_members(archive_path).items():
             expected_notices[f"{identifier}/{member}"] = contents
@@ -1704,11 +1786,11 @@ def audit_appdir_go_sources(appdir: Path) -> list[str]:
         else set()
     )
     if actual_notice_paths != set(expected_notices):
-        issues.append("AppDir Go source notice set differs from the source archives")
+        issues.append(f"{label} Go source notice set differs from the source archives")
     else:
         for relative, contents in expected_notices.items():
             if (notice_directory / relative).read_bytes() != contents:
-                issues.append(f"AppDir Go source notice differs from archive: {relative}")
+                issues.append(f"{label} Go source notice differs from archive: {relative}")
 
     expected_checksums = "".join(
         f"{checksum}  {archive_name}\n"
@@ -1718,7 +1800,7 @@ def audit_appdir_go_sources(appdir: Path) -> list[str]:
     ).encode("utf-8")
     checksums_path = root / "SHA256SUMS"
     if not checksums_path.is_file() or checksums_path.read_bytes() != expected_checksums:
-        issues.append("AppDir Go source SHA256SUMS is missing or non-deterministic")
+        issues.append(f"{label} Go source SHA256SUMS is missing or non-deterministic")
 
     expected_license_index = (
         "# id\tarchive\tlicense-expression\n"
@@ -1729,7 +1811,7 @@ def audit_appdir_go_sources(appdir: Path) -> list[str]:
     ).encode("utf-8")
     license_index = root / "LICENSES.tsv"
     if not license_index.is_file() or license_index.read_bytes() != expected_license_index:
-        issues.append("AppDir Go source LICENSES.tsv differs from the audited manifest")
+        issues.append(f"{label} Go source LICENSES.tsv differs from the audited manifest")
     return issues
 
 
@@ -1739,38 +1821,31 @@ def audit_appdir(appdir: Path) -> list[str]:
     issues: list[str] = []
     issues.extend(audit_appdir_xkb_payload(appdir))
     required = {
-        "usr/share/doc/wildbuzzard/LICENSE": ROOT / "LICENSE",
-        "usr/share/doc/wildbuzzard/NOTICE": ROOT / "NOTICE",
-        "usr/share/doc/wildbuzzard/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/wildbuzzard-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/wildbuzzard-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md": CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        "usr/share/doc/wildbuzzard-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
-        "usr/libexec/wildbuzzard/tar": ROOT / "host/packaging/buzzardos-tar",
+        "usr/share/doc/buzzardos/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
+        "usr/libexec/buzzardos/tar": ROOT / "host/packaging/buzzardos-tar",
     }
     for source in sorted(path for path in LICENSES.rglob("*") if path.is_file()):
         relative = source.relative_to(LICENSES).as_posix()
-        required[f"usr/share/doc/wildbuzzard/licenses/{relative}"] = source
+        required[f"usr/share/doc/buzzardos/licenses/{relative}"] = source
     for destination, source in required.items():
         verify_copy(appdir, destination, source, issues, "AppDir")
 
     expected_hashes = {
-        "usr/libexec/wildbuzzard/crane": "764901b59be6583890901f6c3b87e3ecb41dce7e10b58ee2772eb0b3b7e7f4c7",
-        "usr/libexec/wildbuzzard/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
-        "usr/libexec/wildbuzzard/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
-        "usr/libexec/wildbuzzard/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
-        "usr/libexec/wildbuzzard/tar-libs/libselinux.so.1": "1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16",
-        "usr/libexec/wildbuzzard/tar-libs/libpcre2-8.so.0": "bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e",
+        "usr/libexec/buzzardos/slirp4netns": "20581c54ee53ae32e908c9b318481e5a71b72a13f850ce41722e402cb524b325",
+        "usr/libexec/buzzardos/tar.real": "8498b0a43e820b0f8ed5cc61accfdfadffc7bd43ff6b0a91256a09ffc19dad38",
+        "usr/libexec/buzzardos/tar-libs/libacl.so.1": "f99dd63f622af240ea7779bc2b21c7dc197d5d8dd7a865a3b0f6281a39768bee",
+        "usr/libexec/buzzardos/tar-libs/libselinux.so.1": "1500423209a91f2f7787103b79ce823ceccf42c1883aa372c71112c688dc4d16",
+        "usr/libexec/buzzardos/tar-libs/libpcre2-8.so.0": "bedb7d14699797f65a30cbfa84f16681ffed436ea98111817b7d3ebbfbca334e",
     }
     nvidia_data = read_toml(LICENSES / "nvidia-go-dependencies.toml")
     for binary in nvidia_data.get("binary", []):
-        expected_hashes[f"usr/libexec/wildbuzzard/{binary['name']}"] = binary["sha256"]
+        expected_hashes[f"usr/libexec/buzzardos/{binary['name']}"] = binary["sha256"]
     for destination, expected in expected_hashes.items():
         verify_hash(appdir, destination, expected, issues, "AppDir")
     for package in ("tar", "libacl1", "libselinux1", "libpcre2-8-0"):
-        notice = appdir / f"usr/share/doc/wildbuzzard/tar-runtime/{package}/copyright"
+        notice = appdir / f"usr/share/doc/buzzardos/tar-runtime/{package}/copyright"
         if not notice.is_file() or not notice.read_bytes():
             issues.append(f"AppDir pinned tar runtime notice is missing: {package}")
     source_records = []
@@ -1782,11 +1857,11 @@ def audit_appdir(appdir: Path) -> list[str]:
             if len(fields) != 4 or SHA256_PATTERN.fullmatch(fields[3]) is None:
                 raise AuditError("invalid tar runtime source manifest row")
             source_records.append((fields[1], fields[3]))
-    tar_source_root = appdir / "usr/share/doc/wildbuzzard/sources/tar-runtime"
+    tar_source_root = appdir / "usr/share/doc/buzzardos/sources/tar-runtime"
     for filename, checksum in source_records:
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/tar-runtime/{filename}",
+            f"usr/share/doc/buzzardos/sources/tar-runtime/{filename}",
             checksum,
             issues,
             "AppDir",
@@ -1824,7 +1899,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
     verify_hash(
         appdir,
-        "usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html",
+        "usr/share/doc/buzzardos/rust/COPYRIGHT-library.html",
         rust_runtime["standard_library_notice_sha256"],
         issues,
         "AppDir",
@@ -1832,12 +1907,12 @@ def audit_appdir(appdir: Path) -> list[str]:
     for name, version, checksum, _url in mpl_source_records():
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/mpl/{name}-{version}.crate",
+            f"usr/share/doc/buzzardos/sources/mpl/{name}-{version}.crate",
             checksum,
             issues,
             "AppDir",
         )
-    slirp_source_root = appdir / "usr/share/doc/wildbuzzard/sources/slirp4netns"
+    slirp_source_root = appdir / "usr/share/doc/buzzardos/sources/slirp4netns"
     expected_slirp_checksums = "".join(
         f"{checksum}  {name}\n"
         for name, _url, checksum in sorted(slirp4netns_source_records())
@@ -1845,7 +1920,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     for name, _url, checksum in slirp4netns_source_records():
         verify_hash(
             appdir,
-            f"usr/share/doc/wildbuzzard/sources/slirp4netns/{name}",
+            f"usr/share/doc/buzzardos/sources/slirp4netns/{name}",
             checksum,
             issues,
             "AppDir",
@@ -1856,7 +1931,7 @@ def audit_appdir(appdir: Path) -> list[str]:
     expected_mpl_archives = {
         f"{name}-{version}.crate" for name, version, _checksum, _url in mpl_source_records()
     }
-    mpl_directory = appdir / "usr/share/doc/wildbuzzard/sources/mpl"
+    mpl_directory = appdir / "usr/share/doc/buzzardos/sources/mpl"
     actual_mpl_archives = (
         {path.name for path in mpl_directory.iterdir() if path.is_file()}
         if mpl_directory.is_dir()
@@ -1866,20 +1941,9 @@ def audit_appdir(appdir: Path) -> list[str]:
         issues.append("AppDir MPL source archive set differs from the locked graph")
     issues.extend(audit_appdir_go_sources(appdir))
 
-    crane_path = appdir / "usr/libexec/wildbuzzard/crane"
-    if crane_path.is_file():
-        actual_crane = go_build_modules(crane_path)
-        actual_crane.discard(("github.com/google/go-containerregistry", "(devel)"))
-        expected_crane = {
-            (module["path"], module["version"])
-            for module in read_toml(LICENSES / "crane-dependencies.toml").get("module", [])
-        }
-        if actual_crane != expected_crane:
-            issues.append("AppDir crane Go dependency inventory differs from the audited set")
-
     expected_nvidia = validate_go_module_records(LICENSES / "nvidia-go-dependencies.toml")
     for binary, expected_modules in expected_nvidia.items():
-        binary_path = appdir / "usr/libexec/wildbuzzard" / binary
+        binary_path = appdir / "usr/libexec/buzzardos" / binary
         if binary_path.is_file() and go_build_modules(binary_path) != expected_modules:
             issues.append(f"AppDir {binary} Go dependency inventory differs from the audited set")
 
@@ -1894,6 +1958,142 @@ def audit_appdir(appdir: Path) -> list[str]:
     host_notice_issues, mapped_payloads = verify_appdir_host_notices(appdir)
     issues.extend(host_notice_issues)
     print(f"inspected AppDir: {mapped_payloads} mapped ELF payloads")
+    return issues
+
+
+def audit_debian_package(archive: Path) -> list[str]:
+    if not archive.is_file():
+        raise AuditError(f"Debian package does not exist: {archive}")
+    package = run(["dpkg-deb", "--field", str(archive), "Package"]).strip()
+    inventories = {
+        "buzzardos": GENERATED / "cargo-host.tsv",
+        "buzzardos-guest": GENERATED / "cargo-buzzardos-guest.tsv",
+        "buzzardos-desktop": GENERATED / "cargo-buzzardos-desktop.tsv",
+        "buzzardoscua": GENERATED / "cargo-cua.tsv",
+    }
+    inventory = inventories.get(package)
+    if inventory is None:
+        raise AuditError(f"not a Buzzard binary package: {package or archive.name}")
+    package_sources: dict[str, Path] = {
+        "copyright": ROOT / f"packaging/copyright/{package}",
+        "LICENSE": ROOT / "LICENSE",
+        "NOTICE": ROOT / "NOTICE",
+        "THIRD_PARTY_NOTICES.md": LICENSES / f"package-notices/{package}.md",
+        "RUST_DEPENDENCY_LICENSES.txt": GENERATED
+        / f"RUST_DEPENDENCY_LICENSES.{package}.txt",
+    }
+    package_sources["cargo-host.tsv" if package == "buzzardos" else "cargo-dependencies.tsv"] = (
+        inventory
+    )
+    if package == "buzzardoscua":
+        package_sources["cargo-cua.tsv"] = package_sources.pop("cargo-dependencies.tsv")
+        package_sources.update(
+            {
+                "LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.trycua.md",
+                "CITATION.cff": CUA_ROOT / "CITATION.cff",
+                "UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
+                "CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
+                "virtual-keyboard-unstable-v1.xml": CUA_ROOT
+                / "protocol/virtual-keyboard-unstable-v1.xml",
+            }
+        )
+
+    issues: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="buzzardos-deb-audit-") as temporary:
+        root = Path(temporary) / "root"
+        run(["dpkg-deb", "--extract", str(archive), str(root)])
+        document_root = root / "usr/share/doc"
+        document_packages = (
+            {path.name for path in document_root.iterdir() if path.is_dir()}
+            if document_root.is_dir()
+            else set()
+        )
+        if document_packages != {package}:
+            issues.append(
+                f"{package} documentation crosses package boundaries: "
+                + ", ".join(sorted(document_packages))
+            )
+        for filename, source in package_sources.items():
+            verify_copy(
+                root,
+                f"usr/share/doc/{package}/{filename}",
+                source,
+                issues,
+                package,
+            )
+        rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
+        verify_hash(
+            root,
+            f"usr/share/doc/{package}/rust/COPYRIGHT-library.html",
+            rust_runtime["standard_library_notice_sha256"],
+            issues,
+            package,
+        )
+        expected_mpl = {
+            f"{name}-{version}.crate": checksum
+            for name, version, checksum, _url in mpl_source_records_for_inventory(
+                inventory
+            )
+        }
+        mpl_root = root / f"usr/share/doc/{package}/sources/mpl"
+        actual_mpl = (
+            {path.name for path in mpl_root.iterdir() if path.is_file()}
+            if mpl_root.is_dir()
+            else set()
+        )
+        if actual_mpl != set(expected_mpl):
+            issues.append(f"{package} MPL source set differs from its Cargo closure")
+        for filename, checksum in expected_mpl.items():
+            verify_hash(
+                root,
+                f"usr/share/doc/{package}/sources/mpl/{filename}",
+                checksum,
+                issues,
+                package,
+            )
+        if package == "buzzardos":
+            for destination, checksum in NVIDIA_HOST_PAYLOAD_HASHES.items():
+                verify_hash(root, destination, checksum, issues, package)
+            verify_copy(
+                root,
+                "usr/libexec/buzzardos/nvidia-container-cli",
+                ROOT / "host/packaging/buzzardos-nvidia-container-cli",
+                issues,
+                package,
+            )
+            for filename in (
+                "nvidia-go-dependencies.toml",
+                "go-runtime.toml",
+                "go-source-archives.tsv",
+            ):
+                verify_copy(
+                    root,
+                    f"usr/share/doc/buzzardos/{filename}",
+                    LICENSES / filename,
+                    issues,
+                    package,
+                )
+            expected_links = {
+                "usr/libexec/buzzardos/nvidia-libs/libnvidia-container.so.1": "libnvidia-container.so.1.19.1",
+                "usr/libexec/buzzardos/nvidia-libs/libnvidia-container-go.so.1": "libnvidia-container-go.so.1.19.1",
+            }
+            for relative, target in expected_links.items():
+                link = root / relative
+                if not link.is_symlink() or os.readlink(link) != target:
+                    issues.append(f"{package} payload symlink differs: {relative}")
+            issues.extend(audit_appdir_go_sources(root, package))
+            expected_nvidia = validate_go_module_records(
+                LICENSES / "nvidia-go-dependencies.toml"
+            )
+            for binary, expected_modules in expected_nvidia.items():
+                binary_path = root / "usr/libexec/buzzardos" / binary
+                if not binary_path.is_file():
+                    issues.append(f"{package} Go helper missing: {binary}")
+                elif go_build_modules(binary_path) != expected_modules:
+                    issues.append(
+                        f"{package} {binary} Go dependency inventory differs from the audited set"
+                    )
+    print(f"inspected Debian package: {package} ({archive.name})")
     return issues
 
 
@@ -1922,7 +2122,9 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
         raise AuditError(f"guest rootfs does not exist: {rootfs}")
     issues: list[str] = []
     packages = dpkg_status(rootfs)
-    recorded_inventory, _digest = load_oci_package_inventory()
+    is_cuda = any(package["Package"] == "cuda-keyring" for package in packages)
+    inventory = OCI_PACKAGE_INVENTORIES["cuda" if is_cuda else "standard"]
+    recorded_inventory, _digest = load_oci_package_inventory(inventory)
     observed_inventory = sorted(
         (
             package["Package"]
@@ -1938,7 +2140,7 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
     if observed_inventory != recorded_inventory:
         issues.append(
             "OCI installed package inventory differs from "
-            f"{OCI_PACKAGE_INVENTORY.relative_to(ROOT)}"
+            f"{inventory.relative_to(ROOT)}"
         )
     for package in packages:
         name = package["Package"]
@@ -1947,46 +2149,88 @@ def audit_guest_rootfs(rootfs: Path) -> list[str]:
                 f"OCI package has no copyright file: {name}={package.get('Version', '?')}"
             )
     required = {
-        "usr/share/doc/wildbuzzard/LICENSE": ROOT / "LICENSE",
-        "usr/share/doc/wildbuzzard/NOTICE": ROOT / "NOTICE",
-        "usr/share/doc/wildbuzzard/THIRD_PARTY_NOTICES.md": ROOT / "THIRD_PARTY_NOTICES.md",
-        "usr/share/doc/wildbuzzard/RUST_DEPENDENCY_LICENSES.txt": GENERATED / "RUST_DEPENDENCY_LICENSES.txt",
-        "usr/share/doc/wildbuzzard/cargo-guest.tsv": GENERATED / "cargo-guest.tsv",
-        "usr/share/doc/wildbuzzard/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
-        "usr/share/doc/wildbuzzard-cua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.md",
-        "usr/share/doc/wildbuzzard-cua/CITATION.cff": CUA_ROOT / "CITATION.cff",
-        "usr/share/doc/wildbuzzard-cua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
-        "usr/share/doc/wildbuzzard-cua/CHANGES.WILDBUZZARD.md": CUA_ROOT / "CHANGES.WILDBUZZARD.md",
-        "usr/share/doc/wildbuzzard-cua/Inter-OFL.txt": CUA_ROOT / "cua-driver/rust/crates/cursor-overlay/assets/Inter-OFL.txt",
-        "usr/share/doc/wildbuzzard-cua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "cua-driver/rust/crates/platform-linux/protocol/virtual-keyboard-unstable-v1.xml",
-        "usr/share/doc/wildbuzzard-sway/LICENSE.sway": LICENSES / "upstream/sway-1.12-LICENSE",
-        "usr/share/doc/wildbuzzard-sway/LICENSE.wlroots": LICENSES / "upstream/wlroots-0.20.2-LICENSE",
-        "usr/share/doc/wildbuzzard-sway/UPSTREAM.toml": ROOT / "oci/desktop/SWAY_UPSTREAM.toml",
+        "usr/share/doc/buzzardos-guest/copyright": ROOT
+        / "packaging/copyright/buzzardos-guest",
+        "usr/share/doc/buzzardos-guest/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos-guest/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos-guest/THIRD_PARTY_NOTICES.md": LICENSES
+        / "package-notices/buzzardos-guest.md",
+        "usr/share/doc/buzzardos-guest/RUST_DEPENDENCY_LICENSES.txt": GENERATED
+        / "RUST_DEPENDENCY_LICENSES.buzzardos-guest.txt",
+        "usr/share/doc/buzzardos-guest/cargo-dependencies.tsv": GENERATED
+        / "cargo-buzzardos-guest.tsv",
+        "usr/share/doc/buzzardos-desktop/copyright": ROOT
+        / "packaging/copyright/buzzardos-desktop",
+        "usr/share/doc/buzzardos-desktop/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardos-desktop/NOTICE": ROOT / "NOTICE",
+        "usr/share/doc/buzzardos-desktop/THIRD_PARTY_NOTICES.md": LICENSES
+        / "package-notices/buzzardos-desktop.md",
+        "usr/share/doc/buzzardos-desktop/RUST_DEPENDENCY_LICENSES.txt": GENERATED
+        / "RUST_DEPENDENCY_LICENSES.buzzardos-desktop.txt",
+        "usr/share/doc/buzzardos-desktop/cargo-dependencies.tsv": GENERATED
+        / "cargo-buzzardos-desktop.tsv",
+        "usr/share/doc/buzzardoscua/copyright": ROOT
+        / "packaging/copyright/buzzardoscua",
+        "usr/share/doc/buzzardoscua/LICENSE": ROOT / "LICENSE",
+        "usr/share/doc/buzzardoscua/THIRD_PARTY_NOTICES.md": LICENSES
+        / "package-notices/buzzardoscua.md",
+        "usr/share/doc/buzzardoscua/RUST_DEPENDENCY_LICENSES.txt": GENERATED
+        / "RUST_DEPENDENCY_LICENSES.buzzardoscua.txt",
+        "usr/share/doc/buzzardoscua/cargo-cua.tsv": GENERATED / "cargo-cua.tsv",
+        "usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md": CUA_ROOT / "LICENSE.trycua.md",
+        "usr/share/doc/buzzardoscua/CITATION.cff": CUA_ROOT / "CITATION.cff",
+        "usr/share/doc/buzzardoscua/UPSTREAM.toml": CUA_ROOT / "UPSTREAM.toml",
+        "usr/share/doc/buzzardoscua/CHANGES.BUZZARDOS.md": CUA_ROOT / "CHANGES.BUZZARDOS.md",
+        "usr/share/doc/buzzardoscua/virtual-keyboard-unstable-v1.xml": CUA_ROOT / "protocol/virtual-keyboard-unstable-v1.xml",
     }
     for destination, source in required.items():
         verify_copy(rootfs, destination, source, issues, "OCI")
     rust_runtime = read_toml(LICENSES / "rust-runtime.toml")
-    verify_hash(
-        rootfs,
-        "usr/share/doc/wildbuzzard/rust/COPYRIGHT-library.html",
-        rust_runtime["standard_library_notice_sha256"],
-        issues,
-        "OCI",
-    )
-    for name, version, checksum, _url in mpl_source_records():
+    package_inventories = {
+        "buzzardos-guest": GENERATED / "cargo-buzzardos-guest.tsv",
+        "buzzardos-desktop": GENERATED / "cargo-buzzardos-desktop.tsv",
+        "buzzardoscua": GENERATED / "cargo-cua.tsv",
+    }
+    for package, inventory in package_inventories.items():
         verify_hash(
             rootfs,
-            f"usr/share/doc/wildbuzzard/sources/mpl/{name}-{version}.crate",
-            checksum,
+            f"usr/share/doc/{package}/rust/COPYRIGHT-library.html",
+            rust_runtime["standard_library_notice_sha256"],
             issues,
             "OCI",
         )
-    for relative in [
-        "usr/share/doc/cuda-cudart-13-1/copyright",
-        "usr/share/doc/libcublas-13-1/copyright",
-    ]:
-        if not (rootfs / relative).is_file():
-            issues.append(f"OCI notice missing: {relative}")
+        for name, version, checksum, _url in mpl_source_records_for_inventory(inventory):
+            verify_hash(
+                rootfs,
+                f"usr/share/doc/{package}/sources/mpl/{name}-{version}.crate",
+                checksum,
+                issues,
+                "OCI",
+            )
+    if is_cuda:
+        for relative in [
+            "usr/share/doc/cuda-cudart-13-3/copyright",
+            "usr/share/doc/libcublas-13-3/copyright",
+        ]:
+            if not (rootfs / relative).is_file():
+                issues.append(f"OCI notice missing: {relative}")
+        verify_hash(
+            rootfs,
+            "usr/share/doc/cuda-keyring/copyright",
+            CUDA_KEYRING_LICENSE_SHA256,
+            issues,
+            "OCI",
+        )
+        cudart_notice = rootfs / "usr/share/doc/cuda-cudart-13-3/copyright"
+        meta_notice = rootfs / "usr/share/doc/cuda-libraries-13-3/copyright"
+        if (
+            cudart_notice.is_file()
+            and meta_notice.is_file()
+            and sha256_file(cudart_notice) != sha256_file(meta_notice)
+        ):
+            issues.append(
+                "OCI CUDA libraries metapackage notice differs from the installed CUDA EULA"
+            )
     print(f"inspected OCI rootfs: {len(packages)} installed dpkg packages")
     return issues
 
@@ -2010,6 +2254,13 @@ def parse_args() -> argparse.Namespace:
         help="copy and record the exact build-host package notices after linuxdeploy",
     )
     parser.add_argument("--guest-rootfs", type=Path, help="also audit an extracted OCI rootfs")
+    parser.add_argument(
+        "--deb",
+        type=Path,
+        action="append",
+        default=[],
+        help="also audit an exact Buzzard Debian package; may be repeated",
+    )
     return parser.parse_args()
 
 
@@ -2022,6 +2273,7 @@ def main() -> int:
                 args.structural,
                 args.appdir is not None,
                 args.guest_rootfs is not None,
+                bool(args.deb),
             ]
         ):
             print(
@@ -2046,6 +2298,8 @@ def main() -> int:
             artifact_issues.extend(audit_appdir(args.appdir.resolve()))
         if args.guest_rootfs is not None:
             artifact_issues.extend(audit_guest_rootfs(args.guest_rootfs.resolve()))
+        for archive in args.deb:
+            artifact_issues.extend(audit_debian_package(archive.resolve()))
     except (AuditError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"license audit error: {error}", file=sys.stderr)
         return 2

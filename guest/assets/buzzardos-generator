@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+normal_dir=$1
+wants_dir="$normal_dir/multi-user.target.wants"
+mkdir -p "$wants_dir"
+ln -sf /usr/lib/systemd/system/buzzardos-desktop.service \
+    "$wants_dir/buzzardos-desktop.service"
+
+sockets_wants="$normal_dir/sockets.target.wants"
+mkdir -p "$sockets_wants"
+for socket in buzzardos-sudo.socket buzzardos-fusermount.socket; do
+    ln -sf "/usr/lib/systemd/system/$socket" "$sockets_wants/$socket"
+done

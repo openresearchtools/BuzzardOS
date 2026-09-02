@@ -2,10 +2,40 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <actions>
   <action>
+    <icon>media-playback-start</icon>
+    <name>Run AppImage</name>
+    <unique-id>buzzardos-appimage-run-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper run-path %f</command>
+    <description>Run this AppImage using the validated Buzzard OS launcher</description>
+    <range>1-1</range>
+    <patterns>*.AppImage;*.appimage</patterns>
+    <other-files/>
+  </action>
+  <action>
+    <icon>package-x-generic</icon>
+    <name>Extract and Run AppImage (Persistent)</name>
+    <unique-id>buzzardos-appimage-extract-run-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper extract-and-run %f</command>
+    <description>Persistently extract beside this AppImage and run it</description>
+    <range>1-1</range>
+    <patterns>*.AppImage;*.appimage</patterns>
+    <other-files/>
+  </action>
+  <action>
+    <icon>dialog-warning</icon>
+    <name>Extract and Run --no-sandbox</name>
+    <unique-id>buzzardos-appimage-extract-run-no-sandbox-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper extract-and-run-no-sandbox %f</command>
+    <description>Persistently extract and remember the --no-sandbox launch option</description>
+    <range>1-1</range>
+    <patterns>*.AppImage;*.appimage</patterns>
+    <other-files/>
+  </action>
+  <action>
     <icon>application-x-executable</icon>
-    <name>Add to Applications</name>
-    <unique-id>wildbuzzard-appimage-add-applications-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-applications %f</command>
+    <name>Add AppImage to Applications</name>
+    <unique-id>buzzardos-appimage-add-applications-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-applications %f</command>
     <description>Register this AppImage in the Applications menu</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>
@@ -13,9 +43,9 @@
   </action>
   <action>
     <icon>user-desktop</icon>
-    <name>Add Desktop Shortcut</name>
-    <unique-id>wildbuzzard-appimage-add-desktop-v1</unique-id>
-    <command>/usr/libexec/wildbuzzard-shortcut-helper register-desktop %f</command>
+    <name>Add AppImage to Desktop</name>
+    <unique-id>buzzardos-appimage-add-desktop-v1</unique-id>
+    <command>/usr/libexec/buzzardos-shortcut-helper register-desktop %f</command>
     <description>Create a desktop shortcut linked to this AppImage</description>
     <range>1-1</range>
     <patterns>*.AppImage;*.appimage</patterns>

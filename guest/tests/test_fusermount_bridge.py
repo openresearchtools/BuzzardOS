@@ -12,24 +12,39 @@ from pathlib import Path
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
-EXECUTOR = ASSETS / "wildbuzzard-fusermount-exec"
+CLIENT = ASSETS / "buzzardos-fusermount"
+EXECUTOR = ASSETS / "buzzardos-fusermount-exec"
 
 
 class FusermountBridgeContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.client = runpy.run_path(str(CLIENT))
         cls.bridge = runpy.run_path(str(EXECUTOR))
         cls.ValidationError = cls.bridge["ValidationError"]
 
-    def test_wrapper_passes_only_caller_pid_fd_and_argument_separator(self) -> None:
-        wrapper = (ASSETS / "wildbuzzard-fusermount").read_text()
-        self.assertIn("caller=$$", wrapper)
-        self.assertIn("communication_fd=${_FUSE_COMMFD:--1}", wrapper)
-        self.assertIn("/usr/bin/systemd-run", wrapper)
-        self.assertIn('"$communication_fd"', wrapper)
-        lines = [line.strip() for line in wrapper.splitlines()]
-        separator = lines.index("-- \\")
-        self.assertEqual(lines[separator + 1], '"$@"')
+    def test_client_uses_only_the_fixed_private_socket(self) -> None:
+        wrapper = CLIENT.read_text()
+        self.assertIn('SOCKET_PATH = "/run/buzzardos/fusermount.sock"', wrapper)
+        self.assertIn('os.environ.get("_FUSE_COMMFD", "-1")', wrapper)
+        self.assertNotIn("systemd-run", wrapper)
+        self.assertNotIn("pkexec", wrapper)
+
+    def test_socket_protocol_derives_caller_identity_from_peer_credentials(self) -> None:
+        client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            request = self.client["encode_request"](["--version"], -1)
+            client.sendall(request)
+            client.shutdown(socket.SHUT_WR)
+            process_id, descriptor, arguments = self.bridge[
+                "receive_service_request"
+            ](server)
+            self.assertEqual(process_id, os.getpid())
+            self.assertEqual(descriptor, -1)
+            self.assertEqual(arguments, ["--version"])
+        finally:
+            client.close()
+            server.close()
 
     def test_accepts_only_exact_pinned_runtime_argument_shapes(self) -> None:
         parse = self.bridge["parse_invocation"]
@@ -48,7 +63,7 @@ class FusermountBridgeContractTests(unittest.TestCase):
             ),
             (["-u", "-q", "-z", "--", "/shared/.mount_CCCCCC"], -1, "unmount"),
             (
-                ["--auto-unmount", "--", "/home/wildbuzzard/.mount_DDDDDD"],
+                ["--auto-unmount", "--", "/home/user/.mount_DDDDDD"],
                 9,
                 "auto-unmount",
             ),

@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-manifest=${WILDBUZZARD_MPL_SOURCE_MANIFEST:-"$project_dir/LICENSES/mpl-sources.tsv"}
+manifest=${BUZZARDOS_MPL_SOURCE_MANIFEST:-"$project_dir/LICENSES/mpl-sources.tsv"}
 destination=${1:?usage: fetch-mpl-sources.sh DESTINATION}
 
 for command_name in curl install mkdir mktemp mv sha256sum; do

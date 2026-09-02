@@ -1,0 +1,390 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Shared GTK 4 selectors and metrics. Dark and Light import this exact file;
+ * only their typed palette maps differ.
+ */
+* {
+  color: @wb_text;
+  caret-color: @wb_focus;
+}
+
+window,
+.background {
+  color: @wb_text;
+  background-color: @wb_surface;
+}
+
+/*
+ * Settings uses transparent GTK containers for its stack and pages. Paint
+ * the window-filling application root explicitly so another client can never
+ * show through those containers, including while focus or stack state changes.
+ */
+.wb-settings-root {
+  color: @wb_text;
+  background-image: none;
+  background-color: @wb_surface;
+}
+
+.wb-settings-root:backdrop {
+  color: @wb_backdrop_text;
+  background-image: none;
+  background-color: @wb_backdrop_surface;
+}
+
+.wb-settings-pages {
+  color: @wb_text;
+  background-image: none;
+  background-color: @wb_surface;
+}
+
+.wb-settings-pages:backdrop {
+  color: @wb_backdrop_text;
+  background-image: none;
+  background-color: @wb_backdrop_surface;
+}
+
+/* Give Settings the same visual hierarchy as a native system panel: a
+ * distinct navigation rail, a quiet page canvas, and raised grouped cards.
+ * The palette keeps this geometry equally useful in Light and Dark modes. */
+.wb-settings-body > separator {
+  background-color: @wb_border;
+  min-width: 1px;
+}
+
+.wb-settings-sidebar,
+.wb-settings-sidebar row {
+  background-image: none;
+  background-color: @wb_menu;
+}
+
+.wb-settings-navigation-row {
+  margin: 3px 7px;
+  border-radius: 8px;
+}
+
+.wb-settings-navigation-row:hover {
+  background-color: @wb_hover;
+}
+
+.wb-settings-navigation-row:selected,
+.wb-settings-navigation-row:selected:backdrop {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+}
+
+.wb-settings-page,
+.wb-settings-page > viewport,
+.wb-settings-page-content {
+  background-image: none;
+  background-color: transparent;
+}
+
+.wb-settings-section {
+  background-image: none;
+  background-color: @wb_card;
+  border: 1px solid @wb_border;
+  border-radius: 12px;
+  box-shadow: 0 1px 2px alpha(@wb_text, 0.10);
+  padding: 16px;
+}
+
+.wb-settings-section:backdrop {
+  background-color: @wb_card;
+  box-shadow: none;
+}
+
+.wb-settings-row {
+  padding: 3px 0;
+}
+
+.wb-settings-compact-navigation {
+  margin: 8px 12px;
+}
+
+window:backdrop,
+.background:backdrop,
+.view:backdrop,
+textview:backdrop,
+textview text:backdrop,
+entry:backdrop {
+  color: @wb_backdrop_text;
+  background-color: @wb_backdrop_surface;
+  border-color: @wb_border;
+}
+
+headerbar {
+  color: @wb_text;
+  background-color: @wb_header;
+  border-color: @wb_border;
+  box-shadow: inset 0 -2px @wb_focus;
+}
+
+headerbar:backdrop {
+  color: @wb_backdrop_text;
+  background-color: @wb_header_backdrop;
+  box-shadow: inset 0 -1px @wb_border;
+}
+
+button {
+  color: @wb_text;
+  background-color: @wb_raised;
+  border-color: @wb_border;
+  background-image: none;
+  box-shadow: none;
+}
+
+button:hover {
+  color: @wb_text;
+  background-color: @wb_hover;
+  border-color: @wb_control_border;
+}
+
+button:active,
+button:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+button:focus-visible {
+  outline: 2px solid @wb_focus;
+  outline-offset: -2px;
+}
+
+button:disabled {
+  color: @wb_disabled;
+  background-color: @wb_canvas;
+  border-color: @wb_border;
+}
+
+button.suggested-action,
+button.wb-primary-action {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 4px;
+  min-height: 32px;
+  padding: 5px 14px;
+}
+
+button.wb-primary-action:hover,
+button.wb-primary-action:active,
+button.wb-primary-action:checked,
+button.wb-primary-action:focus-visible {
+  color: @wb_selected_text;
+}
+
+/* GTK's stock suggested-action theme targets the child label directly.  Keep
+ * the Cinnamon-style dark foreground authoritative at that same level. */
+button.wb-primary-action label,
+button.wb-primary-action:hover label,
+button.wb-primary-action:active label,
+button.wb-primary-action:checked label,
+button.wb-primary-action:focus-visible label {
+  color: @wb_selected_text;
+}
+
+button.wb-primary-action:disabled {
+  color: @wb_disabled;
+  background-color: @wb_canvas;
+  border-color: @wb_border;
+}
+
+button.wb-primary-action:disabled label {
+  color: @wb_disabled;
+}
+
+dropdown button,
+combobox button {
+  color: @wb_text;
+  background-color: @wb_raised;
+  border-color: @wb_control_border;
+}
+
+check,
+radio {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+check:checked,
+radio:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_control_border;
+}
+
+switch:checked {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  border-color: @wb_focus;
+}
+
+switch slider {
+  background-color: @wb_raised;
+  border-color: @wb_border;
+}
+
+scale trough {
+  min-width: 6px;
+  min-height: 6px;
+  background-color: @wb_field;
+  border: 1px solid @wb_border;
+  border-radius: 4px;
+}
+
+scale highlight {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 4px;
+}
+
+scale highlight,
+progressbar progress {
+  background-color: @wb_selection;
+  border: 1px solid @wb_focus;
+}
+
+scale slider {
+  min-width: 18px;
+  min-height: 18px;
+  background-color: @wb_raised;
+  border: 1px solid @wb_control_border;
+  border-radius: 9px;
+}
+
+entry,
+textview,
+textview text,
+.view {
+  color: @wb_text;
+  background-color: @wb_field;
+  border-color: @wb_border;
+}
+
+entry:focus,
+textview:focus,
+.view:focus {
+  border-color: @wb_focus;
+  outline-color: @wb_focus;
+}
+
+selection,
+textview text selection,
+.view:selected {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+}
+
+.view:selected:backdrop,
+.navigation-sidebar row:selected:backdrop,
+placessidebar row:selected:backdrop {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+}
+
+.sidebar,
+.navigation-sidebar,
+placessidebar,
+placessidebar row {
+  color: @wb_text;
+  background-color: @wb_menu;
+}
+
+.sidebar row:hover,
+.navigation-sidebar row:hover,
+placessidebar row:hover {
+  color: @wb_text;
+  background-color: @wb_hover;
+}
+
+.sidebar row:selected,
+.navigation-sidebar row:selected,
+placessidebar row:selected {
+  color: @wb_selected_text;
+  background-color: @wb_selection;
+  outline-color: @wb_focus;
+}
+
+popover,
+popover.background,
+menu {
+  color: @wb_text;
+  background-color: @wb_canvas;
+  border: 1px solid @wb_border;
+}
+
+popover row:hover,
+menuitem:hover {
+  color: @wb_text;
+  background-color: @wb_hover;
+}
+
+notebook,
+notebook > stack {
+  color: @wb_text;
+  background-color: @wb_surface;
+}
+
+notebook > header {
+  background-color: @wb_menu;
+  border-color: @wb_border;
+}
+
+notebook > header > tabs > tab {
+  color: @wb_secondary;
+  background-color: @wb_menu;
+  border-color: @wb_border;
+}
+
+notebook > header > tabs > tab:hover {
+  color: @wb_text;
+  background-color: @wb_hover;
+}
+
+notebook > header > tabs > tab:checked {
+  color: @wb_text;
+  background-color: @wb_raised;
+  box-shadow: inset 0 -2px @wb_focus;
+}
+
+scrollbar {
+  background-color: @wb_field;
+  min-width: 12px;
+  min-height: 12px;
+}
+
+scrollbar slider {
+  background-color: @wb_scrollbar;
+  border: 2px solid @wb_field;
+  border-radius: 6px;
+  min-width: 8px;
+  min-height: 28px;
+}
+
+scrollbar slider:hover,
+scrollbar slider:active {
+  background-color: @wb_scrollbar_hover;
+}
+
+tooltip,
+tooltip.background {
+  color: @wb_text;
+  background-color: @wb_field;
+  border: 1px solid @wb_control_border;
+}
+
+rubberband,
+.rubberband {
+  border: 1px solid @wb_focus;
+  background-color: alpha(@wb_selection, 0.35);
+}

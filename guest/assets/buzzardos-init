@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+install -d -m 0700 -o 1000 -g 1000 /run/user/1000
+install -d -m 0755 /run/buzzardos
+
+# Keep the persistent rootfs nosuid and no-new-privileges while restoring the
+# conventional FUSE mount service expected by native Type-2 AppImages. The
+# real distro helper is copied to root-only ephemeral runtime storage, and a
+# non-privileged delegating wrapper is bind-mounted over the public pathname.
+# The root half runs through the guest's private systemd manager and never
+# grants CAP_SYS_ADMIN to the AppImage or its children.
+if [ -c /dev/fuse ]; then
+    test -x /usr/bin/fusermount3
+    runtime=/usr/lib/buzzardos/runtime/current
+    test -x "$runtime/libexec/buzzardos-fusermount"
+    test -x "$runtime/libexec/buzzardos-fusermount-exec"
+    install -d -o 0 -g 0 -m 0700 /run/buzzardos-appimage-helper
+    install -o 0 -g 0 -m 0755 \
+        /usr/bin/fusermount3 \
+        /run/buzzardos-appimage-helper/fusermount3.real
+    mount --bind "$runtime/libexec/buzzardos-fusermount" /usr/bin/fusermount3
+fi
+
+if [ ! -s /etc/machine-id ]; then
+    systemd-machine-id-setup
+fi
+
+exec /lib/systemd/systemd --system

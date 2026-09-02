@@ -4,6 +4,7 @@ mod idmap;
 mod machine;
 mod media;
 mod paths;
+mod registry;
 mod resources;
 mod wayland;
 
@@ -11,11 +12,12 @@ pub use idmap::IdMap;
 pub use machine::{
     DisplayDiagnostics, IntegrationDiagnostics, IntegrationSettings, MachineConfig, MachineState,
     MediaIntegrationDiagnostics, MediaSharing, NetworkMode, OciImageMetadata, PortDirection,
-    PortForward, PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics, RuntimeState,
-    WindowDiagnostics,
+    PortForward, PortIntegrationDiagnostics, PortProtocol, PresentationDiagnostics,
+    RetainedOciArchive, RuntimeState, SharedPath, WindowDiagnostics,
 };
 pub use media::{HostMediaBackend, HostMediaDevice, HostMediaKind, discover_host_media};
 pub use paths::{WbPaths, host_control_socket};
+pub use registry::{MachineRegistry, RegisteredMachine};
 pub use resources::ResourceLocator;
 pub use wayland::WaylandCapabilities;
 
