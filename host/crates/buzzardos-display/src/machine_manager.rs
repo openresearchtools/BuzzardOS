@@ -163,6 +163,13 @@ struct ManagerUi {
     window: gtk::ApplicationWindow,
     launcher: PathBuf,
     list: gtk::ListBox,
+    content: gtk::Stack,
+    settings_page: RefCell<Option<gtk::Box>>,
+    header_title: gtk::Label,
+    back: gtk::Button,
+    create: gtk::Button,
+    refresh_button: gtk::Button,
+    about_button: gtk::Button,
     command_result: Arc<Mutex<Option<String>>>,
     machine_list_snapshot: RefCell<Vec<MachineListSignature>>,
 }
@@ -233,6 +240,15 @@ impl ManagerUi {
             .default_height(560)
             .build();
         let header = gtk::HeaderBar::builder().show_title_buttons(true).build();
+        let header_title = gtk::Label::new(Some("Buzzard OS Machines"));
+        header_title.add_css_class("heading");
+        header.set_title_widget(Some(&header_title));
+        let back = gtk::Button::builder()
+            .icon_name("go-previous-symbolic")
+            .label("Machines")
+            .tooltip_text("Return to the machine list")
+            .visible(false)
+            .build();
         let create = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .label("Add Machine")
@@ -242,6 +258,7 @@ impl ManagerUi {
         refresh.set_tooltip_text(Some("Refresh machines"));
         let about = gtk::Button::from_icon_name("help-about-symbolic");
         about.set_tooltip_text(Some("About Buzzard OS and host-package licenses"));
+        header.pack_start(&back);
         header.pack_start(&create);
         header.pack_end(&refresh);
         header.pack_end(&about);
@@ -262,17 +279,37 @@ impl ManagerUi {
         list.set_margin_bottom(12);
         scroller.set_child(Some(&list));
         root.append(&scroller);
-        window.set_child(Some(&root));
+        let content = gtk::Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .build();
+        content.add_named(&root, Some("machines"));
+        content.set_visible_child_name("machines");
+        window.set_child(Some(&content));
 
         let manager = Rc::new(Self {
             window,
             launcher,
             list,
+            content,
+            settings_page: RefCell::new(None),
+            header_title,
+            back: back.clone(),
+            create: create.clone(),
+            refresh_button: refresh.clone(),
+            about_button: about.clone(),
             command_result: Arc::new(Mutex::new(None)),
             machine_list_snapshot: RefCell::new(Vec::new()),
         });
         manager.refresh()?;
 
+        let weak = Rc::downgrade(&manager);
+        back.connect_clicked(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                manager.show_machine_list();
+            }
+        });
         let weak = Rc::downgrade(&manager);
         refresh.connect_clicked(move |_| refresh_weak(&weak));
         let weak = Rc::downgrade(&manager);
@@ -601,6 +638,19 @@ impl ManagerUi {
         );
     }
 
+    fn show_machine_list(&self) {
+        self.content.set_visible_child_name("machines");
+        if let Some(settings_page) = self.settings_page.borrow_mut().take() {
+            self.content.remove(&settings_page);
+        }
+        self.window.set_title(Some("Buzzard OS Machines"));
+        self.header_title.set_text("Buzzard OS Machines");
+        self.back.set_visible(false);
+        self.create.set_visible(true);
+        self.refresh_button.set_visible(true);
+        self.about_button.set_visible(true);
+    }
+
     fn show_machine_settings(self: &Rc<Self>, machine_dir: &Path) {
         let config = match MachineConfig::load(machine_dir) {
             Ok(config) => config,
@@ -609,14 +659,8 @@ impl ManagerUi {
                 return;
             }
         };
-        let dialog = independent_manager_window(
-            &self.window,
-            &format!("{} Settings", config.name),
-            860,
-            650,
-            true,
-        );
-        dialog.set_titlebar(Some(&gtk::HeaderBar::new()));
+        self.show_machine_list();
+        let parent: gtk::Window = self.window.clone().upcast();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let editor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         editor.set_vexpand(true);
@@ -637,7 +681,7 @@ impl ManagerUi {
 
         let general = settings_page("General", "Display, network, and GPU settings");
         let general_content = general.1;
-        let machine_location = machine_location_control(&dialog, machine_dir);
+        let machine_location = machine_location_control(&parent, machine_dir);
         let title = gtk::Entry::builder()
             .text(&config.title)
             .hexpand(true)
@@ -828,8 +872,8 @@ impl ManagerUi {
         share_actions.append(&add_file);
         share_actions.append(&add_folder);
         sharing.1.append(&share_actions);
-        connect_manager_share_picker(&add_file, &dialog, &share_list, &share_rows, false);
-        connect_manager_share_picker(&add_folder, &dialog, &share_list, &share_rows, true);
+        connect_manager_share_picker(&add_file, &parent, &share_list, &share_rows, false);
+        connect_manager_share_picker(&add_folder, &parent, &share_list, &share_rows, true);
         stack.add_titled(&sharing.0, Some("sharing"), "Sharing");
 
         let actions = gtk::ActionBar::new();
@@ -838,10 +882,24 @@ impl ManagerUi {
         actions.pack_end(&save);
         actions.pack_end(&cancel);
         root.append(&actions);
-        dialog.set_child(Some(&root));
-        let close = dialog.clone();
-        cancel.connect_clicked(move |_| close.close());
-        let close = dialog.clone();
+        self.content.add_named(&root, Some("settings"));
+        self.settings_page.replace(Some(root));
+        self.content.set_visible_child_name("settings");
+        self.window
+            .set_title(Some(&format!("{} Settings — Buzzard OS", config.name)));
+        self.header_title
+            .set_text(&format!("{} Settings", config.name));
+        self.back.set_visible(true);
+        self.create.set_visible(false);
+        self.refresh_button.set_visible(false);
+        self.about_button.set_visible(false);
+
+        let weak = Rc::downgrade(self);
+        cancel.connect_clicked(move |_| {
+            if let Some(manager) = weak.upgrade() {
+                manager.show_machine_list();
+            }
+        });
         let machine_dir = machine_dir.to_path_buf();
         let weak = Rc::downgrade(self);
         save.connect_clicked(move |_| {
@@ -881,15 +939,17 @@ impl ManagerUi {
                 .map(manager_share_value)
                 .collect();
             if let Err(error) = updated.save(&machine_dir) {
-                show_manager_error(&close, "Could not save machine settings", &error);
+                let Some(manager) = weak.upgrade() else {
+                    return;
+                };
+                show_manager_error(&manager.window, "Could not save machine settings", &error);
                 return;
             }
             if let Some(manager) = weak.upgrade() {
                 let _ = manager.refresh();
+                manager.show_machine_list();
             }
-            close.close();
         });
-        dialog.present();
     }
 
     fn run_command(&self, machine_dir: Option<PathBuf>, arguments: Vec<String>) {
