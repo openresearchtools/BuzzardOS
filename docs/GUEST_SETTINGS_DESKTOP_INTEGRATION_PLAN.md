@@ -129,6 +129,24 @@ CUA operations do not select the human's visible workspace. Lifecycle commands
 are provided by the host manager CLI, using the same operations as the GUI;
 machine start, stop, restart and status require no guest-side restart scripts.
 
+CUA focus switches out of an obstructing fullscreen window on its own workspace
+using stock Sway state commands, then activates the requested window through
+the caller's numbered seat. It never uses default-seat IPC focus or clears
+fullscreen windows on unrelated workspaces. Focusing the fullscreen application
+itself, a child inside its fullscreen container, or an allowed transient dialog
+does not exit fullscreen. Foreign-workspace targets are moved into the caller's
+workspace before activation; no intermediate keyboard focus is sent to their
+source workspace. This changes neither the renderer nor the host window mode.
+
+Acceptance limitation (2026-09-05): fullscreen focus recovery passes on both
+numbered seats, but this does not complete the input-isolation requirement.
+Stock Sway 1.12 focuses every seat already on a workspace when a window enters
+fullscreen there. The live test reproduced this when seat0 was viewing CUA2;
+the subsequent CUA focus recovery itself preserved seat0's focus. Arbitrary
+new-window activation and shared-Xwayland focus are separate unresolved cases.
+No focus-reset watcher, compositor patch, or hidden launch-staging rule is an
+accepted substitute for the required behavior.
+
 ## 4.1. Time and location
 
 The guest shares the kernel clock, so the actual date/time remains automatic

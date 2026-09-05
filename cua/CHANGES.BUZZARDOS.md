@@ -34,6 +34,9 @@ Buzzard-specific correctness changes include:
 - compact global window/application metadata reports the owning output and
   workspace; focusing or targeting a window moves it atomically to the
   caller's workspace before acting;
+- seat-specific focus exits an obstructing fullscreen container only on the
+  caller's workspace, with confirmed Sway state and exact final seat focus;
+  other workspaces and the host window/rendering path are not changed;
 - canonical coordinates are physical guest-output pixels and fractional-scale
   geometry is transformed exactly once with generation checks;
 - full-output screenshot, Sway window control, AT-SPI inspection/actions,

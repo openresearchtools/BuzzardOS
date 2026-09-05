@@ -521,9 +521,8 @@ pub fn require_caller_seat_focus(expected_window_id: Option<u64>) -> anyhow::Res
     Ok(focused)
 }
 
-/// Confirm only the exact per-seat container identity. This is used while a
-/// target still lives on its source output; the full caller-output check runs
-/// immediately after the exact Sway move.
+/// Confirm the exact per-seat container identity independently of geometry.
+/// The full caller-output check follows successful activation.
 pub fn require_caller_seat_exact_focus(expected_window_id: u64) -> anyhow::Result<Window> {
     let index = crate::core::seat_context::current_index();
     let seat_name = format!("seat{index}");
@@ -537,6 +536,86 @@ pub fn require_caller_seat_exact_focus(expected_window_id: u64) -> anyhow::Resul
         "{seat_name} focus is {focused_id}, not requested window_id {expected_window_id}"
     );
     resolve_public_window(focused_id, None)
+}
+
+fn find_node(node: &Node, id: u64) -> Option<&Node> {
+    if node.id == id {
+        return Some(node);
+    }
+    node.nodes
+        .iter()
+        .chain(&node.floating_nodes)
+        .find_map(|child| find_node(child, id))
+}
+
+fn fullscreen_obstruction(
+    root: &Node,
+    target_id: u64,
+    workspace: &str,
+) -> anyhow::Result<Option<u64>> {
+    fn find_workspace<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+        if node.node_type == "workspace" && node.name == name {
+            return Some(node);
+        }
+        node.nodes
+            .iter()
+            .chain(&node.floating_nodes)
+            .find_map(|child| find_workspace(child, name))
+    }
+    fn obstruction(node: &Node, target_id: u64) -> Option<u64> {
+        // Workspace nodes also report fullscreen_mode=1 even without a
+        // fullscreen client. Only a container can obstruct another container.
+        if matches!(node.node_type.as_str(), "con" | "floating_con") && node.fullscreen_mode != 0 {
+            return find_node(node, target_id).is_none().then_some(node.id);
+        }
+        node.nodes
+            .iter()
+            .chain(&node.floating_nodes)
+            .find_map(|child| obstruction(child, target_id))
+    }
+    let workspace = find_workspace(root, workspace)
+        .ok_or_else(|| anyhow::anyhow!("caller workspace {workspace} is unavailable"))?;
+    anyhow::ensure!(
+        find_node(workspace, target_id).is_some(),
+        "window_id {target_id} is not on caller workspace {}",
+        workspace.name
+    );
+    Ok(obstruction(workspace, target_id))
+}
+
+/// Recover a seat-specific activation rejected by workspace fullscreen.
+/// Stock Sway's ordinary `focus` command performs this step, but its
+/// foreign-toplevel activation handler does not. Never issue IPC `focus`
+/// (which selects the default seat), and never clear another workspace's
+/// fullscreen state. Called only after native activation failed, so permitted
+/// transient dialogs keep their parent's fullscreen state.
+pub fn exit_caller_fullscreen_obstruction(
+    id: u64,
+    expected_pid: Option<u32>,
+) -> anyhow::Result<bool> {
+    let workspace = cua_workspace_name(crate::core::seat_context::current_index())?;
+    let target = resolve_public_window(id, expected_pid)?;
+    anyhow::ensure!(
+        target.workspace == workspace,
+        "refusing fullscreen changes outside caller workspace {workspace}"
+    );
+    let tree: Node = serde_json::from_value(swaymsg_value("get_tree")?)?;
+    let Some(blocker) = fullscreen_obstruction(&tree, id, &workspace)? else {
+        return Ok(false);
+    };
+    run_container_command(blocker, "fullscreen disable")?;
+    let after: Node = serde_json::from_value(swaymsg_value("get_tree")?)?;
+    anyhow::ensure!(
+        find_node(&after, blocker).is_none_or(|node| node.fullscreen_mode == 0),
+        "Sway did not confirm fullscreen exit for container {blocker}"
+    );
+    let current = resolve_public_window(id, expected_pid)?;
+    anyhow::ensure!(
+        current.workspace == workspace
+            && current.foreign_toplevel_identifier == target.foreign_toplevel_identifier,
+        "focus target changed while exiting fullscreen"
+    );
+    Ok(true)
 }
 
 fn safe_name(value: &str) -> anyhow::Result<String> {
@@ -1350,6 +1429,61 @@ fn read_ipc_message(stream: &mut UnixStream) -> anyhow::Result<(u32, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fullscreen_tree() -> Node {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "type": "root", "nodes": [{"id": 2, "type": "output", "nodes": [
+                {"id": 3, "type": "workspace", "name": "Desktop", "fullscreen_mode": 1,
+                 "nodes": [{"id": 30, "type": "con", "fullscreen_mode": 1}]},
+                {"id": 4, "type": "workspace", "name": "CUA", "fullscreen_mode": 1,
+                 "floating_nodes": [{"id": 40, "type": "floating_con", "fullscreen_mode": 1,
+                    "nodes": [{"id": 41, "type": "con"}]}, {"id": 42, "type": "con"}]},
+                {"id": 5, "type": "workspace", "name": "CUA2", "fullscreen_mode": 1,
+                 "nodes": [{"id": 50, "type": "con", "fullscreen_mode": 1}, {"id": 51, "type": "con"}]}
+            ]}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn fullscreen_focus_selects_only_the_callers_obstructing_container() {
+        let tree = fullscreen_tree();
+        assert_eq!(fullscreen_obstruction(&tree, 42, "CUA").unwrap(), Some(40));
+        assert_eq!(fullscreen_obstruction(&tree, 51, "CUA2").unwrap(), Some(50));
+    }
+
+    #[test]
+    fn fullscreen_focus_preserves_the_target_and_its_fullscreen_ancestor() {
+        let tree = fullscreen_tree();
+        assert_eq!(fullscreen_obstruction(&tree, 40, "CUA").unwrap(), None);
+        assert_eq!(fullscreen_obstruction(&tree, 41, "CUA").unwrap(), None);
+        assert_eq!(fullscreen_obstruction(&tree, 50, "CUA2").unwrap(), None);
+    }
+
+    #[test]
+    fn fullscreen_focus_never_selects_another_workspaces_fullscreen() {
+        let mut tree = fullscreen_tree();
+        tree.nodes[0].nodes[1].floating_nodes[0].fullscreen_mode = 0;
+        // Desktop and CUA2 both remain fullscreen. Workspace metadata alone
+        // must not be mistaken for a fullscreen application.
+        assert_eq!(fullscreen_obstruction(&tree, 42, "CUA").unwrap(), None);
+    }
+
+    #[test]
+    fn fullscreen_focus_rejects_stale_or_foreign_targets() {
+        let tree = fullscreen_tree();
+        assert!(fullscreen_obstruction(&tree, 999, "CUA").is_err());
+        assert!(fullscreen_obstruction(&tree, 51, "CUA").is_err());
+        assert!(fullscreen_obstruction(&tree, 42, "missing").is_err());
+    }
+
+    #[test]
+    fn fullscreen_focus_does_not_clear_foreign_global_fullscreen() {
+        let mut tree = fullscreen_tree();
+        tree.nodes[0].nodes[0].nodes[0].fullscreen_mode = 2;
+        tree.nodes[0].nodes[1].floating_nodes[0].fullscreen_mode = 0;
+        assert_eq!(fullscreen_obstruction(&tree, 42, "CUA").unwrap(), None);
+    }
 
     #[test]
     fn new_output_setup_does_not_reposition_existing_outputs_or_select_a_workspace() {

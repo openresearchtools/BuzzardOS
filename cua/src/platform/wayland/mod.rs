@@ -1913,19 +1913,29 @@ pub fn activate_window_for_input_target(
         state.seat.clone(),
         matching_handle(&state, window_id),
     ) {
-        handle.activate(&seat);
-        queue.roundtrip(&mut state)?;
-        std::thread::sleep(std::time::Duration::from_millis(60));
         if public_window.is_some() {
-            // Disambiguate duplicate titles/app-ids on their source outputs,
-            // confirm the exact seat focus there, then move the exact Sway
-            // container. Per-seat focus follows the container across outputs.
-            sway_ipc::require_caller_seat_exact_focus(window_id)?;
+            // Resolve the handle on its original output before moving, where
+            // identical titles/app-ids can still be disambiguated. Keep that
+            // live handle, but move the exact container before activation so
+            // the numbered seat never focuses a foreign workspace.
             sway_ipc::move_public_window_to_cua(
                 window_id,
                 target_pid,
                 crate::core::seat_context::current_index(),
             )?;
+        }
+        handle.activate(&seat);
+        queue.roundtrip(&mut state)?;
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        if public_window.is_some() {
+            if let Err(focus_error) = sway_ipc::require_caller_seat_exact_focus(window_id) {
+                if !sway_ipc::exit_caller_fullscreen_obstruction(window_id, target_pid)? {
+                    return Err(focus_error);
+                }
+                handle.activate(&seat);
+                queue.roundtrip(&mut state)?;
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
             sway_ipc::require_caller_seat_focus(Some(window_id))?;
         }
         return Ok(());

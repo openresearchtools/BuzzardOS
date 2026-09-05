@@ -2,6 +2,9 @@
 
 ## 0.1.0
 
+- Fix numbered-seat focus switching away from obstructing fullscreen windows
+  without changing other workspaces or using the human seat.
+
 - Initial independently versioned Buzzard CUA Debian package.
 - Uses Buzzard CUA's own product version; the historical TryCua source version
   is retained only in the packaged provenance and license records.
