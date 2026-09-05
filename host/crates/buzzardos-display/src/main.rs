@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod clipboard;
+mod cursor_geometry;
 mod drm_syncobj;
 mod frame_paintable;
 mod gateway;
@@ -11,6 +12,7 @@ mod host_theme;
 mod keyboard;
 mod launch;
 mod machine_manager;
+mod native_cursor;
 
 use std::os::unix::process::CommandExt;
 

@@ -81,12 +81,13 @@ podman exec "$container" sh -ceu '
     pgrep -x cua >/dev/null || command -v cua >/dev/null
 '
 
-# The guest uses the distro sudo directly. Exercise authenticated non-TTY
+# The guest handoff executes the real distro sudo on nosuid storage. Exercise authenticated non-TTY
 # operation, package indexes, dependency resolution, maintainer scripts, and
 # a persistent root-owned configuration write.
 podman exec --user user "$container" sh -ceu '
     test -x /usr/bin/sudo
-    test ! -e /usr/local/bin/sudo
+    test -x /usr/libexec/buzzardos-guest/sudo
+    test -S /run/buzzardos/sudo.sock
     sudo -k
 '
 sudo_guest apt-get -o Dpkg::Use-Pty=0 update

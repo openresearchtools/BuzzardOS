@@ -5,6 +5,12 @@ This notice covers only the payload of the `buzzardoscua` package.
 Buzzard-authored changes are Copyright (C) 2026 Open Research Tools
 contributors and licensed under AGPL-3.0-or-later.
 
+The compact red `BuzzardOS-Agent` native cursor artwork is original Buzzard
+work under those same terms. It is generated only while building the package;
+there is no cursor renderer or cursor daemon running in the guest. Unlisted
+tool shapes inherit the independently installed Adwaita theme without copying
+its artwork into this package.
+
 The reviewed CUA source reduction derives from `trycua/cua` tag
 `cua-driver-rs-v0.17.0`, commit
 `10279552e2bbe479e367a082f78b1b98ee85a697`, Copyright (C) 2025 Cua AI, Inc.,

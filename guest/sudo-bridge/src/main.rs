@@ -1,49 +1,109 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+mod transport;
+
+const REAL_SUDO: &str = "/usr/bin/sudo";
 const SUDOERS_DIRECTORY: &str = "/etc/sudoers.d";
 const PASSWORDLESS_POLICY: &str = "/etc/sudoers.d/91-buzzardos-passwordless";
 const PASSWORDLESS_POLICY_CONTENT: &[u8] = b"user ALL=(ALL:ALL) NOPASSWD: ALL\n";
 
 fn main() -> ExitCode {
-    match run(env::args_os().skip(1)) {
-        Ok(()) => ExitCode::SUCCESS,
+    let arguments = env::args_os().collect::<Vec<_>>();
+    let invoked_as = arguments
+        .first()
+        .and_then(|argument| Path::new(argument).file_name())
+        .unwrap_or_else(|| OsStr::new("sudo"));
+    // The bridge is installed as three distinct executable files.  Resolve the
+    // actual executable for the two privileged entry points instead of
+    // trusting argv[0], which process launchers are allowed to replace.
+    let installed_as = env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(OsStr::to_os_string));
+
+    if installed_as.as_deref() == Some(OsStr::new("buzzardos-sudo-exec")) {
+        if arguments
+            .get(1)
+            .is_some_and(|argument| argument == "--serve")
+            && arguments.len() == 2
+        {
+            return match transport::serve() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::from(126),
+            };
+        }
+        return ExitCode::from(126);
+    }
+    if installed_as.as_deref() == Some(OsStr::new("sudo-policy")) {
+        return match run_sudo_policy(&arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("buzzardos sudo policy failed: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    let mode = match invocation_mode(invoked_as) {
+        Ok(mode) => mode,
         Err(error) => {
-            eprintln!("Buzzard OS sudo policy: {error}");
-            ExitCode::FAILURE
+            eprintln!("buzzardos sudo handoff failed: {error}");
+            return ExitCode::from(126);
+        }
+    };
+    if unsafe { libc::getuid() } == 0 {
+        let error = exec_real_sudo(mode, &arguments[1..]);
+        eprintln!("buzzardos sudo handoff failed: {error}");
+        return ExitCode::from(126);
+    }
+    match transport::run_client(mode, &arguments[1..]) {
+        Ok(code) => ExitCode::from(code),
+        Err(error) => {
+            eprintln!("buzzardos sudo handoff failed: {error}");
+            ExitCode::from(126)
         }
     }
 }
 
-fn run(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> io::Result<()> {
-    let action = arguments.next().ok_or_else(invalid_request)?;
-    if arguments.next().is_some() {
-        return Err(invalid_request());
+fn invocation_mode(executable: &OsStr) -> io::Result<&'static str> {
+    match executable.as_bytes() {
+        b"sudo" | b"buzzardos-sudo" => Ok("sudo"),
+        b"sudoedit" => Ok("sudoedit"),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the sudo bridge must be invoked as sudo or sudoedit",
+        )),
     }
-    let action = match action.as_os_str().as_bytes() {
-        b"enable-passwordless" => Action::Enable,
-        b"disable-passwordless" => Action::Disable,
-        b"status-passwordless" => Action::Status,
-        _ => return Err(invalid_request()),
-    };
+}
+
+fn exec_real_sudo(mode: &str, arguments: &[OsString]) -> io::Error {
+    Command::new(REAL_SUDO).arg0(mode).args(arguments).exec()
+}
+
+fn run_sudo_policy(arguments: &[OsString]) -> io::Result<()> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "this utility must be invoked through the guest's native sudo",
+            "the policy helper must run as guest root",
         ));
     }
-    match action {
-        Action::Enable => enable_passwordless(),
-        Action::Disable => disable_passwordless(),
-        Action::Status => {
+    if arguments.len() != 1 {
+        return Err(invalid_policy_request());
+    }
+    match arguments[0].as_bytes() {
+        b"enable-passwordless" => enable_passwordless_sudo(),
+        b"disable-passwordless" => disable_passwordless_sudo(),
+        b"status-passwordless" => {
             validate_sudoers_directory()?;
             println!(
                 "{}",
@@ -55,16 +115,11 @@ fn run(mut arguments: impl Iterator<Item = std::ffi::OsString>) -> io::Result<()
             );
             Ok(())
         }
+        _ => Err(invalid_policy_request()),
     }
 }
 
-enum Action {
-    Enable,
-    Disable,
-    Status,
-}
-
-fn invalid_request() -> io::Error {
+fn invalid_policy_request() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         "expected enable-passwordless, disable-passwordless, or status-passwordless",
@@ -122,7 +177,7 @@ fn validate_existing_policy(path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn enable_passwordless() -> io::Result<()> {
+fn enable_passwordless_sudo() -> io::Result<()> {
     validate_sudoers_directory()?;
     let policy = Path::new(PASSWORDLESS_POLICY);
     if validate_existing_policy(policy)? {
@@ -141,7 +196,7 @@ fn enable_passwordless() -> io::Result<()> {
         file.set_permissions(fs::Permissions::from_mode(0o440))?;
         file.sync_all()?;
         let status = Command::new("/usr/sbin/visudo")
-            .args([OsStr::new("-c"), OsStr::new("-f")])
+            .args(["-c", "-f"])
             .arg(temporary)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -162,7 +217,7 @@ fn enable_passwordless() -> io::Result<()> {
     result
 }
 
-fn disable_passwordless() -> io::Result<()> {
+fn disable_passwordless_sudo() -> io::Result<()> {
     validate_sudoers_directory()?;
     let policy = Path::new(PASSWORDLESS_POLICY);
     if !validate_existing_policy(policy)? {
@@ -177,16 +232,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_is_exactly_scoped_to_the_interactive_user() {
+    fn recognizes_only_sudo_and_sudoedit_names() {
+        assert_eq!(invocation_mode(OsStr::new("sudo")).unwrap(), "sudo");
+        assert_eq!(
+            invocation_mode(OsStr::new("buzzardos-sudo")).unwrap(),
+            "sudo"
+        );
+        assert_eq!(invocation_mode(OsStr::new("sudoedit")).unwrap(), "sudoedit");
+        assert!(invocation_mode(OsStr::new("su")).is_err());
+    }
+
+    #[test]
+    fn passwordless_policy_is_exactly_scoped_to_the_interactive_user() {
         assert_eq!(
             PASSWORDLESS_POLICY_CONTENT,
             b"user ALL=(ALL:ALL) NOPASSWD: ALL\n"
         );
-    }
-
-    #[test]
-    fn rejects_unknown_actions_before_touching_policy() {
-        let error = run([std::ffi::OsString::from("unknown")].into_iter()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

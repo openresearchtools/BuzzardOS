@@ -416,12 +416,17 @@ fn read_runtime_state(path: &Path) -> Result<Vec<u8>, String> {
         .open(path)
         .map_err(|error| error.to_string())?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
-    let process_uid = effective_user_id();
+    let owner = fs::symlink_metadata(path.parent().ok_or("output-state has no parent")?)
+        .map_err(|error| error.to_string())?
+        .uid();
     if !metadata.is_file() {
         return Err("output-state is not a regular file".into());
     }
-    if metadata.uid() != process_uid {
-        return Err("output-state is not owned by the interactive guest user".into());
+    // This is host-published geometry in a read-only Podman bind mount,
+    // not session-owned state. Native user-namespace modes map its owner
+    // differently; compare it with its publisher directory, not guest UID.
+    if metadata.uid() != owner {
+        return Err("output-state does not belong to its publisher directory".into());
     }
     if metadata.mode() & 0o022 != 0 {
         return Err("output-state is writable by the group or other users".into());

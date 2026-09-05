@@ -8,6 +8,8 @@
 0755	assets/buzzardos-desktop-services	@runtime/libexec/buzzardos-desktop-services
 0755	assets/buzzardos-integration-agent	@runtime/libexec/buzzardos-integration-agent
 0755	assets/buzzardos-appimage-ready	@runtime/libexec/buzzardos-appimage-ready
+0644	assets/buzzardos-sudo.socket	usr/lib/systemd/system/buzzardos-sudo.socket
+0644	assets/buzzardos-sudo@.service	usr/lib/systemd/system/buzzardos-sudo@.service
 0755	assets/buzzardos-fusermount	@runtime/libexec/buzzardos-fusermount
 0755	assets/buzzardos-fusermount-exec	@runtime/libexec/buzzardos-fusermount-exec
 0644	assets/buzzardos-fusermount.socket	usr/lib/systemd/system/buzzardos-fusermount.socket

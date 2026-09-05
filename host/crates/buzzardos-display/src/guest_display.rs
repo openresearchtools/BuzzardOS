@@ -1154,6 +1154,14 @@ impl GuestState {
                     );
                 }
             }
+            // wlroots disables the parent cursor plane by unmapping its
+            // existing cursor surface, not necessarily by set_cursor(NULL).
+            // It then paints the seat cursors into the guest output. Keeping
+            // GTK's previous cursor here draws that stale image a second time
+            // at the human host pointer, even if it came from another seat.
+            if self.cursor_surface.as_ref() == Some(surface) {
+                let _ = self.events.send(GatewayEvent::GuestCursorHidden);
+            }
             for callback in callbacks {
                 callback.done(monotonic_ms());
             }
@@ -1321,6 +1329,19 @@ impl GuestState {
             .is_some_and(|size| size != (self.mode.physical_width, self.mode.physical_height))
         {
             self.resend_output_configure();
+            // Configure is asynchronous: Sway can still commit an in-flight
+            // buffer for the previous size. It is not a display failure.
+            // Release it and request the next frame without importing,
+            // copying, stretching or presenting the stale geometry. Keep
+            // the last valid host frame attached while Sway converges.
+            self.release_buffer_commit(buffer, release_point, explicit_sync);
+            for callback in callbacks {
+                callback.done(monotonic_ms());
+            }
+            for feedback in feedback {
+                feedback.discarded();
+            }
+            return;
         }
 
         match frame_from_buffer(
@@ -2754,6 +2775,156 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for GuestState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestClientData;
+    impl ClientData for TestClientData {
+        fn initialized(&self, _: ClientId) {}
+        fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
+    }
+
+    #[test]
+    fn unmapping_the_cursor_plane_hides_the_host_cursor_only() {
+        let display = Display::<GuestState>::new().unwrap();
+        let mut handle = display.handle();
+        let (client_socket, _peer) = UnixStream::pair().unwrap();
+        let client = handle
+            .insert_client(client_socket, Arc::new(TestClientData))
+            .unwrap();
+        let mut state = test_state();
+        let (_event_read, event_write) = UnixStream::pair().unwrap();
+        let (events, received) = std::sync::mpsc::channel();
+        state.events = EventSender {
+            sender: events,
+            wake: Arc::new(event_write),
+        };
+        let cursor = client
+            .create_resource::<wl_surface::WlSurface, _, GuestState>(
+                &handle,
+                4,
+                SurfaceData::default(),
+            )
+            .unwrap();
+        let output = client
+            .create_resource::<wl_surface::WlSurface, _, GuestState>(
+                &handle,
+                4,
+                SurfaceData::default(),
+            )
+            .unwrap();
+        state.cursor_surface = Some(cursor.clone());
+        state.primary_surface = Some(output.clone());
+
+        // A commit without attach keeps the current cursor unchanged.
+        state.commit_surface(&cursor, cursor.data().unwrap());
+        assert!(received.try_recv().is_err());
+        // Unmapping an output must not be mistaken for a cursor update.
+        output
+            .data::<SurfaceData>()
+            .unwrap()
+            .pending
+            .lock()
+            .unwrap()
+            .attached = Some(None);
+        state.commit_surface(&output, output.data().unwrap());
+        assert!(received.try_recv().is_err());
+        // Both wl_pointer.set_cursor(NULL) and an unmapped cursor surface
+        // mean invisible in Wayland. Stock wlroots uses the latter when it
+        // switches multiple seats to output-composited cursors.
+        cursor
+            .data::<SurfaceData>()
+            .unwrap()
+            .pending
+            .lock()
+            .unwrap()
+            .attached = Some(None);
+        state.commit_surface(&cursor, cursor.data().unwrap());
+        assert!(matches!(
+            received.try_recv().unwrap(),
+            GatewayEvent::GuestCursorHidden
+        ));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn in_flight_resize_buffers_are_released_without_failing_the_display() {
+        for dmabuf in [true, false] {
+            let display = Display::<GuestState>::new().unwrap();
+            let mut handle = display.handle();
+            let (client_socket, _peer) = UnixStream::pair().unwrap();
+            let client = handle
+                .insert_client(client_socket, Arc::new(TestClientData))
+                .unwrap();
+            let mut state = test_state();
+            let (_event_read, event_write) = UnixStream::pair().unwrap();
+            let (events, received) = std::sync::mpsc::channel();
+            state.events = EventSender {
+                sender: events,
+                wake: Arc::new(event_write),
+            };
+            let surface = client
+                .create_resource::<wl_surface::WlSurface, _, GuestState>(
+                    &handle,
+                    4,
+                    SurfaceData::default(),
+                )
+                .unwrap();
+            state.primary_surface = Some(surface.clone());
+            state.mode.physical_width = 16;
+            state.mode.physical_height = 16;
+            state.mode.geometry_generation = 42;
+            for width in [8, 12, 16] {
+                let storage = tempfile::tempfile().unwrap();
+                storage.set_len(u64::from(width * 16 * 4)).unwrap();
+                let data = if dmabuf {
+                    BufferData::Dmabuf(DmabufBufferData {
+                        width,
+                        height: 16,
+                        fourcc: DRM_FORMAT_XRGB8888,
+                        modifier: DRM_FORMAT_MOD_INVALID,
+                        planes: vec![DmabufPlaneData {
+                            fd: storage.into(),
+                            plane: 0,
+                            offset: 0,
+                            stride: width * 4,
+                            modifier: DRM_FORMAT_MOD_INVALID,
+                        }],
+                    })
+                } else {
+                    BufferData::Shm(ShmBufferData {
+                        fd: storage.into(),
+                        offset: 0,
+                        width: width as i32,
+                        height: 16,
+                        stride: width as i32 * 4,
+                        format: wl_shm::Format::Argb8888,
+                    })
+                };
+                let buffer = client
+                    .create_resource::<wl_buffer::WlBuffer, _, GuestState>(&handle, 1, data)
+                    .unwrap();
+                let surface_data = surface.data::<SurfaceData>().unwrap();
+                surface_data.pending.lock().unwrap().attached = Some(Some(buffer));
+                state.commit_surface(&surface, surface_data);
+                if width != 16 {
+                    assert!(
+                        received.try_recv().is_err(),
+                        "a stale frame must not emit Failed or Frame"
+                    );
+                    assert!(state.leases.is_empty());
+                } else {
+                    let GatewayEvent::GuestFrame(frame) = received.try_recv().unwrap() else {
+                        panic!("the converged buffer must produce a frame");
+                    };
+                    let generation = match frame {
+                        GuestFrame::Dmabuf(frame) => frame.geometry_generation,
+                        GuestFrame::Shm(frame) => frame.geometry_generation,
+                    };
+                    assert_eq!(generation, 42);
+                    assert_eq!(state.leases.len(), 1);
+                }
+            }
+        }
+    }
 
     fn test_state() -> GuestState {
         let (_event_read, event_write) = UnixStream::pair().unwrap();

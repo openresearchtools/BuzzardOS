@@ -5,7 +5,7 @@ members = [
     "settings",
     "shell",
     "shortcut-helper",
-    "sudo-policy",
+    "sudo-bridge",
 ]
 resolver = "2"
 

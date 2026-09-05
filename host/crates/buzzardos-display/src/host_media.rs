@@ -51,7 +51,7 @@ struct Endpoints {
     host_camera: Option<u16>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct MediaWorkerStatus {
     pub schema: u32,
     pub guest_audio_output: bool,
@@ -87,6 +87,97 @@ impl MediaKind {
 
 pub(crate) struct MediaWorker {
     child: Child,
+}
+
+struct MediaChannel {
+    kind: MediaKind,
+    port: u16,
+    target: Option<String>,
+    process: Option<MediaProcess>,
+    error: Option<String>,
+    retry_at: Instant,
+}
+
+impl MediaChannel {
+    fn new(kind: MediaKind, port: u16, target: Option<&str>) -> Self {
+        Self {
+            kind,
+            port,
+            target: target.map(str::to_owned),
+            process: None,
+            error: None,
+            retry_at: Instant::now(),
+        }
+    }
+
+    fn reconcile(&mut self, resources: &ResourceLocator) {
+        let kind = self.kind;
+        let port = self.port;
+        let target = self.target.clone();
+        self.reconcile_with(|| start_pipeline(kind, port, target.as_deref(), resources));
+    }
+
+    fn reconcile_with(&mut self, start: impl FnOnce() -> Result<MediaProcess>) {
+        if let Some(process) = &mut self.process {
+            match process.0.try_wait() {
+                Ok(None) => return,
+                Ok(Some(status)) => {
+                    self.error = Some(format!("{} bridge exited with {status}", self.kind.name()));
+                }
+                Err(error) => {
+                    self.error = Some(format!("checking {} bridge: {error}", self.kind.name()));
+                }
+            }
+            self.process.take();
+            self.retry_at = Instant::now() + Duration::from_secs(1);
+        }
+        if Instant::now() < self.retry_at || STOP_REQUESTED.load(Ordering::Acquire) {
+            return;
+        }
+        match start() {
+            Ok(process) => {
+                self.process = Some(process);
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(format!("{}: {error:#}", self.kind.name()));
+                self.retry_at = Instant::now() + Duration::from_secs(1);
+            }
+        }
+    }
+}
+
+// Startup can fail after the process begins (for example while confirming a
+// microphone stream). Every exit path must revoke that exact child process.
+struct MediaProcess(Child);
+
+impl Drop for MediaProcess {
+    fn drop(&mut self) {
+        terminate(&mut self.0);
+    }
+}
+
+fn channel_status(channels: &[MediaChannel]) -> MediaWorkerStatus {
+    let mut status = MediaWorkerStatus {
+        schema: 1,
+        ..MediaWorkerStatus::default()
+    };
+    let mut errors = Vec::new();
+    for channel in channels {
+        let running = channel.process.is_some();
+        match channel.kind {
+            MediaKind::GuestAudio => status.guest_audio_output = running,
+            MediaKind::HostMicrophone => status.host_microphone = running,
+            MediaKind::HostCamera => status.host_camera = running,
+        }
+        if let Some(error) = &channel.error {
+            errors.push(error.as_str());
+        }
+    }
+    if !errors.is_empty() {
+        status.error = Some(errors.join("; "));
+    }
+    status
 }
 
 impl MediaWorker {
@@ -181,7 +272,7 @@ fn run_worker(args: WorkerArgs) -> Result<()> {
     }
     let resources = ResourceLocator::discover()?;
     require_host_pipewire()?;
-    let mut processes = Vec::new();
+    let mut channels = Vec::new();
     let result = (|| -> Result<()> {
         let requested = [
             (
@@ -203,36 +294,25 @@ fn run_worker(args: WorkerArgs) -> Result<()> {
         for (kind, port, target) in requested {
             if let Some(port) = port {
                 validate_port(port)?;
-                processes.push((kind, start_pipeline(kind, port, target, &resources)?));
+                channels.push(MediaChannel::new(kind, port, target));
             }
         }
-        write_status(
-            &args.status,
-            &MediaWorkerStatus {
-                schema: 1,
-                guest_audio_output: endpoints.guest_audio_output.is_some(),
-                host_microphone: endpoints.host_microphone.is_some(),
-                host_camera: endpoints.host_camera.is_some(),
-                error: None,
-            },
-        )?;
+        let mut previous_status = None;
         while !STOP_REQUESTED.load(Ordering::Acquire) {
-            for (kind, process) in &mut processes {
-                if let Some(status) = process
-                    .try_wait()
-                    .with_context(|| format!("checking {} bridge", kind.name()))?
-                {
-                    bail!("{} bridge exited unexpectedly with {status}", kind.name());
-                }
+            for channel in &mut channels {
+                channel.reconcile(&resources);
+            }
+            let status = channel_status(&channels);
+            if previous_status.as_ref() != Some(&status) {
+                write_status(&args.status, &status)?;
+                previous_status = Some(status);
             }
             thread::sleep(Duration::from_millis(100));
         }
         Ok(())
     })();
 
-    for (_, process) in &mut processes {
-        terminate(process);
-    }
+    channels.clear();
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
     let _ = write_status(
         &args.status,
@@ -250,7 +330,7 @@ fn start_pipeline(
     port: u16,
     target: Option<&str>,
     resources: &ResourceLocator,
-) -> Result<Child> {
+) -> Result<MediaProcess> {
     let gst = resources.helper_or_path("gst-launch-1.0")?;
     let device = resolve_device(kind, target, resources)?;
     let mut command = Command::new(&gst);
@@ -371,14 +451,16 @@ fn start_pipeline(
             Ok(())
         });
     }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("starting {} bridge with {}", kind.name(), gst.display()))?;
+    let mut process = MediaProcess(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("starting {} bridge with {}", kind.name(), gst.display()))?,
+    );
     thread::sleep(Duration::from_millis(150));
-    if let Some(status) = child.try_wait().context("checking media startup")? {
+    if let Some(status) = process.0.try_wait().context("checking media startup")? {
         bail!("{} bridge exited during startup with {status}", kind.name());
     }
     if kind == MediaKind::HostMicrophone {
@@ -386,9 +468,9 @@ fn start_pipeline(
             .as_ref()
             .map(|device| device.node_name.as_str())
             .context("microphone selection disappeared")?;
-        wait_for_tracked_microphone(resources, child.id(), target)?;
+        wait_for_tracked_microphone(resources, process.0.id(), target)?;
     }
-    Ok(child)
+    Ok(process)
 }
 
 fn resolve_device(
@@ -664,4 +746,70 @@ fn write_status(path: &Path, status: &MediaWorkerStatus) -> Result<()> {
     fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("protecting {}", temporary.display()))?;
     fs::rename(&temporary, path).with_context(|| format!("saving {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idle_process() -> Result<MediaProcess> {
+        Ok(MediaProcess(Command::new("sleep").arg("30").spawn()?))
+    }
+
+    #[test]
+    fn failed_audio_does_not_disable_microphone_or_camera() {
+        let mut channels = [
+            MediaChannel::new(MediaKind::GuestAudio, 1234, None),
+            MediaChannel::new(MediaKind::HostMicrophone, 1235, None),
+            MediaChannel::new(MediaKind::HostCamera, 1236, None),
+        ];
+        channels[0].reconcile_with(|| bail!("audio unavailable"));
+        channels[1].reconcile_with(idle_process);
+        channels[2].reconcile_with(idle_process);
+        let status = channel_status(&channels);
+        assert!(!status.guest_audio_output);
+        assert!(status.host_microphone);
+        assert!(status.host_camera);
+        assert!(status.error.unwrap().contains("audio unavailable"));
+        let microphone = channels[1].process.as_ref().unwrap().0.id();
+        channels[0].retry_at = Instant::now();
+        channels[0].reconcile_with(idle_process);
+        assert!(channel_status(&channels).error.is_none());
+        assert_eq!(channels[1].process.as_ref().unwrap().0.id(), microphone);
+    }
+
+    #[test]
+    fn reconnect_replaces_only_the_exited_channel_and_reaps_children() {
+        let mut channel = MediaChannel::new(MediaKind::HostCamera, 1236, None);
+        channel.reconcile_with(idle_process);
+        let old_pid = channel.process.as_ref().unwrap().0.id();
+        channel.process.as_mut().unwrap().0.kill().unwrap();
+        channel.process.as_mut().unwrap().0.wait().unwrap();
+        channel.reconcile_with(|| panic!("retry must be delayed"));
+        assert!(channel.process.is_none());
+        assert!(channel.error.is_some());
+        channel.retry_at = Instant::now();
+        channel.reconcile_with(idle_process);
+        let new_pid = channel.process.as_ref().unwrap().0.id();
+        assert_ne!(old_pid, new_pid);
+        drop(channel);
+        assert_eq!(
+            unsafe { libc::waitpid(new_pid as i32, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn failed_start_is_rate_limited_and_healthy_channels_are_not_restarted() {
+        let mut channel = MediaChannel::new(MediaKind::GuestAudio, 1234, None);
+        channel.reconcile_with(|| bail!("not ready"));
+        channel.reconcile_with(|| panic!("no retry before backoff"));
+        channel.retry_at = Instant::now();
+        channel.reconcile_with(idle_process);
+        channel.reconcile_with(|| panic!("a healthy bridge stays running"));
+    }
 }

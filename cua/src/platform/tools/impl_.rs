@@ -30,30 +30,12 @@ fn keyboard_admission(
 }
 
 fn point_near_cursor_path(x: i32, y: i32, cursor_masks: &[(i32, i32)]) -> bool {
-    if cursor_masks.iter().any(|(cursor_x, cursor_y)| {
+    // These are static before/after frames, not a motion trail. Masking the
+    // segment between cursor positions also erased real changes such as the
+    // text selection created by a drag.
+    cursor_masks.iter().any(|(cursor_x, cursor_y)| {
         (x - cursor_x).abs() <= CURSOR_EVIDENCE_MASK_RADIUS
             && (y - cursor_y).abs() <= CURSOR_EVIDENCE_MASK_RADIUS
-    }) {
-        return true;
-    }
-    cursor_masks.windows(2).any(|segment| {
-        let (start_x, start_y) = segment[0];
-        let (end_x, end_y) = segment[1];
-        let dx = f64::from(end_x - start_x);
-        let dy = f64::from(end_y - start_y);
-        let length_squared = dx * dx + dy * dy;
-        if length_squared == 0.0 {
-            return false;
-        }
-        let projection =
-            (f64::from(x - start_x) * dx + f64::from(y - start_y) * dy) / length_squared;
-        let projection = projection.clamp(0.0, 1.0);
-        let nearest_x = f64::from(start_x) + projection * dx;
-        let nearest_y = f64::from(start_y) + projection * dy;
-        let distance_x = f64::from(x) - nearest_x;
-        let distance_y = f64::from(y) - nearest_y;
-        distance_x * distance_x + distance_y * distance_y
-            <= f64::from(CURSOR_EVIDENCE_MASK_RADIUS * CURSOR_EVIDENCE_MASK_RADIUS)
     })
 }
 
@@ -368,6 +350,19 @@ mod visual_observation_tests {
             Some(before.as_slice()),
             Some(outside.as_slice()),
             &[(100, 100), (0, 0)],
+        );
+        assert_eq!(changed["effect"], "confirmed");
+    }
+
+    #[test]
+    fn drag_selection_between_cursor_endpoints_remains_observable() {
+        let before = frame_with_changed_pixel(32, 128);
+        let after = frame_with_changed_pixel(128, 128);
+        let changed = visual_observation_payload_masked(
+            "wayland_desktop",
+            Some(&before),
+            Some(&after),
+            &[(32, 128), (224, 128)],
         );
         assert_eq!(changed["effect"], "confirmed");
     }
@@ -1438,10 +1433,86 @@ static LAUNCH_DEF: std::sync::OnceLock<ToolDef> = std::sync::OnceLock::new();
 const GUI_LAUNCH_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug)]
+struct LaunchedWindow {
+    container_id: u64,
+    pid: u32,
+    foreign_toplevel_identifier: String,
+    record: Value,
+}
+
+impl LaunchedWindow {
+    fn from_sway(window: crate::platform::wayland::sway_ipc::Window) -> Self {
+        Self {
+            container_id: window.id,
+            pid: window.pid,
+            foreign_toplevel_identifier: window.foreign_toplevel_identifier,
+            record: json!({
+                "window_id": window.id,
+                "pid": window.pid,
+                "app_name": window.app_id,
+                "title": window.title,
+                "bounds": {"x": window.x, "y": window.y, "width": window.width, "height": window.height},
+                "x": window.x, "y": window.y,
+                "width": window.width, "height": window.height,
+                "is_on_screen": window.visible,
+                "z_index": Value::Null,
+                "workspace": window.workspace,
+                "output": window.output,
+            }),
+        }
+    }
+
+    fn require_same_identity(
+        &self,
+        pid: u32,
+        current: &crate::platform::wayland::sway_ipc::Window,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.matches_identity(
+                pid,
+                current.id,
+                current.pid,
+                &current.foreign_toplevel_identifier,
+            ),
+            "launched Sway window {} changed its process or mapped identity before routing",
+            self.container_id
+        );
+        Ok(())
+    }
+
+    fn matches_identity(&self, pid: u32, id: u64, owner: u32, identifier: &str) -> bool {
+        self.pid == pid
+            && owner == pid
+            && id == self.container_id
+            && !self.foreign_toplevel_identifier.is_empty()
+            && identifier == self.foreign_toplevel_identifier
+    }
+}
+
+fn launched_windows_for_pid(windows: Vec<LaunchedWindow>, pid: u32) -> Vec<LaunchedWindow> {
+    windows
+        .into_iter()
+        .filter(|window| window.pid == pid && !window.foreign_toplevel_identifier.is_empty())
+        .collect()
+}
+
+fn observe_sway_launch_windows(pid: u32) -> anyhow::Result<Vec<LaunchedWindow>> {
+    // Launch routing accepts only compositor-owned identities. The general
+    // listing enriches native windows with AT-SPI and may fall back to X11 or
+    // synthetic accessibility ids; those numeric domains must never become
+    // Sway con_id selectors, even when a record claims the launched PID.
+    let windows = crate::platform::wayland::sway_ipc::list_public_windows()?
+        .into_iter()
+        .map(|(_, window)| LaunchedWindow::from_sway(window))
+        .collect();
+    Ok(launched_windows_for_pid(windows, pid))
+}
+
+#[derive(Debug)]
 enum DirectLaunchObservation {
     Running {
         pid: u32,
-        windows: Vec<Value>,
+        windows: Vec<LaunchedWindow>,
     },
     ExitedBeforeWindow {
         pid: u32,
@@ -1459,8 +1530,8 @@ fn observe_direct_launch(
     mut child: std::process::Child,
     timeout: std::time::Duration,
     poll_interval: std::time::Duration,
-    mut windows_for_pid: impl FnMut(u32) -> Vec<Value>,
-) -> std::io::Result<DirectLaunchObservation> {
+    mut windows_for_pid: impl FnMut(u32) -> anyhow::Result<Vec<LaunchedWindow>>,
+) -> anyhow::Result<DirectLaunchObservation> {
     let pid = child.id();
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -1471,7 +1542,13 @@ fn observe_direct_launch(
             return Ok(DirectLaunchObservation::ExitedBeforeWindow { pid, status });
         }
 
-        let windows = windows_for_pid(pid);
+        let windows = match windows_for_pid(pid) {
+            Ok(windows) => launched_windows_for_pid(windows, pid),
+            Err(error) => {
+                reap_in_background(child);
+                return Err(error.context("observing the launched process in Sway"));
+            }
+        };
         if !windows.is_empty() {
             // The GUI owns a window and is still alive. Keep the driver from
             // accumulating a zombie when it eventually exits without making
@@ -1499,15 +1576,27 @@ fn direct_launch_result(
     observation: DirectLaunchObservation,
 ) -> ToolResult {
     match observation {
-        DirectLaunchObservation::Running { pid, windows } => ToolResult::text(message)
-            .with_structured(json!({
+        DirectLaunchObservation::Running { pid, windows } => {
+            let observed = !windows.is_empty();
+            let mut structured = json!({
                 "pid": pid,
                 "bundle_id": Value::Null,
                 "name": name,
                 "running": true,
                 "active": false,
-                "windows": windows,
-            })),
+                "windows": windows.into_iter().map(|window| window.record).collect::<Vec<_>>(),
+            });
+            if observed {
+                ToolResult::text(message).with_structured(structured)
+            } else {
+                structured["code"] = json!("launch_window_unobserved");
+                structured["launch_state"] = json!("running_without_window");
+                ToolResult::error(format!(
+                    "Launch process {pid} for {name} is running, but no exact application window was observed before the deadline."
+                ))
+                .with_structured(structured)
+            }
+        }
         DirectLaunchObservation::ExitedBeforeWindow { pid, status } => {
             #[cfg(unix)]
             let signal = std::os::unix::process::ExitStatusExt::signal(&status);
@@ -1561,15 +1650,24 @@ fn route_launch_observation_to_cua(
     match observation {
         DirectLaunchObservation::Running { pid, mut windows } => {
             let workspace = crate::platform::wayland::sway_ipc::cua_workspace_name(index)?;
-            for record in &mut windows {
-                let Some(window_id) = record.get("window_id").and_then(Value::as_u64) else {
-                    continue;
-                };
+            // Validate every original mapped identity before the first move.
+            // PID alone cannot prove that a stale numeric id still denotes
+            // the same toplevel after a compositor restart.
+            for window in &windows {
+                let current = crate::platform::wayland::sway_ipc::resolve_public_window(
+                    window.container_id,
+                    Some(pid),
+                )?;
+                window.require_same_identity(pid, &current)?;
+            }
+            for window in &mut windows {
                 let moved = crate::platform::wayland::sway_ipc::move_public_window_to_cua(
-                    window_id,
+                    window.container_id,
                     Some(pid),
                     index,
                 )?;
+                window.require_same_identity(pid, &moved)?;
+                let record = &mut window.record;
                 record["workspace"] = json!(workspace);
                 record["workspace_index"] = json!(index);
                 record["output"] = json!(moved.output);
@@ -1589,6 +1687,18 @@ fn route_launch_observation_to_cua(
                 record["y"] = json!(frame.1);
                 record["width"] = json!(frame.2);
                 record["height"] = json!(frame.3);
+            }
+            if let Some(window) = windows.last() {
+                // Moving a container does not give this numbered seat focus.
+                // Concurrent launches must not inherit whichever view Sway
+                // most recently focused for another caller.
+                crate::platform::wayland::activate_window_for_input_target(
+                    window.container_id,
+                    Some(pid),
+                )?;
+                crate::platform::wayland::sway_ipc::require_caller_seat_focus(Some(
+                    window.container_id,
+                ))?;
             }
             Ok(DirectLaunchObservation::Running { pid, windows })
         }
@@ -1712,12 +1822,7 @@ impl Tool for LaunchAppTool {
                                 // workspace.
                                 GUI_LAUNCH_WINDOW_TIMEOUT,
                                 std::time::Duration::from_millis(100),
-                                |pid| {
-                                    crate::platform::wayland::list_windows_dispatch(Some(pid))
-                                        .iter()
-                                        .map(window_record_json)
-                                        .collect()
-                                },
+                                observe_sway_launch_windows,
                             )?;
                             return Ok((
                                 format!("✅ Launched {cmd} (pid {pid}) in background."),
@@ -1792,6 +1897,20 @@ fn chromium_family_program(program: &str) -> bool {
 mod launch_app_tests {
     use super::*;
 
+    fn launch_window(pid: u32, container_id: u64, identifier: &str) -> LaunchedWindow {
+        LaunchedWindow {
+            container_id,
+            pid,
+            foreign_toplevel_identifier: identifier.to_owned(),
+            record: json!({
+                "window_id": container_id,
+                "pid": pid,
+                "title": "Fixture",
+                "app_name": "org.xfce.mousepad",
+            }),
+        }
+    }
+
     fn observe_shell(script: &str) -> DirectLaunchObservation {
         let child = std::process::Command::new("sh")
             .args(["-c", script])
@@ -1801,7 +1920,7 @@ mod launch_app_tests {
             child,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(5),
-            |_| Vec::new(),
+            |_| Ok(Vec::new()),
         )
         .expect("observe launch fixture")
     }
@@ -1866,7 +1985,7 @@ mod launch_app_tests {
             child,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(5),
-            |observed_pid| vec![json!({"pid": observed_pid, "title": "Fixture"})],
+            |observed_pid| Ok(vec![launch_window(observed_pid, 10, "new-mousepad")]),
         )
         .expect("observe live launch fixture");
         let result = direct_launch_result(
@@ -1882,6 +2001,88 @@ mod launch_app_tests {
         assert_eq!(structured["pid"], pid);
         assert_eq!(structured["running"], true);
         assert_eq!(structured["windows"][0]["title"], "Fixture");
+    }
+
+    #[test]
+    fn same_app_existing_instance_cannot_satisfy_new_direct_launch() {
+        let windows = launched_windows_for_pid(
+            vec![
+                launch_window(190, 8, "existing-mousepad"),
+                launch_window(256, 10, "new-mousepad-disable-server"),
+                launch_window(374, 14, "other-new-mousepad"),
+            ],
+            256,
+        );
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].container_id, 10);
+        assert_eq!(windows[0].pid, 256);
+    }
+
+    #[test]
+    fn launch_waits_past_existing_instance_until_exact_new_window_maps() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2"])
+            .spawn()
+            .expect("spawn independent launch fixture");
+        let pid = child.id();
+        let mut observations = 0;
+        let result = observe_direct_launch(
+            child,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(1),
+            |owner| {
+                observations += 1;
+                let mut windows = vec![launch_window(0, 8, "existing-mousepad")];
+                if observations >= 2 {
+                    windows.push(launch_window(owner, 10, "new-mousepad-disable-server"));
+                }
+                Ok(windows)
+            },
+        )
+        .unwrap();
+        let DirectLaunchObservation::Running {
+            pid: owner,
+            windows,
+        } = result
+        else {
+            panic!("new process should remain running");
+        };
+        assert_eq!(owner, pid);
+        assert_eq!(observations, 2);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].container_id, 10);
+    }
+
+    #[test]
+    fn launch_identity_rejects_wrong_pid_x11_number_and_reused_container_id() {
+        let window = launch_window(256, 10, "new-mousepad");
+        assert!(window.matches_identity(256, 10, 256, "new-mousepad"));
+        assert!(!window.matches_identity(256, 8, 190, "existing-mousepad"));
+        assert!(!window.matches_identity(256, 24510464, 256, "new-mousepad"));
+        assert!(!window.matches_identity(256, 10, 256, "remapped-mousepad"));
+        assert!(!window.matches_identity(374, 10, 256, "new-mousepad"));
+    }
+
+    #[test]
+    fn incomplete_mapped_identity_does_not_end_launch_discovery() {
+        assert!(launched_windows_for_pid(vec![launch_window(256, 10, "")], 256).is_empty());
+    }
+
+    #[test]
+    fn running_process_without_exact_window_is_not_launch_success() {
+        let result = direct_launch_result(
+            "spawned".to_owned(),
+            "mousepad --disable-server".to_owned(),
+            DirectLaunchObservation::Running {
+                pid: 256,
+                windows: Vec::new(),
+            },
+        );
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["running"], true);
+        assert_eq!(structured["windows"], json!([]));
+        assert_eq!(structured["code"], "launch_window_unobserved");
     }
 }
 

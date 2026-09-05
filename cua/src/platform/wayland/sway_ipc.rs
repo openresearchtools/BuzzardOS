@@ -4,7 +4,10 @@
 //! public CUA id is bound to Sway's opaque `foreign_toplevel_identifier`; title,
 //! app-id, PID, and Wayland object-id heuristics are never used to retarget it.
 
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -575,21 +578,93 @@ fn run_global_command(command: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn normalized_output_position_commands(outputs: &[OutputInfo]) -> anyhow::Result<Vec<String>> {
-    let mut active = outputs
+fn lock_workspace_creation() -> anyhow::Result<File> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR is unavailable"))?;
+    let root = std::path::PathBuf::from(runtime).join("buzzardoscua");
+    let metadata = fs::symlink_metadata(&root)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o077 == 0,
+        "Buzzard CUA runtime directory is not private to the guest user"
+    );
+    // Output creation is the only shared transaction. Existing numbered
+    // workspaces retain their independent per-seat operation locks.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(root.join("workspace-layout.lock"))?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o077 == 0,
+        "Buzzard CUA workspace lock is not private to the guest user"
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        anyhow::ensure!(
+            error.kind() == std::io::ErrorKind::WouldBlock,
+            "locking CUA workspace creation: {error}"
+        );
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "CUA workspace creation is busy with another bounded operation"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn new_output_commands(
+    index: u32,
+    before: &[OutputInfo],
+    created: &OutputInfo,
+    initial_workspace: &str,
+) -> anyhow::Result<Vec<String>> {
+    let workspace_name = cua_workspace_name(index)?;
+    let primary = before
         .iter()
         .filter(|output| output.active)
-        .collect::<Vec<_>>();
-    active.sort_by_key(|output| output.id);
-    anyhow::ensure!(!active.is_empty(), "Sway has no active output to position");
-
-    let mut x = 0_i32;
-    let mut commands = Vec::with_capacity(active.len());
-    for output in active {
-        commands.push(format!("output {} pos {x} 0", safe_name(&output.name)?));
-        x = x.saturating_add(output.rect.width.max(1));
-    }
-    Ok(commands)
+        .min_by_key(|output| output.id)
+        .ok_or_else(|| anyhow::anyhow!("Sway has no host-facing output to mirror"))?;
+    anyhow::ensure!(
+        created.active && before.iter().all(|output| output.name != created.name),
+        "refusing to reconfigure an existing or inactive output for CUA"
+    );
+    let x = before
+        .iter()
+        .filter(|output| output.active)
+        .map(|output| output.rect.right())
+        .max()
+        .ok_or_else(|| anyhow::anyhow!("Sway has no active output layout"))?;
+    Ok(vec![
+        format!(
+            "output {} mode {}x{}@{:.3}Hz scale {:.3} pos {x} 0",
+            safe_name(&created.name)?,
+            primary.physical_width.max(1),
+            primary.physical_height.max(1),
+            f64::from(primary.refresh_millihz) / 1000.0,
+            f64::from(primary.scale_milli) / 1000.0,
+        ),
+        format!("seat \"seat{index}\" fallback false"),
+        agent_cursor_command(index)?,
+        // Stock Sway creates a workspace on a newly enabled output. Rename
+        // that exact workspace in place; `workspace NAME` would select it
+        // through the IPC default seat and disturb human focus.
+        format!(
+            "rename workspace {} to {}",
+            safe_name(initial_workspace)?,
+            safe_name(&workspace_name)?
+        ),
+    ])
 }
 
 pub fn cua_workspace_name(index: u32) -> anyhow::Result<String> {
@@ -614,6 +689,13 @@ fn cua_workspace_index(name: &str) -> Option<u32> {
     }
 }
 
+fn agent_cursor_command(index: u32) -> anyhow::Result<String> {
+    cua_workspace_name(index)?; // seat0 must never receive the agent theme.
+    Ok(format!(
+        "seat \"seat{index}\" xcursor_theme BuzzardOS-Agent 24"
+    ))
+}
+
 pub fn ensure_cua_workspace(index: u32) -> anyhow::Result<String> {
     let workspace_name = cua_workspace_name(index)?;
     if let Some(workspace) = workspaces()?
@@ -622,13 +704,19 @@ pub fn ensure_cua_workspace(index: u32) -> anyhow::Result<String> {
     {
         return Ok(workspace.output);
     }
-    let before = outputs()?;
-    let primary_name = before
+    let _creation_lock = lock_workspace_creation()?;
+    let before_workspaces = workspaces()?;
+    if let Some(workspace) = before_workspaces
         .iter()
-        .filter(|output| output.active)
-        .min_by_key(|output| output.id)
-        .map(|output| output.name.clone())
-        .ok_or_else(|| anyhow::anyhow!("Sway has no host-facing output to mirror"))?;
+        .find(|workspace| workspace.name == workspace_name)
+    {
+        return Ok(workspace.output.clone());
+    }
+    let before = outputs()?;
+    anyhow::ensure!(
+        before.iter().any(|output| output.active),
+        "Sway has no active output"
+    );
     let before_names = before
         .iter()
         .map(|output| output.name.as_str())
@@ -637,39 +725,35 @@ pub fn ensure_cua_workspace(index: u32) -> anyhow::Result<String> {
     let after = outputs()?;
     let created = after
         .iter()
-        .find(|output| !before_names.contains(output.name.as_str()))
-        .ok_or_else(|| anyhow::anyhow!("Sway accepted create_output but exposed no new output"))?;
-    let primary = after
-        .iter()
-        .find(|output| output.active && output.name == primary_name)
-        .ok_or_else(|| anyhow::anyhow!("Sway has no host-facing output to mirror"))?;
-    let previous_workspace = workspaces()?
+        .filter(|output| !before_names.contains(output.name.as_str()))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        created.len() == 1,
+        "Sway output creation did not identify exactly one new output"
+    );
+    let created = created[0];
+    let initial_workspaces = workspaces()?
         .into_iter()
-        .find(|workspace| workspace.output == primary.name)
-        .map(|workspace| workspace.name)
-        .unwrap_or_else(|| "Desktop".to_owned());
-    let mut commands = vec![format!(
-        "output {} mode {}x{}@{:.3}Hz scale {:.3}",
-        safe_name(&created.name)?,
-        primary.physical_width.max(1),
-        primary.physical_height.max(1),
-        f64::from(primary.refresh_millihz) / 1000.0,
-        f64::from(primary.scale_milli) / 1000.0,
-    )];
-    // Host pointer coordinates are local to the first nested output. Keep its
-    // Sway origin fixed while adding a guest-only headless target.
-    commands.extend(normalized_output_position_commands(&after)?);
-    commands.extend([
-        format!("seat \"seat{index}\" fallback false"),
-        format!("workspace {}", safe_name(&workspace_name)?),
-        format!("move workspace to output {}", safe_name(&created.name)?),
-        format!("workspace {}", safe_name(&previous_workspace)?),
-    ]);
+        .filter(|workspace| workspace.output == created.name)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        initial_workspaces.len() == 1
+            && before_workspaces
+                .iter()
+                .all(|workspace| { workspace.name != initial_workspaces[0].name }),
+        "new CUA output does not own one newly created workspace"
+    );
+    let commands = new_output_commands(index, &before, created, &initial_workspaces[0].name)?;
     run_global_command(&commands.join("; "))?;
     let workspace = workspaces()?
         .into_iter()
         .find(|workspace| workspace.name == workspace_name)
         .ok_or_else(|| anyhow::anyhow!("Sway did not create {workspace_name}"))?;
+    anyhow::ensure!(
+        workspace.output == created.name,
+        "Sway did not preserve {workspace_name} on its new output {}",
+        created.name
+    );
     Ok(workspace.output)
 }
 
@@ -883,6 +967,9 @@ fn frame_commands(x: i32, y: i32, width: u32, height: u32, commands: &mut Vec<St
 }
 
 fn run_commands(id: u64, commands: Vec<String>) -> anyhow::Result<()> {
+    if commands.is_empty() {
+        return Ok(());
+    }
     run_container_command(id, &commands.join(", "))
 }
 
@@ -977,6 +1064,37 @@ fn maximize_commands(window: &Window, restore: Rect) -> Vec<String> {
     commands
 }
 
+fn minimize_commands(window: &Window) -> Vec<String> {
+    let mut commands = Vec::new();
+    if !window.maximized {
+        remove_restore_mark_commands(window, &mut commands);
+    }
+    // Stock Sway's `move scratchpad` hides both ordinary windows and already
+    // shown scratchpad members. A toggle command could instead show a window.
+    commands.push("move scratchpad".to_owned());
+    commands
+}
+
+fn restore_commands(window: &Window) -> Vec<String> {
+    let mut commands = Vec::new();
+    if let Some(frame) = window.restore_frame {
+        let frame = clamp_restore_frame(frame, window);
+        remove_restore_mark_commands(window, &mut commands);
+        frame_commands(
+            frame.x,
+            frame.y,
+            u32::try_from(frame.width).unwrap_or(1),
+            u32::try_from(frame.height).unwrap_or(1),
+            &mut commands,
+        );
+    } else if window.fullscreen {
+        commands.push("fullscreen disable".to_owned());
+    }
+    // IPC `focus` uses Sway's default seat, not the caller's numbered seat.
+    // Restoring geometry/state does not require changing keyboard focus.
+    commands
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowControlAction {
     Close,
@@ -1067,17 +1185,7 @@ pub fn control_window(
             }
         }
         WindowControlAction::Minimize => {
-            let mut commands = Vec::new();
-            if !before_window.maximized {
-                remove_restore_mark_commands(&before_window, &mut commands);
-            }
-            // `move scratchpad` rejects a currently shown scratchpad member;
-            // `scratchpad show` toggles that exact shown member back to hidden.
-            commands.push(if before_window.scratchpad {
-                "scratchpad show".to_owned()
-            } else {
-                "move scratchpad".to_owned()
-            });
+            let commands = minimize_commands(&before_window);
             run_confirmed(id, "minimize", commands, |window| window.minimized)?;
         }
         WindowControlAction::Maximize => {
@@ -1139,23 +1247,9 @@ pub fn control_window(
                     |window| !window.minimized,
                 )?;
             }
-            let mut commands = Vec::new();
-            if let Some(frame) = current.restore_frame {
-                let frame = clamp_restore_frame(frame, &current);
-                remove_restore_mark_commands(&current, &mut commands);
-                frame_commands(
-                    frame.x,
-                    frame.y,
-                    u32::try_from(frame.width).unwrap_or(1),
-                    u32::try_from(frame.height).unwrap_or(1),
-                    &mut commands,
-                );
-            } else if current.fullscreen {
-                commands.push("fullscreen disable".to_owned());
-            }
-            commands.push("focus".to_owned());
+            let commands = restore_commands(&current);
             run_confirmed(id, "restore", commands, |window| {
-                !window.minimized && !window.maximized && !window.fullscreen && window.focused
+                !window.minimized && !window.maximized && !window.fullscreen
             })?;
         }
     }
@@ -1258,11 +1352,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_layout_keeps_the_host_input_origin_fixed() {
-        let outputs = [
+    fn new_output_setup_does_not_reposition_existing_outputs_or_select_a_workspace() {
+        let before = [
             OutputInfo {
                 id: 9,
-                name: "WL-3".into(),
+                name: "HEADLESS-2".into(),
                 active: true,
                 rect: Rect {
                     x: 6400,
@@ -1282,11 +1376,15 @@ mod tests {
                     height: 681,
                     ..Rect::default()
                 },
+                physical_width: 1707,
+                physical_height: 908,
+                scale_milli: 1333,
+                refresh_millihz: 60000,
                 ..OutputInfo::default()
             },
             OutputInfo {
                 id: 6,
-                name: "WL-2".into(),
+                name: "HEADLESS-1".into(),
                 active: true,
                 rect: Rect {
                     x: 2560,
@@ -1297,12 +1395,124 @@ mod tests {
                 ..OutputInfo::default()
             },
         ];
+        let created = OutputInfo {
+            id: 12,
+            name: "HEADLESS-3".into(),
+            active: true,
+            ..OutputInfo::default()
+        };
         assert_eq!(
-            normalized_output_position_commands(&outputs).unwrap(),
+            new_output_commands(3, &before, &created, "4").unwrap(),
             [
-                "output \"WL-1\" pos 0 0",
-                "output \"WL-2\" pos 1280 0",
-                "output \"WL-3\" pos 2560 0",
+                "output \"HEADLESS-3\" mode 1707x908@60.000Hz scale 1.333 pos 8960 0",
+                "seat \"seat3\" fallback false",
+                "seat \"seat3\" xcursor_theme BuzzardOS-Agent 24",
+                "rename workspace \"4\" to \"CUA3\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn new_output_setup_rejects_existing_inactive_or_human_seat_targets() {
+        let primary = OutputInfo {
+            name: "WL-1".into(),
+            active: true,
+            ..OutputInfo::default()
+        };
+        let created = OutputInfo {
+            name: "HEADLESS-1".into(),
+            active: true,
+            ..OutputInfo::default()
+        };
+        assert!(new_output_commands(1, &[], &created, "2").is_err());
+        assert!(new_output_commands(1, &[primary.clone()], &primary, "2").is_err());
+        assert!(new_output_commands(0, &[primary.clone()], &created, "2").is_err());
+        assert!(
+            new_output_commands(
+                1,
+                &[primary],
+                &OutputInfo {
+                    active: false,
+                    ..created
+                },
+                "2"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn first_numbered_output_uses_exact_workspace_rename() {
+        let before = [OutputInfo {
+            name: "WL-1".into(),
+            active: true,
+            ..OutputInfo::default()
+        }];
+        let created = OutputInfo {
+            name: "HEADLESS-1".into(),
+            active: true,
+            ..OutputInfo::default()
+        };
+        let commands = new_output_commands(1, &before, &created, "2").unwrap();
+        assert_eq!(commands[1], "seat \"seat1\" fallback false");
+        assert_eq!(
+            commands[2],
+            "seat \"seat1\" xcursor_theme BuzzardOS-Agent 24"
+        );
+        assert_eq!(commands[3], "rename workspace \"2\" to \"CUA\"");
+    }
+
+    #[test]
+    fn agent_cursor_configuration_never_targets_human_or_wildcard_seats() {
+        assert!(agent_cursor_command(0).is_err());
+        assert_eq!(
+            agent_cursor_command(42).unwrap(),
+            "seat \"seat42\" xcursor_theme BuzzardOS-Agent 24"
+        );
+    }
+
+    fn normal_test_window() -> Window {
+        parse_tree(br#"{
+          "id":1,"type":"root","nodes":[{"id":2,"type":"output","name":"HEADLESS-1",
+            "nodes":[{"id":3,"type":"workspace","name":"CUA",
+              "rect":{"x":1600,"y":0,"width":1280,"height":800},
+              "floating_nodes":[{
+                "id":10,"type":"floating_con","name":"Test","pid":10,
+                "foreign_toplevel_identifier":"test","rect":{"x":1700,"y":100,"width":400,"height":300},
+                "scratchpad_state":"none","visible":true
+              }]
+            }]
+          }]
+        }"#).unwrap().remove(0)
+    }
+
+    #[test]
+    fn minimize_hides_shown_scratchpad_member_without_toggling() {
+        let mut window = normal_test_window();
+        assert_eq!(minimize_commands(&window), ["move scratchpad"]);
+        window.scratchpad = true;
+        assert_eq!(minimize_commands(&window), ["move scratchpad"]);
+    }
+
+    #[test]
+    fn restore_geometry_does_not_request_default_seat_focus() {
+        let mut window = normal_test_window();
+        assert!(restore_commands(&window).is_empty());
+        window.fullscreen = true;
+        assert_eq!(restore_commands(&window), ["fullscreen disable"]);
+        window.restore_frame = Some(Rect {
+            x: 1700,
+            y: 100,
+            width: 400,
+            height: 300,
+        });
+        assert_eq!(
+            restore_commands(&window),
+            [
+                "fullscreen disable",
+                "floating enable",
+                "resize set width 400 px height 300 px",
+                "move absolute position 1700 px 100 px",
             ]
         );
     }
@@ -1527,11 +1737,13 @@ mod tests {
     #[test]
     fn command_reply_requires_compositor_success() {
         validate_command_reply(br#"[{"success":true}]"#, 7).unwrap();
-        assert!(validate_command_reply(
-            br#"[{"success":false,"error":"No matching node.","parse_error":false}]"#,
-            7
-        )
-        .is_err());
+        assert!(
+            validate_command_reply(
+                br#"[{"success":false,"error":"No matching node.","parse_error":false}]"#,
+                7
+            )
+            .is_err()
+        );
     }
 
     #[test]

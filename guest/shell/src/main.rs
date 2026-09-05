@@ -2,6 +2,7 @@
 
 mod desktop;
 mod icons;
+mod input;
 mod model;
 mod sway_ipc;
 mod watch;
@@ -42,10 +43,10 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        keyboard::{KeyEvent, KeyboardData, KeyboardHandler, Keysym, Modifiers, RawModifiers},
         pointer::{
-            BTN_LEFT, BTN_RIGHT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler,
-            ThemeSpec, ThemedPointer,
+            BTN_LEFT, BTN_RIGHT, CursorIcon, PointerData, PointerEvent, PointerEventKind,
+            PointerHandler, ThemeSpec, ThemedPointer,
         },
     },
     shell::{
@@ -57,7 +58,7 @@ use smithay_client_toolkit::{
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
@@ -87,6 +88,7 @@ use wayland_protocols::wp::{
 use wl_clipboard_rs::{copy as clipboard_copy, paste as clipboard_paste};
 
 use crate::desktop::DesktopModel;
+use crate::input::{SeatInput, SeatInteraction};
 use crate::watch::{DirectoryWatcher, FileWatcher};
 
 const SHELL_NAME: &str = "Buzzard OS Desktop";
@@ -856,10 +858,6 @@ fn run() -> Result<()> {
         context_state: ContextState::Hidden,
         desktop_selection: BTreeSet::new(),
         desktop_selection_anchor: None,
-        desktop_pointer_gesture: None,
-        last_desktop_click: None,
-        keyboard_focus: None,
-        modifiers: Modifiers::default(),
         guest_clipboard: None,
         clipboard_generation: 0,
         paste_available: false,
@@ -880,12 +878,9 @@ fn run() -> Result<()> {
             .cloned()
             .collect(),
         application_search: String::new(),
-        hovered: None,
         exit: false,
         dirty: true,
-        pointer: None,
-        keyboard: None,
-        seat: None,
+        inputs: HashMap::new(),
         applications,
         application_icons,
         desktop_theme_icons,
@@ -998,6 +993,16 @@ enum MenuKind {
     Workspace(u32),
 }
 
+struct ShellKeyboard(wl_keyboard::WlKeyboard);
+
+impl Drop for ShellKeyboard {
+    fn drop(&mut self) {
+        if self.0.version() >= 3 {
+            self.0.release();
+        }
+    }
+}
+
 struct Shell {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -1039,10 +1044,6 @@ struct Shell {
     context_state: ContextState,
     desktop_selection: BTreeSet<PathBuf>,
     desktop_selection_anchor: Option<PathBuf>,
-    desktop_pointer_gesture: Option<DesktopPointerGesture>,
-    last_desktop_click: Option<(PathBuf, u32)>,
-    keyboard_focus: Option<ShellSurface>,
-    modifiers: Modifiers,
     guest_clipboard: Option<GuestClipboardRecord>,
     clipboard_generation: u64,
     paste_available: bool,
@@ -1054,12 +1055,9 @@ struct Shell {
     capped_task_buttons: bool,
     pinned_applications: BTreeSet<String>,
     application_search: String,
-    hovered: Option<ShellAction>,
     exit: bool,
     dirty: bool,
-    pointer: Option<ThemedPointer>,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-    seat: Option<wl_seat::WlSeat>,
+    inputs: HashMap<wl_seat::WlSeat, SeatInput<ThemedPointer, ShellKeyboard>>,
     applications: Vec<Application>,
     application_icons: BTreeMap<String, AppIcon>,
     desktop_theme_icons: BTreeMap<String, AppIcon>,
@@ -2612,8 +2610,8 @@ impl Shell {
         self.dirty = true;
     }
 
-    fn select_desktop_item(&mut self, path: PathBuf) {
-        if self.modifiers.shift {
+    fn select_desktop_item(&mut self, path: PathBuf, modifiers: Modifiers) {
+        if modifiers.shift {
             let ordered = self
                 .desktop_accessible_targets
                 .iter()
@@ -2628,7 +2626,7 @@ impl Shell {
                 .and_then(|anchor| ordered.iter().position(|candidate| candidate == anchor));
             let current = ordered.iter().position(|candidate| candidate == &path);
             if let (Some(anchor), Some(current)) = (anchor, current) {
-                if !self.modifiers.ctrl {
+                if !modifiers.ctrl {
                     self.desktop_selection.clear();
                 }
                 for candidate in &ordered[anchor.min(current)..=anchor.max(current)] {
@@ -2638,7 +2636,7 @@ impl Shell {
                 self.select_only(path);
                 return;
             }
-        } else if self.modifiers.ctrl {
+        } else if modifiers.ctrl {
             if !self.desktop_selection.remove(&path) {
                 self.desktop_selection.insert(path.clone());
             }
@@ -3122,7 +3120,17 @@ impl Shell {
         });
     }
 
-    fn handle_key(&mut self, event: KeyEvent) {
+    fn handle_key(&mut self, input: &SeatInteraction, event: KeyEvent) {
+        // A menu or dialog on another seat is not this keyboard's target.
+        let Some(focus) = input.keyboard_focus else {
+            return;
+        };
+        if self.context_state.is_visible() && focus != ShellSurface::Context {
+            return;
+        }
+        if self.menu_open && !self.context_state.is_visible() && focus != ShellSurface::Menu {
+            return;
+        }
         if event.keysym == Keysym::Escape {
             if self.context_state.is_visible() {
                 self.hide_context();
@@ -3145,9 +3153,9 @@ impl Shell {
                     self.dirty = true;
                 }
                 _ => {
-                    if !self.modifiers.ctrl
-                        && !self.modifiers.alt
-                        && !self.modifiers.logo
+                    if !input.modifiers.ctrl
+                        && !input.modifiers.alt
+                        && !input.modifiers.logo
                         && let Some(text) = event.utf8
                         && !text.chars().any(char::is_control)
                     {
@@ -3193,9 +3201,9 @@ impl Shell {
                     }
                 }
                 _ => {
-                    if !self.modifiers.ctrl
-                        && !self.modifiers.alt
-                        && !self.modifiers.logo
+                    if !input.modifiers.ctrl
+                        && !input.modifiers.alt
+                        && !input.modifiers.logo
                         && let Some(text) = event.utf8
                         && !text.chars().any(char::is_control)
                     {
@@ -3208,10 +3216,10 @@ impl Shell {
             }
             return;
         }
-        if self.keyboard_focus != Some(ShellSurface::Desktop) {
+        if focus != ShellSurface::Desktop {
             return;
         }
-        if self.modifiers.ctrl {
+        if input.modifiers.ctrl {
             match event.keysym {
                 Keysym::c | Keysym::C => self.copy_selection_to_clipboard(ClipboardOperation::Copy),
                 Keysym::x | Keysym::X => self.copy_selection_to_clipboard(ClipboardOperation::Cut),
@@ -3591,11 +3599,11 @@ impl Shell {
             })
     }
 
-    fn desktop_pointer_press(&mut self, x: f64, y: f64, time: u32) {
+    fn desktop_pointer_press(&mut self, input: &mut SeatInteraction, x: f64, y: f64, time: u32) {
         self.hide_context();
         if let Some((path, _)) = self.desktop_file_target_at(x, y) {
-            self.select_desktop_item(path.clone());
-            self.desktop_pointer_gesture = Some(DesktopPointerGesture::Item {
+            self.select_desktop_item(path.clone(), input.modifiers);
+            input.desktop_pointer_gesture = Some(DesktopPointerGesture::Item {
                 path,
                 start: (x, y),
                 current: (x, y),
@@ -3609,14 +3617,14 @@ impl Shell {
         {
             self.activate(target.action);
         } else {
-            let base = if self.modifiers.ctrl {
+            let base = if input.modifiers.ctrl {
                 self.desktop_selection.clone()
             } else {
                 self.desktop_selection.clear();
                 BTreeSet::new()
             };
             self.desktop_selection_anchor = None;
-            self.desktop_pointer_gesture = Some(DesktopPointerGesture::RubberBand {
+            input.desktop_pointer_gesture = Some(DesktopPointerGesture::RubberBand {
                 start: (x, y),
                 current: (x, y),
                 base,
@@ -3625,8 +3633,8 @@ impl Shell {
         }
     }
 
-    fn desktop_pointer_motion(&mut self, x: f64, y: f64) {
-        let Some(gesture) = &mut self.desktop_pointer_gesture else {
+    fn desktop_pointer_motion(&mut self, input: &mut SeatInteraction, x: f64, y: f64) {
+        let Some(gesture) = &mut input.desktop_pointer_gesture else {
             return;
         };
         match gesture {
@@ -3651,8 +3659,8 @@ impl Shell {
         self.dirty = true;
     }
 
-    fn desktop_pointer_release(&mut self, x: f64, y: f64) {
-        let Some(gesture) = self.desktop_pointer_gesture.take() else {
+    fn desktop_pointer_release(&mut self, input: &mut SeatInteraction, x: f64, y: f64) {
+        let Some(gesture) = input.desktop_pointer_gesture.take() else {
             return;
         };
         if let DesktopPointerGesture::Item {
@@ -3678,21 +3686,22 @@ impl Shell {
                 }
             } else {
                 let double_click =
-                    self.last_desktop_click
+                    input
+                        .last_desktop_click
                         .as_ref()
                         .is_some_and(|(previous, previous_time)| {
                             previous == &path
                                 && time.wrapping_sub(*previous_time) <= DOUBLE_CLICK_MILLIS
                         });
                 if double_click {
-                    self.last_desktop_click = None;
+                    input.last_desktop_click = None;
                     if let Some(kind) = self.selected_item_kind(&path)
                         && let Err(error) = self.open_desktop_item_here(&path, kind)
                     {
                         self.show_operation_error("Could not open item", error);
                     }
                 } else {
-                    self.last_desktop_click = Some((path, time));
+                    input.last_desktop_click = Some((path, time));
                 }
             }
         }
@@ -3712,12 +3721,18 @@ impl Shell {
         }
     }
 
-    fn update_hover(&mut self, surface: &wl_surface::WlSurface, x: f64, y: f64) {
+    fn update_hover(
+        &mut self,
+        input: &mut SeatInteraction,
+        surface: &wl_surface::WlSurface,
+        x: f64,
+        y: f64,
+    ) {
         let hovered = self
             .target_at_surface(surface, x, y)
             .map(|target| target.action);
-        if hovered != self.hovered {
-            self.hovered = hovered;
+        if hovered != input.hovered {
+            input.hovered = hovered;
             self.dirty = true;
         }
     }
@@ -3855,7 +3870,11 @@ impl Shell {
                     theme.selection.rgba(),
                 );
             }
-            if self.hovered.as_ref() == Some(&target.action) {
+            if self
+                .inputs
+                .values()
+                .any(|input| input.interaction.hovered.as_ref() == Some(&target.action))
+            {
                 fill_rect(
                     canvas,
                     width,
@@ -3884,17 +3903,19 @@ impl Shell {
                 },
             );
         }
-        if let Some(DesktopPointerGesture::RubberBand { start, current, .. }) =
-            &self.desktop_pointer_gesture
-        {
-            draw_outline(
-                canvas,
-                width,
-                height,
-                scale_rect(rect_between(*start, *current), self.scale_120),
-                scale_coord(2, self.scale_120).max(1),
-                theme.focus.rgba(),
-            );
+        for input in self.inputs.values() {
+            if let Some(DesktopPointerGesture::RubberBand { start, current, .. }) =
+                &input.interaction.desktop_pointer_gesture
+            {
+                draw_outline(
+                    canvas,
+                    width,
+                    height,
+                    scale_rect(rect_between(*start, *current), self.scale_120),
+                    scale_coord(2, self.scale_120).max(1),
+                    theme.focus.rgba(),
+                );
+            }
         }
         attach(
             &self.desktop,
@@ -3921,7 +3942,9 @@ impl Shell {
             &windows,
             self.task_offset,
             self.capped_task_buttons,
-            self.hovered.as_ref(),
+            self.inputs
+                .values()
+                .filter_map(|input| input.interaction.hovered.as_ref()),
             self.menu_open && self.menu_kind == MenuKind::Applications,
         )
     }
@@ -3995,7 +4018,7 @@ impl Shell {
                     &windows,
                     task_offset,
                     self.capped_task_buttons,
-                    None,
+                    std::iter::empty(),
                     false,
                 )?;
             }
@@ -4021,7 +4044,10 @@ impl Shell {
         // exposing the darker desktop canvas after the final `+` button.
         clear(canvas, theme.menu.rgba());
         for target in top_bar_targets(logical_width, &self.workspace_tabs) {
-            let hovered = self.hovered.as_ref() == Some(&target.action);
+            let hovered = self
+                .inputs
+                .values()
+                .any(|input| input.interaction.hovered.as_ref() == Some(&target.action));
             let active = match target.action {
                 ShellAction::SwitchWorkspace(index) => self
                     .workspace_tabs
@@ -4188,7 +4214,10 @@ impl Shell {
                 theme.text.rgba(),
             );
             let close = applications_menu_close_target(logical_width);
-            let close_hovered = self.hovered.as_ref() == Some(&close.action);
+            let close_hovered = self
+                .inputs
+                .values()
+                .any(|input| input.interaction.hovered.as_ref() == Some(&close.action));
             if close_hovered {
                 fill_rect(
                     canvas,
@@ -4297,7 +4326,10 @@ impl Shell {
                 &filtered_applications,
                 self.menu_scroll,
             ) {
-                let hovered = self.hovered.as_ref() == Some(&target.action);
+                let hovered = self
+                    .inputs
+                    .values()
+                    .any(|input| input.interaction.hovered.as_ref() == Some(&target.action));
                 fill_rect(
                     canvas,
                     width,
@@ -4462,7 +4494,10 @@ impl Shell {
                 theme.text.rgba(),
             );
             for target in window_menu_targets(&toplevel.window, &self.workspace_tabs) {
-                let hovered = self.hovered.as_ref() == Some(&target.action);
+                let hovered = self
+                    .inputs
+                    .values()
+                    .any(|input| input.interaction.hovered.as_ref() == Some(&target.action));
                 fill_rect(
                     canvas,
                     width,
@@ -4535,7 +4570,10 @@ impl Shell {
                 theme.text.rgba(),
             );
             for target in workspace_menu_targets(index) {
-                let hovered = self.hovered.as_ref() == Some(&target.action);
+                let hovered = self
+                    .inputs
+                    .values()
+                    .any(|input| input.interaction.hovered.as_ref() == Some(&target.action));
                 fill_rect(
                     canvas,
                     width,
@@ -4729,7 +4767,10 @@ impl Shell {
             _ => {}
         }
         for target in targets {
-            let hovered = self.hovered.as_ref() == Some(&target.action);
+            let hovered = self
+                .inputs
+                .values()
+                .any(|input| input.interaction.hovered.as_ref() == Some(&target.action));
             let disabled = matches!(target.action, ShellAction::DesktopPaste)
                 && matches!(self.context_state, ContextState::DesktopMenu)
                 && !self.paste_available;
@@ -5495,15 +5536,61 @@ impl LayerShellHandler for Shell {
     }
 }
 
+impl Shell {
+    fn pointer_seat(&self, pointer: &wl_pointer::WlPointer) -> Option<wl_seat::WlSeat> {
+        let seat = pointer.data::<PointerData>()?.seat();
+        let input = self.inputs.get(seat)?;
+        (input.pointer.as_ref()?.pointer() == pointer).then(|| seat.clone())
+    }
+
+    fn keyboard_seat(&self, keyboard: &wl_keyboard::WlKeyboard) -> Option<wl_seat::WlSeat> {
+        let seat = keyboard.data::<KeyboardData<Self>>()?.seat();
+        let input = self.inputs.get(seat)?;
+        (&input.keyboard.as_ref()?.0 == keyboard).then(|| seat.clone())
+    }
+
+    fn human_seat(&self, seat: &wl_seat::WlSeat) -> bool {
+        self.seat_state
+            .info(seat)
+            .and_then(|info| info.name)
+            .as_deref()
+            == Some("seat0")
+    }
+
+    fn update_accessibility_focus(&mut self) {
+        let focused = self
+            .inputs
+            .values()
+            .any(|input| input.interaction.keyboard_focus.is_some());
+        if let Some(accessibility) = self.accessibility.as_mut() {
+            accessibility.adapter.update_window_focus_state(focused);
+        }
+    }
+
+    fn keyboard_surface(&self, surface: &wl_surface::WlSurface) -> Option<ShellSurface> {
+        if surface == self.desktop.wl_surface() {
+            Some(ShellSurface::Desktop)
+        } else if surface == self.top_bar.wl_surface() {
+            Some(ShellSurface::TopBar)
+        } else if surface == self.panel.wl_surface() {
+            Some(ShellSurface::Panel)
+        } else if surface == self.menu.wl_surface() {
+            Some(ShellSurface::Menu)
+        } else if surface == self.context.wl_surface() {
+            Some(ShellSurface::Context)
+        } else {
+            None
+        }
+    }
+}
+
 impl SeatHandler for Shell {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seat_state
     }
 
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        if self.seat.is_none() {
-            self.seat = Some(seat);
-        }
+        self.inputs.entry(seat).or_default();
     }
 
     fn new_capability(
@@ -5513,22 +5600,44 @@ impl SeatHandler for Shell {
         seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        self.seat.get_or_insert_with(|| seat.clone());
-        if capability == Capability::Pointer && self.pointer.is_none() {
+        // Name can arrive after Capabilities. Ownership is the Wayland object,
+        // not announcement order, a default seat, or a "last active" seat.
+        let agent_pointer = self
+            .seat_state
+            .info(&seat)
+            .and_then(|info| info.name)
+            .and_then(|name| {
+                name.strip_prefix("seat")
+                    .and_then(|index| index.parse::<u32>().ok())
+            })
+            .is_some_and(|index| index > 0);
+        let input = self.inputs.entry(seat.clone()).or_default();
+        if capability == Capability::Pointer && input.pointer.is_none() {
             let cursor_surface = self.compositor.create_surface(qh);
-            self.pointer = self
+            input.pointer = self
                 .seat_state
                 .get_pointer_with_theme(
                     qh,
                     &seat,
                     self.shm.wl_shm(),
                     cursor_surface,
-                    ThemeSpec::default(),
+                    if agent_pointer {
+                        ThemeSpec::Named {
+                            name: "BuzzardOS-Agent",
+                            size: 24,
+                        }
+                    } else {
+                        ThemeSpec::default()
+                    },
                 )
                 .ok();
         }
-        if capability == Capability::Keyboard && self.keyboard.is_none() {
-            self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
+        if capability == Capability::Keyboard && input.keyboard.is_none() {
+            input.keyboard = self
+                .seat_state
+                .get_keyboard(qh, &seat, None)
+                .ok()
+                .map(ShellKeyboard);
         }
     }
 
@@ -5536,23 +5645,20 @@ impl SeatHandler for Shell {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
+        seat: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Pointer && self.pointer.is_some() {
-            self.pointer.take();
+        if let Some(input) = self.inputs.get_mut(&seat) {
+            input.remove_capability(capability);
+            self.dirty = true;
         }
-        if capability == Capability::Keyboard
-            && let Some(keyboard) = self.keyboard.take()
-        {
-            keyboard.release();
-        }
+        self.update_accessibility_focus();
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        if self.seat.as_ref() == Some(&seat) {
-            self.seat = None;
-        }
+        self.inputs.remove(&seat);
+        self.update_accessibility_focus();
+        self.dirty = true;
     }
 }
 
@@ -5561,37 +5667,72 @@ impl PointerHandler for Shell {
         &mut self,
         connection: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        let Some(seat) = self.pointer_seat(pointer) else {
+            return;
+        };
+        let human = self.human_seat(&seat);
+        // Taking this one record gives the handler exclusive access to its
+        // interaction state. No Wayland dispatch occurs until it is restored.
+        let Some(mut input) = self.inputs.remove(&seat) else {
+            return;
+        };
         for event in events {
+            if matches!(event.kind, PointerEventKind::Enter { .. }) {
+                if let Some(pointer) = input.pointer.as_ref()
+                    && let Err(error) = pointer.set_cursor(connection, CursorIcon::Default)
+                {
+                    eprintln!("buzzardos-shell: restoring the default pointer: {error}");
+                }
+            }
+            // The top bar selects what the human sees. A numbered pointer
+            // never drives that control, even while its workspace is viewed.
+            if !human && event.surface == *self.top_bar.wl_surface() {
+                continue;
+            }
             match event.kind {
                 PointerEventKind::Enter { .. } => {
-                    if let Some(pointer) = self.pointer.as_ref()
-                        && let Err(error) = pointer.set_cursor(connection, CursorIcon::Default)
-                    {
-                        eprintln!("buzzardos-shell: restoring the default pointer: {error}");
-                    }
-                    if event.surface == *self.menu.wl_surface() {
+                    if human && event.surface == *self.menu.wl_surface() {
                         self.position_pending_window_menu(event.position.0);
                     }
-                    self.update_hover(&event.surface, event.position.0, event.position.1);
+                    self.update_hover(
+                        &mut input.interaction,
+                        &event.surface,
+                        event.position.0,
+                        event.position.1,
+                    );
                 }
                 PointerEventKind::Motion { .. } => {
-                    self.update_hover(&event.surface, event.position.0, event.position.1);
+                    self.update_hover(
+                        &mut input.interaction,
+                        &event.surface,
+                        event.position.0,
+                        event.position.1,
+                    );
                     if event.surface == *self.desktop.wl_surface() {
-                        self.desktop_pointer_motion(event.position.0, event.position.1);
+                        self.desktop_pointer_motion(
+                            &mut input.interaction,
+                            event.position.0,
+                            event.position.1,
+                        );
                     }
                 }
                 PointerEventKind::Leave { .. } => {
-                    if self.hovered.take().is_some() {
+                    if input.interaction.hovered.take().is_some() {
                         self.dirty = true;
                     }
                 }
                 PointerEventKind::Press { button, time, .. }
                     if button == BTN_LEFT && event.surface == *self.desktop.wl_surface() =>
                 {
-                    self.desktop_pointer_press(event.position.0, event.position.1, time);
+                    self.desktop_pointer_press(
+                        &mut input.interaction,
+                        event.position.0,
+                        event.position.1,
+                        time,
+                    );
                 }
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                     self.click_surface(&event.surface, event.position.0, event.position.1);
@@ -5599,7 +5740,11 @@ impl PointerHandler for Shell {
                 PointerEventKind::Release { button, .. }
                     if button == BTN_LEFT && event.surface == *self.desktop.wl_surface() =>
                 {
-                    self.desktop_pointer_release(event.position.0, event.position.1);
+                    self.desktop_pointer_release(
+                        &mut input.interaction,
+                        event.position.0,
+                        event.position.1,
+                    );
                 }
                 PointerEventKind::Press { button, .. }
                     if button == BTN_RIGHT && event.surface == *self.desktop.wl_surface() =>
@@ -5622,7 +5767,8 @@ impl PointerHandler for Shell {
                     self.secondary_click_applications_menu(event.position.0, event.position.1);
                 }
                 PointerEventKind::Axis { vertical, .. }
-                    if event.surface == *self.menu.wl_surface() =>
+                    if event.surface == *self.menu.wl_surface()
+                        || event.surface == *self.desktop.wl_surface() =>
                 {
                     let amount = if vertical.value120 != 0 {
                         f64::from(vertical.value120)
@@ -5631,23 +5777,16 @@ impl PointerHandler for Shell {
                     } else {
                         vertical.absolute
                     };
-                    self.scroll_menu(amount);
-                }
-                PointerEventKind::Axis { vertical, .. }
-                    if event.surface == *self.desktop.wl_surface() =>
-                {
-                    let amount = if vertical.value120 != 0 {
-                        f64::from(vertical.value120)
-                    } else if vertical.discrete != 0 {
-                        f64::from(vertical.discrete)
+                    if event.surface == *self.menu.wl_surface() {
+                        self.scroll_menu(amount);
                     } else {
-                        vertical.absolute
-                    };
-                    self.scroll_desktop(amount);
+                        self.scroll_desktop(amount);
+                    }
                 }
                 _ => {}
             }
         }
+        self.inputs.insert(seat, input);
     }
 }
 
@@ -5656,78 +5795,79 @@ impl KeyboardHandler for Shell {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         surface: &wl_surface::WlSurface,
         _: u32,
         _: &[u32],
         _: &[Keysym],
     ) {
-        self.keyboard_focus = if surface == self.desktop.wl_surface() {
-            Some(ShellSurface::Desktop)
-        } else if surface == self.top_bar.wl_surface() {
-            Some(ShellSurface::TopBar)
-        } else if surface == self.panel.wl_surface() {
-            Some(ShellSurface::Panel)
-        } else if surface == self.menu.wl_surface() {
-            Some(ShellSurface::Menu)
-        } else if surface == self.context.wl_surface() {
-            Some(ShellSurface::Context)
-        } else {
-            None
+        let Some(seat) = self.keyboard_seat(keyboard) else {
+            return;
         };
-        if let Some(accessibility) = self.accessibility.as_mut() {
-            accessibility.adapter.update_window_focus_state(true);
-        }
+        let focus = self.keyboard_surface(surface);
+        self.inputs
+            .get_mut(&seat)
+            .unwrap()
+            .interaction
+            .keyboard_focus = focus;
+        self.update_accessibility_focus();
     }
 
     fn leave(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
-        if self.keyboard_focus.is_some_and(|focused| match focused {
-            ShellSurface::Desktop => surface == self.desktop.wl_surface(),
-            ShellSurface::TopBar => surface == self.top_bar.wl_surface(),
-            ShellSurface::Panel => surface == self.panel.wl_surface(),
-            ShellSurface::Menu => surface == self.menu.wl_surface(),
-            ShellSurface::Context => surface == self.context.wl_surface(),
-            ShellSurface::Auxiliary => false,
-        }) {
-            self.keyboard_focus = None;
+        let Some(seat) = self.keyboard_seat(keyboard) else {
+            return;
+        };
+        let focus = self.keyboard_surface(surface);
+        let input = &mut self.inputs.get_mut(&seat).unwrap().interaction;
+        if input.keyboard_focus == focus {
+            input.keyboard_focus = None;
         }
-        if let Some(accessibility) = self.accessibility.as_mut() {
-            accessibility.adapter.update_window_focus_state(false);
-        }
+        self.update_accessibility_focus();
     }
 
     fn press_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
-        self.handle_key(event);
+        let Some(seat) = self.keyboard_seat(keyboard) else {
+            return;
+        };
+        let Some(input) = self.inputs.remove(&seat) else {
+            return;
+        };
+        self.handle_key(&input.interaction, event);
+        self.inputs.insert(seat, input);
     }
 
     fn repeat_key(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         event: KeyEvent,
     ) {
-        if matches!(event.keysym, Keysym::BackSpace | Keysym::Delete)
-            && (matches!(self.context_state, ContextState::Edit(_))
-                || (self.menu_open && self.menu_kind == MenuKind::Applications))
-        {
-            self.handle_key(event);
+        let Some(seat) = self.keyboard_seat(keyboard) else {
+            return;
+        };
+        let Some(input) = self.inputs.remove(&seat) else {
+            return;
+        };
+        if matches!(event.keysym, Keysym::BackSpace | Keysym::Delete) {
+            self.handle_key(&input.interaction, event);
         }
+        self.inputs.insert(seat, input);
     }
 
     fn release_key(
@@ -5744,13 +5884,16 @@ impl KeyboardHandler for Shell {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         _: u32,
         modifiers: Modifiers,
         _: RawModifiers,
         _: u32,
     ) {
-        self.modifiers = modifiers;
+        let Some(seat) = self.keyboard_seat(keyboard) else {
+            return;
+        };
+        self.inputs.get_mut(&seat).unwrap().interaction.modifiers = modifiers;
     }
 }
 
@@ -6099,7 +6242,7 @@ fn rects_intersect(left: Rect, right: Rect) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_panel_frame(
+fn draw_panel_frame<'a>(
     pool: &mut SlotPool,
     panel: &LayerSurface,
     viewport: &WpViewport,
@@ -6110,7 +6253,7 @@ fn draw_panel_frame(
     windows: &[GuestWindow],
     task_offset: usize,
     capped_task_buttons: bool,
-    hovered_action: Option<&ShellAction>,
+    hovered_actions: impl Iterator<Item = &'a ShellAction> + Clone,
     applications_active: bool,
 ) -> Result<()> {
     let (logical_width, logical_height) = nonzero_size(panel_size);
@@ -6128,7 +6271,9 @@ fn draw_panel_frame(
     // continuous when capped task buttons do not consume the full width.
     clear(canvas, theme.menu.rgba());
     for target in panel_targets(logical_width, windows, task_offset, capped_task_buttons) {
-        let hovered = hovered_action == Some(&target.action);
+        let hovered = hovered_actions
+            .clone()
+            .any(|action| action == &target.action);
         let (color, label, active) = match target.action {
             ShellAction::ToggleApplications => (
                 if applications_active {

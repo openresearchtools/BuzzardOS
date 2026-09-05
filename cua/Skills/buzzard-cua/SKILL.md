@@ -60,7 +60,10 @@ cua screenshot --screenshot-out-file /tmp/cua.png
 
 Raw pointer, keyboard, and screenshot operations always target this invocation's
 `seatN` and output. They never use human `seat0` and never capture host chrome
-or another CUA output. Accessibility discovery may list all guest apps, but a
+or another CUA output. Screenshots include native cursors on that output and
+may show both the human and agent pointer while the human views it. Pointer
+appearance is not input routing; the caller still injects only through seatN.
+Accessibility discovery may list all guest apps, but a
 visual action on a selected window first routes that window to the caller's
 workspace.
 

@@ -153,9 +153,9 @@ struct NativeWindow {
     status_label: gtk::Label,
     state_title: gtk::Label,
     detail_label: gtk::Label,
+    media_detail_label: gtk::Label,
     spinner: gtk::Spinner,
     monitor_view: gtk::Overlay,
-    state_overlay: gtk::Box,
     picture: gtk::Picture,
     frame_paintable: FramePaintable,
     offload: gtk::GraphicsOffload,
@@ -167,6 +167,8 @@ struct NativeWindow {
     clipboard_connection: RefCell<Option<(u64, UnixStream)>>,
     media_worker: RefCell<Option<MediaWorker>>,
     media_session_started: Cell<bool>,
+    microphone_active: Cell<bool>,
+    camera_active: Cell<bool>,
     viewport_width: Cell<u32>,
     viewport_height: Cell<u32>,
     /// Fractional scale of the native host surface.
@@ -200,6 +202,7 @@ struct NativeWindow {
     /// make the embedded monitor visibly flash. Keep the last complete image
     /// and update GTK only when the cursor shape or hotspot actually changes.
     last_cursor: RefCell<Option<CursorFingerprint>>,
+    cursor_texture: RefCell<Option<(gdk::Texture, i32, i32)>>,
     cursor_state: Cell<u8>,
 }
 
@@ -665,8 +668,12 @@ impl NativeWindow {
         let status_label = gtk::Label::new(Some(MonitorState::Starting.label()));
         status_label.add_css_class("caption");
         status_label.add_css_class("warning");
-        status_label.set_tooltip_text(Some("Machine lifecycle state"));
-        header.pack_end(&status_label);
+        let status_button = gtk::Button::builder()
+            .child(&status_label)
+            .has_frame(false)
+            .tooltip_text("Show machine status and details")
+            .build();
+        header.pack_end(&status_button);
 
         // Keep an explicitly painted, permanently black parent surface below
         // the dmabuf subsurface.  GraphicsOffload is presented by GTK as a
@@ -694,29 +701,55 @@ impl NativeWindow {
 
         let spinner = gtk::Spinner::new();
         spinner.set_spinning(true);
-        spinner.set_size_request(36, 36);
+        spinner.set_size_request(16, 16);
         let state_title = gtk::Label::new(Some("Starting machine"));
-        state_title.add_css_class("title-2");
+        state_title.add_css_class("heading");
+        state_title.set_xalign(0.0);
         let detail_label = gtk::Label::new(Some("Waiting for the guest display"));
-        detail_label.add_css_class("dim-label");
-        detail_label.set_wrap(true);
-        detail_label.set_justify(gtk::Justification::Center);
-        detail_label.set_max_width_chars(72);
-        let state_overlay = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        // Keep lifecycle information as a compact dark monitor OSD.  The
-        // generic `view` class painted a glaring content-sized white panel on
-        // light themes, while applying any background to `monitor_view`
-        // itself can disturb the exact offload allocation.
-        state_overlay.add_css_class("osd");
-        state_overlay.set_margin_start(24);
-        state_overlay.set_margin_end(24);
-        state_overlay.set_margin_top(24);
-        state_overlay.set_margin_bottom(24);
-        state_overlay.set_halign(gtk::Align::Center);
-        state_overlay.set_valign(gtk::Align::Center);
-        state_overlay.append(&spinner);
-        state_overlay.append(&state_title);
-        state_overlay.append(&detail_label);
+        let media_detail_label = gtk::Label::new(None);
+        for label in [&detail_label, &media_detail_label] {
+            label.set_wrap(true);
+            label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            label.set_xalign(0.0);
+            label.set_selectable(true);
+            label.set_width_chars(40);
+            label.set_max_width_chars(40);
+        }
+        media_detail_label.set_visible(false);
+        let status_heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        status_heading.append(&spinner);
+        status_heading.append(&state_title);
+        let status_details = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        status_details.set_margin_start(12);
+        status_details.set_margin_end(12);
+        status_details.set_margin_top(12);
+        status_details.set_margin_bottom(12);
+        status_details.append(&status_heading);
+        status_details.append(&detail_label);
+        status_details.append(&media_detail_label);
+        let status_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(320)
+            .child(&status_details)
+            .build();
+        // A separate non-modal toplevel, not a grabbing popover or a transient
+        // dialog: it can remain open beside the guest without intercepting it.
+        let status_window = gtk::Window::builder()
+            .application(application)
+            .title(format!("Machine status — {}", launch.title))
+            .icon_name(wb_core::host_identity().package)
+            .default_width(420)
+            .default_height(220)
+            .hide_on_close(true)
+            .modal(false)
+            .child(&status_scroll)
+            .build();
+        status_window.set_titlebar(Some(&gtk::HeaderBar::new()));
+        let status_window_for_button = status_window.clone();
+        status_button.connect_clicked(move |_| status_window_for_button.present());
+        window.connect_destroy(move |_| status_window.destroy());
 
         // The picture receives dmabuf textures from the display server. It is
         // kept opaque, rectangular, unclipped, and unfiltered so GTK can place
@@ -739,7 +772,6 @@ impl NativeWindow {
         offload.set_vexpand(true);
         monitor_view.set_child(Some(&monitor_backing));
         monitor_view.add_overlay(&offload);
-        monitor_view.add_overlay(&state_overlay);
 
         window.set_child(Some(&monitor_view));
 
@@ -755,9 +787,9 @@ impl NativeWindow {
             status_label,
             state_title,
             detail_label,
+            media_detail_label,
             spinner,
             monitor_view,
-            state_overlay,
             picture,
             frame_paintable,
             offload,
@@ -768,6 +800,8 @@ impl NativeWindow {
             clipboard_connection: RefCell::new(None),
             media_worker: RefCell::new(None),
             media_session_started: Cell::new(false),
+            microphone_active: Cell::new(false),
+            camera_active: Cell::new(false),
             viewport_width: Cell::new(1),
             viewport_height: Cell::new(1),
             host_surface_scale_120: Cell::new(120),
@@ -796,6 +830,7 @@ impl NativeWindow {
             continuity: RefCell::new(MonitorContinuityDiagnostics::default()),
             pressed_pointer_buttons: RefCell::new(BTreeSet::new()),
             last_cursor: RefCell::new(None),
+            cursor_texture: RefCell::new(None),
             cursor_state: Cell::new(0),
         });
 
@@ -1410,14 +1445,18 @@ impl NativeWindow {
         if state != self.state.get() {
             self.set_state(state);
         }
-        let media = host_media::read_status(&self.launch.status_dir);
-        let microphone_active = media
+        self.sync_media_worker(runtime.state);
+        let media = self
+            .media_worker
+            .borrow()
             .as_ref()
-            .is_some_and(|status| status.error.is_none() && status.host_microphone);
-        let camera_active = media
-            .as_ref()
-            .is_some_and(|status| status.error.is_none() && status.host_camera);
+            .and_then(|_| host_media::read_status(&self.launch.status_dir));
+        let microphone_active = media.as_ref().is_some_and(|status| status.host_microphone);
+        let camera_active = media.as_ref().is_some_and(|status| status.host_camera);
         self.update_header_status(microphone_active, camera_active);
+        let media_error = media.as_ref().and_then(|status| status.error.as_deref());
+        self.media_detail_label.set_label(media_error.unwrap_or(""));
+        self.media_detail_label.set_visible(media_error.is_some());
         if self.close_requested.get()
             && matches!(runtime.state, MachineState::Stopped | MachineState::Failed)
         {
@@ -1574,7 +1613,6 @@ impl NativeWindow {
         acquire_wait_us: u64,
     ) {
         self.continuity.borrow_mut().record_frame_installed(id);
-        self.update_state_ui();
         let superseded = self
             .pending_frame
             .replace(Some(PendingFrame {
@@ -1637,7 +1675,7 @@ impl NativeWindow {
             hotspot_y,
             storage,
         } = cursor;
-        let gdk_cursor = match storage {
+        let texture: gdk::Texture = match storage {
             CursorStorage::Shm { stride, pixels } => {
                 let bytes = glib::Bytes::from_owned(pixels);
                 let texture = gdk::MemoryTexture::new(
@@ -1647,7 +1685,7 @@ impl NativeWindow {
                     &bytes,
                     stride,
                 );
-                gdk::Cursor::from_texture(&texture, hotspot_x, hotspot_y, None)
+                texture.upcast()
             }
             CursorStorage::Dmabuf {
                 fourcc,
@@ -1689,22 +1727,35 @@ impl NativeWindow {
                         return;
                     }
                 };
-                gdk::Cursor::from_texture(&texture, hotspot_x, hotspot_y, None)
+                texture
             }
         };
         *self.last_cursor.borrow_mut() = Some(fingerprint);
+        *self.cursor_texture.borrow_mut() = Some((texture, hotspot_x, hotspot_y));
+        self.refresh_cursor_scale();
+    }
+
+    fn refresh_cursor_scale(&self) {
+        let source = self.cursor_texture.borrow();
+        let Some((texture, hotspot_x, hotspot_y)) = source.as_ref() else {
+            return;
+        };
+        let gdk_cursor = crate::native_cursor::from_texture(texture, *hotspot_x, *hotspot_y);
         self.picture.set_cursor(Some(&gdk_cursor));
         self.cursor_state.set(1);
     }
 
     fn fallback_cursor(&self) {
         self.last_cursor.borrow_mut().take();
+        self.cursor_texture.borrow_mut().take();
         if self.cursor_state.replace(3) != 3 {
             self.picture.set_cursor_from_name(Some("default"));
         }
     }
 
     fn hide_cursor(&self) {
+        self.last_cursor.borrow_mut().take();
+        self.cursor_texture.borrow_mut().take();
         if self.cursor_state.replace(2) != 2 {
             self.picture.set_cursor_from_name(Some("none"));
         }
@@ -2019,7 +2070,15 @@ impl NativeWindow {
     }
 
     fn update_state_ui(&self) {
-        self.update_header_status(false, false);
+        self.update_header_status(self.microphone_active.get(), self.camera_active.get());
+        self.detail_label.set_label(status_detail(
+            self.state.get(),
+            self.failure.borrow().as_deref(),
+        ));
+        self.spinner.set_visible(matches!(
+            self.state.get(),
+            MonitorState::Starting | MonitorState::Stopping
+        ));
 
         match self.state.get() {
             MonitorState::Running => {
@@ -2032,8 +2091,6 @@ impl NativeWindow {
             MonitorState::Stopped => {
                 self.spinner.stop();
                 self.state_title.set_label("Machine stopped");
-                self.detail_label
-                    .set_label("Select Start to boot this persistent desktop.");
                 self.lifecycle_button.set_label("Start");
                 self.lifecycle_button.set_action_name(Some("app.start"));
                 self.lifecycle_button.set_sensitive(true);
@@ -2041,28 +2098,18 @@ impl NativeWindow {
             MonitorState::Starting => {
                 self.spinner.start();
                 self.state_title.set_label("Starting machine");
-                self.detail_label
-                    .set_label("Starting systemd, Sway, desktop services, and CUA driver…");
                 self.lifecycle_button.set_label("Starting…");
                 self.lifecycle_button.set_sensitive(false);
             }
             MonitorState::Stopping => {
                 self.spinner.start();
                 self.state_title.set_label("Stopping machine");
-                self.detail_label
-                    .set_label("Waiting for orderly guest shutdown and state persistence…");
                 self.lifecycle_button.set_label("Stopping…");
                 self.lifecycle_button.set_sensitive(false);
             }
             MonitorState::Failed => {
                 self.spinner.stop();
                 self.state_title.set_label("Machine failed");
-                self.detail_label.set_label(
-                    self.failure
-                        .borrow()
-                        .as_deref()
-                        .unwrap_or("Machine startup failed. Open Diagnostics for details."),
-                );
                 self.lifecycle_button.set_label("Start");
                 self.lifecycle_button.set_action_name(Some("app.start"));
                 self.lifecycle_button.set_sensitive(true);
@@ -2078,13 +2125,9 @@ impl NativeWindow {
                 MonitorState::Running | MonitorState::Failed
             ));
         }
-        // Lifecycle labels and display attachment are separate state
-        // machines. Once a frame is attached, stale runtime.json values must
-        // not put the Starting overlay back over the live monitor.
-        self.state_overlay
-            .set_visible(!self.frame_paintable.has_frame());
+        // Status is confined to the user-opened status window. No lifecycle
+        // transition inserts a widget over the guest monitor.
         self.update_clipboard_action_state();
-        self.sync_media_worker();
         self.observe_monitor_continuity("lifecycle-ui");
         if self.state.get() == MonitorState::Running {
             self.ensure_container_watch();
@@ -2160,10 +2203,22 @@ impl NativeWindow {
         }
     }
 
-    fn sync_media_worker(&self) {
-        if self.state.get() != MonitorState::Running {
+    fn sync_media_worker(&self, runtime_state: MachineState) {
+        if !media_can_run(runtime_state, self.state.get(), self.close_requested.get()) {
             self.media_session_started.set(false);
             self.media_worker.borrow_mut().take();
+            return;
+        }
+        // The first rendered frame can arrive before the launcher publishes
+        // Podman's assigned ports. Do not consume this session's startup
+        // attempt until those endpoints exist. The normal lifecycle refresh
+        // will try again, without a separate timer or guest probe.
+        if !self
+            .launch
+            .status_dir
+            .join("media-endpoints.json")
+            .is_file()
+        {
             return;
         }
         if self.media_session_started.replace(true) {
@@ -2180,6 +2235,8 @@ impl NativeWindow {
     }
 
     fn update_header_status(&self, microphone_active: bool, camera_active: bool) {
+        self.microphone_active.set(microphone_active);
+        self.camera_active.set(camera_active);
         for class in ["dim-label", "warning", "success", "error"] {
             self.status_label.remove_css_class(class);
         }
@@ -2221,7 +2278,7 @@ impl NativeWindow {
     }
 
     fn observe_monitor_continuity(&self, source: &'static str) {
-        let placeholder_visible = self.state_overlay.is_visible();
+        let placeholder_visible = false;
         let frame_available = self.frame_paintable.has_frame();
         let violation =
             self.continuity
@@ -2390,7 +2447,11 @@ impl NativeWindow {
         }
         self.viewport_width.set(width);
         self.viewport_height.set(height);
-        self.host_surface_scale_120.set(host_surface_scale_120);
+        let cursor_scale_changed =
+            self.host_surface_scale_120.replace(host_surface_scale_120) != host_surface_scale_120;
+        if cursor_scale_changed {
+            self.refresh_cursor_scale();
+        }
         self.guest_ui_scale_120.set(guest_ui_scale_120);
         self.refresh_mhz.set(refresh_mhz);
         if geometry_changed {
@@ -2590,7 +2651,11 @@ impl NativeWindow {
             self.show_error("Could not request orderly shutdown", &error);
             return;
         }
-        self.set_state(MonitorState::Stopping);
+        self.set_state(if restart {
+            MonitorState::Starting
+        } else {
+            MonitorState::Stopping
+        });
         self.close_requested.set(!restart);
     }
 
@@ -3206,9 +3271,10 @@ impl NativeWindow {
             "logical_height": logical_height,
             "geometry_generation": self.geometry_generation.get(),
         });
-        atomic_json(
+        atomic_json_with_mode(
             &self.launch.output_state_dir.join("output-state.json"),
             &value,
+            0o644,
         )
     }
 
@@ -3796,6 +3862,24 @@ fn header_status_text(state: MonitorState, microphone_active: bool, camera_activ
     text
 }
 
+fn status_detail(state: MonitorState, failure: Option<&str>) -> &str {
+    match state {
+        MonitorState::Running => "The machine is running.",
+        MonitorState::Stopped => "Select Start to boot this persistent desktop.",
+        MonitorState::Starting => "Waiting for the guest system and display to start…",
+        MonitorState::Stopping => "Waiting for orderly guest shutdown and state persistence…",
+        MonitorState::Failed => failure.unwrap_or("The machine could not start."),
+    }
+}
+
+fn media_can_run(runtime: MachineState, display: MonitorState, closing: bool) -> bool {
+    // Display failure is not a container shutdown. Capture follows the user's
+    // media settings and actual container lifecycle, not viewport presentation.
+    runtime == MachineState::Running
+        && !closing
+        && !matches!(display, MonitorState::Stopping | MonitorState::Stopped)
+}
+
 fn effective_monitor_state(current: MonitorState, reported: MonitorState) -> MonitorState {
     match (current, reported) {
         // A lifecycle command updates runtime.json asynchronously. Never let
@@ -3810,17 +3894,25 @@ fn effective_monitor_state(current: MonitorState, reported: MonitorState) -> Mon
 }
 
 fn atomic_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<()> {
+    atomic_json_with_mode(path, value, 0o600)
+}
+
+fn atomic_json_with_mode(
+    path: &std::path::Path,
+    value: &impl serde::Serialize,
+    mode: u32,
+) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value).context("serializing display state")?;
     let mut output = fs::OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
-        .mode(0o600)
+        .mode(mode)
         .open(&temporary)
         .with_context(|| format!("opening {}", temporary.display()))?;
     output
-        .set_permissions(fs::Permissions::from_mode(0o600))
+        .set_permissions(fs::Permissions::from_mode(mode))
         .with_context(|| format!("securing {}", temporary.display()))?;
     output
         .write_all(&bytes)
@@ -3844,6 +3936,19 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn output_geometry_is_readable_across_podman_user_mappings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("output-state.json");
+        // The host-owned directory is mounted read-only into the guest.
+        // Its reader need not map to the host desktop UID.
+        atomic_json_with_mode(&path, &serde_json::json!({"schema": 7}), 0o644).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
         );
     }
 
@@ -3886,6 +3991,51 @@ mod tests {
             header_status_text(MonitorState::Stopped, false, false),
             "Stopped"
         );
+    }
+
+    #[test]
+    fn status_details_follow_current_state_and_preserve_the_complete_error() {
+        let error = "nested display failed\ncomplete, selectable error details";
+        assert_eq!(status_detail(MonitorState::Failed, Some(error)), error);
+        assert_eq!(
+            status_detail(MonitorState::Running, Some(error)),
+            "The machine is running."
+        );
+        for state in [
+            MonitorState::Stopped,
+            MonitorState::Starting,
+            MonitorState::Stopping,
+        ] {
+            assert!(!status_detail(state, Some(error)).contains(error));
+            assert!(!status_detail(state, None).is_empty());
+        }
+        assert_eq!(
+            status_detail(MonitorState::Failed, None),
+            "The machine could not start."
+        );
+    }
+
+    #[test]
+    fn display_failure_does_not_interrupt_running_container_media() {
+        for display in [
+            MonitorState::Running,
+            MonitorState::Starting,
+            MonitorState::Failed,
+        ] {
+            assert!(media_can_run(MachineState::Running, display, false));
+            assert!(!media_can_run(MachineState::Running, display, true));
+        }
+        for runtime in [
+            MachineState::Stopped,
+            MachineState::Stopping,
+            MachineState::Starting,
+            MachineState::Failed,
+        ] {
+            assert!(!media_can_run(runtime, MonitorState::Failed, false));
+        }
+        for display in [MonitorState::Stopped, MonitorState::Stopping] {
+            assert!(!media_can_run(MachineState::Running, display, false));
+        }
     }
 
     #[test]

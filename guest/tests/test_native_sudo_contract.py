@@ -10,13 +10,13 @@ ASSETS = ROOT / "guest/assets"
 
 
 class NativeSudoContractTests(unittest.TestCase):
-    def test_guest_has_no_sudo_transport_or_broad_polkit_authorization(self) -> None:
+    def test_guest_handoff_uses_fixed_socket_without_broad_polkit_authorization(self) -> None:
         self.assertFalse((ASSETS / "49-buzzardos-root.rules").exists())
         manifest = (ROOT / "guest/runtime-asset-manifest.tsv").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("buzzardos-sudo.socket", manifest)
-        self.assertNotIn("buzzardos-sudo@.service", manifest)
+        self.assertIn("buzzardos-sudo.socket", manifest)
+        self.assertIn("buzzardos-sudo@.service", manifest)
         self.assertNotIn("pkexec", manifest)
         self.assertNotIn("systemd-run", manifest)
 
@@ -25,7 +25,7 @@ class NativeSudoContractTests(unittest.TestCase):
         self.assertIn("user ALL=(ALL:ALL) ALL", sudoers)
         self.assertNotIn("NOPASSWD", sudoers)
 
-    def test_only_appimage_mount_handoff_is_socket_activated(self) -> None:
+    def test_appimage_mount_handoff_remains_socket_activated(self) -> None:
         manifest = (ROOT / "guest/runtime-asset-manifest.tsv").read_text(
             encoding="utf-8"
         )
@@ -50,12 +50,12 @@ class NativeSudoContractTests(unittest.TestCase):
         )
         self.assertIn("'user:buzzard' | chpasswd", provision)
         self.assertNotIn("usermod --lock", provision)
-        self.assertNotIn("/usr/local/bin/sudo", provision)
-        self.assertNotIn("/usr/local/bin/sudoedit", provision)
+        self.assertIn("/usr/local/bin/sudo", provision)
+        self.assertIn("/usr/local/bin/sudoedit", provision)
 
     def test_settings_policy_helper_is_invoked_by_native_sudo(self) -> None:
         ui = (ROOT / "guest/settings/src/ui.rs").read_text(encoding="utf-8")
-        self.assertIn('const GUEST_SUDO: &str = "/usr/bin/sudo";', ui)
+        self.assertIn('const GUEST_SUDO: &str = "/usr/libexec/buzzardos-guest/sudo";', ui)
         self.assertIn(
             'const SUDO_POLICY_HELPER: &str = "/usr/libexec/buzzardos-guest/sudo-policy";',
             ui,

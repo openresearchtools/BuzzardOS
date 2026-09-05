@@ -246,7 +246,7 @@ build_host() {
 $host_identity: embedded-library zlib [usr/libexec/$host_identity/$host_identity-display]
 EOF
     write_control "$root" "$host_identity" "$version" \
-        'buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libwayland-client0, libxkbcommon0, passt, pipewire-bin, podman, xkb-data' \
+        'buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libwayland-client0, libxkbcommon0, passt, pipewire-bin, podman, xkb-data' \
         'Buzzard OS rootless persistent desktop-machine manager'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
@@ -263,14 +263,14 @@ build_guest() {
     CARGO_TARGET_DIR="$guest_target" cargo build \
         --locked --release --manifest-path "$project_dir/guest/Cargo.toml" \
         --package buzzardos-clipboard-agent \
-        --package buzzardos-sudo-policy
+        --package buzzardos-sudo-bridge
     local root="$build_root/root-buzzardos-guest"
     rm -rf -- "$root"
     install -d -m 0755 "$root"
     "$project_dir/guest/install-rootfs-assets.sh" \
         "$root" \
         "$guest_target/release/buzzardos-clipboard-agent" \
-        "$guest_target/release/buzzardos-sudo-policy"
+        "$guest_target/release/buzzardos-sudo"
     install -D -m 0644 "$project_dir/packaging/copyright/buzzardos-guest" \
         "$root/usr/share/doc/buzzardos-guest/copyright"
     install -D -m 0644 "$project_dir/LICENSE" \
@@ -304,7 +304,7 @@ rm -f /etc/polkit-1/rules.d/49-buzzardos-root.rules
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ -d /run/systemd/system ] && getent passwd user >/dev/null 2>&1; then
-        systemctl start buzzardos-fusermount.socket
+        systemctl start buzzardos-sudo.socket buzzardos-fusermount.socket
     fi
 fi
 exit 0
@@ -378,6 +378,8 @@ build_cua() {
         ln -s cua "$root/usr/bin/cua$index"
     done
     ln -s cua "$root/usr/bin/buzzardoscua"
+    python3 "$project_dir/cua/tools/build-cursor-theme.py" \
+        "$root/usr/share/icons/BuzzardOS-Agent"
     install -D -m 0644 "$project_dir/cua/LICENSE.trycua.md" \
         "$root/usr/share/doc/buzzardoscua/LICENSE.trycua-cua.md"
     install -D -m 0644 "$project_dir/packaging/copyright/buzzardoscua" \

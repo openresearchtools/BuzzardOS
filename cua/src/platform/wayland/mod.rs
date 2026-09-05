@@ -187,12 +187,10 @@ fn read_buzzardos_output_state() -> anyhow::Result<Option<BuzzardOSOutputState>>
     let metadata = file
         .metadata()
         .map_err(|error| anyhow::anyhow!("inspecting Buzzard OS output-state failed: {error}"))?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o022 != 0
-    {
+    let publisher = std::fs::symlink_metadata("/run/buzzardos-display-state")?;
+    if !metadata.is_file() || metadata.uid() != publisher.uid() || metadata.mode() & 0o022 != 0 {
         anyhow::bail!(
-            "Buzzard OS output-state must be a session-owned regular file with no group/world write permission"
+            "Buzzard OS output-state must belong to its publisher directory and have no group/world write permission"
         );
     }
     if metadata.len() > LIMIT {
@@ -646,19 +644,32 @@ fn matching_handle(state: &State, id: u64) -> Option<ZwlrForeignToplevelHandleV1
                 (name == &window.output).then_some(output.id().protocol_id())
             })
             .collect::<HashSet<_>>();
-        let mut candidates = state
+        let matching = state
             .toplevels
             .iter()
             .filter_map(|(protocol_id, toplevel)| {
                 (!toplevel.closed
-                    && !output_ids.is_disjoint(&toplevel.outputs)
                     && (window.title.is_empty() || toplevel.title == window.title)
                     && (window.app_id.is_empty() || toplevel.app_id == window.app_id))
-                    .then(|| state.handles.get(protocol_id).cloned())
+                    .then(|| {
+                        state
+                            .handles
+                            .get(protocol_id)
+                            .map(|handle| (handle, toplevel))
+                    })
                     .flatten()
-            });
-        let one = candidates.next()?;
-        return candidates.next().is_none().then_some(one);
+            })
+            .collect::<Vec<_>>();
+        // A fully covered window can have no surface/output intersection in
+        // foreign-toplevel even though Sway still owns its mapped container.
+        // Do not make visible pixels a prerequisite for activating a unique
+        // window. When names collide, its current output must disambiguate it.
+        let candidates = matching
+            .iter()
+            .enumerate()
+            .map(|(index, (_, toplevel))| (index, !output_ids.is_disjoint(&toplevel.outputs)))
+            .collect::<Vec<_>>();
+        return unique_activation_candidate(&candidates).map(|index| matching[index].0.clone());
     }
     if let Some(identity) = identity_for(id) {
         let mut candidates = state
@@ -677,6 +688,15 @@ fn matching_handle(state: &State, id: u64) -> Option<ZwlrForeignToplevelHandleV1
 
     let protocol_id = u32::try_from(id).ok()?;
     state.handles.get(&protocol_id).cloned()
+}
+
+fn unique_activation_candidate(candidates: &[(usize, bool)]) -> Option<usize> {
+    if let [(index, _)] = candidates {
+        return Some(*index);
+    }
+    let mut on_output = candidates.iter().filter(|(_, on_output)| *on_output);
+    let (index, _) = on_output.next()?;
+    on_output.next().is_none().then_some(*index)
 }
 
 /// Per-capture in-flight state populated by the screencopy frame Dispatch.
@@ -1392,9 +1412,8 @@ fn capture_via_screencopy() -> anyhow::Result<Vec<u8>> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("compositor exposed no wl_output to capture"))?;
 
-    // Include Sway's native cursor for this invocation's numbered seat. The
-    // output is private to that seat, so no human or other CUA cursor can be
-    // composited into this screenshot.
+    // Include native compositor cursors on the selected output. This flag
+    // cannot select one seat: a human viewing this workspace may also appear.
     let frame = manager.capture_output(1, &output, &qh, ());
     // Make the capture request visible to the nested compositor before asking the desktop
     // shell to damage the idle nested output.
@@ -1735,7 +1754,6 @@ pub const NO_VPTR_MARKER: &str = "no-zwlr-virtual-pointer";
 /// Live virtual-pointer session: connection + queue + the bound objects every
 /// pointer op (click, scroll, drag) needs. Returned by [`open_vptr_session`].
 pub struct VptrSession {
-    pub conn: Connection,
     queue: wayland_client::EventQueue<State>,
     state: State,
     pub vptr: ZwlrVirtualPointerV1,
@@ -1815,7 +1833,6 @@ pub fn open_vptr_session(activate_window_id: Option<u64>) -> anyhow::Result<Vptr
     };
     let (output_w, output_h) = canonical_output_dimensions(state.output_w, state.output_h);
     Ok(VptrSession {
-        conn,
         queue,
         state,
         vptr,
@@ -2067,12 +2084,21 @@ pub fn evdev_pointer_button(button: u8) -> u32 {
 }
 
 fn event_time_ms() -> u32 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_millis()
-        .clamp(1, u32::MAX as u128) as u32
+    // Wayland input timestamps share the compositor's monotonic clock. A
+    // process-relative epoch jumps backwards on every daemonless CLI call,
+    // breaking toolkit click/drag and key-event ordering across invocations.
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // CLOCK_MONOTONIC is always available on the supported Linux hosts.
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) },
+        0
+    );
+    (now.tv_sec as u64)
+        .wrapping_mul(1000)
+        .wrapping_add(now.tv_nsec as u64 / 1_000_000) as u32
 }
 
 /// Click a native Wayland toplevel identified by its `window_id` (the
@@ -2560,7 +2586,7 @@ pub fn type_text(admission: &KeyboardAdmission, window_id: u64, text: &str) -> a
         return Ok(());
     }
     activate_window_for_input(window_id)?;
-    virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
+    type_text_in_confirmed_focus(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
 /// Type into a surface whose exact Sway container is already held focused by
@@ -2570,8 +2596,7 @@ pub fn type_text_focused(admission: &KeyboardAdmission, text: &str) -> anyhow::R
     if text.is_empty() {
         return Ok(());
     }
-    sway_ipc::require_caller_seat_focus(None)?;
-    virtual_keyboard::type_text(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
+    type_text_in_confirmed_focus(admission, text, VIRTUAL_KEYBOARD_TEXT_DELAY_MS)
 }
 
 pub fn type_text_with_delay(
@@ -2584,7 +2609,25 @@ pub fn type_text_with_delay(
         return Ok(());
     }
     activate_window_for_input(window_id)?;
-    virtual_keyboard::type_text(admission, text, delay_ms)
+    type_text_in_confirmed_focus(admission, text, delay_ms)
+}
+
+fn type_text_in_confirmed_focus(
+    admission: &KeyboardAdmission,
+    text: &str,
+    delay_ms: u64,
+) -> anyhow::Result<()> {
+    let target = sway_ipc::require_caller_seat_focus(None)?;
+    virtual_keyboard::type_text(admission, text, delay_ms)?;
+    // A changed screenshot is not proof that text reached the requested
+    // window. Report a lost focus boundary explicitly; do not retry text
+    // whose partial delivery cannot be established. This detects the final
+    // mismatch, not transient focus changes during delivery.
+    sway_ipc::require_caller_seat_focus(Some(target.id))
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!(
+            "input_focus_changed: text delivery may be partial; inspect the guest windows before retrying: {error}"
+        ))
 }
 
 /// Press a single named key into the focused Wayland surface through the
@@ -3019,6 +3062,35 @@ const _BTN_LEFT_ALIAS: u32 = BTN_LEFT;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_timestamps_use_linux_monotonic_time_across_cli_processes() {
+        let before = event_time_ms();
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) },
+            0
+        );
+        let expected = ((now.tv_sec as u64) * 1000 + now.tv_nsec as u64 / 1_000_000) as u32;
+        let after = event_time_ms();
+        assert!(expected.wrapping_sub(before) < 1000);
+        assert!(after.wrapping_sub(expected) < 1000);
+    }
+
+    #[test]
+    fn covered_window_activation_does_not_require_output_intersection() {
+        assert_eq!(unique_activation_candidate(&[(0, false)]), Some(0));
+        assert_eq!(
+            unique_activation_candidate(&[(0, false), (1, true)]),
+            Some(1)
+        );
+        assert_eq!(unique_activation_candidate(&[(0, true), (1, true)]), None);
+        assert_eq!(unique_activation_candidate(&[(0, false), (1, false)]), None);
+        assert_eq!(unique_activation_candidate(&[]), None);
+    }
 
     fn output_state(
         physical_width: u32,

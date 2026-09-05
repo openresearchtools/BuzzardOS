@@ -41,12 +41,9 @@ const XKB_KEYMAP: &str = r#"xkb_keymap {
 
 const KEY_RELEASED: u32 = 0;
 const KEY_PRESSED: u32 = 1;
-const TEXT_KEYCODE_OFFSET: u32 = 1;
-// XKB keycodes are 8..=255. The generated mapping starts at XKB keycode 9,
-// leaving at most 247? No: 255 - 9 + 1 = 247 entries would make the rendered
-// `maximum` 256 because wtype deliberately includes one unused upper slot.
-// Match that representation and cap each keymap at 246 entries.
-const MAX_TEXT_KEYMAP_ENTRIES: usize = 246;
+// Keep Unicode-only codes within Xwayland's XKB range. Ordinary evdev keys
+// retain their fixed meanings in every text map, including during cleanup.
+const MAX_TEXT_EVDEV_KEYCODE: u32 = 247;
 const ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(500);
 const CANCELLATION_POLL_SLICE: Duration = Duration::from_millis(10);
 
@@ -250,9 +247,8 @@ pub(super) fn press_key(admission: &Admission, key: &str) -> anyhow::Result<()> 
 
 /// Type Unicode text without replacing the invocation-owned virtual keyboard.
 ///
-/// The generated keymap follows wtype's one-key-per-keysym representation, so
-/// every scalar value supported by the pinned libxkbcommon has the same input
-/// semantics while the Wayland object remains alive between tool calls.
+/// Fixed-layout characters retain their physical keycodes; other Unicode
+/// scalars use otherwise unassigned keys without replacing control keys.
 pub(super) fn type_text(admission: &Admission, text: &str, delay_ms: u64) -> anyhow::Result<()> {
     request_text(admission, text, delay_ms, None)
 }
@@ -749,46 +745,19 @@ impl KeyboardSession {
             for plan in plans {
                 ensure_admitted(admission)?;
                 self.install_keymap(&plan.keymap, Some(admission))?;
-                for keycode in plan.text_keycodes {
+                for stroke in plan.text_strokes {
                     ensure_admitted(admission)?;
-                    self.emit(
-                        KeyTransition {
-                            keycode,
-                            pressed: true,
-                            modifier_mask: 0,
-                        },
-                        Some(admission),
-                    )?;
-                    self.emit(
-                        KeyTransition {
-                            keycode,
-                            pressed: false,
-                            modifier_mask: 0,
-                        },
-                        Some(admission),
-                    )?;
+                    for transition in stroke.transitions() {
+                        self.emit(transition, Some(admission))?;
+                    }
                     if delay_ms > 0 {
                         cancellable_delay(delay_ms, admission)?;
                     }
                 }
-                if let Some(keycode) = plan.trailing_keycode {
-                    cancellable_delay(50, admission)?;
-                    self.emit(
-                        KeyTransition {
-                            keycode,
-                            pressed: true,
-                            modifier_mask: 0,
-                        },
-                        Some(admission),
-                    )?;
-                    self.emit(
-                        KeyTransition {
-                            keycode,
-                            pressed: false,
-                            modifier_mask: 0,
-                        },
-                        Some(admission),
-                    )?;
+                if let Some(stroke) = plan.trailing_stroke {
+                    for transition in stroke.transitions() {
+                        self.emit(transition, Some(admission))?;
+                    }
                 }
             }
             Ok(())
@@ -823,6 +792,17 @@ impl KeyboardSession {
         keymap_text: &str,
         admission: Option<&Admission>,
     ) -> anyhow::Result<()> {
+        if self.active_keymap == keymap_text {
+            return Ok(());
+        }
+        self.install_keymap_unconditionally(keymap_text, admission)
+    }
+
+    fn install_keymap_unconditionally(
+        &mut self,
+        keymap_text: &str,
+        admission: Option<&Admission>,
+    ) -> anyhow::Result<()> {
         let keymap = keymap_file(keymap_text)?;
         let size = u32::try_from(keymap_text.len().saturating_add(1))
             .context("CUA keymap is too large for the Wayland protocol")?;
@@ -839,7 +819,7 @@ impl KeyboardSession {
         // interrupted after the compositor consumed its request, the local
         // `active_keymap` value is necessarily uncertain. Only a same-client
         // fixed-keymap request plus sync can prove the compositor-side map.
-        self.install_keymap(XKB_KEYMAP, None)?;
+        self.install_keymap_unconditionally(XKB_KEYMAP, None)?;
         self.reset(None)
     }
 
@@ -1038,27 +1018,148 @@ impl Drop for KeyboardSession {
 struct TextKeymapEntry {
     character: Option<char>,
     keysym: xkb::Keysym,
+    keycode: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextStroke {
+    keycode: u32,
+    shift: bool,
+}
+
+impl TextStroke {
+    fn transitions(self) -> Vec<KeyTransition> {
+        let mask = u32::from(self.shift);
+        let mut transitions = Vec::with_capacity(if self.shift { 4 } else { 2 });
+        if self.shift {
+            transitions.push(KeyTransition {
+                keycode: 42,
+                pressed: true,
+                modifier_mask: mask,
+            });
+        }
+        transitions.push(KeyTransition {
+            keycode: self.keycode,
+            pressed: true,
+            modifier_mask: mask,
+        });
+        transitions.push(KeyTransition {
+            keycode: self.keycode,
+            pressed: false,
+            modifier_mask: mask,
+        });
+        if self.shift {
+            transitions.push(KeyTransition {
+                keycode: 42,
+                pressed: false,
+                modifier_mask: 0,
+            });
+        }
+        transitions
+    }
+}
+
+fn fixed_text_stroke(character: char) -> Option<TextStroke> {
+    // Toolkit key events can be queued after Wayland dispatch. GTK3 binding
+    // lookup uses hardware_keycode with the *current* keymap, not necessarily
+    // the keymap from the original wl_keyboard.key event. Never allocate a
+    // text Return at a code that cleanup later turns into Backspace.
+    let (keycode, shift) = match character {
+        'a'..='z' | '0'..='9' => (key_to_evdev(&character.to_string())?, false),
+        'A'..='Z' => (
+            key_to_evdev(&character.to_ascii_lowercase().to_string())?,
+            true,
+        ),
+        '\n' | '\r' => (28, false),
+        '\t' => (15, false),
+        '\u{1b}' => (1, false),
+        '\u{8}' => (14, false),
+        '\u{7f}' => (111, false),
+        ' ' => (57, false),
+        '-' | '_' => (12, character == '_'),
+        '=' | '+' => (13, character == '+'),
+        '[' | '{' => (26, character == '{'),
+        ']' | '}' => (27, character == '}'),
+        ';' | ':' => (39, character == ':'),
+        '\'' | '"' => (40, character == '"'),
+        '`' | '~' => (41, character == '~'),
+        '\\' | '|' => (43, character == '|'),
+        ',' | '<' => (51, character == '<'),
+        '.' | '>' => (52, character == '>'),
+        '/' | '?' => (53, character == '?'),
+        '!' => (2, true),
+        '@' => (3, true),
+        '#' => (4, true),
+        '$' => (5, true),
+        '%' => (6, true),
+        '^' => (7, true),
+        '&' => (8, true),
+        '*' => (9, true),
+        '(' => (10, true),
+        ')' => (11, true),
+        _ => return None,
+    };
+    Some(TextStroke { keycode, shift })
+}
+
+fn unicode_text_keycodes() -> anyhow::Result<Vec<u32>> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = xkb::Keymap::new_from_string(
+        &context,
+        XKB_KEYMAP.to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+    .context("compiling fixed CUA keymap for Unicode allocation")?;
+    let codes = (1..=MAX_TEXT_EVDEV_KEYCODE)
+        .filter(|code| {
+            let key = xkb::Keycode::new(code + 8);
+            (0..keymap.num_layouts_for_key(key)).all(|layout| {
+                (0..keymap.num_levels_for_key(key, layout)).all(|level| {
+                    keymap
+                        .key_get_syms_by_level(key, layout, level)
+                        .iter()
+                        .all(|sym| sym.raw() == 0)
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !codes.is_empty(),
+        "fixed CUA keymap has no unassigned Unicode keys"
+    );
+    Ok(codes)
 }
 
 struct TextKeymap {
     keymap: String,
-    text_keycodes: Vec<u32>,
-    trailing_keycode: Option<u32>,
+    text_strokes: Vec<TextStroke>,
+    trailing_stroke: Option<TextStroke>,
 }
 
 impl TextKeymap {
     fn build_chunks(text: &str, trailing_keysym: Option<&str>) -> anyhow::Result<Vec<Self>> {
         validate_text_length(text)?;
-        let reserve_for_trailing = usize::from(trailing_keysym.is_some());
-        let chunk_entry_limit = MAX_TEXT_KEYMAP_ENTRIES - reserve_for_trailing;
+        let keycodes = unicode_text_keycodes()?;
+        let reserve_for_trailing =
+            usize::from(trailing_keysym.is_some_and(|name| key_to_evdev(name).is_none()));
+        let chunk_entry_limit = keycodes.len() - reserve_for_trailing;
+        anyhow::ensure!(
+            chunk_entry_limit > 0,
+            "fixed CUA keymap has no available Unicode text keys"
+        );
         let mut chunks = Vec::new();
         let mut chunk = String::new();
         let mut distinct = Vec::<char>::new();
 
         for character in text.chars() {
+            if fixed_text_stroke(character).is_some() {
+                chunk.push(character);
+                continue;
+            }
             let is_new = !distinct.contains(&character);
             if is_new && distinct.len() == chunk_entry_limit {
-                chunks.push(Self::build(&chunk, None)?);
+                chunks.push(Self::build_with_keycodes(&chunk, None, &keycodes)?);
                 chunk.clear();
                 distinct.clear();
             }
@@ -1069,7 +1170,11 @@ impl TextKeymap {
         }
 
         if !chunk.is_empty() || trailing_keysym.is_some() {
-            chunks.push(Self::build(&chunk, trailing_keysym)?);
+            chunks.push(Self::build_with_keycodes(
+                &chunk,
+                trailing_keysym,
+                &keycodes,
+            )?);
         }
         if chunks.is_empty() {
             anyhow::bail!("persistent text transaction contains no keys");
@@ -1077,68 +1182,91 @@ impl TextKeymap {
         Ok(chunks)
     }
 
+    #[cfg(test)]
     fn build(text: &str, trailing_keysym: Option<&str>) -> anyhow::Result<Self> {
+        Self::build_with_keycodes(text, trailing_keysym, &unicode_text_keycodes()?)
+    }
+
+    fn build_with_keycodes(
+        text: &str,
+        trailing_keysym: Option<&str>,
+        keycodes: &[u32],
+    ) -> anyhow::Result<Self> {
         let mut entries = Vec::<TextKeymapEntry>::new();
-        let mut text_keycodes = Vec::with_capacity(text.chars().count());
+        let mut text_strokes = Vec::with_capacity(text.chars().count());
         for character in text.chars() {
+            if let Some(stroke) = fixed_text_stroke(character) {
+                text_strokes.push(stroke);
+                continue;
+            }
             let keycode = match entries
                 .iter()
                 .position(|entry| entry.character == Some(character))
             {
-                Some(index) => protocol_keycode(index)?,
+                Some(index) => entries[index].keycode,
                 None => {
                     let keysym = keysym_for_character(character);
+                    let keycode = *keycodes
+                        .get(entries.len())
+                        .context("CUA text chunk exceeds available Unicode keys")?;
                     entries.push(TextKeymapEntry {
                         character: Some(character),
                         keysym,
+                        keycode,
                     });
-                    protocol_keycode(entries.len() - 1)?
+                    keycode
                 }
             };
-            text_keycodes.push(keycode);
+            text_strokes.push(TextStroke {
+                keycode,
+                shift: false,
+            });
         }
 
-        let trailing_keycode = trailing_keysym
+        let trailing_stroke = trailing_keysym
             .map(|name| {
+                if let Some(keycode) = key_to_evdev(name) {
+                    return Ok(TextStroke {
+                        keycode,
+                        shift: false,
+                    });
+                }
                 let keysym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
                 if keysym.raw() == 0 {
                     anyhow::bail!("invalid trailing XKB keysym '{name}'");
                 }
                 match entries.iter().position(|entry| entry.keysym == keysym) {
-                    Some(index) => protocol_keycode(index),
+                    Some(index) => Ok(TextStroke {
+                        keycode: entries[index].keycode,
+                        shift: false,
+                    }),
                     None => {
+                        let keycode = *keycodes
+                            .get(entries.len())
+                            .context("CUA text chunk exceeds available Unicode keys")?;
                         entries.push(TextKeymapEntry {
                             character: None,
                             keysym,
+                            keycode,
                         });
-                        protocol_keycode(entries.len() - 1)
+                        Ok(TextStroke {
+                            keycode,
+                            shift: false,
+                        })
                     }
                 }
             })
             .transpose()?;
 
-        if entries.is_empty() {
+        if text_strokes.is_empty() && trailing_stroke.is_none() {
             anyhow::bail!("persistent text transaction contains no keys");
-        }
-        if entries.len() > MAX_TEXT_KEYMAP_ENTRIES {
-            anyhow::bail!(
-                "CUA text keymap has {} entries; per-keymap limit is {MAX_TEXT_KEYMAP_ENTRIES}",
-                entries.len()
-            );
         }
         Ok(Self {
             keymap: render_text_keymap(&entries)?,
-            text_keycodes,
-            trailing_keycode,
+            text_strokes,
+            trailing_stroke,
         })
     }
-}
-
-fn protocol_keycode(index: usize) -> anyhow::Result<u32> {
-    u32::try_from(index)
-        .ok()
-        .and_then(|value| value.checked_add(TEXT_KEYCODE_OFFSET))
-        .ok_or_else(|| anyhow::anyhow!("CUA text keymap has too many distinct keysyms"))
 }
 
 fn keysym_for_character(character: char) -> xkb::Keysym {
@@ -1156,19 +1284,15 @@ fn keysym_for_character(character: char) -> xkb::Keysym {
 
 fn render_text_keymap(entries: &[TextKeymapEntry]) -> anyhow::Result<String> {
     use std::fmt::Write as _;
-
-    let maximum = entries
-        .len()
-        .checked_add(9)
-        .context("CUA text keymap size overflow")?;
+    if entries.is_empty() {
+        return Ok(XKB_KEYMAP.to_owned());
+    }
     let mut keymap = String::new();
     writeln!(keymap, "xkb_keymap {{")?;
-    writeln!(keymap, "xkb_keycodes \"(unnamed)\" {{")?;
-    writeln!(keymap, "minimum = 8;")?;
-    writeln!(keymap, "maximum = {maximum};")?;
-    for index in 0..entries.len() {
+    writeln!(keymap, "xkb_keycodes {{ include \"evdev+aliases(qwerty)\"")?;
+    for (index, entry) in entries.iter().enumerate() {
         let ordinal = index + 1;
-        let xkb_keycode = index + 9;
+        let xkb_keycode = entry.keycode + 8;
         writeln!(keymap, "<K{ordinal}> = {xkb_keycode};")?;
     }
     writeln!(keymap, "}};")?;
@@ -1180,7 +1304,7 @@ fn render_text_keymap(entries: &[TextKeymapEntry]) -> anyhow::Result<String> {
         keymap,
         "xkb_compatibility \"(unnamed)\" {{ include \"complete\" }};"
     )?;
-    writeln!(keymap, "xkb_symbols \"(unnamed)\" {{")?;
+    writeln!(keymap, "xkb_symbols {{ include \"pc+us+inet(evdev)\"")?;
     for (index, entry) in entries.iter().enumerate() {
         let ordinal = index + 1;
         let name = xkb::keysym_get_name(entry.keysym);
@@ -1194,6 +1318,7 @@ fn render_text_keymap(entries: &[TextKeymapEntry]) -> anyhow::Result<String> {
         writeln!(keymap, "key <K{ordinal}> {{[{name}]}};")?;
     }
     writeln!(keymap, "}};")?;
+    writeln!(keymap, "xkb_geometry {{ include \"pc(pc105)\" }};")?;
     writeln!(keymap, "}};")?;
     Ok(keymap)
 }
@@ -1341,6 +1466,138 @@ fn modifier_keys(modifiers: &[String]) -> anyhow::Result<Vec<(u32, u32)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compile_test_keymap(source: &str) -> xkb::Keymap {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        xkb::Keymap::new_from_string(
+            &context,
+            source.to_owned(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .expect("compile keyboard regression keymap")
+    }
+
+    fn stroke_keysym(keymap: &xkb::Keymap, stroke: TextStroke) -> xkb::Keysym {
+        let mut state = xkb::State::new(keymap);
+        state.update_mask(u32::from(stroke.shift), 0, 0, 0, 0, 0);
+        state.key_get_one_sym(xkb::Keycode::new(stroke.keycode + 8))
+    }
+
+    #[test]
+    fn observed_marker_newline_cannot_become_backspace_during_cleanup() {
+        let fixed = compile_test_keymap(XKB_KEYMAP);
+        for marker in [
+            "S1 iteration 01 aaabbb111222\n",
+            "seat2-loop-02 aaabbccc 222\n",
+        ] {
+            // The former first-seen-character allocation gave both markers
+            // newline code14. GTK's delayed binding lookup could therefore
+            // delete the final '2' after the map reverted to fixed evdev.
+            let mut old_entries = Vec::new();
+            for character in marker.chars() {
+                if !old_entries.contains(&character) {
+                    old_entries.push(character);
+                }
+            }
+            let old_newline = old_entries
+                .iter()
+                .position(|character| *character == '\n')
+                .unwrap() as u32
+                + 1;
+            assert_eq!(old_newline, 14);
+            assert_eq!(
+                stroke_keysym(
+                    &fixed,
+                    TextStroke {
+                        keycode: old_newline,
+                        shift: false
+                    }
+                ),
+                xkb::keysym_from_name("BackSpace", xkb::KEYSYM_NO_FLAGS),
+            );
+            let plan = TextKeymap::build(marker, None).unwrap();
+            assert_eq!(plan.keymap, XKB_KEYMAP);
+            let newline = *plan.text_strokes.last().unwrap();
+            assert_eq!(newline.keycode, 28);
+            assert_eq!(stroke_keysym(&fixed, newline), keysym_for_character('\n'));
+        }
+    }
+
+    #[test]
+    fn all_ascii_text_uses_stable_fixed_keys_and_balanced_shift() {
+        let text: String = (32..=126)
+            .filter_map(char::from_u32)
+            .chain(['\n', '\t', '\u{1b}'])
+            .collect();
+        let plan = TextKeymap::build(&text, None).unwrap();
+        assert_eq!(plan.keymap, XKB_KEYMAP);
+        let keymap = compile_test_keymap(&plan.keymap);
+        assert_eq!(plan.text_strokes.len(), text.chars().count());
+        for (character, stroke) in text.chars().zip(plan.text_strokes) {
+            assert_eq!(
+                stroke_keysym(&keymap, stroke),
+                keysym_for_character(character),
+                "{character:?}"
+            );
+            let transitions = stroke.transitions();
+            // Every interruption point has releases-only recovery; completing
+            // the stroke itself leaves neither the key nor Shift depressed.
+            for end in 0..=transitions.len() {
+                let mut pressed = PressedState::default();
+                for transition in &transitions[..end] {
+                    pressed.record(*transition);
+                }
+                apply_reset(&mut pressed);
+                assert!(pressed.pressed.is_empty());
+                assert_eq!(pressed.modifier_mask, 0);
+            }
+            let mut pressed = PressedState::default();
+            for transition in transitions {
+                pressed.record(transition);
+            }
+            assert!(pressed.pressed.is_empty());
+            assert_eq!(pressed.modifier_mask, 0);
+        }
+    }
+
+    #[test]
+    fn unicode_chunks_preserve_fixed_keys_and_exact_character_order() {
+        let fixed = compile_test_keymap(XKB_KEYMAP);
+        let text: String = "Start Aaa111222\n"
+            .chars()
+            .chain((0x100..0x100 + 300).filter_map(char::from_u32))
+            .chain("\té😀 aaabbb111222\n".chars())
+            .collect();
+        let plans = TextKeymap::build_chunks(&text, None).unwrap();
+        assert!(plans.len() > 1);
+        let mut observed = Vec::new();
+        for plan in plans {
+            let keymap = compile_test_keymap(&plan.keymap);
+            for code in 1..=MAX_TEXT_EVDEV_KEYCODE {
+                let key = xkb::Keycode::new(code + 8);
+                for layout in 0..fixed.num_layouts_for_key(key) {
+                    for level in 0..fixed.num_levels_for_key(key, layout) {
+                        let original = fixed.key_get_syms_by_level(key, layout, level);
+                        if original.iter().any(|sym| sym.raw() != 0) {
+                            assert_eq!(
+                                keymap.key_get_syms_by_level(key, layout, level),
+                                original,
+                                "fixed evdev{code} changed"
+                            );
+                        }
+                    }
+                }
+            }
+            for stroke in plan.text_strokes {
+                observed.push(stroke_keysym(&keymap, stroke));
+            }
+        }
+        assert_eq!(
+            observed,
+            text.chars().map(keysym_for_character).collect::<Vec<_>>()
+        );
+    }
 
     fn apply_reset(state: &mut PressedState) {
         for transition in state.cleanup_transitions() {
@@ -1542,8 +1799,8 @@ mod tests {
     #[test]
     fn persistent_text_keymap_compiles_and_reuses_unicode_keys() {
         let plan = TextKeymap::build("é😀\n\té", Some("Return")).unwrap();
-        assert_eq!(plan.text_keycodes[0], plan.text_keycodes[4]);
-        assert!(plan.trailing_keycode.is_some());
+        assert_eq!(plan.text_strokes[0], plan.text_strokes[4]);
+        assert!(plan.trailing_stroke.is_some());
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         assert!(xkb::Keymap::new_from_string(
             &context,
@@ -1559,18 +1816,18 @@ mod tests {
         let text: String = (0x100..0x100 + 300).filter_map(char::from_u32).collect();
         assert_eq!(text.chars().count(), 300);
         let plans = TextKeymap::build_chunks(&text, Some("Return")).unwrap();
-        assert_eq!(plans.len(), 2);
+        assert!(plans.len() > 1);
         assert_eq!(
             plans
                 .iter()
-                .map(|plan| plan.text_keycodes.len())
+                .map(|plan| plan.text_strokes.len())
                 .sum::<usize>(),
             300
         );
         assert!(plans[..plans.len() - 1]
             .iter()
-            .all(|plan| plan.trailing_keycode.is_none()));
-        assert!(plans.last().unwrap().trailing_keycode.is_some());
+            .all(|plan| plan.trailing_stroke.is_none()));
+        assert!(plans.last().unwrap().trailing_stroke.is_some());
 
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         for plan in plans {

@@ -436,7 +436,9 @@ fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceStat
         .find(|workspace| workspace.name == name)
     {
         if cua_seat {
-            run_global_command(&format!("seat \"seat{index}\" fallback false"))?;
+            run_global_command(&format!(
+                "seat \"seat{index}\" fallback false; seat \"seat{index}\" xcursor_theme BuzzardOS-Agent 24"
+            ))?;
         }
         return Ok(workspace);
     }
@@ -477,6 +479,9 @@ fn ensure_numbered_workspace(index: u32, cua_seat: bool) -> Result<WorkspaceStat
     commands.extend(normalized_output_position_commands(&outputs)?);
     if cua_seat {
         commands.push(format!("seat \"seat{index}\" fallback false"));
+        commands.push(format!(
+            "seat \"seat{index}\" xcursor_theme BuzzardOS-Agent 24"
+        ));
     }
     commands.extend([
         format!("focus output {}", quote_sway(&created.name)?),

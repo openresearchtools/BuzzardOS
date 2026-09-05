@@ -9,9 +9,10 @@
 //! from a series of clicks (press, release, press, release, …) miss the
 //! drag entirely.
 //!
-//! This module keeps the virtual-pointer alive across tool calls. A single
-//! owner thread per process owns one Wayland `Connection`, one `EventQueue`,
-//! and a map of `cursor_id -> ActivePointer`. Commands are sent over a
+//! This module keeps each gesture's virtual-pointer, connection, event queue,
+//! and dispatch state together across batch steps in one CLI invocation. A
+//! single owner thread per process owns `cursor_id -> ActivePointer`. It does
+//! not survive the CLI process or provide cross-process held input. Commands use a
 //! `crossbeam-channel`; replies come back on a per-call reply channel so the
 //! caller blocks until the compositor has roundtripped.
 //!
@@ -23,17 +24,15 @@
 //!   activate — would steal focus mid-drag) and roundtrip.
 //! - `release` emits a button release, removes from the held set; if the
 //!   set is empty the vptr is destroyed and the map entry dropped.
-//! - On `Connection` roundtrip failure (compositor restart / disconnect)
-//!   the owner thread tears down its connection and accepts the next
-//!   command on a fresh one, emitting a typed error for the in-flight call.
+//! - Connection and geometry failures return errors to the caller. The
+//!   one-shot drag path releases its held button on both success and failure.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::thread;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use wayland_client::{protocol::wl_pointer::ButtonState, Connection};
-use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
+use wayland_client::protocol::wl_pointer::ButtonState;
 
 use super::{evdev_pointer_button, open_vptr_session};
 
@@ -62,7 +61,7 @@ enum Cmd {
 
 /// State held inside the owner thread for one cursor_id.
 struct ActivePointer {
-    vptr: ZwlrVirtualPointerV1,
+    session: super::VptrSession,
     /// evdev codes of buttons currently held down. When this set becomes
     /// empty the vptr is destroyed and the entry dropped from the map.
     held: HashSet<u32>,
@@ -133,21 +132,30 @@ fn handle_press(
     y: i32,
     button: u8,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !active.contains_key(cursor_id),
+        "cursor '{cursor_id}' already has a held button"
+    );
     let output_before = super::read_buzzardos_output_state()?;
-    // Open a fresh session for this press — this binds the seat, the foreign-
-    // toplevel manager, activates the target window, and creates a new vptr.
-    // Keep the (out_w, out_h) but drop the queue + state at end of scope; the
-    // vptr itself remains alive (Wayland objects survive their original queue
-    // as long as the Connection is alive).
+    // The same connection, dispatch queue, state and virtual pointer own the
+    // entire gesture. Dropping the original queue discarded its input/output
+    // events while the previous implementation drove a new, unrelated queue.
     let mut sess = open_vptr_session(window_id)?;
     let (w, h) = (sess.output_w, sess.output_h);
     let px = x.clamp(0, w as i32 - 1) as u32;
     let py = y.clamp(0, h as i32 - 1) as u32;
     let btn = evdev_pointer_button(button);
 
-    sess.vptr.motion_absolute(0, px, py, w, h);
+    sess.vptr
+        .motion_absolute(super::event_time_ms(), px, py, w, h);
     sess.vptr.frame();
-    sess.vptr.button(0, btn, ButtonState::Pressed);
+    sess.queue.roundtrip(&mut sess.state)?;
+    // Match the ordinary click path: the compositor acknowledgement is not
+    // the application's acknowledgement of the newly advertised pointer.
+    // Let its event loop bind wl_pointer before delivering the first press.
+    std::thread::sleep(std::time::Duration::from_millis(15));
+    sess.vptr
+        .button(super::event_time_ms(), btn, ButtonState::Pressed);
     sess.vptr.frame();
     sess.queue.roundtrip(&mut sess.state)?;
 
@@ -155,29 +163,20 @@ fn handle_press(
     if let Err(error) = super::require_same_output_generation(output_before, output_after) {
         // Never leave a compositor grab behind when geometry changes between
         // the press coordinates and its acknowledgement.
-        sess.vptr.button(0, btn, ButtonState::Released);
+        sess.vptr
+            .button(super::event_time_ms(), btn, ButtonState::Released);
         sess.vptr.frame();
         let _ = sess.queue.roundtrip(&mut sess.state);
         sess.vptr.destroy();
         return Err(error);
     }
 
-    // Take ownership of the vptr handle by extracting it from the session.
-    // ZwlrVirtualPointerV1 is a Wayland proxy — cloning it gives another
-    // handle to the same wire object; destroying it sends the destructor.
-    let vptr = sess.vptr.clone();
-    // Persist the live connection so the proxy stays valid after this fn returns
-    // (the session goes out of scope; we need the conn alive).
-    // We do this by leaking the connection into a process-static slot keyed by
-    // cursor_id. Subsequent commands on the same cursor reuse this conn.
-    persist_conn(cursor_id, sess.conn);
-
     let mut held = HashSet::new();
     held.insert(btn);
     active.insert(
         cursor_id.to_string(),
         ActivePointer {
-            vptr,
+            session: sess,
             held,
             out_w: w,
             out_h: h,
@@ -204,10 +203,11 @@ fn handle_move(
     let px = x.clamp(0, entry.out_w as i32 - 1) as u32;
     let py = y.clamp(0, entry.out_h as i32 - 1) as u32;
     entry
+        .session
         .vptr
-        .motion_absolute(0, px, py, entry.out_w, entry.out_h);
-    entry.vptr.frame();
-    roundtrip_on_persistent(cursor_id)?;
+        .motion_absolute(super::event_time_ms(), px, py, entry.out_w, entry.out_h);
+    entry.session.vptr.frame();
+    entry.session.queue.roundtrip(&mut entry.session.state)?;
     ensure_active_generation(active, cursor_id)
 }
 
@@ -223,18 +223,20 @@ fn handle_release(
         let entry = active
             .get_mut(cursor_id)
             .ok_or_else(|| anyhow::anyhow!("no held mouse button for cursor '{cursor_id}'"))?;
-        entry.vptr.button(0, btn, ButtonState::Released);
-        entry.vptr.frame();
-        roundtrip_on_persistent(cursor_id)?;
+        entry
+            .session
+            .vptr
+            .button(super::event_time_ms(), btn, ButtonState::Released);
+        entry.session.vptr.frame();
+        entry.session.queue.roundtrip(&mut entry.session.state)?;
         entry.held.remove(&btn);
         entry.held.is_empty()
     };
     if drop_entry {
-        if let Some(p) = active.remove(cursor_id) {
-            p.vptr.destroy();
-            roundtrip_on_persistent(cursor_id).ok();
+        if let Some(mut p) = active.remove(cursor_id) {
+            p.session.vptr.destroy();
+            p.session.queue.roundtrip(&mut p.session.state)?;
         }
-        forget_conn(cursor_id);
     }
     let output_after = super::read_buzzardos_output_state()?;
     super::require_same_output_generation(output_before, output_after)
@@ -259,14 +261,17 @@ fn ensure_active_generation(
         return Ok(());
     }
 
-    if let Some(pointer) = active.remove(cursor_id) {
+    if let Some(mut pointer) = active.remove(cursor_id) {
         for button in &pointer.held {
-            pointer.vptr.button(0, *button, ButtonState::Released);
+            pointer
+                .session
+                .vptr
+                .button(super::event_time_ms(), *button, ButtonState::Released);
         }
-        pointer.vptr.frame();
-        let _ = roundtrip_on_persistent(cursor_id);
-        pointer.vptr.destroy();
-        forget_conn(cursor_id);
+        pointer.session.vptr.frame();
+        let _ = pointer.session.queue.roundtrip(&mut pointer.session.state);
+        pointer.session.vptr.destroy();
+        let _ = pointer.session.queue.roundtrip(&mut pointer.session.state);
     }
     match current {
         Ok(current) => anyhow::bail!(
@@ -274,45 +279,6 @@ fn ensure_active_generation(
         ),
         Err(error) => Err(error),
     }
-}
-
-// Process-static slots for Connection + EventQueue keyed by cursor_id. The
-// EventQueue is !Send but we only touch these on the owner thread, so wrap
-// in a thread-local-by-construction pattern: store inside the same map so
-// the owner thread is the sole accessor.
-//
-// We use a per-thread static rather than a Mutex<HashMap> because the owner
-// thread is the only accessor (no contention possible).
-thread_local! {
-    static CONNS: std::cell::RefCell<HashMap<String, (Connection, wayland_client::EventQueue<super::State>)>>
-        = std::cell::RefCell::new(HashMap::new());
-}
-
-fn persist_conn(cursor_id: &str, conn: Connection) {
-    let queue = conn.new_event_queue::<super::State>();
-    CONNS.with(|c| {
-        c.borrow_mut().insert(cursor_id.to_string(), (conn, queue));
-    });
-}
-
-fn forget_conn(cursor_id: &str) {
-    CONNS.with(|c| {
-        c.borrow_mut().remove(cursor_id);
-    });
-}
-
-fn roundtrip_on_persistent(cursor_id: &str) -> anyhow::Result<()> {
-    CONNS.with(|c| {
-        let mut b = c.borrow_mut();
-        let (_conn, queue) = b
-            .get_mut(cursor_id)
-            .ok_or_else(|| anyhow::anyhow!("no persistent connection for cursor '{cursor_id}'"))?;
-        let mut tmp = super::State::default();
-        queue
-            .roundtrip(&mut tmp)
-            .map_err(|e| anyhow::anyhow!("compositor roundtrip failed: {e}"))?;
-        Ok(())
-    })
 }
 
 // ── public API ────────────────────────────────────────────────────────────

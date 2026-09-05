@@ -101,8 +101,33 @@ need them. The UI contains no free-form component fields.
 One selection change is one complete typed keyboard transaction. The exact
 RMLVO names are compiled against the protected pinned XKB data on both sides
 of the nested physical-keyboard boundary. The guest and host activate the
-same canonical digest atomically. CUA uses its own distinct virtual keyboard
-on the same Sway seat; enabling CUA never disables ordinary human input.
+same canonical digest atomically. Human input belongs exclusively to `seat0`.
+Each `cuaN` has its own `seatN`, keyboard, pointer, focus, pressed state and
+output coordinates. CUA creation, input, cancellation and teardown never
+replace, release, reset or borrow seat0's input objects or interaction state.
+Shell callbacks are dispatched by the exact owning Wayland seat and device,
+not registry order, default-seat selection or the last active device. A
+released device's queued callbacks cannot affect its replacement or another
+seat. Restarts, polling and periodic rebinding are not input recovery.
+
+The human can select and control any CUA workspace through the fixed visible
+output. Its selected agent's native cursor is visible to the human. Numbered
+CUA screenshots include the normal compositor cursors on the captured output;
+the human cursor may appear alongside the agent cursor when sharing that view.
+Capture still excludes other outputs and host chrome. Cursor appearance does
+not change input ownership: each numbered caller still controls only seatN.
+Agents use a compact, contrasting red native cursor theme with no numbers,
+labels, trails, animation or overlay surfaces. Application-defined tool cursors
+remain usable. Human cursor textures retain their original guest physical
+pixels. GTK's scale-aware cursor API receives logical dimensions and hotspot
+separately; no downsample-then-upsample cursor rendering is permitted. Native
+size and sharpness require acceptance on every supported host GTK version.
+When the compositor unmaps its exported cursor surface, the
+host must hide that cursor immediately, including null-buffer commits, so it
+cannot duplicate a cursor already composited inside the guest frame.
+CUA operations do not select the human's visible workspace. Lifecycle commands
+are provided by the host manager CLI, using the same operations as the GUI;
+machine start, stop, restart and status require no guest-side restart scripts.
 
 ## 4.1. Time and location
 
@@ -134,6 +159,11 @@ Enabling it requires the current machine password and creates only the exact
 root-owned `/etc/sudoers.d/91-buzzardos-passwordless` policy for `user` after
 `visudo` validation. Disabling it removes only that exact verified policy. No
 Polkit rule, host helper, host socket, or host filesystem path participates.
+
+On nosuid machine storage, the existing private guest socket handoff invokes
+the unmodified distro sudo with the caller's arguments, descriptors and
+terminal context. Sudo still owns authentication, sudoers and command
+execution. This is not a host-side elevation service.
 
 ## 5. Appearance
 
@@ -224,6 +254,14 @@ The shell restores the normal pointer whenever it receives pointer entry on
 the desktop, taskbar, menu, or transparent click-away surface. A resize or move
 cursor selected by an application must not persist over shell-owned empty
 space.
+
+Every workspace selector and the `+` button uses its complete rendered
+rectangle as the click target, including its lower edge and fractional-scale
+positions. The right side of the top bar hosts application system trays using
+the guest-private StatusNotifierItem/StatusNotifierWatcher and DBusMenu
+protocols. Tray entries react to registration, property and owner-change
+signals without periodic process or bus polling; they support their normal
+activation and menu actions. They never connect to a host session bus.
 
 An application-titlebar secondary click sends only the target window identity
 to the shell. The transient full-output menu surface obtains the current

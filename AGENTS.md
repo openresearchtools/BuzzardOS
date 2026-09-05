@@ -132,8 +132,10 @@ Buzzard AppArmor policy. Upgrade and uninstall never delete machines.
 `buzzardos-guest` contains desktop-independent session, systemd, stock-Sway,
 output/scale/keyboard synchronization, clipboard agent, AppImage integration,
 private D-Bus/AT-SPI/PipeWire/WirePlumber/portal glue, and guest halves of the
-typed Buzzard integrations. Native sudo inside the Podman container is the
-distro sudo; there is no Buzzard sudo transport or privilege bridge.
+typed Buzzard integrations. The guest-only socket handoff executes the real
+distro sudo with its normal password authentication on nosuid persistent
+rootfs storage. It preserves the existing guest sudo and sudoedit entry points;
+it exposes no host helper, host socket, or broad Polkit authorization.
 
 `buzzardos-desktop` owns only the official shell, Settings, themes, icons,
 Thunar integration, application defaults, and desktop assets.
@@ -258,9 +260,15 @@ boundary.
 ## Display, input, integrations, and guest desktop
 
 `buzzardos-display` remains one native GTK4 host Wayland application and one
-filtered gateway. It owns exactly one host toplevel and embeds the one fixed
-guest Sway output. Extra CUA/manual outputs remain active guest-internal
+filtered gateway. It embeds the one fixed guest Sway output in exactly one
+host toplevel. The user-opened status window contains only host status, never
+another guest display. Extra CUA/manual outputs remain active guest-internal
 off-screen outputs and never create host surfaces.
+
+Agent cursors have a compact contrasting native theme, without numbers, badges,
+trails or overlay surfaces. The human cursor retains normal native sizing.
+Screenshots may show both human and agent cursors on the selected guest output;
+cursor exclusion by seat is not a requirement. Input isolation remains unchanged.
 
 Podman receives only the exact private Unix endpoints and state mounts required
 for the selected integrations. It never receives the real host Wayland,
@@ -307,11 +315,19 @@ Runtime state is derived from `podman inspect` and Podman events/status, not a
 stale host process PID. Closing a machine window requests orderly stop; an
 unexpected display disconnect marks the current window Failed.
 
+The native header's current lifecycle status is clickable and opens a separate
+non-modal GTK status window containing current state and complete, selectable
+failure details. It has no input grab or modal/transient attachment and can stay
+open while the guest is used. Status changes never open it automatically and
+never place a status/error overlay over the guest viewport. Without a guest
+frame the viewport stays blank; the header remains available throughout startup,
+restart, and failure.
+
 ## Required verification
 
 Completion requires evidence for all of the following:
 
-- no Bubblewrap/custom namespace/slirp/CDI/sudo-transport source, package,
+- no Bubblewrap/custom namespace/slirp/private-CDI source, package,
   test, notice, or dependency remains;
 - exact generated argv contains no hidden security policy and custom argv is
   forwarded byte-for-byte as parsed, without a shell;
@@ -329,6 +345,8 @@ Completion requires evidence for all of the following:
 - manager and machine-window controls match the exact UI contract above;
 - display, resize, scale, input, CUA seats/outputs, clipboard, audio,
   microphone, and camera acceptance journeys pass;
+- password-authenticated guest sudo, sudoedit, redirected input/output and
+  interactive terminals work on the real nosuid persistent rootfs;
 - four independently versioned Debian packages build, install, upgrade, and
   carry correct current licensing; and
 - APT-installed host package and APT-built reference images pass on Ubuntu

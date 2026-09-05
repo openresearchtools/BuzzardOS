@@ -10,6 +10,6 @@ ln -sf /usr/lib/systemd/system/buzzardos-desktop.service \
 
 sockets_wants="$normal_dir/sockets.target.wants"
 mkdir -p "$sockets_wants"
-for socket in buzzardos-fusermount.socket; do
+for socket in buzzardos-sudo.socket buzzardos-fusermount.socket; do
     ln -sf "/usr/lib/systemd/system/$socket" "$sockets_wants/$socket"
 done

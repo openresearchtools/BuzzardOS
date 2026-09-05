@@ -17,6 +17,14 @@ License: AGPL-3.0-or-later and MIT
  General Public License version 3 is available at
  /usr/share/common-licenses/AGPL-3.
 
+Files: cua/tools/build-cursor-theme.py cua/tools/test_cursor_theme.py
+       usr/share/icons/BuzzardOS-Agent/*
+Copyright: 2026 Open Research Tools contributors
+License: AGPL-3.0-or-later
+ The compact agent cursor artwork is original Buzzard work, generated at
+ package build time. Unlisted shapes inherit the separately installed distro
+ Adwaita theme; no Adwaita artwork is copied into this package.
+
 Files: cua/protocol/virtual-keyboard-unstable-v1.xml
 Copyright: 2008-2011 Kristian Høgsberg
            2010-2013 Intel Corporation

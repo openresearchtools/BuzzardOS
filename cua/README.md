@@ -10,6 +10,14 @@ workspace's exact Sway output. `cua --index N` supports an arbitrary positive
 number without requiring another installed link. Different numbers have
 independent output coordinates and per-seat mutation locks.
 
+Numbered seats use the compact red `BuzzardOS-Agent` native cursor theme,
+with no numbers, labels or overlay surfaces. Its Xcursor files are generated
+at package-build time and installed with `buzzardoscua`. Stock Sway and clients
+using its cursor-shape protocol use the seat theme; clients supplying their own
+cursor surfaces retain their application-defined artwork. Output screenshots
+may include both human and agent cursors while the human views that workspace.
+This does not merge seats or change the caller's input coordinates.
+
 There is no daemon, MCP server, browser/CDP implementation, recording,
 telemetry, self-update, remote skill download, macOS code, or Windows code.
 `cua browser ...` is only an `exec(2)` compatibility route to the separately

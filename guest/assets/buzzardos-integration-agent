@@ -132,55 +132,84 @@ async def wait_for_listener(name: str, port: int, process: subprocess.Popen) -> 
         await asyncio.sleep(0.025)
 
 
+class MediaEndpoint:
+    def __init__(self, name: str, port: int) -> None:
+        self.name = name
+        self.port = port
+        self.process: subprocess.Popen | None = None
+        self.error: str | None = None
+        self.retry_at = 0.0
+
+    def stop(self) -> None:
+        if self.process is not None:
+            stop_pipeline(self.process)
+            self.process = None
+
+    async def reconcile(self) -> None:
+        if self.process is not None:
+            status = self.process.poll()
+            if status is None:
+                return
+            self.error = f"{self.name} bridge exited (status {status})"
+            self.stop()
+            self.retry_at = time.monotonic() + 1.0
+        if time.monotonic() < self.retry_at:
+            return
+        try:
+            self.process = start_pipeline(pipeline(self.name))
+            await wait_for_listener(self.name, self.port, self.process)
+            self.error = None
+        except asyncio.CancelledError:
+            self.stop()
+            raise
+        except Exception as error:
+            self.stop()
+            self.error = str(error)
+            self.retry_at = time.monotonic() + 1.0
+
+    def status(self) -> dict:
+        return {
+            "pid": self.process.pid if self.process is not None else None,
+            "running": self.process is not None and self.process.poll() is None,
+            "error": self.error,
+        }
+
+
 async def run() -> None:
     control = json.loads(CONTROL.read_text(encoding="utf-8"))
     if control.get("schema") != 1:
         raise RuntimeError("unsupported integration control schema")
     generation = int(control.get("generation", 0))
     requested = control.get("media", {})
-    processes: dict[str, subprocess.Popen] = {}
+    endpoints = {
+        name: MediaEndpoint(name, port)
+        for name, port in MEDIA_PORTS.items()
+        if bool(requested.get(name))
+    }
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
     for event in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(event, stopped.set)
     try:
-        for name, port in MEDIA_PORTS.items():
-            if bool(requested.get(name)):
-                process = start_pipeline(pipeline(name))
-                processes[name] = process
-                await wait_for_listener(name, port, process)
-        atomic_json(
-            STATUS,
-            {
+        previous = None
+        while not stopped.is_set():
+            await asyncio.gather(*(endpoint.reconcile() for endpoint in endpoints.values()))
+            status = {
                 "schema": 1,
                 "generation": generation,
-                "media": {
-                    name: {"pid": process.pid, "running": process.poll() is None}
-                    for name, process in processes.items()
-                },
+                "media": {name: endpoint.status() for name, endpoint in endpoints.items()},
                 "error": None,
-            },
-        )
-        while not stopped.is_set():
-            failed = next(
-                (
-                    (name, process.returncode)
-                    for name, process in processes.items()
-                    if process.poll() is not None
-                ),
-                None,
-            )
-            if failed is not None:
-                raise RuntimeError(
-                    f"{failed[0]} bridge exited unexpectedly (status {failed[1]})"
-                )
+            }
+            if status != previous:
+                atomic_json(STATUS, status)
+                previous = status
             try:
                 await asyncio.wait_for(stopped.wait(), timeout=0.5)
             except asyncio.TimeoutError:
                 pass
     finally:
-        for process in processes.values():
-            stop_pipeline(process)
+        for endpoint in endpoints.values():
+            endpoint.stop()
         atomic_json(
             STATUS,
             {"schema": 1, "generation": generation, "media": {}, "error": None},

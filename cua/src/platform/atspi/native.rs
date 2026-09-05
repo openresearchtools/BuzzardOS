@@ -207,6 +207,12 @@ async fn web_extents_are_physical(visited: &[Visited<'_>], pid: u32, coord: Coor
     );
     let converted =
         crate::platform::wayland::physical_rect_to_logical(x, y, width as u32, height as u32);
+    // The shared inverse transform returns global compositor coordinates.
+    // This probe compares a renderer viewport with its window's local size,
+    // so an off-screen output's placement must not enter the fit test.
+    let output_origin =
+        crate::platform::wayland::sway_ipc::caller_output_origin().unwrap_or((0, 0));
+    let converted = logical_rect_relative_to_origin(converted, output_origin);
     let converted_fits = rect_fits_window(
         converted.0,
         converted.1,
@@ -228,15 +234,70 @@ async fn web_extents_are_physical(visited: &[Visited<'_>], pid: u32, coord: Coor
 fn canonicalize_renderer_rect(
     node: &Visited<'_>,
     physical_web_extents: bool,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+    rect: (i32, i32, u32, u32),
+    logical_window_origin: Option<(i32, i32)>,
+    logical_document_offset: (i32, i32),
 ) -> (i32, i32, u32, u32) {
-    if renderer_node_uses_physical_extents(node, physical_web_extents) {
-        crate::platform::wayland::physical_rect_to_canonical(x, y, width, height)
+    canonicalize_atspi_rect(
+        rect,
+        renderer_node_uses_physical_extents(node, physical_web_extents),
+        logical_window_origin,
+        logical_document_offset,
+        crate::platform::wayland::logical_rect_to_canonical,
+    )
+}
+
+fn logical_rect_relative_to_origin(
+    (x, y, width, height): (i32, i32, u32, u32),
+    (origin_x, origin_y): (i32, i32),
+) -> (i32, i32, u32, u32) {
+    (
+        x.saturating_sub(origin_x),
+        y.saturating_sub(origin_y),
+        width,
+        height,
+    )
+}
+
+/// Convert an AT-SPI rectangle into caller-output physical pixels. A window
+/// origin means the rectangle is Window-relative; None means Screen-relative.
+/// Both the compositor window origin and the optional embedded-document inset
+/// are logical. Combine those before the one output translation/scale, never
+/// add global logical coordinates to an already scaled output-local rectangle.
+///
+/// Chromium renderer rectangles can already be physical. In that case scale
+/// only the logical origin/inset, preserving the rectangle's physical pixels.
+fn canonicalize_atspi_rect(
+    (x, y, width, height): (i32, i32, u32, u32),
+    physical_extents: bool,
+    logical_window_origin: Option<(i32, i32)>,
+    logical_document_offset: (i32, i32),
+    logical_to_output: impl FnOnce(i32, i32, u32, u32) -> (i32, i32, u32, u32),
+) -> (i32, i32, u32, u32) {
+    let origin = logical_window_origin.map(|(window_x, window_y)| {
+        (
+            window_x.saturating_add(logical_document_offset.0),
+            window_y.saturating_add(logical_document_offset.1),
+        )
+    });
+    if physical_extents {
+        let (offset_x, offset_y, _, _) = origin
+            .map(|(x, y)| logical_to_output(x, y, 0, 0))
+            .unwrap_or((0, 0, 0, 0));
+        crate::platform::wayland::physical_rect_to_canonical(
+            x.saturating_add(offset_x),
+            y.saturating_add(offset_y),
+            width,
+            height,
+        )
     } else {
-        crate::platform::wayland::logical_rect_to_canonical(x, y, width, height)
+        let (offset_x, offset_y) = origin.unwrap_or((0, 0));
+        logical_to_output(
+            x.saturating_add(offset_x),
+            y.saturating_add(offset_y),
+            width,
+            height,
+        )
     }
 }
 
@@ -1874,7 +1935,7 @@ pub fn focus_element(pid: u32, idx: usize) -> Result<bool> {
     )
 }
 
-/// Resolve a window-local pixel `(win_x, win_y)` to the deepest actionable
+/// Resolve a window-local physical pixel `(win_x, win_y)` to the deepest actionable
 /// AT-SPI element covering it and perform its primary action.
 ///
 /// This is the no-focus-steal way to land a *pixel* click on toolkits that drop
@@ -1904,6 +1965,11 @@ pub fn perform_action_at_point(pid: u32, win_x: i32, win_y: i32) -> Result<Optio
                 .unwrap_or((0, 0));
             let physical_web_extents =
                 web_extents_are_physical(&visited, pid, CoordType::Window).await;
+            // This API accepts window-local pixels, not output-local pixels.
+            // Using the caller output origin as the synthetic window origin
+            // cancels the global-to-output translation while retaining scale.
+            let local_origin =
+                crate::platform::wayland::sway_ipc::caller_output_origin().unwrap_or((0, 0));
 
             // Collect actionable nodes whose window-local bounds contain the point,
             // then let `select_click_target` pick the innermost *real actuator* —
@@ -1936,10 +2002,9 @@ pub fn perform_action_at_point(pid: u32, win_x: i32, win_y: i32) -> Result<Optio
                 let (x, y, width, height) = canonicalize_renderer_rect(
                     v,
                     physical_web_extents,
-                    x + document_x,
-                    y + document_y,
-                    w as u32,
-                    h as u32,
+                    (x, y, w as u32, h as u32),
+                    Some(local_origin),
+                    (document_x, document_y),
                 );
                 frames.push((i, x, y, width, height, is_passive_role(&v.role)));
             }
@@ -1986,8 +2051,8 @@ pub fn perform_action_at_point(pid: u32, win_x: i32, win_y: i32) -> Result<Optio
 /// there", with no pointer injection and no reliance on `CoordType::Screen`
 /// (which GTK4 reports as (0,0)).
 ///
-/// `screen_x`/`screen_y` are full-display screen pixels (what the vision
-/// screenshot and `get_window_state` frames are in). Returns `Ok(Some(action))`
+/// `screen_x`/`screen_y` are caller-output physical pixels (the same space as
+/// the screenshot and `get_window_state` frames). Returns `Ok(Some(action))`
 /// on a hit, `Ok(None)` when no element covers the point so the caller can fall
 /// back to its native injection path.
 pub fn perform_action_at_screen_point(
@@ -2018,7 +2083,6 @@ pub fn perform_action_at_screen_point(
             } else {
                 CoordType::Screen
             };
-            let (ox, oy) = offset.unwrap_or((0, 0));
             let physical_web_extents = web_extents_are_physical(&visited, pid, coord).await;
 
             // (element_index, x, y, w, h, is_passive_label) over the SAME indexable
@@ -2050,19 +2114,11 @@ pub fn perform_action_at_screen_point(
                 let (x, y, width, height) = canonicalize_renderer_rect(
                     node,
                     physical_web_extents,
-                    x + document_x,
-                    y + document_y,
-                    w as u32,
-                    h as u32,
+                    (x, y, w as u32, h as u32),
+                    offset,
+                    (document_x, document_y),
                 );
-                frames.push((
-                    idx,
-                    x + ox,
-                    y + oy,
-                    width,
-                    height,
-                    is_passive_role(&node.role),
-                ));
+                frames.push((idx, x, y, width, height, is_passive_role(&node.role)));
             }
 
             let Some(idx) = select_click_target(&frames, screen_x, screen_y) else {
@@ -2256,16 +2312,13 @@ pub fn get_element_bounds(pid: u32, idx: usize) -> Result<(i32, i32, u32, u32)> 
             } else {
                 (0, 0)
             };
-            let (x, y, width, height) = canonicalize_renderer_rect(
+            Ok(canonicalize_renderer_rect(
                 target,
                 physical_web_extents,
-                x + document_x,
-                y + document_y,
-                w.max(0) as u32,
-                h.max(0) as u32,
-            );
-            let (offset_x, offset_y) = offset.unwrap_or((0, 0));
-            Ok((x + offset_x, y + offset_y, width, height))
+                (x, y, w.max(0) as u32, h.max(0) as u32),
+                offset,
+                (document_x, document_y),
+            ))
         },
         || {
             Err(anyhow!(
@@ -2541,7 +2594,7 @@ fn rebase_renderer_window_offset(
     offset
 }
 
-/// Screen-coordinate bounds for the exact visited sequence rendered into the
+/// Caller-output physical-pixel bounds for the exact visited sequence rendered into the
 /// current snapshot. Nodes without a usable Component interface, or whose
 /// extents query fails/times out, are omitted rather than borrowing another
 /// live traversal's ordinal.
@@ -2656,10 +2709,9 @@ async fn element_bounds_for_visited(
         None
     };
     let physical_web_extents = web_extents_are_physical(visited, pid, coord).await;
-    let (offset_x, offset_y) = rebase_renderer_window_offset(
-        offset.or(screen_rebase).unwrap_or((0, 0)),
-        window_frame_origin,
-    );
+    let logical_origin = offset
+        .or(screen_rebase)
+        .map(|origin| rebase_renderer_window_offset(origin, window_frame_origin));
     if let Some((ox, oy)) = offset {
         dlog!("element bounds: WINDOW coords + screen offset ({ox},{oy})");
     } else if let Some((ox, oy)) = screen_rebase {
@@ -2713,12 +2765,11 @@ async fn element_bounds_for_visited(
             let (x, y, width, height) = canonicalize_renderer_rect(
                 node,
                 physical_web_extents,
-                x + document_x,
-                y + document_y,
-                w as u32,
-                h as u32,
+                (x, y, w as u32, h as u32),
+                logical_origin,
+                (document_x, document_y),
             );
-            out.push((idx, x + offset_x, y + offset_y, width, height));
+            out.push((idx, x, y, width, height));
         }
     }
     out
@@ -2728,12 +2779,117 @@ async fn element_bounds_for_visited(
 mod coord_tests {
     use super::parse_gtk_frame_extents;
     use super::{
-        activation_index, canonical_role_name, combine_wayland_content_offsets,
-        editable_text_byte_length, is_activation_action, is_indexable_capabilities,
-        is_passive_role, is_web_process_bus, prefer_authoritative_wayland_origin,
+        activation_index, canonical_role_name, canonicalize_atspi_rect,
+        combine_wayland_content_offsets, editable_text_byte_length, is_activation_action,
+        is_indexable_capabilities, is_passive_role, is_web_process_bus,
+        logical_rect_relative_to_origin, prefer_authoritative_wayland_origin,
         rebase_renderer_window_offset, rect_fits_window, screen_extent_rebase, select_click_target,
     };
     use atspi::Role;
+
+    fn output_transform(
+        origin: (i32, i32),
+        numerator: i64,
+        denominator: i64,
+    ) -> impl Fn(i32, i32, u32, u32) -> (i32, i32, u32, u32) {
+        move |x, y, width, height| {
+            let x = i64::from(x) - i64::from(origin.0);
+            let y = i64::from(y) - i64::from(origin.1);
+            let floor = |value: i64| (value * numerator).div_euclid(denominator);
+            let ceil = |value: i64| -floor(-value);
+            let left = floor(x);
+            let top = floor(y);
+            (
+                left as i32,
+                top as i32,
+                (ceil(x + i64::from(width)) - left) as u32,
+                (ceil(y + i64::from(height)) - top) as u32,
+            )
+        }
+    }
+
+    #[test]
+    fn window_extents_combine_global_logical_origin_before_output_scale() {
+        // Displaced numbered output at 4/3 scale. Previously this converted
+        // (60,47) as a global rectangle, then added unscaled (2217,924),
+        // producing (-471,-82), nowhere near the captured control.
+        assert_eq!(
+            canonicalize_atspi_rect(
+                (60, 47, 90, 24),
+                false,
+                Some((2217, 924)),
+                (0, 0),
+                output_transform((2076, 801), 4, 3),
+            ),
+            (268, 226, 120, 33),
+        );
+    }
+
+    #[test]
+    fn local_extents_never_include_numbered_output_placement() {
+        for origin in [(0, 0), (1038, 0), (2076, 801), (-1038, -801)] {
+            for (numerator, denominator) in [(1, 1), (5, 4), (4, 3), (2, 1)] {
+                assert_eq!(
+                    canonicalize_atspi_rect(
+                        (60, 48, 90, 24),
+                        false,
+                        Some(origin),
+                        (0, 0),
+                        output_transform(origin, numerator, denominator),
+                    ),
+                    output_transform((0, 0), numerator, denominator)(60, 48, 90, 24),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screen_extents_translate_once_without_adding_document_or_window_origin() {
+        assert_eq!(
+            canonicalize_atspi_rect(
+                (1239, 971, 90, 24),
+                false,
+                None,
+                (88, 99),
+                output_transform((1038, 801), 4, 3),
+            ),
+            (268, 226, 120, 33),
+        );
+    }
+
+    #[test]
+    fn physical_renderer_extents_scale_only_logical_window_and_document_offsets() {
+        assert_eq!(
+            canonicalize_atspi_rect(
+                (80, 64, 120, 32),
+                true,
+                Some((1188, 90)),
+                (3, 21),
+                output_transform((1038, 0), 4, 3),
+            ),
+            (284, 212, 120, 32),
+        );
+        assert_eq!(
+            canonicalize_atspi_rect((80, 64, 120, 32), true, None, (3, 21), |_, _, _, _| panic!(
+                "physical screen extents must not be scaled again"
+            ),),
+            (80, 64, 120, 32),
+        );
+    }
+
+    #[test]
+    fn separate_document_logical_offset_is_combined_before_fractional_rounding() {
+        assert_eq!(
+            canonicalize_atspi_rect(
+                (60, 47, 90, 24),
+                false,
+                Some((-900, -711)),
+                (3, 33),
+                output_transform((-1038, -801), 4, 3),
+            ),
+            (268, 226, 120, 33),
+        );
+    }
 
     #[test]
     fn numeric_role_fills_missing_optional_localized_role_name() {
@@ -2789,6 +2945,11 @@ mod coord_tests {
     fn physical_renderer_viewport_is_distinguishable_from_logical_window() {
         assert!(!rect_fits_window(0, 161, 1358, 799, 1026, 758));
         assert!(rect_fits_window(0, 121, 1019, 599, 1026, 758));
+        for origin in [(1038, 0), (2076, 801), (-1038, -801)] {
+            let (x, y, width, height) =
+                logical_rect_relative_to_origin((origin.0, origin.1 + 121, 1019, 599), origin);
+            assert!(rect_fits_window(x, y, width, height, 1026, 758));
+        }
     }
 
     #[test]
