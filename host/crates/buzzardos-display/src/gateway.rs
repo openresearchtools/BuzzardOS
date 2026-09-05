@@ -42,7 +42,7 @@ pub(crate) enum GatewayEvent {
     GuestConnected,
     GuestDisconnected,
     GuestFailed(String),
-    GuestFrame(GuestFrame),
+    GuestFrame(DmabufFrame),
     GuestCursor(CursorImage),
     GuestCursorFallback,
     GuestCursorHidden,
@@ -238,25 +238,6 @@ pub(crate) struct DmabufFrame {
     pub(crate) submitted_monotonic_us: u64,
     pub(crate) explicit_sync: bool,
     pub(crate) acquire_wait_us: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct ShmFrame {
-    pub(crate) id: u64,
-    pub(crate) geometry_generation: u64,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) stride: usize,
-    /// Premultiplied BGRA8 pixels, matching wl_shm ARGB8888 on
-    /// little-endian Linux and GDK_MEMORY_B8G8R8A8_PREMULTIPLIED.
-    pub(crate) pixels: Vec<u8>,
-    pub(crate) submitted_monotonic_us: u64,
-}
-
-#[derive(Debug)]
-pub(crate) enum GuestFrame {
-    Dmabuf(DmabufFrame),
-    Shm(ShmFrame),
 }
 
 #[derive(Debug)]

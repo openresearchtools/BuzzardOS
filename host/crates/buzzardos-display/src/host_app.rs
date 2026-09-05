@@ -34,8 +34,8 @@ use crate::clipboard::{self, ClipboardValue};
 use crate::frame_paintable::FramePaintable;
 use crate::gateway::{
     CursorImage, CursorStorage, DmabufFormat, DmabufFrame, EventSender, GatewayCommand,
-    GatewayCommandSender, GatewayConnection, GatewayEvent, GatewaySockets, GuestFrame,
-    GuestScalePreset, GuestScaleReply, GuestScaleRequest, HostCommand, OutputMode, ShmFrame,
+    GatewayCommandSender, GatewayConnection, GatewayEvent, GatewaySockets, GuestScalePreset,
+    GuestScaleReply, GuestScaleRequest, HostCommand, OutputMode,
 };
 use crate::host_media::{self, MediaWorker};
 use crate::launch::Launch;
@@ -221,7 +221,6 @@ struct PendingPresentation {
 }
 
 struct FrameMetadata {
-    transport: FrameTransport,
     geometry_generation: u64,
     width: u32,
     height: u32,
@@ -229,42 +228,6 @@ struct FrameMetadata {
     modifier: u64,
     planes: u32,
     explicit_sync: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrameTransport {
-    Dmabuf,
-    Shm,
-}
-
-impl FrameTransport {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Dmabuf => "dmabuf",
-            Self::Shm => "wl_shm",
-        }
-    }
-}
-
-struct ShmFrameBytes {
-    pixels: Vec<u8>,
-    id: u64,
-    commands: GatewayCommandSender,
-}
-
-impl AsRef<[u8]> for ShmFrameBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.pixels
-    }
-}
-
-impl Drop for ShmFrameBytes {
-    fn drop(&mut self) {
-        let _ = self.commands.send(GatewayCommand::ReleaseFrame {
-            id: self.id,
-            released_monotonic_us: monotonic_us(),
-        });
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1464,14 +1427,7 @@ impl NativeWindow {
         }
     }
 
-    fn install_frame(&self, frame: GuestFrame) -> Result<()> {
-        match frame {
-            GuestFrame::Dmabuf(frame) => self.install_dmabuf_frame(frame),
-            GuestFrame::Shm(frame) => self.install_shm_frame(frame),
-        }
-    }
-
-    fn install_dmabuf_frame(&self, frame: DmabufFrame) -> Result<()> {
+    fn install_frame(&self, frame: DmabufFrame) -> Result<()> {
         let DmabufFrame {
             id,
             geometry_generation,
@@ -1498,7 +1454,6 @@ impl NativeWindow {
         }
         let plane_count = planes.len() as u32;
         let metadata = FrameMetadata {
-            transport: FrameTransport::Dmabuf,
             geometry_generation,
             width,
             height,
@@ -1555,52 +1510,6 @@ impl NativeWindow {
             explicit_sync,
             acquire_wait_us,
         );
-        Ok(())
-    }
-
-    fn install_shm_frame(&self, frame: ShmFrame) -> Result<()> {
-        let ShmFrame {
-            id,
-            geometry_generation,
-            width,
-            height,
-            stride,
-            pixels,
-            submitted_monotonic_us,
-        } = frame;
-        if geometry_generation != self.geometry_generation.get() {
-            self.release_rejected_frame(id)?;
-            let mut stats = self.presentation.borrow_mut();
-            stats.dropped_frames = stats.dropped_frames.saturating_add(1);
-            drop(stats);
-            self.presentation_dirty.set(true);
-            return Ok(());
-        }
-        let bytes = glib::Bytes::from_owned(ShmFrameBytes {
-            pixels,
-            id,
-            commands: self.commands.clone(),
-        });
-        let texture = gdk::MemoryTexture::new(
-            i32::try_from(width).context("wl_shm texture width overflow")?,
-            i32::try_from(height).context("wl_shm texture height overflow")?,
-            gdk::MemoryFormat::B8g8r8a8Premultiplied,
-            &bytes,
-            stride,
-        );
-        let metadata = FrameMetadata {
-            transport: FrameTransport::Shm,
-            geometry_generation,
-            width,
-            height,
-            fourcc: 0,
-            modifier: 0,
-            planes: 0,
-            explicit_sync: false,
-        };
-        self.reset_offload_claim();
-        self.frame_paintable.set_texture(&texture);
-        self.finish_frame_install(id, submitted_monotonic_us, metadata, false, 0);
         Ok(())
     }
 
@@ -1954,12 +1863,8 @@ impl NativeWindow {
         sequence: u64,
     ) {
         let mut stats = self.presentation.borrow_mut();
-        let transport = frame.metadata.transport.label();
-        let modifier = if frame.metadata.transport == FrameTransport::Dmabuf {
-            format!("0x{:016x}", frame.metadata.modifier)
-        } else {
-            "not-applicable".to_owned()
-        };
+        let transport = "dmabuf";
+        let modifier = format!("0x{:016x}", frame.metadata.modifier);
         let same_presented_path = stats.presented
             && stats.transport == transport
             && frame.metadata.geometry_generation == self.geometry_generation.get()
@@ -1997,9 +1902,7 @@ impl NativeWindow {
         stats.presentation_feedback = true;
         stats.gtk_subsurface_offload = frame.offloaded;
         stats.last_pacing_source = "host-vblank".into();
-        stats.explicit_sync = if frame.metadata.transport == FrameTransport::Shm {
-            "not-applicable (wl_shm)".into()
-        } else if frame.metadata.explicit_sync {
+        stats.explicit_sync = if frame.metadata.explicit_sync {
             "linux-drm-syncobj-v1/gateway-wait/gtk-host-sync".into()
         } else {
             "implicit-dmabuf".into()
@@ -2024,9 +1927,7 @@ impl NativeWindow {
         stats.presented = true;
         stats.discarded = false;
         stats.vsync = refresh_interval_us > 0;
-        stats.zero_copy = frame.metadata.transport == FrameTransport::Dmabuf
-            && frame.offloaded
-            && exact_native_mapping;
+        stats.zero_copy = frame.offloaded && exact_native_mapping;
         stats.sequence = sequence;
         stats.refresh_ns = refresh_interval_us
             .max(0)

@@ -1,5 +1,14 @@
 # Buzzard OS host changelog
 
+## Unreleased
+
+- Restore the hardware-only primary display path: configure the guest session
+  for GLES2, accept DMA-BUF frames, and remove the primary-output shared-memory
+  CPU-copy path. Shared-memory cursor support is unchanged.
+- Keep native Podman namespace options unchanged. This source correction does
+  not resolve render-device permissions for the current subordinate-mapped
+  desktop user; hardware startup and installed-package acceptance remain open.
+
 ## 0.1.5
 
 - Keep the host completely out of guest credential management: create, pull,

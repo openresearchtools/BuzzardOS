@@ -4,14 +4,14 @@
 //!
 //! This is deliberately a server, not a byte proxy to the host compositor.
 //! The only client permitted here is Sway. Its final output buffer becomes a
-//! a typed [`GuestFrame`] for the GTK monitor; guest-created xdg objects never
+//! typed [`DmabufFrame`] for the GTK monitor; guest-created xdg objects never
 //! become host xdg objects.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::{FileExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +45,7 @@ use xkbcommon::xkb;
 use crate::drm_syncobj::{SyncobjDevice, SyncobjTimeline};
 use crate::gateway::{
     CursorImage, CursorStorage, DmabufFormat, DmabufFrame, DmabufPlane, EventSender,
-    GatewayCommand, GatewayEvent, GuestFrame, OutputMode, ShmFrame,
+    GatewayCommand, GatewayEvent, OutputMode,
 };
 use crate::keyboard::{
     CompiledKeymap, KeyboardMapFailure, KeyboardMapReply, KeyboardMapRequest, KeyboardMapResponse,
@@ -53,7 +53,6 @@ use crate::keyboard::{
 };
 
 const MAX_DMABUF_PLANES: usize = 4;
-const MAX_SHM_FRAME_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PENDING_KEY_EVENTS: usize = 256;
 #[cfg(test)]
 const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
@@ -1722,7 +1721,7 @@ fn frame_from_buffer(
     formats: &[DmabufFormat],
     explicit_sync: bool,
     acquire_wait_us: u64,
-) -> Result<GuestFrame> {
+) -> Result<DmabufFrame> {
     let data = buffer
         .data::<BufferData>()
         .context("nested compositor attached an unknown wl_buffer")?;
@@ -1758,7 +1757,7 @@ fn frame_from_buffer(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(GuestFrame::Dmabuf(DmabufFrame {
+            Ok(DmabufFrame {
                 id,
                 geometry_generation: mode.geometry_generation,
                 width: data.width,
@@ -1769,81 +1768,11 @@ fn frame_from_buffer(
                 submitted_monotonic_us: monotonic_us(),
                 explicit_sync,
                 acquire_wait_us,
-            }))
+            })
         }
-        BufferData::Shm(data) => {
-            let width = u32::try_from(data.width).context("wl_shm frame width is invalid")?;
-            let height = u32::try_from(data.height).context("wl_shm frame height is invalid")?;
-            anyhow::ensure!(
-                width == mode.physical_width && height == mode.physical_height,
-                "nested output buffer {}x{} does not match native physical mode {}x{}",
-                width,
-                height,
-                mode.physical_width,
-                mode.physical_height
-            );
-            anyhow::ensure!(
-                matches!(
-                    data.format,
-                    wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888
-                ),
-                "primary-output wl_shm format {:?} is unsupported",
-                data.format
-            );
-            let offset = u64::try_from(data.offset).context("wl_shm frame offset is invalid")?;
-            let stride = usize::try_from(data.stride).context("wl_shm frame stride is invalid")?;
-            let minimum_stride = usize::try_from(width)
-                .context("wl_shm frame width overflow")?
-                .checked_mul(4)
-                .context("wl_shm minimum stride overflow")?;
-            anyhow::ensure!(
-                stride >= minimum_stride,
-                "wl_shm frame stride {stride} is smaller than {minimum_stride}"
-            );
-            let length = stride
-                .checked_mul(usize::try_from(height).context("wl_shm frame height overflow")?)
-                .context("wl_shm frame byte length overflow")?;
-            anyhow::ensure!(
-                length <= MAX_SHM_FRAME_BYTES,
-                "wl_shm frame is larger than the {}-byte display limit",
-                MAX_SHM_FRAME_BYTES
-            );
-            let end = offset
-                .checked_add(u64::try_from(length).context("wl_shm frame length overflow")?)
-                .context("wl_shm frame range overflow")?;
-            let file = File::from(
-                data.fd
-                    .try_clone()
-                    .context("duplicating primary-output wl_shm pool")?,
-            );
-            let pool_length = file
-                .metadata()
-                .context("reading primary-output wl_shm pool metadata")?
-                .len();
-            anyhow::ensure!(
-                end <= pool_length,
-                "wl_shm frame range ends at {end}, beyond its {pool_length}-byte pool"
-            );
-            let mut pixels = vec![0_u8; length];
-            file.read_exact_at(&mut pixels, offset)
-                .context("copying primary-output wl_shm frame")?;
-            if data.format == wl_shm::Format::Xrgb8888 {
-                for row in pixels.chunks_exact_mut(stride) {
-                    for pixel in row[..minimum_stride].chunks_exact_mut(4) {
-                        pixel[3] = u8::MAX;
-                    }
-                }
-            }
-            Ok(GuestFrame::Shm(ShmFrame {
-                id,
-                geometry_generation: mode.geometry_generation,
-                width,
-                height,
-                stride,
-                pixels,
-                submitted_monotonic_us: monotonic_us(),
-            }))
-        }
+        BufferData::Shm(_) => bail!(
+            "nested compositor attached shared memory to its primary output; GPU DMA-BUF rendering is required"
+        ),
     }
 }
 
@@ -2911,16 +2840,18 @@ mod tests {
                         "a stale frame must not emit Failed or Frame"
                     );
                     assert!(state.leases.is_empty());
-                } else {
+                } else if dmabuf {
                     let GatewayEvent::GuestFrame(frame) = received.try_recv().unwrap() else {
                         panic!("the converged buffer must produce a frame");
                     };
-                    let generation = match frame {
-                        GuestFrame::Dmabuf(frame) => frame.geometry_generation,
-                        GuestFrame::Shm(frame) => frame.geometry_generation,
-                    };
-                    assert_eq!(generation, 42);
+                    assert_eq!(frame.geometry_generation, 42);
                     assert_eq!(state.leases.len(), 1);
+                } else {
+                    let GatewayEvent::GuestFailed(message) = received.try_recv().unwrap() else {
+                        panic!("a software-rendered primary output must be rejected");
+                    };
+                    assert!(message.contains("GPU DMA-BUF rendering is required"));
+                    assert!(state.leases.is_empty());
                 }
             }
         }

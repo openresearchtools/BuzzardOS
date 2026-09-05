@@ -163,7 +163,8 @@ fn prepare_runtime_files(
          BUZZARDOS_MACHINE_ID={}\n\
          BUZZARDOS_MACHINE_NAME={}\n\
          BUZZARDOS_WINDOW_TITLE=Buzzard OS — {}\n\
-         BUZZARDOS_WINDOW_APP_ID={}\n",
+         BUZZARDOS_WINDOW_APP_ID={}\n\
+         WLR_RENDERER=gles2\n",
         config.id, config.name, config.name, wb_core::host_identity().application_id
     );
     write_runtime_file(
@@ -345,4 +346,27 @@ fn drm_devices_share_backing_device(first: u64, second: u64) -> bool {
             .ok()
     };
     matches!((backing(first), backing(second)), (Some(first), Some(second)) if first == second)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn systemd_desktop_receives_hardware_renderer_in_its_environment_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = MachineConfig::new(
+            "hardware-desktop".into(),
+            "fixture".into(),
+            format!("sha256:{}", "0".repeat(64)),
+            wb_core::NetworkMode::User,
+            Vec::new(),
+        );
+        let runtime = PodmanRuntimePaths::under(temp.path(), config.id);
+        runtime.prepare().unwrap();
+        prepare_runtime_files(&config, &runtime, true).unwrap();
+        let environment = fs::read_to_string(runtime.host_exchange.join("driver.env")).unwrap();
+        assert!(environment.lines().any(|line| line == "WLR_RENDERER=gles2"));
+        assert!(!environment.contains("pixman"));
+    }
 }

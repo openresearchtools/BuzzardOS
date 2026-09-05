@@ -70,6 +70,19 @@ guest UI-density setting. The native host window continues to determine the
 guest monitor's physical pixel dimensions, and the display path must not
 bitmap-stretch the guest output.
 
+The primary guest output uses hardware GLES2 and DMA-BUF transport; there is
+no Pixman or CPU-copied shared-memory primary-frame fallback. The renderer
+selection reaches the systemd-managed desktop through its runtime environment
+file, not only Podman's initial PID 1 environment. Ordinary shared-memory
+cursor surfaces remain supported independently of primary-frame transport.
+
+Hardware acceptance remains open (2026-09-05): the current rootless Podman
+machine exposes no DRM node. An isolated native `--device` probe also showed
+that its default-mapped desktop UID 1000 cannot open the host render node,
+although guest root can. `keep-groups` did not resolve this host's user-ACL
+access. No hidden namespace selection or host device-permission change is
+permitted as a substitute for resolving the machine's native configuration.
+
 The Display page presents one row labelled `Scaling`; it does not repeat a
 second `Scaling` section heading above that row.
 

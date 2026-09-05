@@ -143,13 +143,11 @@ impl PodmanDefinition {
             arguments.push(OsString::from("--env"));
             arguments.push(OsString::from(variable));
         }
-        // Podman's native rootless default maps guest user 1000 to a
-        // subordinate host ID. Do not expose an inaccessible DRM node: the
-        // nested compositor then uses its complete shared-memory path. Users
-        // select DRM, CDI, CUDA, and a matching renderer solely through the
-        // normal GPU field or unrestricted stock Podman arguments below.
+        // Preserve the original hardware renderer. Device access must be
+        // configured through native rootless Podman, never substituted with
+        // a software-rendered desktop.
         arguments.push(OsString::from("--env"));
-        arguments.push(OsString::from("WLR_RENDERER=pixman"));
+        arguments.push(OsString::from("WLR_RENDERER=gles2"));
         if let Some(signal) = config.oci.stop_signal.as_deref() {
             arguments.push(OsString::from("--stop-signal"));
             arguments.push(OsString::from(signal));
@@ -983,6 +981,18 @@ mod tests {
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn desktop_renderer_is_gles2_and_never_forced_to_software() {
+        let (_temp, definition) = definition(&config());
+        let arguments = strings(&definition);
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--env", "WLR_RENDERER=gles2"])
+        );
+        assert!(!arguments.iter().any(|argument| argument.contains("pixman")));
     }
 
     #[test]
