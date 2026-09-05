@@ -101,6 +101,22 @@ Podman version may be supplied in the same field. Definition-changing settings
 take effect at the next explicit start or restart; unchanged Start, Stop, and
 Restart target the same persistent Podman container.
 
+For hardware rendering, select a device and a native UID mapping that can open
+it. One tested Intel configuration on an external LUKS/ext4 `nosuid` drive is:
+
+```text
+--userns=keep-id:uid=1000,gid=1000 --device=/dev/dri/renderD128
+```
+
+This is an explicit configuration example, not a hidden default or a guarantee
+for every GPU. Buzzard's private stock crun mounts the chosen disk directly at
+`/`, using reconstructible runtime metadata as the native rootfs anchor. No
+machine data is copied into that anchor, no overlay is added to the running
+disk, and no mount helper stays resident. Native Podman `exec --user` lookups
+use the anchor's metadata; use numeric guest IDs (for example `1000:1000`) when
+entering the canonical guest account through Podman. Guest-local account
+lookups continue to use the real guest filesystem.
+
 The same operations are fully scriptable. `--machine-dir` is the exact machine
 directory, not a global parent:
 

@@ -279,7 +279,7 @@ fn clone_machine(
     let source_dir = registry.resolve(source)?;
     let source_config = MachineConfig::load(&source_dir)?;
     let _lock = lock_stopped_machine(podman, &source_dir, "clone")?;
-    let definition = PodmanDefinition::for_machine(
+    let definition = podman.definition_for_machine(
         &source_config,
         &source_dir,
         &PodmanRuntimePaths::discover(source_config.id)?,
@@ -376,7 +376,7 @@ fn materialize_machine(
 
         let runtime = PodmanRuntimePaths::discover(config.id)?;
         runtime.prepare()?;
-        let definition = PodmanDefinition::for_machine(&config, &final_dir, &runtime)?;
+        let definition = podman.definition_for_machine(&config, &final_dir, &runtime)?;
         let inspection = podman.create(&definition)?;
         save_inspection(&final_dir, &inspection, Some(&definition.digest), None)?;
         registry.register(&final_dir)?;
@@ -394,7 +394,7 @@ fn materialize_machine(
         let _ = cleanup_tree(podman, &stage);
         if final_dir.exists() {
             if let Ok(runtime) = PodmanRuntimePaths::discover(config.id)
-                && let Ok(definition) = PodmanDefinition::for_machine(&config, &final_dir, &runtime)
+                && let Ok(definition) = podman.definition_for_machine(&config, &final_dir, &runtime)
             {
                 let _ = podman.remove_definition(&definition.container_name);
             }
@@ -413,7 +413,7 @@ fn start_machine(
     let _lock = lock_machine(machine_dir)?;
     let config = MachineConfig::load(machine_dir)?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     if let Some(inspection) = podman.inspect(&definition.container_name)?
         && inspection.state == PodmanContainerState::Running
     {
@@ -464,6 +464,7 @@ fn start_machine(
         println!("Reattached Buzzard OS desktop '{}'", config.name);
         return Ok(());
     }
+    runtime.prepare()?;
     ensure_definition(podman, machine_dir, &definition)?;
 
     let prepared = display::prepare_and_launch(resources, machine_dir, &config, &runtime)?;
@@ -507,7 +508,7 @@ fn stop_machine(podman: &Podman, machine_dir: &Path, close_window: bool) -> Resu
     let _lock = lock_machine(machine_dir)?;
     let config = MachineConfig::load(machine_dir)?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     let Some(inspection) = podman.inspect(&definition.container_name)? else {
         save_stopped(
             machine_dir,
@@ -549,7 +550,7 @@ fn restart_machine(resources: &ResourceLocator, podman: &Podman, machine_dir: &P
     let _lock = lock_machine(machine_dir)?;
     let config = MachineConfig::load(machine_dir)?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     let current = podman.inspect(&definition.container_name)?;
     let definition_changed = current
         .as_ref()
@@ -581,6 +582,7 @@ fn restart_machine(resources: &ResourceLocator, podman: &Podman, machine_dir: &P
             podman.stop(&definition.container_name)?;
         }
         podman.remove_definition(&definition.container_name)?;
+        runtime.prepare()?;
         podman.create(&definition)?;
     }
 
@@ -720,7 +722,7 @@ fn export_machine(podman: &Podman, machine_dir: &Path, output: &Path) -> Result<
     let config = MachineConfig::load(machine_dir)?;
     let _lock = lock_stopped_machine(podman, machine_dir, "export")?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     let inspection = podman
         .inspect(&definition.container_name)?
         .context("Podman container definition is missing")?;
@@ -843,7 +845,7 @@ fn delete_machine(
     let config = MachineConfig::load(machine_dir)?;
     let _lock = lock_stopped_machine(podman, machine_dir, "delete")?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     if let Some(inspection) = podman.inspect(&definition.container_name)? {
         require_stopped(&inspection, "delete")?;
         podman.remove_definition(&definition.container_name)?;
@@ -858,7 +860,7 @@ fn delete_machine(
 fn print_status(podman: &Podman, machine_dir: &Path) -> Result<()> {
     let config = MachineConfig::load(machine_dir)?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     let inspection = podman.inspect(&definition.container_name)?;
     if let Some(inspection) = &inspection {
         save_inspection(machine_dir, inspection, Some(&definition.digest), None)?;
@@ -891,7 +893,7 @@ fn list_machines(podman: &Podman, registry: &MachineRegistry) -> Result<()> {
     for entry in registry.entries() {
         let config = MachineConfig::load(&entry.machine_dir)?;
         let runtime = PodmanRuntimePaths::discover(config.id)?;
-        let definition = PodmanDefinition::for_machine(&config, &entry.machine_dir, &runtime)?;
+        let definition = podman.definition_for_machine(&config, &entry.machine_dir, &runtime)?;
         let inspection = podman.inspect(&definition.container_name)?;
         if let Some(inspection) = &inspection {
             save_inspection(
@@ -1166,7 +1168,7 @@ fn lock_stopped_machine(podman: &Podman, machine_dir: &Path, operation: &str) ->
     let lock = lock_machine(machine_dir)?;
     let config = MachineConfig::load(machine_dir)?;
     let runtime = PodmanRuntimePaths::discover(config.id)?;
-    let definition = PodmanDefinition::for_machine(&config, machine_dir, &runtime)?;
+    let definition = podman.definition_for_machine(&config, machine_dir, &runtime)?;
     if let Some(inspection) = podman.inspect(&definition.container_name)? {
         require_stopped(&inspection, operation)?;
     }

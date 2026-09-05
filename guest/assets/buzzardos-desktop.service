@@ -5,6 +5,7 @@ Wants=dbus.service
 
 [Service]
 Type=simple
+TasksMax=infinity
 User=user
 Group=user
 WorkingDirectory=/home/user

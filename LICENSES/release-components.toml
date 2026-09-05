@@ -1,5 +1,18 @@
 schema = 2
-audited_at = "2026-08-30"
+audited_at = "2026-09-05"
+
+[[component]]
+id = "private-crun"
+surface = ["source", "deb"]
+name = "Unmodified package-private crun and recursive source dependencies"
+version = "1.29.1"
+source = "https://github.com/containers/crun"
+source_commit = "f0d911de5587342cfeb16473bf32ecdfeaf25957"
+source_tag = "1.29.1"
+license = "GPL-2.0-or-later AND LGPL-2.1-or-later AND GPL-3.0-or-later WITH parser-skeleton-exception AND Apache-2.0 AND (CC0-1.0 OR Apache-2.0)"
+evidence = ["third-party/crun/UPSTREAM.toml", "third-party/crun/README.md", "third-party/crun/source/COPYING", "third-party/crun/source/COPYING.libcrun", "third-party/crun/source/libocispec/COPYING", "third-party/crun/source/libocispec/image-spec/LICENSE", "third-party/crun/source/libocispec/runtime-spec/LICENSE", "third-party/crun/source/src/libcrun/blake3/LICENSE", "packaging/build-crun.sh"]
+bundle_notice = ["deb:/usr/share/doc/<host-package>/crun/", "deb:/usr/share/doc/<host-package>/sources/crun-source.tar.gz"]
+status = "pinned-unmodified-source-with-corresponding-source-and-notices-bundled"
 
 [[component]]
 id = "buzzardos-project-notice"

@@ -45,7 +45,8 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
         self.assertIn("docker.io/library/ubuntu:24.04", matrix)
         self.assertIn("docker.io/library/debian:13", matrix)
         self.assertIn("docker.io/library/ubuntu:26.04", matrix)
-        self.assertIn("buzzardos --version", matrix)
+        self.assertIn('"$identity" --version', matrix)
+        self.assertIn('"$private_crun" --version', matrix)
         self.assertIn("podman --version", matrix)
         self.assertIn("test-host-package-matrix.sh", self.workflow)
 

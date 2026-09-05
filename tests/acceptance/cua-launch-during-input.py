@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Guest-only regression: one CUA types while the other launches an app.
+"""Guest-only regression: independent input, then cross-seat app launches.
 
 Run as the graphical guest user with its Wayland/Sway environment. Requires
 Mousepad, Foot and the installed CUA package. No host input, shell restart,
@@ -65,10 +65,12 @@ def run(output: Path) -> bool:
     sampler.start()
     try:
         targets = {}
+        expected_files = {1: "", 2: ""}
         for index in (1, 2):
             file = output / f"editor-{index}.txt"
             file.touch()
             launched = call(index, "launch_app", {"name": "env", "additional_arguments": [
+                "GDK_BACKEND=wayland",
                 f"XDG_CONFIG_HOME={output / f'config-{index}'}",
                 f"XDG_CACHE_HOME={output / f'cache-{index}'}",
                 "mousepad", "--disable-server", str(file),
@@ -77,6 +79,62 @@ def run(output: Path) -> bool:
                 raise RuntimeError("test editor did not launch; see report.json")
             data = json.loads(launched["stdout"])
             targets[index] = {"pid": data["pid"], "window_id": data["windows"][0]["window_id"]}
+
+        report["initial_tree"] = json.loads(subprocess.check_output(
+            ["swaymsg", "-r", "-t", "get_tree"], text=True, timeout=5))
+
+        # First establish two independent native input streams. Different
+        # strings and pointer coordinates expose cross-routing that identical
+        # actions on both seats would hide. Window launches are a separate
+        # phase: their focus-policy failures must not mask this baseline.
+        started = time.monotonic()
+        human_focus = next(seat["focus"] for seat in seats() if seat["name"] == "seat0")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = []
+            for index, marker in ((1, "ALPHA bookkeeper 1122"), (2, "bravo COFFEE 9988")):
+                expected_files[index] = "".join(f"{marker}: line {line}\n" for line in range(12))
+                pending.append(pool.submit(call, index, "type_text", {
+                    **targets[index], "text": expected_files[index]}))
+            typed = [task.result() for task in pending]
+        for index in (1, 2):
+            call(index, "press_key", {**targets[index], "key": "s", "modifiers": ["CTRL"]})
+        report["concurrent_input"] = {
+            "exact": all((output / f"editor-{index}.txt").read_text() == expected_files[index]
+                         for index in (1, 2)),
+            "codes": [record["code"] for record in typed],
+            "overlap_seconds": max(0, min(record["finished"] for record in typed)
+                                   - max(record["started"] for record in typed)),
+            "human_focus_unchanged": all(
+                "error" not in sample and next(seat["focus"] for seat in sample["seats"]
+                                               if seat["name"] == "seat0") == human_focus
+                for sample in report["samples"] if sample["time"] >= started),
+        }
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            moves = [pool.submit(call, index, "move_cursor", {"x": x, "y": y, "scope": "desktop"})
+                     for index, x, y in ((1, 137, 211), (2, 491, 337))]
+            moved = [move.result() for move in moves]
+        positions = [call(index, "get_cursor_position", {}) for index in (1, 2)]
+        moved.append(call(1, "move_cursor", {"x": 173, "y": 229, "scope": "desktop"}))
+        unchanged = call(2, "get_cursor_position", {})
+        expected_positions = [(137, 211), (491, 337)]
+        positions_match = all(
+            record["code"] == 0 and
+            (json.loads(record["stdout"]).get("x"), json.loads(record["stdout"]).get("y")) == expected
+            for record, expected in zip(positions, expected_positions))
+        report["pointer_independence"] = {
+            "positions": positions,
+            "moves_succeeded": not any(record["code"] for record in moved),
+            "positions_match": positions_match,
+            "other_seat_unchanged": (positions[1]["code"] == unchanged["code"] == 0
+                                     and positions[1]["stdout"] == unchanged["stdout"]),
+        }
+        for index in (1, 2):
+            capture = subprocess.run([
+                f"cua{index}", "screenshot", "{}", "--screenshot-out-file",
+                str(output / f"cua{index}.png")], capture_output=True, text=True, timeout=30)
+            report[f"screenshot_{index}"] = {
+                "code": capture.returncode, "stdout": capture.stdout, "stderr": capture.stderr}
+        persist()
 
         for number, typing in enumerate((1, 2)):
             launching = 3 - typing
@@ -98,15 +156,17 @@ def run(output: Path) -> bool:
                 typed, launched = typed.result(), launched.result()
             saved = call(typing, "press_key", {**target, "key": "s", "modifiers": ["CTRL"]})
             actual = (output / f"editor-{typing}.txt").read_text()
+            expected_files[typing] += text
             report["cases"].append({
                 "typing_seat": typing, "launching_seat": launching,
-                "expected": text, "actual": actual, "exact": text == actual,
+                "expected": expected_files[typing], "actual": actual,
+                "exact": expected_files[typing] == actual,
                 "codes": [typed["code"], launched["code"], saved["code"]],
                 "overlap_seconds": max(0, min(typed["finished"], launched["finished"])
                                        - max(typed["started"], launched["started"])),
             })
             persist()
-            if text != actual:
+            if expected_files[typing] != actual:
                 break
     except Exception as error:
         report["error"] = str(error)
@@ -121,6 +181,14 @@ def run(output: Path) -> bool:
         )
         report["pass"] = (
             "error" not in report and report["human_unchanged"]
+            and report["concurrent_input"]["exact"]
+            and not any(report["concurrent_input"]["codes"])
+            and report["concurrent_input"]["overlap_seconds"] > 0
+            and report["concurrent_input"]["human_focus_unchanged"]
+            and report["pointer_independence"]["other_seat_unchanged"]
+            and report["pointer_independence"]["moves_succeeded"]
+            and report["pointer_independence"]["positions_match"]
+            and all(report[f"screenshot_{index}"]["code"] == 0 for index in (1, 2))
             and len(report["cases"]) == 2
             and all(case["exact"] and not any(case["codes"]) and case["overlap_seconds"] > 0
                     for case in report["cases"])

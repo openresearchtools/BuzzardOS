@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use uuid::Uuid;
 
+mod rootfs;
+
 const MACHINE_LABEL: &str = "org.openresearchtools.buzzardos.machine-id";
 const MANAGED_LABEL: &str = "org.openresearchtools.buzzardos.managed";
 const GUEST_HOST_RUNTIME: &str = "/run/buzzardos-host";
@@ -31,6 +33,7 @@ pub struct PodmanRuntimePaths {
     pub host_exchange: PathBuf,
     pub host_status: PathBuf,
     pub display_state: PathBuf,
+    pub rootfs_anchor: PathBuf,
 }
 
 impl PodmanRuntimePaths {
@@ -53,6 +56,7 @@ impl PodmanRuntimePaths {
             host_exchange: root.join("host"),
             host_status: root.join("host-status"),
             display_state: root.join("display-state"),
+            rootfs_anchor: root.join("rootfs-anchor"),
             root,
         }
     }
@@ -63,6 +67,7 @@ impl PodmanRuntimePaths {
             &self.host_exchange,
             &self.host_status,
             &self.display_state,
+            &self.rootfs_anchor,
         ] {
             fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))
@@ -88,7 +93,7 @@ pub struct PodmanDefinition {
 }
 
 impl PodmanDefinition {
-    pub fn for_machine(
+    fn for_machine(
         config: &MachineConfig,
         machine_dir: &Path,
         runtime: &PodmanRuntimePaths,
@@ -118,6 +123,10 @@ impl PodmanDefinition {
             OsString::from("--hostname"),
             OsString::from(&config.name),
             OsString::from("--systemd=always"),
+            // A complete desktop and development session must not inherit
+            // Podman's small single-container task budget. Keep this before
+            // custom arguments so native user-supplied limits still win.
+            OsString::from("--pids-limit=-1"),
             // A Buzzard machine always boots systemd as PID 1. Native modes
             // such as keep-id otherwise select the caller's UID as the
             // process user. Keep this before the unrestricted arguments so a
@@ -205,10 +214,10 @@ impl PodmanDefinition {
                 .map(OsString::from),
         );
 
-        // Podman opens the external rootfs directly. No user namespace or
-        // idmapped-mount mode is selected or implied by Buzzard.
-        arguments.push(OsString::from("--rootfs"));
-        arguments.push(rootfs.into_os_string());
+        // Stock crun acquires this bind source before entering the selected
+        // user namespace. The empty anchor contains no machine disk, overlay
+        // or copied files; the exact external rootfs is mounted directly at /.
+        rootfs::append_rootfs(&mut arguments, &rootfs, &runtime.rootfs_anchor, false);
         // The fixed guest init creates only the private runtime directories
         // required by the desktop and then execs systemd as PID 1. Podman
         // still owns all container, namespace, mount, device, and lifecycle
@@ -359,13 +368,40 @@ pub struct PodmanImageInspection {
 #[derive(Debug, Clone)]
 pub struct Podman {
     executable: PathBuf,
+    oci_runtime: PathBuf,
 }
 
 impl Podman {
     pub fn discover(resources: &ResourceLocator) -> Result<Self> {
         Ok(Self {
             executable: resources.helper_or_path("podman")?,
+            oci_runtime: resources.private_helper("crun")?,
         })
+    }
+
+    pub fn definition_for_machine(
+        &self,
+        config: &MachineConfig,
+        machine_dir: &Path,
+        runtime: &PodmanRuntimePaths,
+    ) -> Result<PodmanDefinition> {
+        let mut definition = PodmanDefinition::for_machine(config, machine_dir, runtime)?;
+        // Runtime selection is part of the persistent definition, including a
+        // development resource path. Changing it reconciles only this stopped
+        // machine; a package upgrade at the same stable path does not recreate it.
+        let mut arguments = vec![
+            OsString::from("--runtime"),
+            self.oci_runtime.clone().into_os_string(),
+        ];
+        arguments.extend_from_slice(&definition.arguments);
+        definition.digest = digest_arguments(&arguments);
+        Ok(definition)
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        command.arg("--runtime").arg(&self.oci_runtime);
+        command
     }
 
     pub fn create(&self, definition: &PodmanDefinition) -> Result<PodmanInspection> {
@@ -488,11 +524,14 @@ impl Podman {
                 .into_iter()
                 .map(OsString::from),
         );
-        arguments.push(OsString::from("--rootfs"));
-        arguments.push(rootfs.as_os_str().to_owned());
-        arguments.extend_from_slice(command);
-        self.run_checked(&arguments, "running a command in an external rootfs")?;
-        Ok(())
+        self.with_rootfs_anchor(|anchor| {
+            arguments.push(OsString::from("--user=0"));
+            arguments.push(OsString::from("--log-driver=none"));
+            rootfs::append_rootfs(&mut arguments, rootfs, anchor, false);
+            arguments.extend_from_slice(command);
+            self.run_checked(&arguments, "running a command in an external rootfs")?;
+            Ok(())
+        })
     }
 
     pub fn version(&self) -> Result<String> {
@@ -526,9 +565,8 @@ impl Podman {
     /// a container created with `--rootfs`, rather than that external rootfs.
     /// Run the rootfs's own GNU tar in a disposable stock-Podman container and
     /// expose the unmounted source tree at a private read-only bind instead.
-    /// This retains guest numeric ownership for default, keep-id, host, auto,
-    /// nomap, and explicit native mapping arguments without Buzzard translating
-    /// IDs. Runtime-only directory contents are intentionally omitted.
+    /// Podman selects the namespace from the machine's native arguments;
+    /// Buzzard does not translate IDs. Runtime-only contents are omitted.
     pub fn archive_external_rootfs(
         &self,
         rootfs: &Path,
@@ -544,58 +582,67 @@ impl Podman {
         );
         arguments.extend([
             OsString::from("--network=none"),
+            OsString::from("--no-hosts"),
+            // stdout is the binary archive, not container diagnostic output.
+            // Do not duplicate machine contents into the host's log driver.
+            OsString::from("--log-driver=none"),
             OsString::from("--read-only"),
+            OsString::from("--tmpfs=/run:rw,mode=755"),
             OsString::from("--user=0"),
             OsString::from("--mount"),
             OsString::from(format!(
                 "type=bind,src={},dst={source},ro=true",
                 quote_mount_field(rootfs.as_os_str())
             )),
-            OsString::from("--rootfs"),
-            rootfs.as_os_str().to_owned(),
-            OsString::from("/usr/bin/tar"),
-            OsString::from("--numeric-owner"),
-            OsString::from("--xattrs"),
-            OsString::from("--xattrs-include=*"),
-            OsString::from("--acls"),
-            OsString::from("--sparse"),
-            OsString::from("--exclude=./dev/*"),
-            OsString::from("--exclude=./proc/*"),
-            OsString::from("--exclude=./run/*"),
-            OsString::from("--exclude=./shared/*"),
-            OsString::from("--exclude=./sys/*"),
-            OsString::from("--exclude=./tmp/*"),
-            OsString::from("-cpf"),
-            OsString::from("-"),
-            OsString::from("-C"),
-            OsString::from(source),
-            OsString::from("."),
         ]);
+        self.with_rootfs_anchor(|anchor| {
+            rootfs::append_rootfs(&mut arguments, rootfs, anchor, true);
+            arguments.extend([
+                OsString::from("/usr/bin/tar"),
+                OsString::from("--numeric-owner"),
+                OsString::from("--xattrs"),
+                OsString::from("--xattrs-include=*"),
+                OsString::from("--acls"),
+                OsString::from("--sparse"),
+                OsString::from("--exclude=./dev/*"),
+                OsString::from("--exclude=./proc/*"),
+                OsString::from("--exclude=./run/*"),
+                OsString::from("--exclude=./shared/*"),
+                OsString::from("--exclude=./sys/*"),
+                OsString::from("--exclude=./tmp/*"),
+                OsString::from("-cpf"),
+                OsString::from("-"),
+                OsString::from("-C"),
+                OsString::from(source),
+                OsString::from("."),
+            ]);
 
-        let archive = File::options()
-            .write(true)
-            .truncate(true)
-            .open(output)
-            .with_context(|| format!("opening rootfs archive {}", output.display()))?;
-        let result = Command::new(&self.executable)
-            .args(&arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(archive))
-            .output()
-            .with_context(|| {
-                format!(
-                    "running {} to archive the external rootfs",
-                    self.executable.display()
-                )
-            })?;
-        if !result.status.success() {
-            return command_error(
-                "archiving the external rootfs with Podman",
-                &self.executable,
-                &result,
-            );
-        }
-        Ok(())
+            let archive = File::options()
+                .write(true)
+                .truncate(true)
+                .open(output)
+                .with_context(|| format!("opening rootfs archive {}", output.display()))?;
+            let result = self
+                .command()
+                .args(&arguments)
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(archive))
+                .output()
+                .with_context(|| {
+                    format!(
+                        "running {} to archive the external rootfs",
+                        self.executable.display()
+                    )
+                })?;
+            if !result.status.success() {
+                return command_error(
+                    "archiving the external rootfs with Podman",
+                    &self.executable,
+                    &result,
+                );
+            }
+            Ok(())
+        })
     }
 
     /// Extract a Podman-exported rootfs using the selected image's own tar
@@ -621,41 +668,53 @@ impl Podman {
         );
         arguments.extend([
             OsString::from("--user=0"),
+            OsString::from("--network=none"),
+            OsString::from("--no-hosts"),
+            OsString::from("--log-driver=none"),
+            OsString::from("--read-only"),
+            OsString::from("--tmpfs=/run:rw,mode=755"),
             OsString::from("--mount"),
             OsString::from(format!(
                 "type=bind,src={},dst=/run/buzzardos-materialize,rw=true",
                 quote_mount_field(destination.as_os_str())
             )),
-            OsString::from(image),
-            OsString::from("/bin/sh"),
-            OsString::from("-ec"),
-            OsString::from(
-                "chown 0:0 /run/buzzardos-materialize; \
+        ]);
+        self.with_image_root(image, |source| {
+            self.with_rootfs_anchor(|anchor| {
+                rootfs::append_rootfs(&mut arguments, source, anchor, true);
+                arguments.extend([
+                    OsString::from("/bin/sh"),
+                    OsString::from("-ec"),
+                    OsString::from(
+                        "chown 0:0 /run/buzzardos-materialize; \
                  chmod 0755 /run/buzzardos-materialize; \
                  exec /usr/bin/tar --numeric-owner --xattrs --acls -xpf - \
                  -C /run/buzzardos-materialize",
-            ),
-        ]);
-        let input = File::open(archive)
-            .with_context(|| format!("opening exported rootfs {}", archive.display()))?;
-        let output = Command::new(&self.executable)
-            .args(&arguments)
-            .stdin(input)
-            .output()
-            .with_context(|| {
-                format!(
-                    "running {} to materialize the external rootfs",
-                    self.executable.display()
-                )
-            })?;
-        if !output.status.success() {
-            return command_error(
-                "materializing the external rootfs with Podman",
-                &self.executable,
-                &output,
-            );
-        }
-        Ok(())
+                    ),
+                ]);
+                let input = File::open(archive)
+                    .with_context(|| format!("opening exported rootfs {}", archive.display()))?;
+                let output = self
+                    .command()
+                    .args(&arguments)
+                    .stdin(input)
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "running {} to materialize the external rootfs",
+                            self.executable.display()
+                        )
+                    })?;
+                if !output.status.success() {
+                    return command_error(
+                        "materializing the external rootfs with Podman",
+                        &self.executable,
+                        &output,
+                    );
+                }
+                Ok(())
+            })
+        })
     }
 
     /// Import a flat rootfs archive as an image using only stock Podman
@@ -788,7 +847,8 @@ impl Podman {
     }
 
     pub fn inspect(&self, container: &str) -> Result<Option<PodmanInspection>> {
-        let output = Command::new(&self.executable)
+        let output = self
+            .command()
             .args(["container", "inspect", container])
             .output()
             .with_context(|| format!("running {} container inspect", self.executable.display()))?;
@@ -837,7 +897,8 @@ impl Podman {
     }
 
     fn run_checked(&self, arguments: &[OsString], action: &str) -> Result<Output> {
-        let output = Command::new(&self.executable)
+        let output = self
+            .command()
             .args(arguments)
             .output()
             .with_context(|| format!("running {} for {action}", self.executable.display()))?;
@@ -848,7 +909,8 @@ impl Podman {
     }
 
     fn run_streamed(&self, arguments: &[OsString], action: &str) -> Result<()> {
-        let status = Command::new(&self.executable)
+        let status = self
+            .command()
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
@@ -984,6 +1046,60 @@ mod tests {
     }
 
     #[test]
+    fn private_runtime_is_selected_without_environment_or_global_configuration() {
+        let podman = Podman {
+            executable: PathBuf::from("/usr/bin/podman"),
+            oci_runtime: PathBuf::from("/usr/libexec/buzzardos-pod/crun"),
+        };
+        let mut command = podman.command();
+        command.args([
+            "create",
+            "--runtime=/opt/user/runtime",
+            "--rootfs",
+            "/machine/rootfs",
+        ]);
+        assert_eq!(command.get_program(), "/usr/bin/podman");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--runtime",
+                "/usr/libexec/buzzardos-pod/crun",
+                "create",
+                "--runtime=/opt/user/runtime",
+                "--rootfs",
+                "/machine/rootfs",
+            ]
+        );
+        assert_eq!(command.get_envs().count(), 0);
+    }
+
+    #[test]
+    fn private_runtime_path_participates_in_persistent_definition_identity() {
+        let config = config();
+        let temp = tempfile::tempdir().unwrap();
+        let machine = temp.path().join("machine");
+        fs::create_dir_all(machine.join("rootfs")).unwrap();
+        let runtime = PodmanRuntimePaths::under(temp.path(), config.id);
+        let mut podman = Podman {
+            executable: PathBuf::from("/usr/bin/podman"),
+            oci_runtime: PathBuf::from("/usr/libexec/buzzardos-pod/crun"),
+        };
+        let one = podman
+            .definition_for_machine(&config, &machine, &runtime)
+            .unwrap();
+        let same = podman
+            .definition_for_machine(&config, &machine, &runtime)
+            .unwrap();
+        assert_eq!(one.digest, same.digest);
+        podman.oci_runtime = PathBuf::from("/usr/libexec/buzzardos/crun");
+        let changed = podman
+            .definition_for_machine(&config, &machine, &runtime)
+            .unwrap();
+        assert_ne!(one.digest, changed.digest);
+        assert_eq!(one.arguments, changed.arguments);
+    }
+
+    #[test]
     fn desktop_renderer_is_gles2_and_never_forced_to_software() {
         let (_temp, definition) = definition(&config());
         let arguments = strings(&definition);
@@ -993,6 +1109,39 @@ mod tests {
                 .any(|pair| pair == ["--env", "WLR_RENDERER=gles2"])
         );
         assert!(!arguments.iter().any(|argument| argument.contains("pixman")));
+    }
+
+    #[test]
+    fn desktop_tasks_default_to_unlimited_and_allow_native_user_overrides() {
+        let mut config = config();
+        let (_temp, default_definition) = definition(&config);
+        let default_arguments = strings(&default_definition);
+        assert_eq!(
+            default_arguments
+                .iter()
+                .filter(|argument| argument.starts_with("--pids-limit"))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["--pids-limit=-1"]
+        );
+
+        for custom in ["--pids-limit=8192", "--pids-limit 8192"] {
+            config.custom_podman_arguments = custom.into();
+            let (_temp, custom_definition) = definition(&config);
+            let arguments = strings(&custom_definition);
+            let default_index = arguments
+                .iter()
+                .position(|argument| argument == "--pids-limit=-1")
+                .unwrap();
+            let custom_index = arguments
+                .iter()
+                .rposition(|argument| argument.starts_with("--pids-limit"))
+                .unwrap();
+            assert!(custom_index > default_index);
+            let parsed = MachineConfig::parse_custom_podman_arguments(custom).unwrap();
+            assert_eq!(arguments[custom_index..custom_index + parsed.len()], parsed);
+            assert_ne!(default_definition.digest, custom_definition.digest);
+        }
     }
 
     #[test]
@@ -1019,7 +1168,12 @@ mod tests {
         assert!(
             arguments
                 .iter()
-                .any(|argument| argument.ends_with("/rootfs"))
+                .any(|argument| argument.ends_with("/machine/rootfs,dst=/"))
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| { pair[0] == "--rootfs" && pair[1].ends_with("/rootfs-anchor") })
         );
         assert!(
             !arguments

@@ -26,8 +26,8 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use uuid::Uuid;
 use wb_core::{
-    MachineConfig, MachineState, Podman, PodmanDefinition, PodmanRuntimePaths,
-    PresentationDiagnostics, ResourceLocator, RuntimeState, WindowDiagnostics,
+    MachineConfig, MachineState, Podman, PodmanRuntimePaths, PresentationDiagnostics,
+    ResourceLocator, RuntimeState, WindowDiagnostics,
 };
 
 use crate::clipboard::{self, ClipboardValue};
@@ -2045,7 +2045,7 @@ impl NativeWindow {
             let podman = Podman::discover(&resources)?;
             let runtime = PodmanRuntimePaths::discover(config.id)?;
             let definition =
-                PodmanDefinition::for_machine(&config, &self.launch.machine_dir, &runtime)?;
+                podman.definition_for_machine(&config, &self.launch.machine_dir, &runtime)?;
             Ok((podman, definition.container_name))
         })();
         let (podman, container) = match setup {

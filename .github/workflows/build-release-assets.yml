@@ -39,6 +39,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
+            autoconf automake libtool libcap-dev libjson-c-dev libseccomp-dev libsystemd-dev \
             binutils build-essential buildah curl dpkg-dev libdrm-dev libglib2.0-dev libgtk-4-dev \
             libpulse-dev libx11-dev libxfixes-dev libxi-dev libxkbcommon-dev \
             libxrandr-dev libxtst-dev pkg-config python3

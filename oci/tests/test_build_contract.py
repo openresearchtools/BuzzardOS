@@ -11,6 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class OciBuildContractTests(unittest.TestCase):
+    def test_complete_desktop_has_no_additional_service_task_ceiling(self) -> None:
+        from configparser import ConfigParser
+
+        unit = ConfigParser(interpolation=None, strict=False)
+        unit.read(ROOT / "guest/assets/buzzardos-desktop.service")
+        self.assertEqual(unit["Service"]["TasksMax"], "infinity")
+
     def containerfiles(self) -> list[Path]:
         return [
             ROOT / "oci/desktop/Containerfile",

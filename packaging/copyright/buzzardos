@@ -6,6 +6,9 @@ Comment:
  Machine root filesystems, guest packages, and separately installed host
  packages are not part of this package. Exact notices for Rust crates linked
  into the host executables are shipped in RUST_DEPENDENCY_LICENSES.txt.
+ The separately executed private crun preserves its upstream terms below.
+ Complete corresponding crun source, including recursive dependencies and
+ build scripts, is shipped in sources/crun-source.tar.gz beside this record.
 
 Files: host/* clipboard-protocol/*
 Copyright: 2026 Open Research Tools contributors
@@ -18,3 +21,34 @@ Copyright: 2026 Open Research Tools contributors
 License: CC0-1.0
  On Debian-family systems, the complete CC0 1.0 Universal legal code is
  available at /usr/share/common-licenses/CC0-1.0.
+
+Files: third-party/crun/source/*
+Copyright: 2017-2026 Giuseppe Scrivano and crun contributors
+License: GPL-2.0-or-later
+ The complete license is shipped in crun/COPYING beside this record.
+ Per-file upstream notices and build-tool license exceptions are retained
+ verbatim in the accompanying complete source archive.
+
+Files: third-party/crun/source/src/libcrun/*
+Copyright: 2017-2026 Giuseppe Scrivano and crun contributors
+License: LGPL-2.1-or-later
+ The complete license is shipped in crun/COPYING.libcrun beside this record.
+
+Files: third-party/crun/source/libocispec/*
+Copyright: 2017-2026 Giuseppe Scrivano and libocispec contributors
+License: GPL-3.0-or-later with libocispec-parser-exception
+ The complete license and parser-skeleton exception are shipped in
+ crun/libocispec/COPYING beside this record. Generated parser code retains
+ the permission granted by that upstream exception.
+
+Files: third-party/crun/source/libocispec/image-spec/*
+       third-party/crun/source/libocispec/runtime-spec/*
+Copyright: Open Container Initiative contributors
+License: Apache-2.0
+ Complete upstream license texts are shipped in
+ crun/libocispec/image-spec/LICENSE and crun/libocispec/runtime-spec/LICENSE.
+
+Files: third-party/crun/source/src/libcrun/blake3/*
+Copyright: BLAKE3 contributors
+License: CC0-1.0 or Apache-2.0
+ Both upstream license texts are shipped in crun/src/libcrun/blake3/LICENSE.

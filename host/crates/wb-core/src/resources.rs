@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ResourceLocator {
     roots: Vec<PathBuf>,
+    private_roots: Vec<PathBuf>,
     asset_roots: Vec<PathBuf>,
 }
 
@@ -15,22 +16,46 @@ impl ResourceLocator {
         let identity = crate::host_identity();
         let exe = env::current_exe().context("locating current executable")?;
         let mut roots = Vec::new();
+        let mut private_roots = Vec::new();
         let mut asset_roots = Vec::new();
         if let Some(parent) = exe.parent() {
+            private_roots.push(parent.join("../libexec").join(identity.package));
             roots.push(parent.join("../libexec").join(identity.package));
             roots.push(parent.to_path_buf());
             asset_roots.push(parent.join("../share").join(identity.package));
         }
         roots.push(PathBuf::from("/usr/libexec").join(identity.package));
+        private_roots.push(PathBuf::from("/usr/libexec").join(identity.package));
         roots.push(PathBuf::from("/usr/bin"));
         asset_roots.push(PathBuf::from("/usr/share").join(identity.package));
         if let Some(root) = env::var_os("BUZZARDOS_RESOURCE_DIR") {
             let root = PathBuf::from(root);
+            private_roots.insert(0, root.clone());
             roots.insert(0, root.clone());
             asset_roots.insert(0, root);
         }
 
-        Ok(Self { roots, asset_roots })
+        Ok(Self {
+            roots,
+            private_roots,
+            asset_roots,
+        })
+    }
+
+    /// Package-private executable; never substitutes the distro binary or PATH.
+    pub fn private_helper(&self, name: &str) -> Result<PathBuf> {
+        self.private_roots
+            .iter()
+            .map(|root| root.join(name))
+            .find(|path| is_executable(path))
+            .with_context(|| {
+                format!(
+                    "package-private helper '{name}' is missing; reinstall {}",
+                    crate::host_identity().package
+                )
+            })?
+            .canonicalize()
+            .with_context(|| format!("resolving package-private helper '{name}'"))
     }
 
     pub fn helper(&self, name: &str) -> Result<PathBuf> {
@@ -133,6 +158,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let locator = ResourceLocator {
             roots: vec![temp.path().to_owned()],
+            private_roots: vec![],
             asset_roots: vec![],
         };
         let selected = crate::host_identity().display_executable;
@@ -149,5 +175,25 @@ mod tests {
         std::fs::write(&selected, "selected installation").unwrap();
         std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(locator.helper("buzzardos-display").unwrap(), selected);
+    }
+
+    #[test]
+    fn private_runtime_never_falls_back_to_system_helper_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("crun");
+        std::fs::write(&executable, "distro runtime").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut locator = ResourceLocator {
+            roots: vec![temp.path().to_owned()],
+            private_roots: vec![],
+            asset_roots: vec![],
+        };
+        assert!(locator.helper_or_path("crun").is_ok());
+        assert!(locator.private_helper("crun").is_err());
+        locator.private_roots.push(temp.path().to_owned());
+        assert_eq!(
+            locator.private_helper("crun").unwrap(),
+            executable.canonicalize().unwrap()
+        );
     }
 }

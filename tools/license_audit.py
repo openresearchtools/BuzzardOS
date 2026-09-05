@@ -21,6 +21,11 @@ import tempfile
 import tomllib
 from typing import Iterable
 
+if __package__:
+    from . import crun_source
+else:
+    import crun_source
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LICENSES = ROOT / "LICENSES"
@@ -473,6 +478,7 @@ def validate_upstream_sources() -> None:
 
 
 def validate_provenance() -> None:
+    crun_source.verify()
     required = [
         ROOT / "LICENSE",
         ROOT / "NOTICE",
@@ -968,6 +974,14 @@ def audit_debian_package(archive: Path) -> list[str]:
     package_sources["cargo-host.tsv" if component == "buzzardos" else "cargo-dependencies.tsv"] = (
         inventory
     )
+    if component == "buzzardos":
+        vendor = ROOT / "third-party/crun"
+        package_sources.update({f"crun/{name}": vendor / name
+                                for name in ("UPSTREAM.toml", "README.md")})
+        for name in ("COPYING", "COPYING.libcrun", "libocispec/COPYING",
+                     "libocispec/image-spec/LICENSE", "libocispec/runtime-spec/LICENSE",
+                     "src/libcrun/blake3/LICENSE"):
+            package_sources[f"crun/{name}"] = vendor / "source" / name
     if package == "buzzardoscua":
         package_sources["cargo-cua.tsv"] = package_sources.pop("cargo-dependencies.tsv")
         package_sources.update(
@@ -985,6 +999,19 @@ def audit_debian_package(archive: Path) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="buzzardos-deb-audit-") as temporary:
         root = Path(temporary) / "root"
         run(["dpkg-deb", "--extract", str(archive), str(root)])
+        if component == "buzzardos":
+            private_runtime = root / f"usr/libexec/{package}/crun"
+            if not private_runtime.is_file() or not os.access(private_runtime, os.X_OK):
+                issues.append(f"{package} private crun executable is missing")
+            if (root / "usr/bin/crun").exists():
+                issues.append(f"{package} must not replace the system crun")
+            try:
+                crun_source.verify_archive(root / f"usr/share/doc/{package}/sources/crun-source.tar.gz")
+                features = json.loads((root / f"usr/share/doc/{package}/crun/features.json").read_text())
+                if not features.get("linux", {}).get("seccomp", {}).get("enabled"):
+                    issues.append(f"{package} private crun lacks seccomp support")
+            except (OSError, ValueError) as error:
+                issues.append(f"{package} private crun evidence: {error}")
         document_root = root / "usr/share/doc"
         document_packages = (
             {path.name for path in document_root.iterdir() if path.is_dir()}

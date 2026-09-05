@@ -44,6 +44,28 @@ networking, ports, devices, CDI, and supported runtime flags. Buildah or Podman
 builds Containerfiles. Buzzard OS does not implement a second container
 runtime.
 
+The host package builds and ships an unmodified package-private crun from
+`third-party/crun/source`, pinned with all recursive source dependencies in
+`third-party/crun/UPSTREAM.toml`. Buzzard selects its stable absolute path with
+Podman's native `--runtime` option. This explicit upstream dependency does not
+replace `/usr/bin/crun`, modify the user's Podman configuration, or migrate
+unrelated containers. Source verification, retained notices, corresponding
+source delivery, ABI checks and upstream security updates are package duties.
+
+External machine roots are supplied through a native bind mount at `/`, with
+a stable runtime-directory anchor as Podman's `--rootfs`. Stock crun acquires
+the source before entering the selected user namespace. This preserves access
+through host-only parent ACLs without changing those ACLs, moving the machine
+disk, adding an overlay, or keeping an extra mount process at runtime. The
+anchor is reconstructible metadata, never the machine filesystem. It must be
+prepared before Podman creates or starts the stored definition.
+
+Image extraction obtains a temporary image mount through native `podman
+unshare` and `podman image mount`, releasing it when the operation ends. The
+extractor and stopped-rootfs helpers use the selected native namespace and the
+same direct root bind. Temporary transfer containers disable their log driver;
+archive bytes go only to the operation's explicit output, not container logs.
+
 The final source tree contains no Bubblewrap backend, custom namespace
 construction, slirp4netns controller, custom cgroup controller, copied NVIDIA
 toolkit, private CDI generator, legacy runtime mode, compatibility branch,
@@ -54,7 +76,7 @@ less:
 
 - it supplies no Buzzard-authored seccomp, capability, AppArmor, SELinux,
   `no-new-privileges`, privileged-mode, or syscall policy;
-- it never adds `--privileged` or weakens Podman defaults automatically;
+- it never adds `--privileged` or weakens Podman's isolation defaults automatically;
 - the user's normal Podman configuration remains effective;
 - a single unrestricted custom Podman-arguments field accepts arbitrary
   arguments without filtering, rewriting, categorizing, or policy UI;
@@ -62,6 +84,14 @@ less:
   a shell; and
 - tests assert the exact argv and inspect the stored Podman configuration so
   hidden security flags cannot appear.
+
+The explicitly selected desktop-machine resource default is native
+`--pids-limit=-1`, before the user's custom arguments. A user-supplied native
+task limit therefore overrides it unchanged. The guest desktop service ships
+`TasksMax=infinity` so the entire desktop and its applications do not inherit
+a small per-service task ceiling. Host/ancestor cgroup limits, kernel limits,
+per-user limits and available resources still apply. No host-wide resource
+configuration is changed, and other guest services keep their distro settings.
 
 Buzzard OS does not hard-code a user-namespace mode. With no custom namespace
 argument, Podman's configured rootless default applies. The unrestricted
@@ -126,7 +156,7 @@ buzzardoscua_<version>_<arch>.deb
 filtered Wayland gateway, media and clipboard bridges, metadata, icons, and
 diagnostics. It declares distro Podman and Buildah dependencies and does not
 bundle their binaries. It installs no privileged Buzzard daemon, system
-service, setuid binary, copied container runtime, copied NVIDIA toolkit, or
+service, setuid binary, copied NVIDIA toolkit, or
 Buzzard AppArmor policy. Upgrade and uninstall never delete machines.
 
 `buzzardos-guest` contains desktop-independent session, systemd, stock-Sway,
@@ -146,7 +176,8 @@ daemon, MCP server, recording, telemetry, browser specialization, or host
 automation surface.
 
 Every package carries Debian copyright material and exact dependency notices
-for what it ships. Distro-provided Podman, Buildah, conmon, crun/runc,
+for what it ships. The host includes private crun notices and corresponding
+source. Distro-provided Podman, Buildah, conmon, system crun/runc,
 Netavark/Aardvark or pasta, seccomp policy, CDI support, and their dependencies
 remain independently installed host packages whose own package records are
 authoritative. License inventories and tests must contain no notice for a

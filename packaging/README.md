@@ -39,6 +39,11 @@ signed Open Research Tools APT repository indexes those release assets.
 
 ## License boundaries
 
+The host package builds its private stock crun from the recursively pinned
+source under `third-party/crun`, using `build-crun.sh`. It does not replace
+system crun or configure Podman globally. Source, build scripts, notices and
+feature evidence accompany the executable. See `third-party/crun/README.md`.
+
 Each package carries an independent Debian-format copyright record, a
 package-specific third-party notice, the exact locked Cargo inventory for its
 own executables, retained Rust dependency notices, and the Rust standard

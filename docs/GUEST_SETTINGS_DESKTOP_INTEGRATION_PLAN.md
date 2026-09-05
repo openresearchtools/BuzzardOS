@@ -76,12 +76,17 @@ selection reaches the systemd-managed desktop through its runtime environment
 file, not only Podman's initial PID 1 environment. Ordinary shared-memory
 cursor surfaces remain supported independently of primary-frame transport.
 
-Hardware acceptance remains open (2026-09-05): the current rootless Podman
-machine exposes no DRM node. An isolated native `--device` probe also showed
-that its default-mapped desktop UID 1000 cannot open the host render node,
-although guest root can. `keep-groups` did not resolve this host's user-ACL
-access. No hidden namespace selection or host device-permission change is
-permitted as a substitute for resolving the machine's native configuration.
+Hardware/rootfs integration (2026-09-05): the APT-installed host now supplies
+the external disk as a native root bind through private stock crun, using a
+reconstructible runtime anchor. A fresh machine on LUKS/ext4 `nosuid,nodev`
+storage booted the actual nested desktop with explicit native
+`--userns=keep-id:uid=1000,gid=1000 --device=/dev/dri/renderD128`. Guest UID 1000
+rendered through Intel GLES; Firefox on CUA1 used Wayland, hardware WebRender
+and WebGL2. The host presentation record confirmed DMA-BUF and explicit sync.
+Complete stop/start and restart retained the same container and rootfs.
+These results do not cover every GPU, NVIDIA CDI, or other host distributions.
+No hidden namespace selection or host device-permission change is permitted;
+the selected native mapping must have access to the selected render device.
 
 The Display page presents one row labelled `Scaling`; it does not repeat a
 second `Scaling` section heading above that row.
@@ -159,6 +164,15 @@ the subsequent CUA focus recovery itself preserved seat0's focus. Arbitrary
 new-window activation and shared-Xwayland focus are separate unresolved cases.
 No focus-reset watcher, compositor patch, or hidden launch-staging rule is an
 accepted substitute for the required behavior.
+
+The GPU-backed production-compositor regression now separately checks distinct
+simultaneous CUA text streams, distinct pointer positions and output screenshots
+before launching windows during typing. The existing-window case passed with
+6.23 seconds of overlapping exact text, independent pointers and unchanged
+seat0 focus. The launch phase still failed with `input_focus_changed`; hardware
+rendering does not repair stock Sway's all-seat activation behavior. The
+acceptance test continues to fail overall, rather than treating the passing
+baseline as complete multi-CUA isolation.
 
 ## 4.1. Time and location
 
@@ -400,6 +414,16 @@ single-flight state are checked before a value reaches either clipboard.
 Clipboard bytes and hashes are never logged or persisted.
 
 ## 10. Persistence, security, and acceptance
+
+The complete guest desktop service uses `TasksMax=infinity`; this setting is
+owned by the guest mechanics package and delivered by APT, not a boot-time
+repair script. Machine definitions default to native Podman `--pids-limit=-1`
+before unrestricted user arguments, so explicit per-machine limits still win.
+The effective ceiling remains subject to ancestor/host limits and available
+resources. This changes no renderer, browser sandbox, namespace, capability,
+or other guest service policy. Acceptance must launch Firefox through the
+actual Sway desktop service, load ordinary pages, and check the service and
+container `pids.events` before and after, including a complete machine restart.
 
 Settings and desktop state live only in the persistent guest rootfs. No guest
 setting gains access to host D-Bus, host files outside explicit shares, host

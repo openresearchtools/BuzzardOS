@@ -20,12 +20,39 @@ use gtk::prelude::*;
 use gtk4 as gtk;
 use wb_core::{
     DEFAULT_PODMAN_ARGUMENTS, HostMediaDevice, HostMediaKind, MachineConfig, MachineRegistry,
-    MachineState, NetworkMode, Podman, PodmanContainerState, PodmanDefinition, PodmanRuntimePaths,
-    PortDirection, PortForward, PortProtocol, ResourceLocator, RuntimeState, SharedPath,
-    discover_host_media, host_identity,
+    MachineState, NetworkMode, Podman, PodmanContainerState, PodmanRuntimePaths, PortDirection,
+    PortForward, PortProtocol, ResourceLocator, RuntimeState, SharedPath, discover_host_media,
+    host_identity,
 };
 
 const HOST_PROJECT_LICENSE: &str = include_str!("../../../../LICENSE");
+const CRUN_UPSTREAM: &str = include_str!("../../../../third-party/crun/UPSTREAM.toml");
+const CRUN_LICENSES: &[(&str, &str)] = &[
+    (
+        "crun — GPL-2.0-or-later",
+        include_str!("../../../../third-party/crun/source/COPYING"),
+    ),
+    (
+        "libcrun — LGPL-2.1-or-later",
+        include_str!("../../../../third-party/crun/source/COPYING.libcrun"),
+    ),
+    (
+        "libocispec — GPL-3.0-or-later with parser-skeleton exception",
+        include_str!("../../../../third-party/crun/source/libocispec/COPYING"),
+    ),
+    (
+        "OCI image specification — Apache-2.0",
+        include_str!("../../../../third-party/crun/source/libocispec/image-spec/LICENSE"),
+    ),
+    (
+        "OCI runtime specification — Apache-2.0",
+        include_str!("../../../../third-party/crun/source/libocispec/runtime-spec/LICENSE"),
+    ),
+    (
+        "BLAKE3 — CC0-1.0 or Apache-2.0",
+        include_str!("../../../../third-party/crun/source/src/libcrun/blake3/LICENSE"),
+    ),
+];
 const HOST_CARGO_INVENTORY: &str = include_str!("../../../../LICENSES/generated/cargo-host.tsv");
 const HOST_RUST_DEPENDENCY_NOTICES: &str =
     include_str!("../../../../LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardos.txt");
@@ -42,7 +69,7 @@ const BUILTIN_APT_LIVE_SOURCES: &[u8] =
 const BUILTIN_APT_SNAPSHOT_CONFIG: &[u8] =
     include_bytes!("../../../../oci/desktop/apt/99buzzardos-snapshot");
 const MACHINE_LICENSE_EXCLUSION: &str = "This About view covers only the installed Buzzard OS host package. It does not cover machine images or root filesystems, software installed inside a machine, or the separately packaged Buzzard guest components. Those retain their own license records.";
-const EXTERNAL_HOST_DEPENDENCIES: &str = "The following runtime packages are installed separately by APT and are not bundled into the Buzzard OS host package:\n\nPodman, Buildah, their native OCI runtime and networking dependencies, GStreamer and its PipeWire plugins, GTK 4, GLib, Wayland, libxkbcommon, xkb-data, and PipeWire.\n\nTheir package metadata and /usr/share/doc/<package>/copyright files are authoritative for the versions installed on this host.";
+const EXTERNAL_HOST_DEPENDENCIES: &str = "The following runtime packages are installed separately by APT and are not bundled into the Buzzard OS host package:\n\nPodman, Buildah, the system OCI runtime and networking dependencies, GStreamer and its PipeWire plugins, GTK 4, GLib, Wayland, libxkbcommon, xkb-data, and PipeWire.\n\nBuzzard's separate package-private crun is bundled; its exact version, source and licenses are listed here.\n\nSystem package metadata and /usr/share/doc/<package>/copyright files are authoritative for separately installed dependencies.";
 
 #[derive(Debug, Parser)]
 #[command(name = "buzzardos-display --machine-manager")]
@@ -427,7 +454,7 @@ impl ManagerUi {
             "Bundled licenses",
         );
         let dependency_document = format!(
-            "HOST RUST DEPENDENCIES EMBEDDED IN THE EXECUTABLES\n\n{}\n\nSYSTEM PACKAGES — NOT BUNDLED\n\n{}",
+            "HOST RUST DEPENDENCIES EMBEDDED IN THE EXECUTABLES\n\n{}\n\nBUNDLED PRIVATE CRUN — EXACT SOURCE PINS\n\n{CRUN_UPSTREAM}\n\nSYSTEM PACKAGES — NOT BUNDLED\n\n{}",
             cargo_dependency_summary(HOST_CARGO_INVENTORY),
             EXTERNAL_HOST_DEPENDENCIES
         );
@@ -888,8 +915,11 @@ impl ManagerUi {
         self.content.add_named(&root, Some("settings"));
         self.settings_page.replace(Some(root));
         self.content.set_visible_child_name("settings");
-        self.window
-            .set_title(Some(&format!("{} Settings — {}", config.name, host_identity().name)));
+        self.window.set_title(Some(&format!(
+            "{} Settings — {}",
+            config.name,
+            host_identity().name
+        )));
         self.header_title
             .set_text(&format!("{} Settings", config.name));
         self.back.set_visible(true);
@@ -2059,8 +2089,9 @@ fn discover_machine_list() -> Result<Vec<MachineListItem>> {
         .filter_map(|entry| {
             let config = MachineConfig::load(&entry.machine_dir).ok()?;
             let runtime = PodmanRuntimePaths::discover(config.id).ok()?;
-            let definition =
-                PodmanDefinition::for_machine(&config, &entry.machine_dir, &runtime).ok()?;
+            let definition = podman
+                .definition_for_machine(&config, &entry.machine_dir, &runtime)
+                .ok()?;
             let inspection = podman.inspect(&definition.container_name).ok().flatten();
             let state = inspection
                 .as_ref()
@@ -2880,13 +2911,21 @@ fn cargo_dependency_summary(inventory: &str) -> String {
 }
 
 fn host_license_document() -> String {
-    let notice_path = format!("/usr/share/doc/{}/rust/COPYRIGHT-library.html", host_identity().package);
+    let crun_notices = CRUN_LICENSES
+        .iter()
+        .map(|(name, text)| format!("{name}\n\n{text}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let notice_path = format!(
+        "/usr/share/doc/{}/rust/COPYRIGHT-library.html",
+        host_identity().package
+    );
     let rust_standard_library_notice = std::fs::read_to_string(&notice_path)
     .unwrap_or_else(|_| {
         format!("The complete checksum-verified Rust standard-library notice is installed at {notice_path} in the packaged application.")
     });
     format!(
-        "BUZZARD OS — AGPL-3.0-OR-LATER\n\n{HOST_PROJECT_LICENSE}\n\nAPPLICATION METADATA — CC0-1.0\n\norg.openresearchtools.BuzzardOS.metainfo.xml is licensed under CC0-1.0. The full text is installed at /usr/share/common-licenses/CC0-1.0.\n\nRUST STANDARD LIBRARY\n\n{rust_standard_library_notice}\n\nRUST DEPENDENCIES\n\n{HOST_RUST_DEPENDENCY_NOTICES}"
+        "BUZZARD OS — AGPL-3.0-OR-LATER\n\n{HOST_PROJECT_LICENSE}\n\nAPPLICATION METADATA — CC0-1.0\n\norg.openresearchtools.BuzzardOS.metainfo.xml is licensed under CC0-1.0. The full text is installed at /usr/share/common-licenses/CC0-1.0.\n\nRUST STANDARD LIBRARY\n\n{rust_standard_library_notice}\n\nRUST DEPENDENCIES\n\n{HOST_RUST_DEPENDENCY_NOTICES}\n\nBUNDLED PRIVATE CRUN\n\n{crun_notices}"
     )
 }
 
@@ -2916,7 +2955,10 @@ mod license_tests {
     #[test]
     fn installed_manager_uses_its_own_desktop_identity() {
         let launcher = PathBuf::from("/usr/bin").join(host_identity().package);
-        assert_eq!(manager_application_id(&launcher), host_identity().application_id);
+        assert_eq!(
+            manager_application_id(&launcher),
+            host_identity().application_id
+        );
     }
 
     #[test]
@@ -2929,7 +2971,8 @@ mod license_tests {
             manager_application_id(second)
         );
         assert!(
-            manager_application_id(first).starts_with(&format!("{}.manager.x", host_identity().application_id))
+            manager_application_id(first)
+                .starts_with(&format!("{}.manager.x", host_identity().application_id))
         );
     }
 

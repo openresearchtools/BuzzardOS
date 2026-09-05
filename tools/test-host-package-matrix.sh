@@ -34,19 +34,28 @@ for image in \
             export DEBIAN_FRONTEND=noninteractive
             apt-get -qq update >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
             apt-get install --yes --no-install-recommends -qq \
-                -o Dpkg::Use-Pty=0 /tmp/buzzardos.deb >>/tmp/apt.log 2>&1 || {
+                -o Dpkg::Use-Pty=0 \
+                -o "Dpkg::Options::=--path-include=/usr/share/doc/buzzardos*/*" \
+                /tmp/buzzardos.deb >>/tmp/apt.log 2>&1 || {
                 cat /tmp/apt.log >&2
                 exit 1
             }
-            version=$(dpkg-query -W -f="\${Version}" buzzardos)
-            test "$(buzzardos --version)" = "Buzzard OS $version"
-            /usr/libexec/buzzardos/buzzardos-display --help >/dev/null
+            identity=$(dpkg-deb --field /tmp/buzzardos.deb Package)
+            case "$identity" in buzzardos|buzzardos-pod) ;; *) exit 1 ;; esac
+            version=$(dpkg-query -W -f="\${Version}" "$identity")
+            "$identity" --version | grep -F "$version"
+            /usr/libexec/"$identity"/"$identity"-display --help >/dev/null
+            private_crun=/usr/libexec/"$identity"/crun
+            crun_version=$(sed -n "s/^version = \"\([^\"]*\)\"/\1/p" /usr/share/doc/"$identity"/crun/UPSTREAM.toml)
+            "$private_crun" --version | grep -Fx "crun version $crun_version"
+            "$private_crun" features >/dev/null
             podman --version >/dev/null
             buildah --version >/dev/null
-            test -s /usr/share/doc/buzzardos/copyright
-            test -s /usr/share/applications/org.openresearchtools.buzzardos.desktop
-            test -s /usr/share/metainfo/org.openresearchtools.buzzardos.metainfo.xml
-            test -s /usr/share/icons/hicolor/256x256/apps/buzzardos.png
+            test -s /usr/share/doc/"$identity"/copyright
+            test -s /usr/share/doc/"$identity"/sources/crun-source.tar.gz
+            test -s /usr/share/applications/org.openresearchtools."$identity".desktop
+            test -s /usr/share/metainfo/org.openresearchtools."$identity".metainfo.xml
+            test -s /usr/share/icons/hicolor/256x256/apps/"$identity".png
             echo "Buzzard OS $version package smoke passed"
         '
 done

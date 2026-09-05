@@ -1,0 +1,27 @@
+schema = 1
+version = "1.29.1"
+tag = "1.29.1"
+tag_object = "ada8d7b573b35a387f88c4522bef05a5b17d1f80"
+commit = "f0d911de5587342cfeb16473bf32ecdfeaf25957"
+source_sha256 = "96648949630d614f94eab4a6f3661ce1b4db3523b85546f254e431250f261f99"
+local_patches = []
+
+[[repository]]
+path = "."
+url = "https://github.com/containers/crun.git"
+commit = "f0d911de5587342cfeb16473bf32ecdfeaf25957"
+
+[[repository]]
+path = "libocispec"
+url = "https://github.com/containers/libocispec.git"
+commit = "872b8b0b7ccb1a121601ede0dcac8c6b8a1008a6"
+
+[[repository]]
+path = "libocispec/image-spec"
+url = "https://github.com/opencontainers/image-spec.git"
+commit = "26647a49f642c7d22a1cd3aa0a48e4650a542269"
+
+[[repository]]
+path = "libocispec/runtime-spec"
+url = "https://github.com/opencontainers/runtime-spec.git"
+commit = "d64c1d945da7cf6970061c7c9ff4391fafdf2a15"

@@ -1,0 +1,54 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        # our oldest (officially) supported version and the two upstream-supported versions
+        go: [1.21.x, oldstable, stable]
+
+    env:
+      # avoid downloading any alternate toolchains (https://go.dev/doc/toolchain)
+      GOTOOLCHAIN: local
+
+    steps:
+      - name: checkout source code
+        uses: actions/checkout@v4
+
+      - name: setup go environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: create go.mod
+        run: |
+          # Fix for "cannot find main module" issue
+          go mod init github.com/opencontainers/runtime-spec
+
+          go get -d ./schema/...
+
+      - name: run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5
+
+      - name: run tests
+        run: |
+          set -x
+          make install.tools
+
+          make .govet
+
+          make .gitvalidation
+          make docs
+          make -C schema test

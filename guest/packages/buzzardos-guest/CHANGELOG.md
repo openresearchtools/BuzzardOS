@@ -1,5 +1,11 @@
 # buzzardos-guest changelog
 
+## Unreleased
+
+- Remove the desktop session's inherited systemd task ceiling with
+  `TasksMax=infinity`; applications remain subject to the selected outer
+  container limit and host resources. Other service policies are unchanged.
+
 ## 0.1.1
 
 - Provision the official reference-image account as `user` at UID/GID 1000,

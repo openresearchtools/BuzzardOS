@@ -3,13 +3,21 @@ FROM docker.io/library/rust:1.96.0-trixie
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      autoconf \
+      automake \
       binutils \
       build-essential \
       buildah \
       curl \
       dpkg-dev \
       fuse3 \
+      libcap-dev \
+      libcriu-dev \
       libdrm-dev \
+      libjson-c-dev \
+      libseccomp-dev \
+      libsystemd-dev \
+      libtool \
       libglib2.0-dev \
       libgtk-4-dev \
       libpulse-dev \

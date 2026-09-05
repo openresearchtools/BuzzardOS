@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Default desktop-machine task capacity to native Podman `--pids-limit=-1`,
+  preserving explicit per-machine limits supplied through custom arguments.
+
+- Build an unmodified private crun 1.29.1 from its exact upstream and recursive
+  submodule commits. Ship corresponding source, license notices and features
+  with the host package; retain the host's system crun and Podman defaults.
+- Select the private runtime through native Podman arguments for all Buzzard
+  commands. Include its path in persistent definition reconciliation without
+  migrating other containers or recreating machines on ordinary starts.
+
 - Restore the hardware-only primary display path: configure the guest session
   for GLES2, accept DMA-BUF frames, and remove the primary-output shared-memory
   CPU-copy path. Shared-memory cursor support is unchanged.

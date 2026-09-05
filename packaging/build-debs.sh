@@ -167,6 +167,8 @@ install_rust_licensing() {
 }
 
 build_host() {
+    local crun_build="$build_root/private-crun"
+    bash "$project_dir/packaging/build-crun.sh" "$crun_build"
     BUZZARDOS_HOST_IDENTITY="$host_identity" CARGO_TARGET_DIR="$host_target" cargo build \
         --locked --release --manifest-path "$project_dir/host/Cargo.toml" --workspace
     local root="$build_root/root-$host_identity"
@@ -177,6 +179,20 @@ build_host() {
     fi
     install -D -m 0755 "$host_target/release/buzzardos-display" \
         "$root/usr/libexec/$host_identity/$host_identity-display"
+    install -D -m 0755 "$crun_build/bin/crun" "$root/usr/libexec/$host_identity/crun"
+    install -D -m 0644 "$crun_build/crun-source.tar.gz" \
+        "$root/usr/share/doc/$host_identity/sources/crun-source.tar.gz"
+    local crun_notice
+    for crun_notice in UPSTREAM.toml README.md; do
+        install -D -m 0644 "$project_dir/third-party/crun/$crun_notice" \
+            "$root/usr/share/doc/$host_identity/crun/$crun_notice"
+    done
+    for crun_notice in COPYING COPYING.libcrun libocispec/COPYING \
+        libocispec/image-spec/LICENSE libocispec/runtime-spec/LICENSE src/libcrun/blake3/LICENSE; do
+        install -D -m 0644 "$project_dir/third-party/crun/source/$crun_notice" \
+            "$root/usr/share/doc/$host_identity/crun/$crun_notice"
+    done
+    install -m 0644 "$crun_build/features.json" "$root/usr/share/doc/$host_identity/crun/features.json"
     install -D -m 0644 "$project_dir/host/packaging/BuzzardOS.desktop" \
         "$root/usr/share/applications/org.openresearchtools.$host_identity.desktop"
     install -D -m 0644 "$project_dir/host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml" \
@@ -246,8 +262,8 @@ build_host() {
 $host_identity: embedded-library zlib [usr/libexec/$host_identity/$host_identity-display]
 EOF
     write_control "$root" "$host_identity" "$version" \
-        'buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libwayland-client0, libxkbcommon0, passt, pipewire-bin, podman, xkb-data' \
-        'Buzzard OS rootless persistent desktop-machine manager'
+        "$(<"$crun_build/depends"), buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libwayland-client0, libxkbcommon0, passt, pipewire-bin, podman, xkb-data" \
+        'Buzzard OS rootless persistent desktop-machine manager' 'criu'
     cat >"$root/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e

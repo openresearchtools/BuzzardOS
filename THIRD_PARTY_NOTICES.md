@@ -8,6 +8,13 @@ Buzzard OS. Machine-readable component and asset records are under
 
 ## Source-vendored components
 
+- **crun 1.29.1** is unmodified upstream commit
+  `f0d911de5587342cfeb16473bf32ecdfeaf25957`, including its exactly pinned
+  recursive source dependencies. `third-party/crun/UPSTREAM.toml` records the
+  commits and complete source fingerprint. The host package ships its private
+  executable, full corresponding source/build recipe, and retained GPL,
+  LGPL, Apache, CC0, and libocispec parser-exception notices. See
+  `third-party/crun/README.md` for the component-by-component terms.
 - **Buzzard CUA** contains an auditable Linux fork of `trycua/cua`,
   tag `cua-driver-rs-v0.17.0`, commit
   `10279552e2bbe479e367a082f78b1b98ee85a697`, under the MIT License. Its
@@ -40,13 +47,15 @@ Buzzard OS. Machine-readable component and asset records are under
 
 ## Native Debian packages
 
-- Podman, Buildah, their native OCI runtime and networking dependencies,
+- Podman, Buildah, the system OCI runtime and networking dependencies,
   GStreamer, GTK, and PipeWire are normal Debian dependencies. They are not
   copied into or statically repackaged by `buzzardos`; their distro packages
   retain the authoritative copyright and source records.
 - OCI lifecycle, pull, build, import, export, networking, devices, CDI, and
   user-namespace behavior use the distribution's stock Podman and Buildah.
-  Buzzard OS ships no copied container runtime or downloaded Go executable.
+  Only Buzzard commands explicitly select the separately installed,
+  package-private crun built from the pinned source above. The host's crun
+  binary, Podman configuration and other containers are not replaced.
 - `buzzardos`, `buzzardos-guest`, `buzzardos-desktop`, and `buzzardoscua` each
   carry only the project, embedded dependency, asset, and upstream-fork
   evidence applicable to that package. Their notice bundles are intentionally

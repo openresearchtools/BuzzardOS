@@ -1,0 +1,23 @@
+name: Lint
+
+on: [push, pull_request]
+
+jobs:
+  check-format:
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Run make -C schema fmt
+      run: make -C schema fmt
+    - name: Check for changes
+      run: git diff --exit-code
+
+  codespell:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: install deps
+      run: pip install --break-system-packages codespell==v2.4.1
+    - name: run codespell
+      run: codespell

@@ -17,6 +17,11 @@ only the host package's embedded material and clearly excludes machine and
 guest-package licensing.
 
 `release-components.toml` records direct non-Cargo inputs.
+The host's unmodified private crun source and recursive commit pins live under
+`third-party/crun/`. Source fingerprint verification is a build/release gate.
+The host package includes its corresponding source and exact build recipe
+under `/usr/share/doc/<host-package>/sources/crun-source.tar.gz`, and its
+retained component notices under that package's `crun/` documentation folder.
 `package-inputs.toml` mirrors the ordered APT and direct-download blocks used
 when locally verifying the Containerfiles. The Standard and CUDA recipes have
 separate exact package inventories because the CUDA choice intentionally adds
