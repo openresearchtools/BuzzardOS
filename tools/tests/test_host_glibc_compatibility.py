@@ -50,8 +50,9 @@ class HostGlibcCompatibilityTests(unittest.TestCase):
         self.assertIn("test-host-package-matrix.sh", self.workflow)
 
     def test_host_package_uses_normal_debian_paths(self) -> None:
-        self.assertIn('"$root/usr/bin/buzzardos"', self.packager)
-        self.assertIn('"$root/usr/libexec/buzzardos/buzzardos-display"', self.packager)
+        self.assertIn('"$root/usr/bin/$host_identity"', self.packager)
+        self.assertIn('"$root/usr/libexec/$host_identity/$host_identity-display"', self.packager)
+        self.assertIn('host_identity=${BUZZARDOS_HOST_IDENTITY:-buzzardos}', self.packager)
         self.assertNotIn("AppRun", self.packager)
 
     def test_host_package_uses_distro_podman_without_copied_helpers(self) -> None:

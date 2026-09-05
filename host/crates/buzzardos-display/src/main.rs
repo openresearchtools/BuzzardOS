@@ -35,6 +35,8 @@ fn run() -> Result<()> {
     if let Some(result) = host_media::maybe_run() {
         return result;
     }
+    gtk4::glib::set_application_name(wb_core::host_identity().name);
+    gtk4::glib::set_prgname(Some(wb_core::host_identity().package));
     configure_gtk_portal_policy();
     reexec_with_display_desktop_identity()?;
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--machine-manager")) {

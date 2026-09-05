@@ -46,7 +46,7 @@ impl PodmanRuntimePaths {
 
     pub fn under(runtime: &Path, machine_id: Uuid) -> Self {
         let root = runtime
-            .join("buzzardos")
+            .join(crate::host_identity().package)
             .join("machines")
             .join(machine_id.simple().to_string());
         Self {
@@ -304,7 +304,7 @@ fn digest_arguments(arguments: &[OsString]) -> String {
 }
 
 fn container_name(id: Uuid) -> String {
-    format!("buzzardos-{}", id.simple())
+    format!("{}-{}", crate::host_identity().package, id.simple())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

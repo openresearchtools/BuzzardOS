@@ -17,7 +17,6 @@ use wb_core::{
     host_control_socket,
 };
 
-const HOST_APP_ID: &str = "org.openresearchtools.buzzardos";
 
 pub(crate) struct PreparedDisplay {
     pub(crate) session_token: String,
@@ -93,7 +92,7 @@ pub(crate) fn prepare_and_launch(
         .arg("--title")
         .arg(&config.name)
         .arg("--app-id")
-        .arg(HOST_APP_ID)
+        .arg(wb_core::host_identity().application_id)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -164,8 +163,8 @@ fn prepare_runtime_files(
          BUZZARDOS_MACHINE_ID={}\n\
          BUZZARDOS_MACHINE_NAME={}\n\
          BUZZARDOS_WINDOW_TITLE=Buzzard OS — {}\n\
-         BUZZARDOS_WINDOW_APP_ID={HOST_APP_ID}\n",
-        config.id, config.name, config.name
+         BUZZARDOS_WINDOW_APP_ID={}\n",
+        config.id, config.name, config.name, wb_core::host_identity().application_id
     );
     write_runtime_file(
         &runtime.host_exchange.join("driver.env"),

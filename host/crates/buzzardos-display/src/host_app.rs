@@ -648,7 +648,7 @@ impl NativeWindow {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
             .title(&launch.title)
-            .icon_name("buzzardos")
+            .icon_name(wb_core::host_identity().package)
             .default_width(launch.initial_width as i32)
             .default_height(launch.initial_height as i32)
             .resizable(true)

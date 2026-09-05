@@ -22,7 +22,7 @@ use wb_core::{
     DEFAULT_PODMAN_ARGUMENTS, HostMediaDevice, HostMediaKind, MachineConfig, MachineRegistry,
     MachineState, NetworkMode, Podman, PodmanContainerState, PodmanDefinition, PodmanRuntimePaths,
     PortDirection, PortForward, PortProtocol, ResourceLocator, RuntimeState, SharedPath,
-    discover_host_media,
+    discover_host_media, host_identity,
 };
 
 const HOST_PROJECT_LICENSE: &str = include_str!("../../../../LICENSE");
@@ -123,9 +123,12 @@ pub(crate) fn run_from_args() -> Result<()> {
 }
 
 fn manager_application_id(launcher: &Path) -> String {
-    // One primary manager belongs to one portable application folder.  The
-    // path-derived suffix prevents an independently copied portable folder
-    // from stealing another copy's Settings requests.
+    // Installed launchers use their desktop-file identity for shell grouping
+    // and icons. Development launchers remain independent by canonical path.
+    let installed = PathBuf::from("/usr/bin").join(host_identity().package);
+    if launcher == installed {
+        return host_identity().application_id.to_owned();
+    }
     let identity = launcher
         .canonicalize()
         .unwrap_or_else(|_| launcher.to_path_buf());
@@ -134,7 +137,7 @@ fn manager_application_id(launcher: &Path) -> String {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("org.openresearchtools.buzzardos.manager.x{hash:016x}")
+    format!("{}.manager.x{hash:016x}", host_identity().application_id)
 }
 
 fn manager_invocation(args: &ManagerArgs) -> Result<Vec<String>> {
@@ -143,7 +146,7 @@ fn manager_invocation(args: &ManagerArgs) -> Result<Vec<String>> {
         .to_str()
         .context("machine manager launcher path is not valid UTF-8")?;
     let mut invocation = vec![
-        "BuzzardOS".to_owned(),
+        host_identity().package.to_owned(),
         "--launcher".to_owned(),
         launcher.to_owned(),
     ];
@@ -234,13 +237,13 @@ impl ManagerUi {
     fn build(application: &gtk::Application, launcher: PathBuf) -> Result<Rc<Self>> {
         let window = gtk::ApplicationWindow::builder()
             .application(application)
-            .title("Buzzard OS Machines")
-            .icon_name("buzzardos")
+            .title(host_identity().manager_title)
+            .icon_name(host_identity().package)
             .default_width(820)
             .default_height(560)
             .build();
         let header = gtk::HeaderBar::builder().show_title_buttons(true).build();
-        let header_title = gtk::Label::new(Some("Buzzard OS Machines"));
+        let header_title = gtk::Label::new(Some(host_identity().manager_title));
         header_title.add_css_class("heading");
         header.set_title_widget(Some(&header_title));
         let back = gtk::Button::builder()
@@ -643,8 +646,8 @@ impl ManagerUi {
         if let Some(settings_page) = self.settings_page.borrow_mut().take() {
             self.content.remove(&settings_page);
         }
-        self.window.set_title(Some("Buzzard OS Machines"));
-        self.header_title.set_text("Buzzard OS Machines");
+        self.window.set_title(Some(host_identity().manager_title));
+        self.header_title.set_text(host_identity().manager_title);
         self.back.set_visible(false);
         self.create.set_visible(true);
         self.refresh_button.set_visible(true);
@@ -886,7 +889,7 @@ impl ManagerUi {
         self.settings_page.replace(Some(root));
         self.content.set_visible_child_name("settings");
         self.window
-            .set_title(Some(&format!("{} Settings — Buzzard OS", config.name)));
+            .set_title(Some(&format!("{} Settings — {}", config.name, host_identity().name)));
         self.header_title
             .set_text(&format!("{} Settings", config.name));
         self.back.set_visible(true);
@@ -2604,7 +2607,7 @@ fn independent_manager_window(
 ) -> gtk::Window {
     let window = gtk::Window::builder()
         .title(title)
-        .icon_name("buzzardos")
+        .icon_name(host_identity().package)
         .default_width(default_width)
         .default_height(default_height)
         .resizable(resizable)
@@ -2618,7 +2621,7 @@ fn independent_manager_window(
 fn embedded_buzzard_icon(pixel_size: i32) -> gtk::Image {
     let bytes = glib::Bytes::from_static(HOST_ICON_PNG);
     let image = gtk::gdk::Texture::from_bytes(&bytes).map_or_else(
-        |_| gtk::Image::from_icon_name("buzzardos"),
+        |_| gtk::Image::from_icon_name(host_identity().package),
         |texture| gtk::Image::from_paintable(Some(&texture)),
     );
     image.set_pixel_size(pixel_size);
@@ -2718,7 +2721,7 @@ fn choose_folder_with_creation(
     let parent = parent.upcast_ref::<gtk::Window>();
     let dialog = gtk::Window::builder()
         .title(title)
-        .icon_name("buzzardos")
+        .icon_name(host_identity().package)
         .transient_for(parent)
         .modal(true)
         .default_width(820)
@@ -2786,7 +2789,7 @@ fn show_new_folder_dialog(parent: &gtk::Window, chooser: &gtk::FileChooserWidget
     };
     let dialog = gtk::Window::builder()
         .title("New Folder")
-        .icon_name("buzzardos")
+        .icon_name(host_identity().package)
         .transient_for(parent)
         .modal(true)
         .resizable(false)
@@ -2877,12 +2880,10 @@ fn cargo_dependency_summary(inventory: &str) -> String {
 }
 
 fn host_license_document() -> String {
-    let rust_standard_library_notice = std::fs::read_to_string(
-        "/usr/share/doc/buzzardos/rust/COPYRIGHT-library.html",
-    )
+    let notice_path = format!("/usr/share/doc/{}/rust/COPYRIGHT-library.html", host_identity().package);
+    let rust_standard_library_notice = std::fs::read_to_string(&notice_path)
     .unwrap_or_else(|_| {
-        "The complete checksum-verified Rust standard-library notice is installed at /usr/share/doc/buzzardos/rust/COPYRIGHT-library.html in the packaged application."
-            .to_owned()
+        format!("The complete checksum-verified Rust standard-library notice is installed at {notice_path} in the packaged application.")
     });
     format!(
         "BUZZARD OS — AGPL-3.0-OR-LATER\n\n{HOST_PROJECT_LICENSE}\n\nAPPLICATION METADATA — CC0-1.0\n\norg.openresearchtools.BuzzardOS.metainfo.xml is licensed under CC0-1.0. The full text is installed at /usr/share/common-licenses/CC0-1.0.\n\nRUST STANDARD LIBRARY\n\n{rust_standard_library_notice}\n\nRUST DEPENDENCIES\n\n{HOST_RUST_DEPENDENCY_NOTICES}"
@@ -2913,6 +2914,12 @@ mod license_tests {
     use super::*;
 
     #[test]
+    fn installed_manager_uses_its_own_desktop_identity() {
+        let launcher = PathBuf::from("/usr/bin").join(host_identity().package);
+        assert_eq!(manager_application_id(&launcher), host_identity().application_id);
+    }
+
+    #[test]
     fn manager_identity_is_stable_per_portable_launcher() {
         let first = Path::new("/opt/BuzzardOS/BuzzardOS");
         let second = Path::new("/mnt/portable/BuzzardOS/BuzzardOS");
@@ -2922,7 +2929,7 @@ mod license_tests {
             manager_application_id(second)
         );
         assert!(
-            manager_application_id(first).starts_with("org.openresearchtools.buzzardos.manager.x")
+            manager_application_id(first).starts_with(&format!("{}.manager.x", host_identity().application_id))
         );
     }
 

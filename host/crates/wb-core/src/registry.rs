@@ -48,7 +48,7 @@ impl MachineRegistry {
                 config_home.display()
             );
         }
-        Self::open(config_home.join("buzzardos/machines.json"))
+        Self::open(config_home.join(crate::host_identity().package).join("machines.json"))
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {

@@ -32,6 +32,11 @@ Buzzard OS is not an ephemeral application container:
 Human-facing identities use `Buzzard OS`. New executable, application,
 package, D-Bus, theme, diagnostic, and runtime identities use Buzzard naming.
 
+For local side-by-side testing, the explicitly requested reversible host build
+identity `buzzardos-pod` is supported. It must not conflict with the installed
+`buzzardos` host package, registry, runtime paths, or desktop identity. Guest
+components keep their normal identities. See `docs/PODMAN_SIDE_BY_SIDE_BUILD.md`.
+
 ## One runtime: native rootless Podman
 
 Podman owns the machine container, namespaces, cgroups, seccomp, capabilities,

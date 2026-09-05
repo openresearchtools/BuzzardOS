@@ -945,24 +945,27 @@ def audit_debian_package(archive: Path) -> list[str]:
     if not archive.is_file():
         raise AuditError(f"Debian package does not exist: {archive}")
     package = run(["dpkg-deb", "--field", str(archive), "Package"]).strip()
+    # The local side-by-side host build ships the identical licensed component,
+    # under its own installation paths; it is not a fifth component.
+    component = "buzzardos" if package == "buzzardos-pod" else package
     inventories = {
         "buzzardos": GENERATED / "cargo-host.tsv",
         "buzzardos-guest": GENERATED / "cargo-buzzardos-guest.tsv",
         "buzzardos-desktop": GENERATED / "cargo-buzzardos-desktop.tsv",
         "buzzardoscua": GENERATED / "cargo-cua.tsv",
     }
-    inventory = inventories.get(package)
+    inventory = inventories.get(component)
     if inventory is None:
         raise AuditError(f"not a Buzzard binary package: {package or archive.name}")
     package_sources: dict[str, Path] = {
-        "copyright": ROOT / f"packaging/copyright/{package}",
+        "copyright": ROOT / f"packaging/copyright/{component}",
         "LICENSE": ROOT / "LICENSE",
         "NOTICE": ROOT / "NOTICE",
-        "THIRD_PARTY_NOTICES.md": LICENSES / f"package-notices/{package}.md",
+        "THIRD_PARTY_NOTICES.md": LICENSES / f"package-notices/{component}.md",
         "RUST_DEPENDENCY_LICENSES.txt": GENERATED
-        / f"RUST_DEPENDENCY_LICENSES.{package}.txt",
+        / f"RUST_DEPENDENCY_LICENSES.{component}.txt",
     }
-    package_sources["cargo-host.tsv" if package == "buzzardos" else "cargo-dependencies.tsv"] = (
+    package_sources["cargo-host.tsv" if component == "buzzardos" else "cargo-dependencies.tsv"] = (
         inventory
     )
     if package == "buzzardoscua":

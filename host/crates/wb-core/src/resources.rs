@@ -12,14 +12,18 @@ pub struct ResourceLocator {
 
 impl ResourceLocator {
     pub fn discover() -> Result<Self> {
+        let identity = crate::host_identity();
         let exe = env::current_exe().context("locating current executable")?;
         let mut roots = Vec::new();
         let mut asset_roots = Vec::new();
         if let Some(parent) = exe.parent() {
-            roots.push(parent.join("../libexec/buzzardos"));
+            roots.push(parent.join("../libexec").join(identity.package));
             roots.push(parent.to_path_buf());
-            asset_roots.push(parent.join("../share/buzzardos"));
+            asset_roots.push(parent.join("../share").join(identity.package));
         }
+        roots.push(PathBuf::from("/usr/libexec").join(identity.package));
+        roots.push(PathBuf::from("/usr/bin"));
+        asset_roots.push(PathBuf::from("/usr/share").join(identity.package));
         if let Some(root) = env::var_os("BUZZARDOS_RESOURCE_DIR") {
             let root = PathBuf::from(root);
             roots.insert(0, root.clone());
@@ -30,6 +34,7 @@ impl ResourceLocator {
     }
 
     pub fn helper(&self, name: &str) -> Result<PathBuf> {
+        let name = crate::host_identity().helper_name(name);
         self.find_executable(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "the bundled helper '{name}' is missing; this is a broken Buzzard OS build"
@@ -38,6 +43,7 @@ impl ResourceLocator {
     }
 
     pub fn helper_or_path(&self, name: &str) -> Result<PathBuf> {
+        let name = crate::host_identity().helper_name(name);
         if let Some(path) = self.find_executable(name) {
             return Ok(path);
         }
@@ -115,4 +121,33 @@ fn is_executable(path: &Path) -> bool {
     path.metadata()
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn helpers_resolve_only_the_compiled_installation_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let locator = ResourceLocator {
+            roots: vec![temp.path().to_owned()],
+            asset_roots: vec![],
+        };
+        let selected = crate::host_identity().display_executable;
+        let other = if selected == "buzzardos-display" {
+            "buzzardos-pod-display"
+        } else {
+            "buzzardos-display"
+        };
+        let other = temp.path().join(other);
+        std::fs::write(&other, "other installation").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(locator.helper("buzzardos-display").is_err());
+        let selected = temp.path().join(selected);
+        std::fs::write(&selected, "selected installation").unwrap();
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(locator.helper("buzzardos-display").unwrap(), selected);
+    }
 }

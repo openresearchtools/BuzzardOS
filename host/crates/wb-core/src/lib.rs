@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod identity;
 mod machine;
 mod media;
 mod paths;
@@ -8,6 +9,7 @@ mod registry;
 mod resources;
 mod wayland;
 
+pub use identity::{HostIdentity, host_identity};
 pub use machine::{
     DEFAULT_PODMAN_ARGUMENTS, IntegrationSettings, MachineConfig, MachineState, MediaSharing,
     NetworkMode, OciImageMetadata, PortDirection, PortForward, PortProtocol,

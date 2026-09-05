@@ -10,6 +10,12 @@ output_dir=${BUZZARDOS_DEB_OUTPUT_DIR:-$build_root/output}
 host_target=${BUZZARDOS_HOST_TARGET_DIR:-$build_root/target-host}
 guest_target=${BUZZARDOS_GUEST_TARGET_DIR:-$build_root/target-guest}
 cua_target=${BUZZARDOS_CUA_TARGET_DIR:-$build_root/target-cua}
+host_identity=${BUZZARDOS_HOST_IDENTITY:-buzzardos}
+case "$host_identity" in
+    buzzardos|buzzardos-pod) ;;
+    *) echo "unsupported host identity: $host_identity" >&2; exit 2 ;;
+esac
+
 version=$(tr -d '\n' <"$project_dir/VERSION")
 guest_version=$(tr -d '\n' <"$project_dir/guest/GUEST_VERSION")
 desktop_version=$(tr -d '\n' <"$project_dir/guest/DESKTOP_VERSION")
@@ -161,68 +167,85 @@ install_rust_licensing() {
 }
 
 build_host() {
-    CARGO_TARGET_DIR="$host_target" cargo build \
+    BUZZARDOS_HOST_IDENTITY="$host_identity" CARGO_TARGET_DIR="$host_target" cargo build \
         --locked --release --manifest-path "$project_dir/host/Cargo.toml" --workspace
-    local root="$build_root/root-buzzardos"
+    local root="$build_root/root-$host_identity"
     rm -rf -- "$root"
-    install -D -m 0755 "$host_target/release/buzzardos" "$root/usr/bin/buzzardos"
-    ln -s buzzardos "$root/usr/bin/BuzzardOS"
+    install -D -m 0755 "$host_target/release/buzzardos" "$root/usr/bin/$host_identity"
+    if [[ "$host_identity" == buzzardos ]]; then
+        ln -s buzzardos "$root/usr/bin/BuzzardOS"
+    fi
     install -D -m 0755 "$host_target/release/buzzardos-display" \
-        "$root/usr/libexec/buzzardos/buzzardos-display"
+        "$root/usr/libexec/$host_identity/$host_identity-display"
     install -D -m 0644 "$project_dir/host/packaging/BuzzardOS.desktop" \
-        "$root/usr/share/applications/org.openresearchtools.buzzardos.desktop"
+        "$root/usr/share/applications/org.openresearchtools.$host_identity.desktop"
     install -D -m 0644 "$project_dir/host/packaging/org.openresearchtools.BuzzardOS.metainfo.xml" \
-        "$root/usr/share/metainfo/org.openresearchtools.buzzardos.metainfo.xml"
+        "$root/usr/share/metainfo/org.openresearchtools.$host_identity.metainfo.xml"
+    if [[ "$host_identity" == buzzardos-pod ]]; then
+        # Only staged host metadata is renamed. Guest recipes, package names,
+        # protocol paths and the default build remain unchanged.
+        sed -i \
+            -e 's/^Name=Buzzard OS$/Name=Buzzard OS (Podman)/' \
+            -e 's/^Exec=buzzardos$/Exec=buzzardos-pod/' \
+            -e 's/^Icon=buzzardos$/Icon=buzzardos-pod/' \
+            -e 's/^StartupWMClass=.*/StartupWMClass=org.openresearchtools.buzzardos-pod/' \
+            "$root/usr/share/applications/org.openresearchtools.$host_identity.desktop"
+        sed -i \
+            -e 's/org.openresearchtools.buzzardos/org.openresearchtools.buzzardos-pod/g' \
+            -e 's/<name>Buzzard OS<\//<name>Buzzard OS (Podman)<\//' \
+            -e 's/<binary>buzzardos<\//<binary>buzzardos-pod<\//' \
+            "$root/usr/share/metainfo/org.openresearchtools.$host_identity.metainfo.xml"
+    fi
     local icon size
     for icon in "$project_dir"/host/packaging/icons/buzzardos-*.png; do
         size=${icon##*-}
         size=${size%.png}
         install -D -m 0644 "$icon" \
-            "$root/usr/share/icons/hicolor/${size}x${size}/apps/buzzardos.png"
+            "$root/usr/share/icons/hicolor/${size}x${size}/apps/$host_identity.png"
     done
     install -D -m 0644 "$project_dir/packaging/copyright/buzzardos" \
-        "$root/usr/share/doc/buzzardos/copyright"
+        "$root/usr/share/doc/$host_identity/copyright"
     install -D -m 0644 "$project_dir/LICENSE" \
-        "$root/usr/share/doc/buzzardos/LICENSE"
+        "$root/usr/share/doc/$host_identity/LICENSE"
     install -D -m 0644 "$project_dir/host/LICENSE" \
-        "$root/usr/share/doc/buzzardos/COMPONENT-LICENSE"
-    install_upstream_changelog "$root" buzzardos "$project_dir/host/CHANGELOG.md"
-    install -D -m 0644 "$project_dir/NOTICE" "$root/usr/share/doc/buzzardos/NOTICE"
+        "$root/usr/share/doc/$host_identity/COMPONENT-LICENSE"
+    install_upstream_changelog "$root" "$host_identity" "$project_dir/host/CHANGELOG.md"
+    install -D -m 0644 "$project_dir/NOTICE" "$root/usr/share/doc/$host_identity/NOTICE"
     install -D -m 0644 "$project_dir/LICENSES/package-notices/buzzardos.md" \
-        "$root/usr/share/doc/buzzardos/THIRD_PARTY_NOTICES.md"
+        "$root/usr/share/doc/$host_identity/THIRD_PARTY_NOTICES.md"
     install -D -m 0644 \
         "$project_dir/LICENSES/generated/RUST_DEPENDENCY_LICENSES.buzzardos.txt" \
-        "$root/usr/share/doc/buzzardos/RUST_DEPENDENCY_LICENSES.txt"
+        "$root/usr/share/doc/$host_identity/RUST_DEPENDENCY_LICENSES.txt"
     install -D -m 0644 "$project_dir/LICENSES/generated/cargo-host.tsv" \
-        "$root/usr/share/doc/buzzardos/cargo-host.tsv"
-    install_rust_licensing "$root" buzzardos \
+        "$root/usr/share/doc/$host_identity/cargo-host.tsv"
+    install_rust_licensing "$root" "$host_identity" \
         "$project_dir/LICENSES/generated/cargo-host.tsv"
-    install -d -m 0755 "$root/usr/share/buzzardos"
-    printf '%s\n' "$version" >"$root/usr/share/buzzardos/version"
+    install -d -m 0755 "$root/usr/share/$host_identity"
+    printf '%s\n' "$version" >"$root/usr/share/$host_identity/version"
     # Ship only Buzzard's guest-building recipes with the host manager. Guest
     # packages remain separate release artifacts and are never folded into the
     # host package or its licensing inventory.
     install -D -m 0644 "$project_dir/oci/desktop/Containerfile" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/Containerfile"
+        "$root/usr/share/$host_identity/containerfiles/desktop/Containerfile"
     install -D -m 0644 "$project_dir/oci/desktop/Containerfile.cuda" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/Containerfile.cuda"
+        "$root/usr/share/$host_identity/containerfiles/desktop/Containerfile.cuda"
     install -D -m 0755 "$project_dir/oci/desktop/provision-image.sh" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/provision-image.sh"
+        "$root/usr/share/$host_identity/containerfiles/desktop/provision-image.sh"
     install -D -m 0644 "$project_dir/oci/desktop/apt/debian-sid-snapshot.sources" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/apt/debian-sid-snapshot.sources"
+        "$root/usr/share/$host_identity/containerfiles/desktop/apt/debian-sid-snapshot.sources"
     install -D -m 0644 "$project_dir/oci/desktop/apt/debian-sid-live.sources" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/apt/debian-sid-live.sources"
+        "$root/usr/share/$host_identity/containerfiles/desktop/apt/debian-sid-live.sources"
     install -D -m 0644 "$project_dir/oci/desktop/apt/99buzzardos-snapshot" \
-        "$root/usr/share/buzzardos/containerfiles/desktop/apt/99buzzardos-snapshot"
+        "$root/usr/share/$host_identity/containerfiles/desktop/apt/99buzzardos-snapshot"
     install -d -m 0755 "$root/usr/share/lintian/overrides"
-    cat >"$root/usr/share/lintian/overrides/buzzardos" <<'EOF'
+    cat >"$root/usr/share/lintian/overrides/$host_identity" <<EOF
 # Lintian's byte signature identifies Rust's separately inventoried
 # miniz_oxide implementation as embedded C zlib. No zlib source or library is
 # copied into this package; the exact Rust crate/license closure is shipped in
-# /usr/share/doc/buzzardos.
-buzzardos: embedded-library zlib [usr/libexec/buzzardos/buzzardos-display]
+# /usr/share/doc/$host_identity.
+$host_identity: embedded-library zlib [usr/libexec/$host_identity/$host_identity-display]
 EOF
-    write_control "$root" buzzardos "$version" \
+    write_control "$root" "$host_identity" "$version" \
         'buildah, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-tools, libc6, libgcc-s1, libglib2.0-0t64 | libglib2.0-0, libgtk-4-1 (>= 4.14), libwayland-client0, libxkbcommon0, passt, pipewire-bin, podman, xkb-data' \
         'Buzzard OS rootless persistent desktop-machine manager'
     cat >"$root/DEBIAN/postinst" <<'EOF'
@@ -233,7 +256,7 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q /us
 exit 0
 EOF
     chmod 0755 "$root/DEBIAN/postinst"
-    finish_package "$root" buzzardos "$version"
+    finish_package "$root" "$host_identity" "$version"
 }
 
 build_guest() {

@@ -9,7 +9,7 @@ use clap::Parser;
 use wb_core::MachineConfig;
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "buzzardos-display", version)]
+#[command(name = wb_core::host_identity().display_executable, version)]
 pub(crate) struct Launch {
     /// Real host Wayland socket. This path is never passed into the guest.
     #[arg(long)]
@@ -77,11 +77,11 @@ pub(crate) struct Launch {
     pub(crate) sync_drm_device: Option<PathBuf>,
 
     /// Native host window title.
-    #[arg(long, default_value = "Buzzard OS")]
+    #[arg(long, default_value = wb_core::host_identity().name)]
     pub(crate) title: String,
 
     /// Native host application identifier.
-    #[arg(long, default_value = "org.openresearchtools.buzzardos")]
+    #[arg(long, default_value = wb_core::host_identity().application_id)]
     pub(crate) app_id: String,
 
     /// Test-only fractional scale override, in units of 1/120.

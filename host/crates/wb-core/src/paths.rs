@@ -116,7 +116,7 @@ fn host_control_socket_in(runtime: &Path, machine_dir: &Path) -> Result<PathBuf>
     let digest = Sha256::digest(machine_dir.as_os_str().as_bytes());
     let key = format!("{digest:x}");
     Ok(runtime
-        .join("buzzardos")
+        .join(crate::host_identity().package)
         .join(format!("window-{}.sock", &key[..24])))
 }
 

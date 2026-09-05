@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "Buzzard OS",
+    name = wb_core::host_identity().package,
     version,
     about = "Persistent rootless Podman desktop machines"
 )]
